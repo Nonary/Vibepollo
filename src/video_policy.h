@@ -10,6 +10,38 @@
 #include <utility>
 
 namespace video::policy {
+  /**
+   * What an encode loop does with an image after convert(): whether to encode it,
+   * and the timestamps to encode it with.
+   */
+  struct converted_input_t {
+    bool encode = true;
+    std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
+  };
+
+  /**
+   * A conversion that read pixels this session already sent is skipped, not
+   * encoded again. Otherwise the frame the conversion actually read decides the
+   * timestamps; an image whose pixels were not replaced keeps the stamps its
+   * capture claimed. `Converted` is platf::converted_frame_t.
+   */
+  template<class Converted>
+  converted_input_t resolve_converted_input(
+    const Converted &converted,
+    const std::optional<std::chrono::steady_clock::time_point> &claimed_frame_timestamp,
+    const std::optional<std::chrono::steady_clock::time_point> &claimed_host_processing_timestamp
+  ) {
+    if (converted.repeats_previous) {
+      return {false, std::nullopt, std::nullopt};
+    }
+    return {
+      true,
+      converted.frame_timestamp ? converted.frame_timestamp : claimed_frame_timestamp,
+      converted.host_processing_timestamp ? converted.host_processing_timestamp : claimed_host_processing_timestamp,
+    };
+  }
+
   template<class Queue, class Context, class ShutdownSignal, class JoinSignal>
   bool try_admit_capture_session(
     Queue &queue,

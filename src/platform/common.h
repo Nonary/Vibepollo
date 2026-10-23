@@ -403,10 +403,24 @@ namespace platf {
     virtual ~img_t() = default;
   };
 
+  /**
+   * @brief The capture frame a convert() call actually read.
+   * @details A capture image that aliases a texture the capture source keeps rewriting
+   *          (direct WGC encoder input) can hold newer pixels than its own timestamps by
+   *          the time an encoder reads it, or pixels the encoder has already converted.
+   */
+  struct converted_frame_t {
+    bool repeats_previous = false;  ///< Do not encode these pixels: they were already converted from an earlier image, or the frame they belong to could not be identified.
+    std::optional<std::chrono::steady_clock::time_point> frame_timestamp;  ///< Replaces the image's frame timestamp when set.
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;  ///< Replaces the image's host processing timestamp when set.
+  };
+
   struct encode_device_t {
     virtual ~encode_device_t() = default;
 
     virtual int convert(platf::img_t &img) = 0;
+
+    converted_frame_t converted_frame;  ///< What the last convert() read; each call resets it.
 
     video::sunshine_colorspace_t colorspace;
     bool rtx_hdr_active = false;

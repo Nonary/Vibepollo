@@ -338,3 +338,54 @@ TEST(WgcGeometryUpdatePolicy, WgcRechecksTargetIdentityOnPollEvenWithColorEvents
   EXPECT_TRUE(target_observation_needed(false, false, true, true, false, false, false));
   EXPECT_TRUE(target_observation_needed(false, false, false, false, false, false, true));
 }
+
+TEST(WgcDirectEncoderInput, EncodesEachSharedFrameOnce) {
+  using platf::dxgi::wgc_policy::direct_frame_cursor_t;
+  using platf::dxgi::wgc_policy::take_direct_frame;
+  direct_frame_cursor_t cursor;
+  EXPECT_TRUE(take_direct_frame(cursor, 1, 7));
+  // The capture thread claimed frame 8, but the helper published 9 before the
+  // encoder locked the texture: the encoder converts 9, stamped as 9.
+  EXPECT_TRUE(take_direct_frame(cursor, 1, 9));
+  // The image claimed for frame 9 then finds the same pixels.
+  EXPECT_FALSE(take_direct_frame(cursor, 1, 9));
+  EXPECT_TRUE(take_direct_frame(cursor, 1, 10));
+}
+
+TEST(WgcDirectEncoderInput, UnreadableFrameRecordSkipsTheFrameAndKeepsTheCursor) {
+  using platf::dxgi::wgc_policy::classify_direct_frame;
+  using platf::dxgi::wgc_policy::direct_frame_cursor_t;
+  using platf::dxgi::wgc_policy::direct_frame_e;
+  direct_frame_cursor_t cursor;
+  EXPECT_EQ(classify_direct_frame(cursor, true, 1, 7), direct_frame_e::convert);
+  // The record cannot be read: nothing is converted and nothing is consumed,
+  // whatever stale ids the caller passes.
+  EXPECT_EQ(classify_direct_frame(cursor, false, 1, 99), direct_frame_e::unreadable);
+  EXPECT_EQ(classify_direct_frame(cursor, false, 2, 1), direct_frame_e::unreadable);
+  EXPECT_EQ(cursor.generation, 1u);
+  EXPECT_EQ(cursor.frame_id, 7u);
+  // Once the record reads again, the next frame converts and a repeat is a repeat.
+  EXPECT_EQ(classify_direct_frame(cursor, true, 1, 7), direct_frame_e::repeat);
+  EXPECT_EQ(classify_direct_frame(cursor, true, 1, 8), direct_frame_e::convert);
+}
+
+TEST(WgcDirectEncoderInput, RestartedHelperRestartsFrameIds) {
+  using platf::dxgi::wgc_policy::direct_frame_cursor_t;
+  using platf::dxgi::wgc_policy::take_direct_frame;
+  direct_frame_cursor_t cursor;
+  EXPECT_TRUE(take_direct_frame(cursor, 1, 500));
+  EXPECT_TRUE(take_direct_frame(cursor, 2, 1));
+  EXPECT_FALSE(take_direct_frame(cursor, 2, 1));
+  EXPECT_TRUE(take_direct_frame(cursor, 2, 2));
+}
+
+TEST(WgcDirectEncoderInput, KeepsTheCopyPathForSourcesThatNeedAStableImage) {
+  using platf::dxgi::wgc_policy::direct_encoder_input_allowed;
+  EXPECT_TRUE(direct_encoder_input_allowed(true, false, false));
+  EXPECT_FALSE(direct_encoder_input_allowed(false, false, false));
+  // Constant frame rate capture re-sends its cached image on a timeout; the
+  // frame cursor would drop that as a repeat.
+  EXPECT_FALSE(direct_encoder_input_allowed(true, true, false));
+  // PyroWave reads the capture image's own texture and keyed mutex.
+  EXPECT_FALSE(direct_encoder_input_allowed(true, false, true));
+}

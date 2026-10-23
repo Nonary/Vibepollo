@@ -5302,6 +5302,10 @@ Set `0` to preserve the existing legacy/adaptive pacing behavior without this ad
 
 Sets the maximum network packet size used for streaming. Set `0` to use the default behavior.
 
+### wgc_direct_encoder_input
+
+Lets GPU encoders read each Windows Graphics Capture frame directly from the capture helper's shared texture instead of from a host-side snapshot copy. This removes one full-frame GPU copy and one hand-off between the capture and encoder devices per frame, which shortens and steadies host processing latency. Defaults to `enabled`; set `disabled` to restore the previous copy path. Software encoding and DXGI capture are unaffected; `wgcc` (constant) capture and PyroWave always use the copy path.
+
 <div class="section_buttons">
 
 | Previous          |                            Next |
