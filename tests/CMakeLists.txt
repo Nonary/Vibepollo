@@ -1834,7 +1834,8 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
     add_test(NAME regression_remote_input_reconnect
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_remote_input_reconnect.py"
             --compiler "${SUNSHINE_TEST_GXX}"
-            --build-dir "${CMAKE_CURRENT_BINARY_DIR}/remote_input_reconnect")
+            --build-dir "${CMAKE_CURRENT_BINARY_DIR}/remote_input_reconnect"
+            --json-include "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>")
     set_tests_properties(regression_remote_input_reconnect PROPERTIES LABELS "component" TIMEOUT 120)
     add_test(NAME regression_stream_disconnect_lifecycle
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_stream_disconnect_lifecycle.py"
