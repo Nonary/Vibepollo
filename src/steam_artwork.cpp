@@ -1,4 +1,5 @@
 /** @file src/steam_artwork.cpp */
+#include "file_clock.h"
 #include "steam_artwork.h"
 #include "provider_scan_protocol.h"
 
@@ -131,7 +132,7 @@ namespace {
     if (ec) return std::nullopt;
     const auto size = fs::file_size(canonical, ec);
     if (ec) return std::nullopt;
-    const auto mtime = static_cast<std::intmax_t>(fs::last_write_time(canonical, ec).time_since_epoch().count());
+    const auto mtime = file_clock::count_string(fs::last_write_time(canonical, ec).time_since_epoch().count());
     if (ec) return std::nullopt;
     return platf::steam::artwork::source_fingerprint_t {canonical.generic_string(), size, mtime};
   }
@@ -148,7 +149,7 @@ namespace {
       try {
         if (key == "path") out.path = value;
         else if (key == "size") out.size = static_cast<std::uintmax_t>(std::stoull(value));
-        else if (key == "mtime") out.mtime = static_cast<std::intmax_t>(std::stoll(value));
+        else if (key == "mtime") out.mtime = value;
       } catch (...) {
         return false;
       }

@@ -27,7 +27,9 @@ namespace platf::steam::artwork {
   struct source_fingerprint_t {
     std::string path;
     std::uintmax_t size = 0;
-    std::intmax_t mtime = 0;
+    // Keep the full native count, including libc++'s signed 128-bit range.
+    // Decimal text also preserves compatibility with existing version-1 sidecars.
+    std::string mtime = "0";
 
     bool operator==(const source_fingerprint_t &) const = default;
   };
