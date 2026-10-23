@@ -412,6 +412,7 @@ namespace system_tray {
     // AppKit only runs the menu bar on the main thread, which is where main() calls this from.
     // main() then runs the AppKit event loop there once startup is done.
     // No retries: unlike Windows' shell, a status item that fails once won't recover.
+    tray_set_log_callback(&tray_log_bridge);
     if (tray_init(&tray) < 0) {
       BOOST_LOG(warning) << "Failed to create the menu bar icon"sv;
       return;

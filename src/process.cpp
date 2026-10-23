@@ -55,6 +55,7 @@
 #include "crypto.h"
 #include "display_device.h"
 #include "deferred_action.h"
+#include "file_clock.h"
 #include "file_handler.h"
 #include "globals.h"
 #include "logging.h"
@@ -3936,7 +3937,7 @@ namespace proc {
         if (ec) return std::nullopt;
         const auto size = std::filesystem::file_size(path, ec);
         if (ec) return std::nullopt;
-        return std::to_string(modified.time_since_epoch().count()) + "-" + std::to_string(size);
+        return file_clock::count_string(modified.time_since_epoch().count()) + "-" + std::to_string(size);
       });
   }
 

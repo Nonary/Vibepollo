@@ -754,7 +754,7 @@ int main(int argc, char *argv[]) {
 #ifndef __linux__
   // Other platforms retain their native signal/control handlers. Linux has
   // blocked these signals process-wide and consumes them synchronously above.
-  on_signal(SIGINT, [&shutdown_signal_requested, shutdown_event]() {
+  on_signal(SIGINT, [shutdown_event]() {
     shutdown_signal_requested.store(true, std::memory_order_relaxed);
     BOOST_LOG(info) << "Interrupt handler called"sv;
 
@@ -770,7 +770,7 @@ int main(int argc, char *argv[]) {
   #endif
   });
 
-  on_signal(SIGTERM, [&shutdown_signal_requested, shutdown_event]() {
+  on_signal(SIGTERM, [shutdown_event]() {
     shutdown_signal_requested.store(true, std::memory_order_relaxed);
     BOOST_LOG(info) << "Terminate handler called"sv;
 

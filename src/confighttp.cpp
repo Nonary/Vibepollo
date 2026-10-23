@@ -6344,6 +6344,7 @@ namespace confighttp {
           return;
         }
         auto task = [handler, response, request = std::move(request), ticket]() mutable {
+          (void) ticket;  // Unused where no handler takes a ticket, as on macOS.
           try {
             if constexpr (std::is_invocable_v<decltype(handler), resp_https_t, req_https_t, host_stream_control::ticket_t>) {
               handler(response, request, ticket);
