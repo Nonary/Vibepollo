@@ -110,7 +110,12 @@ int main(int argc, char **argv) {
 
 
 def input_harness(source):
-    """Compile actual allocation/handlers with fake mail, worker and OS output."""
+    """Compile actual allocation/handlers with fake mail, worker and OS output.
+
+    Geometry refresh is outside this harness's Guide/session-config contract,
+    so the extracted snippets use inert lifecycle hooks while retaining the
+    production atomic worker-wake coalescing policy.
+    """
     prelude = production_prelude(source)
     # Use the real utility numeric helpers rather than duplicating parsing.
     prelude = '#include "src/utility.h"\n' + prelude
@@ -142,8 +147,17 @@ def input_harness(source):
     crypto_source = (ROOT / 'src/crypto.h').read_text()
     permissions = crypto_source[crypto_source.index('  enum class PERM :'):crypto_source.index('  struct command_entry_t')]
     prelude += '\nnamespace crypto {\n' + permissions + '\n}\n'
+    geometry_support = r'''
+namespace geometry {
+  inline bool request_serialized_worker_wake(std::atomic_bool &scheduled) noexcept {
+    return !scheduled.exchange(true, std::memory_order_acq_rel);
+  }
+}
+void refresh_input_geometry(const std::shared_ptr<input_t> &) {}
+void start_input_geometry_refresh(const std::shared_ptr<input_t> &) {}
+'''
     code = '\n'.join(function(source, signature) for signature in signatures if signature in source)
-    return prelude + MAIL + config_code((ROOT / 'src/config.cpp').read_text()) + extra + code
+    return prelude + MAIL + config_code((ROOT / 'src/config.cpp').read_text()) + extra + geometry_support + code
 
 
 def main():

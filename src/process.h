@@ -44,10 +44,7 @@ namespace VDISPLAY {
 
 #endif
 
-#define VIRTUAL_DISPLAY_UUID "8902CB19-674A-403D-A587-41B092E900BA"
-#define FALLBACK_DESKTOP_UUID "EAAC6159-089A-46A9-9E24-6436885F6610"
-#define REMOTE_INPUT_UUID "8CB5C136-DA67-4F99-B4A1-F9CD35005CF4"
-#define TERMINATE_APP_UUID "E16CBE1B-295D-4632-9A76-EC4180C857D3"
+#include "legacy_generated_app_identities.h"
 
 namespace bp = boost_process_shim;
 #define DEFAULT_APP_IMAGE_PATH SUNSHINE_ASSETS_DIR "/box.png"
@@ -134,6 +131,7 @@ namespace proc {
     std::string get_app_image(int app_id);
     std::optional<ctx_t> resolve_app(const std::string &appid, const std::string &appuuid = "") const;
     std::optional<ctx_t> resolve_app(int app_id) const;
+    std::optional<ctx_t> active_app_snapshot() const;
     std::string get_last_run_app_name();
     std::string get_running_app_uuid();
     bp::environment get_env();
@@ -157,7 +155,7 @@ namespace proc {
 
     // Hot-update app list and environment without disrupting a running app
     void update_apps(std::vector<ctx_t> &&apps, bp::environment &&env);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     bool update_active_app_live_rtx_hdr_overrides(const std::string &app_uuid);
     bool update_active_app_live_rtx_hdr_overrides(
       const std::string &app_uuid,

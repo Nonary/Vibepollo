@@ -371,11 +371,17 @@ namespace platf::dxgi::present_timing {
       refresh_foreground(composition_qpc);
       std::uint64_t source = 0;
       if (foreground_pid_ != 0) {
-        source = tracker_->presents_for(foreground_pid_, composition_qpc - stale_, composition_qpc, frequency_, source_, presents_);
+        source = tracker_->presents_for(
+          foreground_pid_,
+          composition_qpc - stale_,
+          composition_qpc,
+          frequency_,
+          source_identity_.preferred_swapchain(foreground_pid_),
+          presents_
+        );
       }
-      if (source != source_) {
+      if (source_identity_.update(foreground_pid_, source)) {
         refiner_.reset_source();
-        source_ = source;
       }
     }
 

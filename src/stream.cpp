@@ -62,6 +62,7 @@ extern "C" {
 #include "remote_display_topology.h"
 #include "rtsp.h"
 #include "rtsp_pending_policy.h"
+#include "send_result_observation.h"
 #include "session_history.h"
 #include "steam_controller_protocol.h"
 #include "stream.h"
@@ -73,6 +74,7 @@ extern "C" {
 #include "utility.h"
 #include "uuid.h"
 #include "video_send.h"
+#include "video_pacing_policy.h"
 #include "webrtc_stream.h"
 #ifdef _WIN32
   #include "platform/windows/frame_limiter.h"
@@ -639,6 +641,8 @@ namespace stream {
     std::shared_ptr<void> display_power_guard;
     std::shared_ptr<void> audio_context_guard;
     std::shared_ptr<void> normal_display_capture;
+    std::optional<display_target::descriptor_t> exact_monitor_target;
+    std::shared_ptr<void> exact_target_hold;
     config_t config;
     int stream_fps = 0;
     int stream_fps_scaled = 0;
@@ -646,6 +650,7 @@ namespace stream {
     bool secondary_game_client = false;
     remote_session::role_e remote_role {remote_session::role_e::game};
     std::uint64_t remote_role_generation {};
+    std::string monitor_profile_uuid;
     bool input_only {};
     bool audio_disabled {};
     std::atomic_bool client_disconnected {false};
@@ -675,6 +680,8 @@ namespace stream {
       safe::mail_raw_t::event_t<bool> idr_events;
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
       safe::mail_raw_t::event_t<int> bitrate_events;
+      // HTTP bitrate control is concurrent with the UDP sender.
+      std::atomic<int> pacing_bitrate_kbps {0};
 
       std::unique_ptr<platf::deinit_t> qos;
     } video;
@@ -715,6 +722,10 @@ namespace stream {
       platf::feedback_queue_t feedback_queue;
       std::array<haptics_gain_t, platf::MAX_GAMEPADS> haptics_gains;
       std::atomic_bool pcm_negotiation_warning_logged {false};
+      std::array<std::atomic_bool, platf::MAX_GAMEPADS> pcm_send_success_logged {};
+      std::array<std::atomic_bool, platf::MAX_GAMEPADS> pcm_send_failure_logged {};
+      std::array<std::atomic_bool, platf::MAX_GAMEPADS> vigem_rumble_send_success_logged {};
+      std::array<std::atomic_bool, platf::MAX_GAMEPADS> vigem_rumble_send_failure_logged {};
       safe::mail_raw_t::event_t<video::hdr_info_t> hdr_queue;
     } control;
 
@@ -884,7 +895,8 @@ namespace stream {
       sessions.reserve(ctx.control_server._sessions->size());
       for (auto *session : *ctx.control_server._sessions) {
         if (session) {
-          sessions.push_back({session->device_uuid, session->config.monitor.bitrate, session->config.monitor.client_requested_bitrate, session->video.idr_events, session->video.bitrate_events});
+          sessions.push_back({session->device_uuid, session->config.monitor.bitrate, session->config.monitor.client_requested_bitrate,
+                              session->video.pacing_bitrate_kbps, session->video.idr_events, session->video.bitrate_events});
         }
       }
       return action(sessions);
@@ -1355,11 +1367,19 @@ namespace stream {
     }
 
     std::string payload;
-    if (msg.type == platf::gamepad_feedback_e::haptics_pcm) {
+    if (msg.type == platf::gamepad_feedback_e::speaker_pcm) {
+      const auto plaintext = controller_speaker_pcm::encode(session->config.mlFeatureFlags, session->config.controlProtocolType, msg.id, msg.data.speaker, msg.speaker_epoch);
+      if (!plaintext) {
+        return 0;
+      }
+      std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(controller_speaker_pcm::payload_size + 4) + crypto::cipher::tag_size> encrypted_payload;
+      payload = encode_control(session, std::string_view(reinterpret_cast<const char *>(plaintext->data()), plaintext->size()), encrypted_payload);
+    } else if (msg.type == platf::gamepad_feedback_e::haptics_pcm) {
       if (!(session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM)) {
         // PCM arrives in frequent chunks; report missing negotiation once per session.
         if (!session->control.pcm_negotiation_warning_logged.exchange(true, std::memory_order_relaxed)) {
-          BOOST_LOG(warning) << "Dropping waveform haptics because the client session did not negotiate PCM feedback support"sv;
+          BOOST_LOG(warning) << "Dropping waveform haptics because the client session did not negotiate PCM feedback support; mlFeatureFlags="
+                             << session->config.mlFeatureFlags;
         }
         return 0;
       }
@@ -1497,7 +1517,53 @@ namespace stream {
       return -1;
     }
 
-    if (session->broadcast_ref->control_server.send(payload, session->control.peer, msg.type == platf::gamepad_feedback_e::haptics_pcm)) {
+    const auto send_result = detail::send_and_observe_result(
+      [&] {
+        if (msg.type == platf::gamepad_feedback_e::speaker_pcm) {
+          // Encryption is complete. Serialize only ENet queue admission with
+          // epoch reset, not network flushing or the producer slot mutex.
+          return controller_speaker_pcm::enqueue_if_current(msg.speaker_epoch, msg.data.speaker.generation, [&] {
+            return session->broadcast_ref->control_server.send(payload, session->control.peer, true);
+          });
+        }
+        return session->broadcast_ref->control_server.send(payload, session->control.peer, msg.type == platf::gamepad_feedback_e::haptics_pcm);
+      },
+      [&](const int result) {
+        if (msg.type == platf::gamepad_feedback_e::haptics_pcm &&
+            msg.id < session->control.pcm_send_success_logged.size() &&
+            detail::claim_first_send_result_log(result,
+              session->control.pcm_send_success_logged[msg.id],
+              session->control.pcm_send_failure_logged[msg.id])) {
+          BOOST_LOG(debug) << "Waveform haptics ENet queue " << (result == 0 ? "accepted" : "rejected")
+                           << " frame; client-relative controller index=" << msg.id
+                           << "; mlFeatureFlags=" << session->config.mlFeatureFlags
+                           << "; peer channels=" << session->control.peer->channelCount
+                           << "; result=" << result;
+        }
+        if (!msg.from_vigem ||
+            msg.type != platf::gamepad_feedback_e::rumble ||
+            msg.id >= session->control.vigem_rumble_send_success_logged.size()) {
+          return;
+        }
+
+        if (!detail::claim_first_send_result_log(
+              result,
+              session->control.vigem_rumble_send_success_logged[msg.id],
+              session->control.vigem_rumble_send_failure_logged[msg.id]
+            )) {
+          return;
+        }
+
+        if (result == 0) {
+          BOOST_LOG(info) << "control_server.send() returned success after ENet accepted the packet into its outgoing queue for sending; ViGEm "sv
+                          << detail::format_client_relative_controller_index_field(msg.id);
+        } else {
+          BOOST_LOG(warning) << "control_server.send() returned failure for ViGEm rumble feedback; ENet queue acceptance was not reported; result="sv
+                             << result << "; "sv << detail::format_client_relative_controller_index_field(msg.id);
+        }
+      }
+    );
+    if (send_result) {
       TUPLE_2D(port, addr, platf::from_sockaddr_ex((sockaddr *) &session->control.peer->address.address));
       BOOST_LOG(warning) << "Couldn't send gamepad feedback to ["sv << addr << ':' << port << ']';
 
@@ -2060,7 +2126,9 @@ namespace stream {
 
     auto &io = ctx.io_context;
 
-    udp::endpoint peer;
+    // Each outstanding receive writes its sender endpoint. Give the video and
+    // audio sockets separate storage so one cannot replace the other's peer.
+    std::array<udp::endpoint, 2> peers;
 
     std::array<char, 2048> buf[2];
     std::function<void(const boost::system::error_code, size_t)> recv_func[2];
@@ -2093,8 +2161,10 @@ namespace stream {
 
     auto recv_func_init = [&](udp::socket &sock, int buf_elem, std::map<av_session_id_t, message_queue_t> &peer_to_session) {
       recv_func[buf_elem] = [&, buf_elem](const boost::system::error_code &ec, size_t bytes) {
+        // Snapshot this sender before rearming the socket's receive.
+        const auto peer = peers[buf_elem];
         auto fg = util::fail_guard([&]() {
-          sock.async_receive_from(asio::buffer(buf[buf_elem]), peer, 0, recv_func[buf_elem]);
+          sock.async_receive_from(asio::buffer(buf[buf_elem]), peers[buf_elem], 0, recv_func[buf_elem]);
         });
 
         auto type_str = buf_elem ? "AUDIO"sv : "VIDEO"sv;
@@ -2135,8 +2205,8 @@ namespace stream {
     recv_func_init(video_sock, 0, peer_to_video_session);
     recv_func_init(audio_sock, 1, peer_to_audio_session);
 
-    video_sock.async_receive_from(asio::buffer(buf[0]), peer, 0, recv_func[0]);
-    audio_sock.async_receive_from(asio::buffer(buf[1]), peer, 0, recv_func[1]);
+    video_sock.async_receive_from(asio::buffer(buf[0]), peers[0], 0, recv_func[0]);
+    audio_sock.async_receive_from(asio::buffer(buf[1]), peers[1], 0, recv_func[1]);
 
     while (!broadcast_shutdown_event->peek()) {
       io.run();
@@ -2416,6 +2486,18 @@ namespace stream {
         fec_blocks_begin = std::begin(fec_blocks),
         fec_blocks_end = std::begin(fec_blocks) + fec_blocks_needed;
 
+      // When enabled, the demand quantum limits one ordinary-stream send call;
+      // it does not cap aggregate sends before the next pacing wait.
+      // Keep the downstream frame deadline/cumulative pacing calculations intact.
+      std::size_t pacing_frame_packets = total_shards;
+      if (!pyrowave_session && config::stream.pacing_batch_demand_limit) {
+        pacing_frame_packets = 0;
+        for (std::size_t x = 0; x < fec_blocks_needed; ++x) {
+          const auto data_shards = (fec_blocks[x].size() + blocksize - 1) / blocksize;
+          pacing_frame_packets += pacing::fec_expanded_packets(data_shards, fec_block_percentages[x], min_parity_shards);
+        }
+      }
+
       BOOST_LOG(verbose) << "Generating "sv << fec_blocks_needed << " FEC blocks"sv;
 
       std::size_t frame_packets_accepted = 0;
@@ -2436,6 +2518,7 @@ namespace stream {
           pacing_ceiling, blocksize + (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0));
         size_t ratecontrol_packets_in_1ms = std::giga::num * 80 / 100 / 1000 / blocksize / 8;
         ratecontrol_packets_in_1ms = std::max<size_t>(1, ratecontrol_packets_in_1ms);
+        std::size_t ordinary_batch_quantum_packets = 1;
         if (pacing_ceiling > 0 && capped_batch_packets == 0) {
           BOOST_LOG(error) << "Configured pacing ceiling has an invalid video datagram"sv;
           session::stop(*session);
@@ -2478,7 +2561,7 @@ namespace stream {
             wire_timeline_state.cached_link_bps, session->config.monitor.pyrowave_peer_link_bps);
           const auto link_interface_id = wire_timeline_state.cached_interface_id;
           const auto &monitor = session->config.monitor;
-          const auto stream_kbps = monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate;
+          const auto stream_kbps = session->video.pacing_bitrate_kbps.load(std::memory_order_relaxed);
           // Ethernet header/FCS/preamble/interpacket gap, IP header, UDP header,
           // plus the optional encrypted-video prefix all occupy link time.
           const auto ip_header_bytes = session->video.peer.address().is_v6() ? 40u : 20u;
@@ -2514,6 +2597,23 @@ namespace stream {
           }
         }
 
+        if (!pyrowave_session && config::stream.pacing_batch_demand_limit) {
+          const auto &monitor = session->config.monitor;
+          const auto stream_kbps = session->video.pacing_bitrate_kbps.load(std::memory_order_relaxed);
+          const auto ip_header_bytes = session->video.peer.address().is_v6() ? 40u : 20u;
+          const auto wire_bytes = blocksize + 38 + ip_header_bytes + 8 +
+                                  (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
+          ordinary_batch_quantum_packets = pacing::packets_per_ms(
+            0,
+            stream_kbps,
+            payload_blocksize,
+            wire_bytes,
+            pacing_frame_packets,
+            monitor.framerate,
+            0
+          );
+        }
+
         // Send less than 64K in a single batch.
         // On Windows, batches above 64K seem to bypass SO_SNDBUF regardless of its size,
         // appear in "Other I/O" and begin waiting for interrupts.
@@ -2524,6 +2624,9 @@ namespace stream {
         max_batch_size_bytes = pyrowave_session ?
                                  std::min(max_batch_size_bytes, ratecontrol_packets_in_1ms * datagram_size) :
                                  std::min<size_t>(max_batch_size_bytes, (size_t) config::stream.video_max_batch_size_kb * 1024);
+        if (!pyrowave_session && config::stream.pacing_batch_demand_limit) {
+          max_batch_size_bytes = pacing::max_batch_bytes(max_batch_size_bytes, ordinary_batch_quantum_packets, datagram_size);
+        }
         if (pacing_ceiling > 0) {
           max_batch_size_bytes = std::min(max_batch_size_bytes, capped_batch_packets * datagram_size);
         }
@@ -3359,7 +3462,7 @@ namespace stream {
     }
 
     bool has_shared_runtime_owner(const shared_runtime_finalize_context_t &context) {
-      return has_capture_runtime_owner(context) ||
+      return display_target::leases().protected_output() || has_capture_runtime_owner(context) ||
 #ifdef __linux__
              remote_display_topology::instance().has_live_managed_client_identity();
 #else
@@ -3480,9 +3583,9 @@ namespace stream {
 #endif
 
 #ifdef __linux__
-      if (capture_runtime_owned || topology.has_live_managed_client_identity()) {
+      if (display_target::leases().protected_output() || capture_runtime_owned || topology.has_live_managed_client_identity()) {
 #else
-      if (capture_runtime_owned || topology.managed_client_identity_count() != 0) {
+      if (display_target::leases().protected_output() || capture_runtime_owned || topology.managed_client_identity_count() != 0) {
 #endif
 #ifdef _WIN32
         // A normal game's reservation survives pause for Resume. Restoring the
@@ -3781,6 +3884,8 @@ namespace stream {
       // The app may already have exited, but its output must survive until
       // this capture has joined and released every encoder/conversion import.
       session.normal_display_capture.reset();
+      session.config.monitor.capture_target_valid = {};
+      session.exact_target_hold.reset();
       remote_display_topology::instance().release_drained_normal_game_identities();
       nvhttp::reconcile_remote_monitor_owners();
 
@@ -3898,6 +4003,13 @@ namespace stream {
     int start(session_t &session, const std::string &addr_string) {
       session.input = input::alloc(session.mail, session.config.guide_button, session.config.gcpersist);
       input::update_guide_button_permissions(session.input, session.permission);
+
+      const auto &monitor = session.config.monitor;
+      const bool pyrowave_session = monitor.videoFormat == pyrowave::protocol::BITSTREAM_FORMAT;
+      const auto pacing_bitrate_kbps = pyrowave_session ?
+                                         (monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate) :
+                                         (monitor.bitrate > 0 ? monitor.bitrate : monitor.client_requested_bitrate);
+      session.video.pacing_bitrate_kbps.store(pacing_bitrate_kbps, std::memory_order_relaxed);
 
       session.broadcast_ref = broadcast.ref();
       if (!session.broadcast_ref) {
@@ -4171,6 +4283,14 @@ namespace stream {
       session->secondary_game_client = launch_session.secondary_game_client;
       session->remote_role = launch_session.role;
       session->remote_role_generation = launch_session.role_generation;
+      session->monitor_profile_uuid = launch_session.monitor_profile_uuid;
+      session->exact_monitor_target = launch_session.exact_monitor_target;
+      session->exact_target_hold = launch_session.exact_target_hold;
+      if (session->exact_target_hold) {
+        if (!remote_session::exact_target_still_valid(session->exact_target_hold)) throw std::runtime_error("The retained exact target is missing or its mode changed");
+        session->config.monitor.capture_target_valid = [hold = session->exact_target_hold] { return remote_session::exact_target_still_valid(hold); };
+      }
+      if (session->exact_monitor_target && !session->exact_target_hold) return nullptr;
 #if defined(_WIN32) || defined(__linux__)
       if (launch_session.role == remote_session::role_e::game) {
         const auto app = proc::proc.active_session_guard();

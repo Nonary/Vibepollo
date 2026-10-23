@@ -124,7 +124,7 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn("build-archlinux", jobs)
         self.assertIn("awaiting-signing", jobs)
         self.assertIn("build-archlinux", awaiting_signing["needs"])
-        self.assertIn("should_release", build_inputs["build_only"])
+        self.assertEqual(build_inputs["build_only"], "true")
         for job in ("build-windows", "build-archlinux"):
             self.assertEqual(
                 jobs[job]["with"]["build_tests"],
@@ -151,6 +151,67 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertNotIn("Linux branch candidate:", workflow_text)
         self.assertIn("should_release=\"false\"", workflow_text)
         self.assertNotIn("def canonical_release_tag", workflow_text)
+
+    def test_ci_stops_before_consumer_setup_for_validation_and_tag_builds(self) -> None:
+        caller = load_workflow("ci.yml")["jobs"]["build-windows"]["with"]
+        windows = load_workflow("ci-windows.yml")["jobs"]
+        self.assertEqual(caller["build_only"], "true")
+
+        def evaluate(condition, values):
+            expression = condition.removeprefix("${{").removesuffix("}}")
+            for key, value in values.items():
+                expression = expression.replace(key, repr(value))
+            expression = expression.replace("always()", "True").replace("!cancelled()", "True")
+            expression = re.sub(r"\btrue\b", "True", expression)
+            expression = re.sub(r"\bfalse\b", "False", expression)
+            expression = expression.replace("&&", "and").replace("||", "or")
+            return eval(" ".join(expression.split()), {"__builtins__": {}})
+
+        # Evaluate the actual reusable job graph. CI (PR or tag) stops after
+        # building the MSI; the independent signing/daily callers still finalize.
+        for build_only, expected in ((True, False), (False, True)):
+            values = {"inputs.build_only": build_only, "needs.release_artifacts.result": "success"}
+            for name in ("sign_windows_msi", "package_windows", "sign_windows_installer", "finalize_windows"):
+                with self.subTest(build_only=build_only, job=name):
+                    selected = evaluate(windows[name]["if"], values)
+                    self.assertEqual(selected, expected)
+                    values[f"needs.{name}.result"] = "success" if selected else "skipped"
+
+        steps = windows["build_windows"]["steps"]
+        names = [step.get("name", "") for step in steps]
+        gate = next(step for step in steps if step.get("name") == "Test packaged MSI version and validation safety")
+        self.assertNotIn("if", gate)
+        self.assertGreater(names.index(gate["name"]), names.index("Package Windows MSI"))
+        self.assertLess(names.index(gate["name"]), names.index("Upload unsigned MSI for SignPath"))
+
+    def test_final_windows_retention_honors_validation_without_shortening_releases(self) -> None:
+        windows = load_workflow("ci-windows.yml")
+        uploads = [step for step in windows["jobs"]["finalize_windows"]["steps"]
+                   if step.get("uses", "").startswith("actions/upload-artifact@")]
+        self.assertEqual({step["with"]["name"] for step in uploads}, {"release-provenance", "build-Windows"})
+        default_days = int(windows["on"]["workflow_call"]["inputs"]["release_artifact_retention_days"]["default"])
+        caller = load_workflow("ci.yml")["jobs"]["build-windows"]["with"]["release_artifact_retention_days"]
+        for release, tag, expected_days in (("false", "", 1), ("true", "2.0.2", 90)):
+            expression = caller.removeprefix("${{").removesuffix("}}")
+            expression = expression.replace("needs.release-candidate.outputs.should_release", repr(release))
+            days = eval(expression.replace("&&", "and").replace("||", "or").strip(), {"__builtins__": {}})
+            for upload in uploads:
+                with self.subTest(release=release, artifact=upload["with"]["name"]):
+                    expression = upload["with"]["retention-days"].removeprefix("${{").removesuffix("}}")
+                    expression = expression.replace("inputs.release_tag", repr(tag))
+                    expression = expression.replace("inputs.release_artifact_retention_days", str(days))
+                    actual = eval(expression.replace("&&", "and").replace("||", "or").strip(), {"__builtins__": {}})
+                    self.assertEqual(actual, expected_days)
+        cases = (("", default_days, 1), ("", 14, 14),
+                 ("2.0.2-nightly.d20261022.aaaaaaaaaaaa", 7, 90), ("2.0.2", default_days, 90))
+        for tag, days, expected in cases:
+            for upload in uploads:
+                with self.subTest(tag=tag, days=days, artifact=upload["with"]["name"]):
+                    expression = upload["with"]["retention-days"].removeprefix("${{").removesuffix("}}")
+                    expression = expression.replace("inputs.release_tag", repr(tag))
+                    expression = expression.replace("inputs.release_artifact_retention_days", str(days))
+                    actual = eval(expression.replace("&&", "and").replace("||", "or").strip(), {"__builtins__": {}})
+                    self.assertEqual(actual, expected)
 
     def test_installer_regressions_run_after_wix_for_all_test_builds(self) -> None:
         steps = load_workflow("ci-windows.yml")["jobs"]["build_windows"]["steps"]
@@ -186,6 +247,27 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
             r"\$\{\{ needs\.release-candidate\.outputs\.release_version \|\| '([^']+)' \}\}",
             workflow["jobs"]["build-windows"]["with"]["release_version"],
         ).group(1)
+        self.assertEqual(fallback, "2.0.0-pr-validation")
+        self.assertEqual(
+            workflow["jobs"]["build-archlinux"]["with"]["release_version"],
+            workflow["jobs"]["build-windows"]["with"]["release_version"],
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Path(directory) / "probe-version.cmake"
+            probe.write_text(
+                f'include("{(ROOT / "cmake" / "prep" / "build_version.cmake").as_posix()}")\n'
+                'if(NOT PROJECT_VERSION_NUMERIC STREQUAL "2.0.0")\n'
+                '  message(FATAL_ERROR "PR validation numeric version changed")\n'
+                'endif()\n',
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["cmake", f"-DBUILD_VERSION={fallback}", "-P", str(probe)],
+                cwd=ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
         for event in ("push", "pull_request"):
             with self.subTest(event=event), tempfile.TemporaryDirectory() as directory:
                 output = Path(directory) / "outputs"
@@ -662,12 +744,68 @@ esac
         self.assertIn("arch_package_version=${arch_package_version//+/.}", workflow_text)
 
         release_steps = jobs["release"]["steps"]
-        close_issues = next(
-            step for step in release_steps if step["name"] == "Close fixed issues for release"
+        self.assertFalse(
+            any(step["name"] == "Close fixed issues for release" for step in release_steps)
         )
-        self.assertEqual(close_issues["if"], "inputs.release_draft == false")
+        self.assertNotIn("state=closed", workflow_text)
         self.assertIn('--argjson draft "${RELEASE_DRAFT}"', workflow_text)
         self.assertIn('if [[ "${RELEASE_DRAFT}" == "true" ]]', workflow_text)
+
+    def test_daily_fixed_issue_follow_up_is_verified_and_permission_bounded(self) -> None:
+        follow_up = load_workflow("fixed-issue-follow-up.yml")
+        self.assertIn("issues", follow_up["on"])
+        self.assertIn("release", follow_up["on"])
+        self.assertIn("repository_dispatch", follow_up["on"])
+        self.assertEqual(
+            follow_up["on"]["repository_dispatch"]["types"],
+            ["daily-release-published"],
+        )
+        self.assertEqual(
+            follow_up["jobs"]["follow-up-verified-daily"]["permissions"],
+            {"issues": "write"},
+        )
+        for workflow_name in ("fixed-issue-follow-up.yml", "sign-release.yml"):
+            workflow_text = (ROOT / ".github" / "workflows" / workflow_name).read_text(
+                encoding="utf-8"
+            )
+            self.assertNotIn("state=closed", workflow_text)
+            self.assertNotIn("state: 'closed'", workflow_text)
+            self.assertNotIn('state: "closed"', workflow_text)
+            self.assertNotIn("state_reason=completed", workflow_text)
+
+        daily = load_workflow("daily-prerelease.yml")
+        self.assertEqual(daily["jobs"]["build"]["with"]["upload_symbols_artifact"], "true")
+        publish = daily["jobs"]["publish"]
+        self.assertEqual(publish["permissions"], {"actions": "read", "contents": "write"})
+        self.assertNotIn("issues", publish["permissions"])
+        publish_steps = {step["name"]: step for step in publish["steps"] if "name" in step}
+        symbols = publish_steps["Retain exact-build Windows symbols"]
+        self.assertEqual(symbols["with"]["retention-days"], "90")
+        self.assertEqual(symbols["with"]["name"], "nightly-windows-symbols")
+        self.assertEqual(publish_steps["Download exact-build Windows symbols from this run"]["with"]["name"], "windows-symbols-Windows")
+        self.assertIn('test -s "symbol-assets/$symbol_pack"',
+                      publish_steps["Verify exact-build Windows symbols"]["run"])
+        self.assertIn('VibepolloSymbols-${DAILY_VERSION}-windows-x64.7z',
+                      publish_steps["Verify exact-build Windows symbols"]["run"])
+        self.assertLess(
+            list(publish_steps).index("Verify exact-build Windows symbols"),
+            list(publish_steps).index("Verify finalized provenance, identity and complete asset set"),
+        )
+        windows = load_workflow("ci-windows.yml")
+        finalize_steps = {step["name"]: step for step in windows["jobs"]["finalize_windows"]["steps"] if "name" in step}
+        self.assertEqual(finalize_steps["Include symbols in build artifact"]["if"],
+                         "inputs.upload_symbols_artifact && !inputs.daily_unsigned")
+        publish_script = "\n".join(step.get("run", "") for step in publish["steps"])
+        self.assertIn('event_type:"daily-release-published"', publish_script)
+
+    def test_fixed_issue_follow_up_decisions_with_mocked_github_calls(self) -> None:
+        test_file = ROOT / ".github" / "scripts" / "test_fixed_issue_follow_up.js"
+        subprocess.run(
+            ["node", str(test_file)],
+            cwd=ROOT,
+            check=True,
+            text=True,
+        )
 
     def test_reusable_windows_workflow_supports_deferred_signing(self) -> None:
         workflow_path = ROOT / ".github" / "workflows" / "ci-windows.yml"

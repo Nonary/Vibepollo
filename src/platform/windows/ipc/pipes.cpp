@@ -491,6 +491,8 @@ namespace platf::dxgi {
       return _inner && _inner->is_connected();
     }
 
+    std::optional<DWORD> peer_process_id() override { return _inner ? _inner->peer_process_id() : std::nullopt; }
+
   private:
     std::unique_ptr<INamedPipe> _inner;
     std::vector<uint8_t> _buffer;
@@ -554,6 +556,8 @@ namespace platf::dxgi {
       }
       return control_ && control_->is_connected();
     }
+
+    std::optional<DWORD> peer_process_id() override { auto *pipe = active_pipe(); return pipe ? pipe->peer_process_id() : std::nullopt; }
 
   private:
     bool stop_requested() const {
@@ -1739,3 +1743,24 @@ namespace platf::dxgi {
     return inner && inner->is_connected();
   }
 }  // namespace platf::dxgi
+
+#ifdef _WIN32
+namespace platf::dxgi {
+  std::optional<DWORD> WinPipe::peer_process_id() {
+    ULONG pid = 0;
+    if (!_pipe || !(_is_server ? GetNamedPipeClientProcessId(_pipe.get(), &pid) :
+                               GetNamedPipeServerProcessId(_pipe.get(), &pid)) || pid == 0) return std::nullopt;
+    return static_cast<DWORD>(pid);
+  }
+  std::optional<DWORD> FramedPipe::peer_process_id() {
+    return _inner ? _inner->peer_process_id() : std::nullopt;
+  }
+  std::optional<DWORD> AsyncNamedPipe::peer_process_id() const {
+    return _pipe ? _pipe->peer_process_id() : std::nullopt;
+  }
+  std::optional<DWORD> SelfHealingPipe::peer_process_id() {
+    const auto inner = acquire_inner();
+    return inner ? inner->peer_process_id() : std::nullopt;
+  }
+}
+#endif

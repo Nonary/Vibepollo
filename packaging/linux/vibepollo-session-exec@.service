@@ -39,6 +39,8 @@ PrivateDevices=yes
 PrivateTmp=yes
 PrivateMounts=yes
 ProtectSystem=strict
+# The controller creates this root-only protocol inode before publishing a session.
+ReadWritePaths=-/run/vibepollo/display-mutation.lock
 ProtectHome=read-only
 ProtectProc=invisible
 ProtectClock=yes

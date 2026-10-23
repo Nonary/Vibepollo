@@ -20,7 +20,8 @@ namespace release_selection {
   inline bool daily_tag(const std::string &tag) {
     static const std::regex pattern(R"(^daily-[0-9]{4}-[0-9]{2}-[0-9]{2}(\.([1-9][0-9]{0,2}))?$)");
     static const std::regex semver(R"(^[0-9]+\.[0-9]+\.[0-9]+-daily\.d[0-9]{8}(\.([1-9][0-9]{0,2}))?$)");
-    return std::regex_match(tag, pattern) || std::regex_match(tag, semver);
+    static const std::regex nightly(R"(^[0-9]+\.[0-9]+\.[0-9]+-nightly\.d[0-9]{8}\.[0-9a-f]{12}$)");
+    return std::regex_match(tag, pattern) || std::regex_match(tag, semver) || std::regex_match(tag, nightly);
   }
   inline bool asset(const json &release, const std::string &name) {
     if (!release.contains("assets") || !release["assets"].is_array()) return false;
@@ -73,6 +74,18 @@ namespace release_selection {
   }
   inline bool valid_metadata(const std::string &tag, const json &metadata) {
     if (!daily_tag(tag) || !metadata.is_object()) return false;
+    static const std::regex new_nightly(R"(^([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d([0-9]{4})([0-9]{2})([0-9]{2})\.([0-9a-f]{12})$)");
+    std::smatch nightly_match;
+    if (std::regex_match(tag, nightly_match, new_nightly)) {
+      const auto source = metadata.value("source_commit", "");
+      static const std::regex sha(R"(^[0-9a-f]{40}$)");
+      if (!std::regex_match(source, sha) || !ordered_version(tag) || metadata.value("schema_version", 0) != 1 ||
+          metadata.value("channel", "") != "nightly" || metadata.value("tag", "") != tag ||
+          metadata.value("version", "") != tag || nightly_match[5].str() != source.substr(0, 12) ||
+          !metadata.contains("nightly_sequence") || !metadata["nightly_sequence"].is_number_integer()) return false;
+      const auto day = nightly_match[2].str() + nightly_match[3].str() + nightly_match[4].str();
+      return metadata["nightly_sequence"].get<long long>() == std::stoll(day);
+    }
     if (!tag.starts_with("daily-")) {
       static const std::regex semver(R"(^([0-9]+\.[0-9]+\.[0-9]+)-daily\.d([0-9]{4})([0-9]{2})([0-9]{2})(\.([1-9][0-9]{0,2}))?$)");
       std::smatch match;
@@ -120,7 +133,7 @@ namespace release_selection {
     return metadata["version"].get<std::string>();
   }
   inline bool nightly_version(const std::string &version) {
-    return version.find("-daily.d") != std::string::npos;
+    return version.find("-daily.d") != std::string::npos || version.find("-nightly.d") != std::string::npos;
   }
   inline bool same_base(const std::string &left, const std::string &right) {
     const auto a = version_compare::parse_semver(left);
@@ -134,6 +147,11 @@ namespace release_selection {
       // sorted channel between beta and rc. Stable respins remain above it.
       return a ? -1 : 1;
     }
+    // New tags carry random SHA identity, not a monotonic same-day revision.
+    static const std::regex dated_nightly(R"(^[0-9]+\.[0-9]+\.[0-9]+-nightly\.d([0-9]{8})\.[0-9a-f]{12}$)");
+    std::smatch lm, rm;
+    if (std::regex_match(left, lm, dated_nightly) && std::regex_match(right, rm, dated_nightly) &&
+        same_base(left, right) && lm[1] == rm[1]) return 0;
     return version_compare::compare_semver(left, right);
   }
   inline json select(const json &releases, const std::string &installed, bool allow_prereleases) {

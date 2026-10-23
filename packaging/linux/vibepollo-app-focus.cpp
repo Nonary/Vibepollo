@@ -27,7 +27,7 @@ namespace {
   // cannot leave a compositor timer that keeps stealing focus.
   class kwin_focus {
   public:
-    kwin_focus() {
+    explicit kwin_focus(int timeout_ms = 1000): timeout_ms_(timeout_ms) {
       bus_ = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, nullptr);
       if (!bus_) {
         return;
@@ -82,7 +82,7 @@ namespace {
         const auto object = "/Scripting/Script" + std::to_string(id);
         if (auto *reply = call(object.c_str(), "org.kde.kwin.Script", "run", nullptr)) {
           g_variant_unref(reply);
-          const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+          const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::min(500,timeout_ms_));
           while (!received_ && !cancelled && std::chrono::steady_clock::now() < deadline) {
             while (g_main_context_iteration(nullptr, false)) {}
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
@@ -113,7 +113,7 @@ namespace {
 
     GVariant *call(const char *object, const char *interface, const char *method, GVariant *args) {
       GError *error = nullptr;
-      auto *reply = g_dbus_connection_call_sync(bus_, "org.kde.KWin", object, interface, method, args, nullptr, G_DBUS_CALL_FLAGS_NONE, 1000, nullptr, &error);
+      auto *reply = g_dbus_connection_call_sync(bus_, "org.kde.KWin", object, interface, method, args, nullptr, G_DBUS_CALL_FLAGS_NONE, timeout_ms_, nullptr, &error);
       if (error) {
         std::cerr << "Managed focus: " << error->message << '\n';
         g_error_free(error);
@@ -126,6 +126,7 @@ namespace {
     guint registration_ = 0;
     bool received_ = false;
     nlohmann::json result_;
+    int timeout_ms_;
   };
 
   bool steam_identity(std::uint64_t pid, const std::string &id) {
@@ -141,6 +142,32 @@ namespace {
 }  // namespace
 
 int main(int argc, char **argv) {
+  if (argc == 4 && std::string_view(argv[1]) == "--foreground") {
+    // This is a read-only query in the selected desktop identity. The dummy
+    // candidate cannot activate anything: the script gets no activation list.
+    const std::string provider=argv[2], identity=argv[3];
+    kwin_focus focus(250);
+    const auto observed=focus.apply({1});
+    const auto pid=observed.is_object()?observed.value("foreground_pid",std::uint64_t{0}):0;
+    bool matches=false;
+    if (pid && provider=="steam") matches=steam_identity(pid,identity);
+    else if (pid && provider=="executable") {
+      std::error_code error;
+      const auto executable=std::filesystem::read_symlink("/proc/"+std::to_string(pid)+"/exe",error);
+      if (!error) matches=identity.find('/')==std::string::npos ? executable.filename()==identity : executable==identity;
+    } else if (pid && provider=="lutris") {
+      for (const auto &game:platf::lutris::discover()) {
+        if (std::to_string(game.id)!=identity) continue;
+        if (auto snapshot=platf::steam::lifecycle::snapshot_processes()) {
+          const auto pids=managed_app_focus::candidates({provider,identity,game.directory},*snapshot);
+          matches=std::find(pids.begin(),pids.end(),pid)!=pids.end();
+        }
+        break;
+      }
+    }
+    std::cout<<(matches?"1\n":"0\n");
+    return observed.is_object()?0:1;
+  }
   if (argc != 7 || std::string_view(argv[1]) != "--managed") {
     return 2;
   }

@@ -61,6 +61,7 @@ namespace display_helper::v2 {
     bool matches_current(const Snapshot &snapshot) const;
 
     EnumeratedDeviceList enumerate() const;
+    std::optional<EnumeratedDeviceList> try_enumerate() const;
     codec::layout_rotation_map_t capture_layouts(const std::set<std::string> &device_ids) const;
     bool topology_is_valid(const ActiveTopology &topology) const;
 

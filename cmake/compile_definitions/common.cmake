@@ -53,7 +53,6 @@ elseif(UNIX)
     endif()
 endif()
 
-include_directories(BEFORE SYSTEM "${CMAKE_SOURCE_DIR}/third-party/nv-codec-headers/include")
 file(GLOB NVENC_SOURCES CONFIGURE_DEPENDS "src/nvenc/*.cpp" "src/nvenc/*.h")
 list(APPEND PLATFORM_TARGET_FILES ${NVENC_SOURCES})
 
@@ -330,6 +329,11 @@ include_directories(
         ${Opus_INCLUDE_DIR}
         ${Boost_INCLUDE_DIRS}  # has to be the last, or we get runtime error on macOS ffmpeg encoder
 )
+
+# Pin the CUDA dispatch ABI after the bulk include list above. FFmpeg bundles
+# may provide an older CudaFunctions layout; every object sharing that table
+# (including TrueHDR and its tests) must use the same repository revision.
+include_directories(BEFORE SYSTEM "${CMAKE_SOURCE_DIR}/third-party/nv-codec-headers/include")
 
 list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${MINIUPNP_LIBRARIES}

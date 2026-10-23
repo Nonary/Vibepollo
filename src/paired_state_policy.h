@@ -1,6 +1,7 @@
 #pragma once
 
 #include "state_storage_policy.h"
+#include "crypto.h"
 
 #include <algorithm>
 #include <boost/property_tree/json_parser.hpp>
@@ -10,7 +11,9 @@
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace nvhttp::state_policy {
   inline bool valid_uuid(const std::string &value) {
@@ -57,9 +60,11 @@ namespace nvhttp::state_policy {
 
   // Old property-tree writers encode empty arrays as "". Normalize only those
   // known containers; preserve every Apollo permission, command and unknown key.
-  // Offline duplicate inspection alone may tolerate repeated certificates.
-  // Every loader call keeps the strict default, including all typed validation.
-  inline bool normalize_snapshot(nlohmann::json &tree, const statefile::policy::certificate_identity_t &certificate_identity = {}, bool allow_duplicate_certificates = false) {
+  // Offline duplicate inspection may retain repeated certificates. Normal
+  // loading collapses 1.x duplicates into the first record that 1.x used.
+  inline bool normalize_snapshot(nlohmann::json &tree, const statefile::policy::certificate_identity_t &certificate_identity = {}, bool allow_duplicate_certificates = false,
+                                 std::vector<statefile::policy::collapsed_pairing_record_t> *collapsed = nullptr) {
+    if (collapsed) collapsed->clear();
     if (!tree.is_object() || !tree.contains("root") || !tree["root"].is_object()) return false;
     auto &root = tree["root"];
     if (!root.contains("uniqueid") || !root["uniqueid"].is_string() || !valid_uuid(root["uniqueid"])) return false;
@@ -72,6 +77,7 @@ namespace nvhttp::state_policy {
     };
     std::unordered_set<std::string> uuids;
     std::unordered_set<std::string> certs;
+    std::vector<statefile::policy::collapsed_pairing_record_t> collapsed_records;
     const auto identity = [&](const nlohmann::json &certificate) -> std::optional<std::string> {
       const auto &pem = certificate.get_ref<const std::string &>();
       return certificate_identity ? certificate_identity(pem) : std::make_optional(pem);
@@ -79,12 +85,15 @@ namespace nvhttp::state_policy {
     if (root.contains("named_devices")) {
       auto &devices = root["named_devices"];
       if (!array(devices) || devices.size() > 256) return false;
+      nlohmann::json survivors = nlohmann::json::array();
+      std::unordered_map<std::string, std::pair<std::size_t, std::size_t>> first_by_cert;
+      std::size_t index = 0;
       for (auto &device : devices) {
         if (!device.is_object() || !device.contains("uuid") || !device["uuid"].is_string() || !valid_uuid(device["uuid"]) || !uuids.insert(device["uuid"]).second || !device.contains("cert") || !device["cert"].is_string() || device["cert"].get_ref<const std::string &>().empty() || device["cert"].get_ref<const std::string &>().size() > 65536) {
           return false;
         }
         const auto certificate = identity(device["cert"]);
-        if (!certificate || certificate->empty() || (!certs.insert(*certificate).second && !allow_duplicate_certificates)) {
+        if (!certificate || certificate->empty()) {
           return false;
         }
         if (device.contains("perm") && !permission(device["perm"])) return false;
@@ -114,7 +123,35 @@ namespace nvhttp::state_policy {
             if (!entry.key().empty() && !entry.value().is_string()) return false;
           }
         }
+        certs.insert(*certificate);
+        const auto [first, inserted] = first_by_cert.emplace(*certificate, std::pair {survivors.size(), index});
+        if (!inserted && !allow_duplicate_certificates) {
+          // Either a revoked Apollo permission or a disabled imported Shine
+          // record revokes the survivor. Never gain access by deduplicating.
+          const auto denied = [](const nlohmann::json &record) {
+            if (record.contains("enabled") && (record["enabled"] == false || record["enabled"] == "false" || record["enabled"] == "0")) return true;
+            if (!record.contains("perm")) return false;
+            std::uint32_t mask = 0;
+            if (record["perm"].is_string()) {
+              const auto &text = record["perm"].get_ref<const std::string &>();
+              std::from_chars(text.data(), text.data() + text.size(), mask);
+            } else {
+              mask = record["perm"].get<std::uint32_t>();
+            }
+            return (mask & static_cast<std::uint32_t>(crypto::PERM::_all)) == 0;
+          };
+          auto &survivor = survivors[first->second.first];
+          if (denied(device) || denied(survivor)) {
+            survivor["perm"] = 0;
+            survivor["enabled"] = false;
+          }
+          collapsed_records.push_back({first->second.second, survivor["uuid"].get<std::string>(), index, device["uuid"].get<std::string>()});
+        } else {
+          survivors.push_back(device);
+        }
+        ++index;
       }
+      if (!allow_duplicate_certificates && !collapsed_records.empty()) devices = std::move(survivors);
     }
     if (root.contains("devices")) {
       if (!array(root["devices"])) return false;
@@ -137,14 +174,19 @@ namespace nvhttp::state_policy {
           if (certs.contains(*certificate)) {
             it = device["certs"].erase(it);
           } else {
-            if (++legacy_count > 256 || (!legacy_certs.insert(*certificate).second && !allow_duplicate_certificates)) {
+            if (++legacy_count > 256) {
               return false;
             }
-            ++it;
+            if (!legacy_certs.insert(*certificate).second && !allow_duplicate_certificates) {
+              it = device["certs"].erase(it);
+            } else {
+              ++it;
+            }
           }
         }
       }
     }
+    if (collapsed) *collapsed = std::move(collapsed_records);
     return true;
   }
 

@@ -132,11 +132,14 @@ namespace {
       ULONG requested_resolution;
       if (nt_set_timer_resolution_max(requested_resolution)) {
         owned_nt_timer_resolution = requested_resolution;
+        BOOST_LOG(info) << "Stream scheduling acquired native timer resolution request "sv << requested_resolution << " (100-ns units)"sv;
       } else {
         BOOST_LOG(error) << "NtSetTimerResolution() failed, falling back to timeBeginPeriod()";
         const auto result = timeBeginPeriod(1);
         owned_time_period = result == TIMERR_NOERROR;
-        if (!owned_time_period) {
+        if (owned_time_period) {
+          BOOST_LOG(info) << "Stream scheduling acquired WinMM 1 ms timer period"sv;
+        } else {
           BOOST_LOG(warning) << "Unable to begin timer period: "sv << result;
         }
       }
@@ -151,10 +154,13 @@ namespace {
       } else if (priority != HIGH_PRIORITY_CLASS) {
         if (SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS)) {
           previous_priority_class = priority;
+          BOOST_LOG(info) << "Stream scheduling raised process priority from "sv << priority << " to HIGH_PRIORITY_CLASS"sv;
         } else {
           const auto winerr = GetLastError();
           BOOST_LOG(warning) << "Unable to raise process priority class: "sv << winerr;
         }
+      } else {
+        BOOST_LOG(info) << "Stream scheduling kept the preexisting HIGH_PRIORITY_CLASS unchanged"sv;
       }
     }
   }
@@ -174,8 +180,11 @@ namespace {
         BOOST_LOG(warning) << "Unable to get process priority class for restoration: "sv << winerr;
       } else if (priority != HIGH_PRIORITY_CLASS) {
         previous_priority_class.reset();
+        BOOST_LOG(info) << "Stream scheduling preserved externally changed process priority class "sv << priority;
       } else if (SetPriorityClass(GetCurrentProcess(), *previous_priority_class)) {
+        const auto restored_priority = *previous_priority_class;
         previous_priority_class.reset();
+        BOOST_LOG(info) << "Stream scheduling restored process priority class "sv << restored_priority;
       } else {
         const auto winerr = GetLastError();
         BOOST_LOG(warning) << "Unable to restore process priority class: "sv << winerr;
@@ -186,9 +195,11 @@ namespace {
     // teardown or end a WinMM period that did not successfully begin.
     if (owned_nt_timer_resolution) {
       ULONG current;
+      const auto released_resolution = *owned_nt_timer_resolution;
       const auto status = NtSetTimerResolution(*owned_nt_timer_resolution, FALSE, &current);
       if (NT_SUCCESS(status)) {
         owned_nt_timer_resolution.reset();
+        BOOST_LOG(info) << "Stream scheduling released native timer resolution request "sv << released_resolution;
       } else {
         BOOST_LOG(error) << "Unable to release native timer resolution: "sv << status;
       }
@@ -197,6 +208,7 @@ namespace {
       const auto result = timeEndPeriod(1);
       if (result == TIMERR_NOERROR) {
         owned_time_period = false;
+        BOOST_LOG(info) << "Stream scheduling released WinMM 1 ms timer period"sv;
       } else {
         BOOST_LOG(warning) << "Unable to end timer period: "sv << result;
       }

@@ -129,8 +129,23 @@ program = r'''
 #include <string>
 #include <thread>
 #include <vector>
+#include "src/platform/windows/display_helper_borrow_gate.h"
 
 using namespace std::chrono_literals;
+namespace display_helper::borrow {
+  inline std::atomic<bool> &helper_process() { static std::atomic<bool> value {false}; return value; }
+  class native_mutation_scope_t {
+  public:
+    static native_mutation_scope_t enter(bool wait) {
+      native_mutation_scope_t result;
+      result.scope_ = wait ? process_gate().wait_enter() : process_gate().try_enter();
+      return result;
+    }
+    explicit operator bool() const { return static_cast<bool>(scope_); }
+  private:
+    gate_t::scope_t scope_;
+  };
+}
 struct NullLog { template<class T> NullLog &operator<<(const T &) { return *this; } };
 #define BOOST_LOG(level) NullLog {}
 constexpr int info = 0, warning = 1, debug = 2;

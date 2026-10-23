@@ -1,6 +1,7 @@
-"""Validate the actual CI portable ZIP without starting the host or installing anything."""
+"""Validate the actual CI portable ZIP and smoke its host on Windows."""
 import argparse
 import hashlib
+import os
 import shutil
 import stat
 import subprocess
@@ -65,9 +66,17 @@ def main():
                         "-P", str(build / "portable_pre_build.cmake")], check=True)
         if contents() != original_files:
             raise ValueError("Extracted portable ZIP required repair during runtime revalidation")
+        if os.name == "nt":
+            # This runner has no NVIDIA driver. Loading the extracted host must
+            # still work even though the optional NGX DLL imports nvcuda.dll.
+            result = subprocess.run([str(stage / "sunshine.exe"), "--version"],
+                                    check=True, capture_output=True, text=True, timeout=30)
+            if f"{args.product} version: {args.version}" not in result.stdout:
+                raise ValueError(f"Unexpected portable host version output: {result.stdout!r}")
     args.output.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(archive, args.output / archive.name)
-    print(f"Validated actual AMD64 portable ZIP: {archive.name} (packaging only; host not executed)")
+    print(f"Validated actual AMD64 portable ZIP: {archive.name}"
+          f" ({'host --version passed' if os.name == 'nt' else 'host smoke requires Windows'})")
 
 
 if __name__ == "__main__":

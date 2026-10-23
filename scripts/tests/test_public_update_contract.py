@@ -22,9 +22,9 @@ class PublicContractTest(unittest.TestCase):
         if host:
             self.assertIn('--destination public-assets --product ' + product, workflow)
         repo = 'Nonary/' + (product if product == 'Vibepollo' else 'vibeshine') if host else 'Nonary/moonlight-qt'
-        tag = '2.0.1-daily.d20261012.1' if host else 'v6.2.0-daily.183'
         source = 'a' * 40
-        version = tag + '+' + source[:12] if host else tag[1:]
+        tag = '2.0.1-nightly.d20261012.' + source[:12] if host else 'v6.2.0-daily.183'
+        version = tag if host else tag[1:]
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / 'assets'
             root.mkdir()

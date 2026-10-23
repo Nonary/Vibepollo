@@ -4,13 +4,14 @@
  */
 // standard includes
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <memory>
 #include <string>
 
 // platform includes
-#include <winsock2.h>
+#include <winsock2.h>  // Must precede Windows SDK headers that include windows.h.
 #include <d3d11_4.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
@@ -26,6 +27,11 @@
 #include "src/utility.h"
 #include "src/video_colorspace.h"
 #include "utf_utils.h"
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+  #include "game_activity.h"
+  #include "nv_truehdr.h"
+  #include "rtx_hdr_runtime.h"
+#endif
 
 #if !defined(SUNSHINE_SHADERS_DIR)  // for testing this needs to be defined in cmake as we don't do an install
   #define SUNSHINE_SHADERS_DIR SUNSHINE_ASSETS_DIR "/shaders/directx"
@@ -129,6 +135,14 @@ namespace pyrowave::host {
             failed = true;
             return -1;
           }
+          // video.cpp routes PyroWave exclusively through the async pool. A
+          // retained existing control block excludes pool reuse; all actual DDA/
+          // WGC pixel writers acquire the capture resource's keyed mutex. Metadata
+          // replacement is not pixel mutation of the independently pinned resource.
+          source.capture_owner = img->weak_from_this().lock();
+          source.capture_texture = img->capture_texture.get();
+          source.capture_mutex = img->capture_mutex.get();
+          source.lease = d3d11::source_lease_e::async_capture_pool;
           source.srv = ctx->srv.Get();
           source.mutex = ctx->mutex.Get();
           source.width = unsigned(img->width);
@@ -180,11 +194,71 @@ namespace pyrowave::host {
     private:
       struct img_ctx_t {
         ComPtr<ID3D11Texture2D> texture;
+        ComPtr<ID3D11Texture2D> capture_texture_identity;
         ComPtr<IDXGIKeyedMutex> mutex;
         ComPtr<ID3D11ShaderResourceView> srv;
-        ID3D11Texture2D *capture_texture_p = nullptr;
         std::weak_ptr<const platf::img_t> img_weak;
       };
+
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      bool convert_rtx_hdr(ID3D11Texture2D *input, d3d11::source_t &frame) {
+        const RECT capture_rect {display->offset_x, display->offset_y, display->offset_x + display->width, display->offset_y + display->height};
+        const auto state = rtx_hdr_runtime.update_for_frame(capture_rect);
+        frame.sdr_white_nits = platf::rtx_hdr::sdr_brightness_to_white_nits(state.sdr_brightness);
+        D3D11_TEXTURE2D_DESC desc {};
+        input->GetDesc(&desc);
+        const bool sdr = desc.Format == DXGI_FORMAT_B8G8R8A8_UNORM ||
+                         desc.Format == DXGI_FORMAT_R8G8B8A8_UNORM ||
+                         desc.Format == DXGI_FORMAT_R10G10B10A2_UNORM;
+        const char *mode = sdr ? "neutral SDR-to-PQ" : "native HDR";
+        if (sdr && state.enabled) {
+          if (!platf::game_activity::display_mode_change_in_flight()) {
+            if (!truehdr) {
+              truehdr = std::make_unique<platf::dxgi::nv_truehdr_t>();
+            }
+            if (!truehdr->available()) {
+              (void) truehdr->init(core->device());
+            }
+          }
+          mode = "waiting for NGX TrueHDR; neutral SDR-to-PQ";
+          if (truehdr && truehdr->available()) {
+            platf::dxgi::truehdr_params_t values;
+            values.enabled = true;
+            values.contrast = state.contrast;
+            values.saturation = state.saturation;
+            values.middle_gray = state.middle_gray;
+            values.peak_brightness = std::clamp(state.peak_brightness, 400, 2000);
+            const float scale = values.peak_brightness > 1000 ? values.peak_brightness / 1000.0f : 1.0f;
+            // Match the codec converters' compensation for NGX's output ceiling.
+            if (scale > 1.0f) {
+              values.middle_gray = std::clamp(int(std::lround(values.middle_gray / scale)), 10, 100);
+              values.peak_brightness = 1000;
+            }
+            if (auto *converted = truehdr->convert(input, values)) {
+              if (converted != truehdr_texture.Get()) {
+                truehdr_srv.Reset();
+                truehdr_texture.Reset();
+                if (FAILED(core->device()->CreateShaderResourceView(converted, nullptr, &truehdr_srv))) {
+                  return false;
+                }
+                truehdr_texture = converted;
+              }
+              frame.srv = truehdr_srv.Get();
+              frame.transfer = d3d11::transfer_e::truehdr_pq;
+              frame.luminance_scale = scale;
+              mode = "NGX TrueHDR active";
+            } else {
+              mode = "NGX unavailable for frame; neutral SDR-to-PQ";
+            }
+          }
+        }
+        if (last_truehdr_mode != mode) {
+          BOOST_LOG(info) << "PyroWave RTX HDR: " << mode;
+          last_truehdr_mode = mode;
+        }
+        return true;
+      }
+#endif
 
       bool create_core(platf::dxgi::img_d3d_t &img) {
         auto adapter = adapter_of(img.capture_texture.get());
@@ -193,6 +267,13 @@ namespace pyrowave::host {
           return false;
         }
 
+        if (params.rtx_hdr) {
+          DXGI_ADAPTER_DESC desc {};
+          if (FAILED(adapter->GetDesc(&desc)) || desc.VendorId != 0x10de || !video::colorspace_is_hdr(params.colorspace) || params.colorspace.bit_depth < 10) {
+            BOOST_LOG(error) << "PyroWave RTX HDR requires an NVIDIA adapter and a 10-bit HDR stream";
+            return false;
+          }
+        }
         d3d11::core_config_t config;
         config.width = params.width;
         config.height = params.height;
@@ -200,7 +281,20 @@ namespace pyrowave::host {
         config.yuv444 = params.yuv444;
         config.ten_bit = params.colorspace.bit_depth > 8;
         config.color_matrix = color_matrix_for(params.colorspace);
+        if (params.rtx_hdr) {
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+          config.transform_rgb = [this](ID3D11Texture2D *input, d3d11::source_t &source) {
+            return convert_rtx_hdr(input, source);
+          };
+#else
+          BOOST_LOG(error) << "PyroWave RTX HDR is unavailable in this build";
+          return false;
+#endif
+        }
         config.shader_path = utf_utils::from_utf8(SUNSHINE_SHADERS_DIR "/convert_pyrowave_cs.hlsl");
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+        config.experimental_d3d12_conversion = !params.rtx_hdr;
+#endif
 
         core = d3d11::core_t::create(adapter.Get(), config, log_core_message);
         if (!core) {
@@ -218,7 +312,7 @@ namespace pyrowave::host {
         }
 
         auto &ctx = img_ctxs[img.id];
-        if (ctx.texture && ctx.capture_texture_p == img.capture_texture.get()) {
+        if (ctx.texture && ctx.capture_texture_identity.Get() == img.capture_texture.get()) {
           return &ctx;
         }
 
@@ -239,7 +333,10 @@ namespace pyrowave::host {
           img_ctxs.erase(img.id);
           return nullptr;
         }
-        ctx.capture_texture_p = img.capture_texture.get();
+        // Keep the object alive while its raw interface pointer is the cache
+        // key, preventing address reuse from binding a replacement image to
+        // this entry's previously opened shared texture.
+        ctx.capture_texture_identity = img.capture_texture.get();
         ctx.img_weak = img.weak_from_this();
         return &ctx;
       }
@@ -269,8 +366,15 @@ namespace pyrowave::host {
       std::shared_ptr<platf::display_t> display;
       d3d11::framing_params_t framing;
       policy::budget_t budget;
-      std::unique_ptr<d3d11::core_t> core;
       std::map<std::uint32_t, img_ctx_t> img_ctxs;
+      std::unique_ptr<d3d11::core_t> core;
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      platf::rtx_hdr::runtime_t rtx_hdr_runtime;
+      std::unique_ptr<platf::dxgi::nv_truehdr_t> truehdr;
+      ComPtr<ID3D11Texture2D> truehdr_texture;
+      ComPtr<ID3D11ShaderResourceView> truehdr_srv;
+      std::string last_truehdr_mode;
+#endif
       bool failed = false;
       bool warned_unorm_hdr = false;
       logging::min_max_avg_periodic_logger<double> encode_logger;
@@ -287,8 +391,7 @@ namespace pyrowave::host {
       BOOST_LOG(error) << "PyroWave: invalid negotiated frame rate, bitrate or packet size"sv;
       return nullptr;
     }
-    if (params.width <= 0 || params.height <= 0 ||
-        (!params.yuv444 && ((params.width & 1) || (params.height & 1)))) {
+    if (params.width <= 0 || params.height <= 0 || (!params.yuv444 && ((params.width & 1) || (params.height & 1)))) {
       BOOST_LOG(error) << "PyroWave: invalid stream size "sv << params.width << 'x' << params.height;
       return nullptr;
     }

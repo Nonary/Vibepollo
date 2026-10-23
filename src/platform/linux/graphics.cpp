@@ -720,7 +720,9 @@ namespace egl {
     };
 
     if (!rgb->xrgb8) {
-      BOOST_LOG(error) << "Couldn't import RGB Image: "sv << util::hex(eglGetError()).to_string_view();
+      const auto egl_error = eglGetError();
+      BOOST_LOG(error) << "Couldn't import RGB Image: "sv << util::hex(egl_error).to_string_view()
+                       << " (source DMA-BUF " << describe_surface_layout(xrgb) << ')';
 
       return std::nullopt;
     }

@@ -6,6 +6,7 @@
 
 #include "../tests_common.h"
 
+#include "src/platform/windows/display_helper_borrow_gate.h"
 #include "src/platform/windows/display_helper_v2/async_dispatcher.h"
 #include "src/platform/windows/display_helper_v2/golden_health.h"
 #include "src/platform/windows/display_helper_v2/operations.h"
@@ -14,6 +15,10 @@
 #include <future>
 #include <mutex>
 #include <numeric>
+#include <thread>
+
+display_helper::borrow::gate_t::scope_t enter_display_helper_borrow_gate_from_peer(
+  display_helper::borrow::gate_t &gate);
 
 namespace {
   class FakeClock final : public display_helper::v2::IClock {
@@ -123,6 +128,43 @@ namespace {
     int enable_calls = 0;
   };
 }  // namespace
+
+TEST(DisplayHelperV2AsyncDispatcher, BorrowGateTracksNestedAndMovedScopesAcrossTranslationUnits) {
+  display_helper::borrow::gate_t gate;
+  auto outer = gate.try_enter();
+  ASSERT_TRUE(outer);
+  EXPECT_EQ(gate.active(), 1u);
+
+  std::promise<bool> peer_counted;
+  std::promise<void> release_peer;
+  auto release_peer_future = release_peer.get_future().share();
+  std::thread peer([&] {
+    auto scope = enter_display_helper_borrow_gate_from_peer(gate);
+    peer_counted.set_value(scope && gate.active() == 2u);
+    release_peer_future.wait();
+    scope.reset();
+  });
+  const bool peer_was_counted = peer_counted.get_future().get();
+  const auto active_with_peer = gate.active();
+  release_peer.set_value();
+  peer.join();
+  EXPECT_TRUE(peer_was_counted);
+  EXPECT_EQ(active_with_peer, 2u);
+  EXPECT_EQ(gate.active(), 1u);
+
+  auto inner = enter_display_helper_borrow_gate_from_peer(gate);
+  ASSERT_TRUE(inner);
+  EXPECT_EQ(gate.active(), 1u);
+  inner.reset();
+  EXPECT_EQ(gate.active(), 1u);
+
+  std::thread releaser([scope = std::move(outer)]() mutable { scope.reset(); });
+  releaser.join();
+  EXPECT_EQ(gate.active(), 0u);
+
+  auto next = gate.try_enter();
+  EXPECT_TRUE(next);
+}
 
 TEST(DisplayHelperV2AsyncDispatcher, RepeatedIdleShutdownCompletes) {
   FakeClock clock;

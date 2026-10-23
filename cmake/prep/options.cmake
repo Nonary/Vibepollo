@@ -24,6 +24,8 @@ else()
     option(SUNSHINE_ENABLE_PYROWAVE "Enable the PyroWave video codec." OFF)
 endif()
 
+option(SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12 "Enable the Windows PyroWave conversion-only D3D12 prototype (native qualification required)." OFF)
+
 option(SUNSHINE_SYSTEM_VULKAN_HEADERS "Use system installation of vulkan-headers rather than the submodule." OFF)
 option(SUNSHINE_SYSTEM_WAYLAND_PROTOCOLS "Use system installation of wayland-protocols rather than the submodule." OFF)
 

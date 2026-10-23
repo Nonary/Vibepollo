@@ -357,7 +357,9 @@ const filteredGroups = computed(() => {
   return categories.flatMap((settingsCategory) =>
     settingsCategory.groups
       .filter(
-        (group) => matchesPlatform(group, hostPlatform.value) && (query || groupIsVisible(group)),
+        (group) => matchesPlatform(group, hostPlatform.value) &&
+          (group.id !== 'video_rtx_hdr' || hostPlatform.value !== 'linux' || hostMetadata.value.rtx_hdr_supported === true) &&
+          (query || groupIsVisible(group)),
       )
       .map<DisplaySettingsGroup>((group) => ({
         ...group,

@@ -14,9 +14,12 @@
 namespace platf::dualsense_usbip {
   struct callbacks {
     std::function<void(std::span<const std::uint8_t>)> hid_output;
-    // Stereo signed 16-bit little-endian PCM, 48 kHz. USB speaker channels
-    // are discarded; each span contains only the two actuator channels.
+    // Stereo signed 16-bit little-endian PCM, 48 kHz, actuator channels 3/4.
     std::function<void(std::span<const std::uint8_t>)> haptics_pcm;
+    // Independent stereo speaker channels 1/2; spans are borrowed until return.
+    std::function<void(std::span<const std::uint8_t>, std::uint64_t)> speaker_pcm;
+    // Capture at application-buffer admission, never at completion. Zero is fail-closed.
+    std::function<std::uint64_t()> capture_speaker_incarnation;
   };
 
   // Portable USB/IP 1.1.1 device endpoint. Except set_input_report(), methods
@@ -28,6 +31,11 @@ namespace platf::dualsense_usbip {
     static std::string bus_id(std::uint8_t slot);
     bool set_input_report(std::span<const std::uint8_t> report);
     bool feed(std::span<const std::uint8_t> bytes, std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
+    // The transport captures before its nonblocking receive, preserving provenance
+    // if ownership changes between recv() and parsing. No kernel-buffer claim.
+    std::uint64_t capture_receive_incarnation() const;
+    bool feed(std::span<const std::uint8_t> bytes, std::uint64_t incarnation,
+              std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     void poll(std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now());
     std::vector<std::uint8_t> take_output();
     bool imported() const noexcept;
@@ -52,9 +60,11 @@ namespace platf::dualsense_usbip {
       std::vector<iso_packet> packets;
       std::vector<std::uint8_t> data;
       std::chrono::steady_clock::time_point due {};
+      std::uint64_t speaker_incarnation = 0;
     };
 
     bool parse_one();
+    void consume_received(std::size_t count);
     void submit(urb request);
     void control(const urb &request);
     void reply(const urb &request, std::int32_t status, std::span<const std::uint8_t> data = {}, std::uint32_t out_length = 0);
@@ -74,6 +84,10 @@ namespace platf::dualsense_usbip {
     std::array<std::uint8_t, 2> mute_ {};
     std::array<std::array<std::int16_t, 5>, 2> volume_ {};
     std::vector<std::uint8_t> receive_;
+    // feed() drains complete records; only its leading incomplete record can
+    // survive a call. Later records therefore belong to the current feed batch.
+    std::uint64_t receive_incarnation_ = 0;
+    std::uint64_t feed_incarnation_ = 0;
     std::vector<std::uint8_t> transmit_;
     std::deque<urb> pending_;
     std::chrono::steady_clock::time_point next_hid_ {};

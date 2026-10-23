@@ -4,9 +4,12 @@
  */
 #pragma once
 
+#include "display_target_lease.h"
+
 #include "config.h"
 
 #include <chrono>
+#include <cstddef>
 #include <optional>
 #include <string>
 #include <unordered_map>
@@ -58,6 +61,8 @@ namespace proc {
     std::vector<std::string> detached;
 
     std::string idx;
+    // Original configured row; generated controls have no JSON row.
+    std::optional<std::size_t> configured_index;
     std::string uuid;
     std::string name;
     std::string cmd;
@@ -86,6 +91,9 @@ namespace proc {
     bool elevated;
     bool dualsense_haptics {false};
     bool virtual_screen {false};
+    // Explicit configured Monitor profile; its UUID is independent of its title.
+    bool remote_monitor_profile {false};
+    std::optional<display_target::descriptor_t> monitor_target;
     // Unset inherits the device preference; false allows normal client HDR requests.
     std::optional<bool> prefer_10bit_sdr;
     std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;

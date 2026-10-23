@@ -17,6 +17,7 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <span>
 #include <string>
 #include <thread>
@@ -175,6 +176,10 @@ namespace platf::dxgi {
      * @return `true` if connected, `false` otherwise.
      */
     virtual bool is_connected() = 0;
+
+    // Capability admission requires the actual connected kernel pipe peer.
+    // Older/custom transports fail closed instead of trusting payload PIDs.
+    virtual std::optional<DWORD> peer_process_id() { return std::nullopt; }
   };
 
   class FramedPipe: public INamedPipe {
@@ -189,6 +194,7 @@ namespace platf::dxgi {
     void wait_for_client_connection(int milliseconds) override;
     void disconnect() override;
     bool is_connected() override;
+    std::optional<DWORD> peer_process_id() override;
 
   private:
     bool try_decode_one_frame(std::span<uint8_t> dst, size_t &bytesRead);
@@ -246,6 +252,7 @@ namespace platf::dxgi {
      * @return `true` if connected, `false` otherwise.
      */
     bool is_connected() const;
+    std::optional<DWORD> peer_process_id() const;
 
   private:
     /**
@@ -339,6 +346,7 @@ namespace platf::dxgi {
      * @return `true` if connected, `false` otherwise.
      */
     bool is_connected() override;
+    std::optional<DWORD> peer_process_id() override;
 
     /**
      * @brief Flushes the message queue and retrieves the latest message from the pipe.
@@ -656,6 +664,7 @@ namespace platf::dxgi {
     void wait_for_client_connection(int milliseconds) override;
     void disconnect() override;
     bool is_connected() override;
+    std::optional<DWORD> peer_process_id() override;
 
   private:
     /// Return a stable transport snapshot without reconnecting. Connection

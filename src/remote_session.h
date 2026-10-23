@@ -1,6 +1,7 @@
 #pragma once
 
 #include "virtual_display_capacity.h"
+#include "display_target_lease.h"
 
 #include <chrono>
 #include <cstdint>
@@ -39,6 +40,11 @@ namespace remote_session {
     std::string uuid;
     std::string title;
     bool synthetic {};
+    bool monitor_profile {};
+    // Retained configured numeric identities participate in synthetic allocation.
+    std::vector<std::string> id_aliases;
+    // Hidden configured rows still occupy their current and retained IDs.
+    bool catalogue_visible {true};
   };
 
   struct game_t {
@@ -124,6 +130,20 @@ namespace remote_session {
     std::chrono::steady_clock::time_point expires_at {};
   };
 
+  // One selected profile per paired client, matching the protocol's one
+  // Resume/Disconnect pair. Application overrides are copied at acceptance so
+  // editing/deleting a configured profile cannot retarget retained ownership.
+  struct monitor_profile_t {
+    std::string uuid;
+    std::unordered_map<std::string, std::string> app_overrides;
+    std::optional<display_target::descriptor_t> target;
+  };
+
+  [[nodiscard]] std::optional<monitor_profile_t> select_monitor_profile(
+    monitor_profile_t requested,
+    const std::optional<monitor_profile_t> &retained
+  );
+
   struct monitor_runtime_state_t {
     bool accepted {};
     bool ready {};
@@ -131,6 +151,9 @@ namespace remote_session {
     std::string output;
     std::string error;
     bool hdr_enabled = false;
+    std::shared_ptr<void> target_hold;
+    std::optional<display_target::descriptor_t> exact_target;
+    bool conflict = false;
   };
 
   struct monitor_runtime_hooks_t {
@@ -161,11 +184,20 @@ namespace remote_session {
 
   [[nodiscard]] bool reserved_name(std::string_view name);
   [[nodiscard]] control_e identify(std::int32_t id, std::string_view uuid = {});
-  [[nodiscard]] control_e identify(std::int32_t id, std::string_view uuid, std::int32_t running_app_id);
+  // All fixed current/legacy controls and configured-ID admission share this policy.
+  [[nodiscard]] bool configured_app_id(std::int32_t id);
+  // Marked profiles require a literal, non-nil UUID outside every fixed control
+  // identity, unique among all configured rows. Existing controls are unmarked.
+  [[nodiscard]] std::string_view monitor_profile_uuid_error(std::string_view uuid, const std::vector<std::string_view> &configured_uuids);
+
+  // Contextual numeric identities must use the same complete configured snapshot
+  // (including aliases) as projection. An explicit configured UUID is never a
+  // contextual running-game identity.
+  [[nodiscard]] control_e identify(std::int32_t id, std::string_view uuid, std::int32_t running_app_id, const std::vector<app_t> &configured);
   [[nodiscard]] std::string synthetic_uuid(control_e control);
   [[nodiscard]] app_t synthetic(control_e control);
-  [[nodiscard]] std::int32_t synthetic_running_game_id(std::int32_t app_id);
-  [[nodiscard]] app_t synthetic_running_game(const app_t &game);
+  [[nodiscard]] std::int32_t synthetic_running_game_id(std::int32_t app_id, const std::vector<app_t> &configured = {});
+  [[nodiscard]] app_t synthetic_running_game(const app_t &game, const std::vector<app_t> &configured = {});
   [[nodiscard]] std::optional<std::string_view> synthetic_artwork_filename(control_e control);
   [[nodiscard]] bool exposes_active_game(
     const caller_t &caller,
@@ -207,6 +239,9 @@ namespace remote_session {
   };
 
   void register_monitor_runtime_hooks(monitor_runtime_hooks_t hooks);
+  void register_exact_target_probe(display_target::probe_t probe);
+  bool exact_target_still_valid(const std::shared_ptr<void> &hold);
+  monitor_runtime_state_t borrow_monitor_target(std::string_view client, std::uint64_t generation, const display_target::descriptor_t &target, display_target::mode_t mode, std::optional<std::string> requested_output = {});
   [[nodiscard]] monitor_runtime_state_t activate_or_resume_monitor(std::string_view client_uuid, std::string_view client_label, std::string_view requested_mode, bool hdr_requested, std::uint64_t generation);
   [[nodiscard]] monitor_runtime_state_t monitor_runtime_snapshot(std::string_view client_uuid, std::uint64_t generation);
   [[nodiscard]] bool release_monitor(std::string_view client_uuid, std::uint64_t generation, std::string_view reason);

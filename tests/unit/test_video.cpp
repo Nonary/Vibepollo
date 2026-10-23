@@ -4,9 +4,17 @@
 #include "src/thread_safe.h"
 
 #include <array>
+#include <chrono>
 #include <map>
 
 namespace {
+  // The parts of platf::converted_frame_t the encode loops' policy reads.
+  struct converted_t {
+    bool repeats_previous = false;
+    std::optional<std::chrono::steady_clock::time_point> frame_timestamp;
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
+  };
+
   class FakeEncoderProvider: public video::policy::encoder_capability_provider_t {
   public:
     std::map<std::string, video::policy::encoder_capabilities_t> values;
@@ -159,4 +167,52 @@ TEST(VideoOutputPolicy, FallsBackToFirstActiveVirtualOutputWithoutConfiguredAffi
     video::policy::select_preferred_virtual_output("", active_outputs, active_outputs),
     "\\\\.\\DISPLAY54"
   );
+}
+
+TEST(ConvertedInputPolicy, NewerFrameReadReplacesTheClaimStamps) {
+  const auto claim = std::chrono::steady_clock::time_point {std::chrono::milliseconds {100}};
+  const auto frame = std::chrono::steady_clock::time_point {std::chrono::milliseconds {108}};
+  const auto host = std::chrono::steady_clock::time_point {std::chrono::milliseconds {110}};
+  const auto input = video::policy::resolve_converted_input(converted_t {false, frame, host}, claim, claim);
+  EXPECT_TRUE(input.encode);
+  EXPECT_EQ(input.frame_timestamp, frame);
+  EXPECT_EQ(input.host_processing_timestamp, host);
+}
+
+TEST(ConvertedInputPolicy, SameFrameKeepsTheClaimStamps) {
+  const auto frame_claim = std::chrono::steady_clock::time_point {std::chrono::milliseconds {100}};
+  const auto host_claim = std::chrono::steady_clock::time_point {std::chrono::milliseconds {102}};
+  const auto input = video::policy::resolve_converted_input(converted_t {}, frame_claim, host_claim);
+  EXPECT_TRUE(input.encode);
+  EXPECT_EQ(input.frame_timestamp, frame_claim);
+  EXPECT_EQ(input.host_processing_timestamp, host_claim);
+
+  // Placeholders and other images without claim stamps stay unstamped.
+  const auto unstamped = video::policy::resolve_converted_input(converted_t {}, std::nullopt, std::nullopt);
+  EXPECT_TRUE(unstamped.encode);
+  EXPECT_FALSE(unstamped.frame_timestamp);
+  EXPECT_FALSE(unstamped.host_processing_timestamp);
+}
+
+// A direct image whose frame record could not be read is reported as
+// repeats_previous, so it takes the same skip-with-no-encode path.
+TEST(ConvertedInputPolicy, RepeatedFrameIsSkippedWithoutStamps) {
+  const auto claim = std::chrono::steady_clock::time_point {std::chrono::milliseconds {100}};
+  const auto input = video::policy::resolve_converted_input(converted_t {true, claim, claim}, claim, claim);
+  EXPECT_FALSE(input.encode);
+  EXPECT_FALSE(input.frame_timestamp);
+  EXPECT_FALSE(input.host_processing_timestamp);
+}
+
+// A skipped repeat must not delay a requested keyframe behind the next capture.
+TEST(ConvertedInputPolicy, RepeatedFrameKeepsARequestedKeyframePending) {
+  const auto claim = std::chrono::steady_clock::time_point {std::chrono::milliseconds {100}};
+  const auto repeated = video::policy::resolve_converted_input(converted_t {true, claim, claim}, claim, claim);
+  EXPECT_TRUE(video::policy::retry_idr_after_repeat(repeated, true));
+  // A repeat without a keyframe request is a plain skip.
+  EXPECT_FALSE(video::policy::retry_idr_after_repeat(repeated, false));
+  // A converted frame carries its own keyframe request; there is nothing to retry.
+  const auto converted = video::policy::resolve_converted_input(converted_t {}, claim, claim);
+  EXPECT_FALSE(video::policy::retry_idr_after_repeat(converted, true));
+  EXPECT_FALSE(video::policy::retry_idr_after_repeat(converted, false));
 }

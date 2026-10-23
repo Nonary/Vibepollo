@@ -5,9 +5,11 @@
 #pragma once
 
 #include <boost/property_tree/ptree_fwd.hpp>
+#include <cstddef>
 #include <functional>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace statefile::policy {
   enum class read_status_e {
@@ -74,17 +76,34 @@ namespace statefile::policy {
 
   using certificate_identity_t = std::function<std::optional<std::string>(const std::string &)>;
 
+  /** A named record removed because an earlier record has the same certificate. */
+  struct collapsed_pairing_record_t {
+    std::size_t kept_index;
+    std::string kept_uuid;
+    std::size_t dropped_index;
+    std::string dropped_uuid;
+  };
+
   /** Older writers retained root.devices after importing its certificates into
    * named_devices. Remove only those legacy aliases from an in-memory snapshot;
    * the named record retains its UUID, enabled policy and all client settings.
-   * Invalid certificates and duplicate named identities still fail closed.
-   * Failure leaves the supplied snapshot unchanged. Optional diagnostics contain
-   * fixed field paths and record indices, never certificate or credential data.
+   *
+   * 1.x appended a new named record whenever a client re-paired and looked up
+   * clients by certificate, stopping at the first match. Later records with the
+   * same certificate were therefore never used for authorization, identity or
+   * settings. Collapse them into that first record, which stays disabled if any
+   * of its duplicates was disabled. Repeated legacy certificates are collapsed
+   * the same way. Optional `collapsed` lists every removed named record.
+   *
+   * Invalid certificates still fail closed. Failure leaves the supplied snapshot
+   * unchanged. Optional diagnostics contain fixed field paths and record
+   * indices, never certificate or credential data.
    */
   bool normalize_legacy_pairing_state(
     boost::property_tree::ptree &tree,
     const certificate_identity_t &certificate_identity,
-    std::string *failure_reason = nullptr
+    std::string *failure_reason = nullptr,
+    std::vector<collapsed_pairing_record_t> *collapsed = nullptr
   );
 
   /** Structural validation shared by primary reads and writes. */

@@ -25,9 +25,14 @@ b = remote.index("\n  }", a) + 4
 policy = "namespace remote_session {" + remote[a:b] + "}"
 program = r'''
 #include <cassert>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
+#include "host_stream_control.h"
 using namespace std::string_view_literals;
 struct req_https_t {};
 struct resp_https_t {};
@@ -82,6 +87,45 @@ void check(bool app, bool authenticated, bool permission, bool other, bool remot
   if (!app) assert(owner_reads == 0);
 }
 int main() {
+  // Hold the real terminal action after terminate() closes admission. A cancel
+  // arriving during that window must fail closed before reading app ownership.
+  std::mutex terminal_mutex;
+  std::condition_variable terminal_changed;
+  bool terminal_entered = false;
+  bool release_terminal = false;
+  bool terminal_result = false;
+  std::thread terminal_worker([&] {
+    terminal_result = host_stream_control::terminate([] { return true; }, [&] {
+      std::unique_lock lock {terminal_mutex};
+      terminal_entered = true;
+      terminal_changed.notify_one();
+      terminal_changed.wait(lock, [&] { return release_terminal; });
+    });
+  });
+  bool admission_closed = false;
+  {
+    std::unique_lock lock {terminal_mutex};
+    admission_closed = terminal_changed.wait_for(lock, std::chrono::seconds(5), [&] { return terminal_entered; });
+  }
+  if (admission_closed) {
+    paired = true; permitted = true; running = true; remote_active = false;
+    requesting_uuid = "caller"; owner_uuid = "caller";
+    result = -1; status = -1; authorized_teardowns = 0; owner_reads = 0;
+    cancel({}, {});
+  }
+  {
+    std::lock_guard lock {terminal_mutex};
+    release_terminal = true;
+  }
+  terminal_changed.notify_one();
+  terminal_worker.join();
+  assert(admission_closed);
+  assert(terminal_result);
+  assert(status == 503);
+  assert(result == 0);
+  assert(authorized_teardowns == 0);
+  assert(owner_reads == 0);
+
   // An exited app has already discarded its owner. Repeated cancellation is
   // successful but must never enter shared teardown or consult the old owner.
   for (bool other : {false, true}) for (bool remote : {false, true}) {
@@ -101,6 +145,7 @@ with tempfile.TemporaryDirectory(prefix="cancel-after-exit-") as directory:
     src = pathlib.Path(directory) / "test.cpp"
     binary = pathlib.Path(directory) / "test"
     src.write_text(program)
-    subprocess.run(["g++", "-std=c++20", "-Wall", "-Wextra", "-Werror", str(src), "-o", str(binary)], check=True)
+    subprocess.run(["g++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
+                    "-I", str(root), "-iquote", str(root / "src"), str(src), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)
 print("Production cancel admission: exited-app, repeated cancel, authentication, ownership and teardown checks passed")

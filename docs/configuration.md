@@ -1521,9 +1521,69 @@ editors hide those controls for Remote Monitor and preserve existing values on
 unrelated saves. Runtime `config-overrides` remain available and follow their
 existing activation rules; they do not create a separate monitor target.
 
-Shared virtual targets, physical capture targets, and duplicate Remote Monitor
-profiles are currently unsupported. The built-in tile uses a reserved identity;
-renaming or copying it does not create another monitor profile. A normal
+Additional Monitor profiles can be configured as applications with a fresh UUID
+and `"remote-monitor-profile": true`. For example, add the following app to
+`apps.json` while preserving the other entries (replace the example UUID for each
+additional profile):
+
+```json
+{
+  "name": "Work Monitor",
+  "uuid": "f1a171c5-66eb-4cc1-8d15-9f8d20680845",
+  "remote-monitor-profile": true,
+  "image-path": "remote-session/remote-monitor.png",
+  "config-overrides": { "remote_monitor_mute_audio": true }
+}
+```
+
+Marked Remote Monitor profiles require a literal, non-nil UUID unique among all
+configured applications. Fixed Resume, Disconnect, Terminate, Monitor, Input and
+running-game control UUIDs are reserved, including case variants. The save API
+rejects invalid or conflicting marked identities with an explicit validation
+error before writing the catalog. Existing invalid marked entries remain in
+apps.json for repair, are logged and omitted from the runtime catalog, and are
+never converted to ordinary apps or assigned a replacement UUID. Legacy builtin
+entries without the marker keep their existing control identity.
+
+Steam and Lutris sync preserve marked rows, including their provider metadata.
+Their publication step rejects changes that would invalidate a previously valid
+profile before writing the catalog or refreshing the runtime cache. An unchanged
+already-invalid profile remains available for repair; this exception does not
+promise to reject further conflicts while that profile is already omitted.
+
+The marker is explicit: a matching title, copied artwork, or ordinary routing
+fields do not turn an application into a Monitor profile. Profiles have distinct
+catalogue identities and use the same paired client's stable private display.
+The app allocator and launch routing share one identity policy for all current
+and legacy built-in controls, including saved IDs and aliases. Existing valid
+app IDs and unambiguous aliases remain usable. The running game's extra Resume
+tile keeps its prior app/art-based numeric ID when free; otherwise it chooses a
+free ID against every configured app and retained alias, including hidden apps.
+Only that synthetic tile changes; configured app IDs and UUIDs remain stable.
+
+Clients must refresh their catalogue after a control-ID migration or a catalogue
+change that occupies a cached running tile's ID. A numeric-only cached tile has
+no way to distinguish its old meaning from a newly configured app; the current
+configured ID or alias takes that meaning. For contextual running tiles, a
+supplied configured UUID selects that app, while the synthetic running UUID
+continues to select Resume. Fixed numeric control IDs retain their control meaning.
+Their commands and ordinary app display selectors are not executed. Profile
+application overrides are copied when ownership is accepted; paired-client
+overrides retain their existing precedence and activation rules. The two editors
+preserve the marker and hide ineffective ordinary display selectors when editing
+an existing profile. The v2 editor's advanced JSON can add the marker; a dedicated
+profile creation/target selector is not yet available.
+
+Only one Monitor profile is retained per paired client. Transport loss and
+**Resume** keep that selected UUID and its application overrides, including after
+its entry is renamed, edited, or deleted. Launching another profile (including
+the built-in Monitor) returns a conflict until **Disconnect Monitor** completes.
+After Disconnect, a fresh launch reads the current profile configuration. The
+built-in Monitor preserves its existing live-configuration behavior. Profiles
+can coexist with another client's Monitor and with the same client's normal
+per-client game without replacing the stable display identity.
+
+Shared virtual targets and physical capture targets remain unsupported. A normal
 application can select a display using ordinary app routing, but follows the
 normal game lifecycle and does not acquire an independent monitor role alongside
 a running game.
@@ -2619,8 +2679,8 @@ These settings are host-wide and are not application runtime overrides.
         <td colspan="2">
             Maximum size in KiB for each outgoing video send batch.
             The default is 64 KiB.
-            Lower values can improve stream stability on cheaper switches, routers, and Wi-Fi hardware by reducing burst size,
-            but at the cost of less than 1 ms of additional host-side delay.
+            A lower value only reduces the maximum payload of an individual send call; it does not cap packets across successive
+            calls before the next pacing wait or guarantee a smaller wire burst. Lower values may increase host-side send work.
             PyroWave resolves its send batch size automatically and ignores this setting.
         </td>
     </tr>
@@ -2638,6 +2698,31 @@ These settings are host-wide and are not application runtime overrides.
         <td>Example</td>
         <td colspan="2">@code{}
             video_max_batch_size_kb = 32
+            @endcode</td>
+    </tr>
+</table>
+
+### pacing_batch_demand_limit
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Experimental opt-in for ordinary video streams. When enabled, Vibepollo uses negotiated bitrate and FEC-expanded
+            frame demand to limit the size of each outgoing send call. It leaves the ordinary pacing group,
+            <code>pacing_max_bitrate_kbps</code> ceiling, and cumulative pacing deadline unchanged.
+            It does not cap aggregate packets across successive calls before a pacing wait, guarantee a wire-level burst limit,
+            or establish the cause of a reported streaming failure. It may increase host-side send work. PyroWave is unchanged.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            pacing_batch_demand_limit = true
             @endcode</td>
     </tr>
 </table>
@@ -5161,6 +5246,10 @@ Enables KDE Plasma Wayland HDR environment compatibility for games launched duri
 ### wgc_pacing_smoothing
 
 Enables WGC pacing smoothing so capture re-anchors to the pacing grid instead of raw frame-arrival timing.
+
+### wgc_direct_encoder_input
+
+Lets GPU encoders read each Windows Graphics Capture frame directly from the capture helper's shared texture instead of from a host-side snapshot copy. This removes one full-frame GPU copy and one hand-off between the capture and encoder devices per frame, which shortens and steadies host processing latency. Defaults to `enabled`; set `disabled` to restore the previous copy path. Software encoding and DXGI capture are unaffected; `wgcc` (constant) capture and PyroWave always use the copy path.
 
 ### auto_capture_sink
 

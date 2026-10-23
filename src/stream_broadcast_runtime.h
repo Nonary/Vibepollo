@@ -6,6 +6,7 @@
 
 #include "thread_safe.h"
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <span>
@@ -97,6 +98,7 @@ namespace stream::broadcast_runtime {
     std::string_view client_uuid;
     std::reference_wrapper<int> bitrate;
     std::reference_wrapper<int> client_requested_bitrate;
+    std::reference_wrapper<std::atomic<int>> pacing_bitrate_kbps;
     safe::mail_raw_t::event_t<bool> idr_events;
     safe::mail_raw_t::event_t<int> bitrate_events;
   };

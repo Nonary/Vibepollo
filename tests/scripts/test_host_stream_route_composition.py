@@ -101,8 +101,9 @@ namespace proc {
 std::mutex lifecycle,launch_request_mutex;
 std::unique_lock<std::mutex> acquire_stream_start_lifecycle_lock() { return std::unique_lock{lifecycle}; }
 int launches = 0, resumes = 0, web_sessions = 0,cancels = 0;
-void launch(int &, resp_https_t, req_https_t, int) { ++launches; }
-void resume(int &, resp_https_t, req_https_t, int) { ++resumes; }
+std::uint64_t last_launch_trace_id = 0, last_resume_trace_id = 0;
+void launch(int &, resp_https_t, req_https_t, int, std::uint64_t trace_id = 0) { ++launches; last_launch_trace_id = trace_id; }
+void resume(int &, resp_https_t, req_https_t, int, bool = true, bool = false, std::uint64_t trace_id = 0) { ++resumes; last_resume_trace_id = trace_id; }
 void cancel(resp_https_t,req_https_t){++cancels;}
 void createWebRTCSession(resp_https_t, req_https_t) { ++web_sessions; }
 bool authenticate(resp_https_t response, req_https_t request) {
@@ -146,6 +147,15 @@ nv_checks = r'''
   fresh(std::make_shared<Response>(), std::make_shared<Request>());
   blocking_route_pool.run();
   check(launches == before_fresh + 1, "real NVHTTP route accepts fresh post-terminal request");
+  check(last_launch_trace_id != 0 && !dispatch::include_request_identity_log_fields(last_launch_trace_id),
+        "real launch route supplies a redacted request-detail logging context");
+  const int before_fresh_resume = resumes;
+  auto &fresh_resume = https_server.resource["^/resume$"]["GET"];
+  fresh_resume(std::make_shared<Response>(), std::make_shared<Request>());
+  blocking_route_pool.run();
+  check(resumes == before_fresh_resume + 1 && last_resume_trace_id != 0 &&
+        !dispatch::include_request_identity_log_fields(last_resume_trace_id),
+        "real resume route supplies a redacted request-detail logging context");
 }
 void web_routes() {
   thread_pool_util::ThreadPool blocking_route_pool;

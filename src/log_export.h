@@ -8,16 +8,17 @@
 #include <array>
 #include <boost/asio/ip/address_v6.hpp>
 #include <boost/crc.hpp>
+#include <boost/regex.hpp>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <ctime>
 #include <filesystem>
 #include <fstream>
 #include <istream>
 #include <limits>
 #include <optional>
-#include <regex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -110,10 +111,10 @@ namespace log_export {
       };
 
       std::vector<replacement_t> replacements;
-      const auto add_matches = [&](const std::regex &pattern, std::size_t capture, int priority, const std::string &kind, bool validate_ipv6 = false, bool preserve_service_identity = false) {
-        std::match_results<std::string::const_iterator> match;
+      const auto add_matches = [&](const boost::regex &pattern, std::size_t capture, int priority, const std::string &kind, bool validate_ipv6 = false, bool preserve_service_identity = false) {
+        boost::match_results<std::string::const_iterator> match;
         auto search_start = input.cbegin();
-        while (std::regex_search(search_start, input.cend(), match, pattern)) {
+        while (boost::regex_search(search_start, input.cend(), match, pattern)) {
           if (capture >= match.size() || !match[capture].matched) {
             break;
           }
@@ -140,16 +141,21 @@ namespace log_export {
 
       // Compiled once per process: sanitize() runs over every exported file and
       // regex construction is expensive enough to dominate small files.
+      // Boost's engine avoids the expensive per-character std::regex dispatch
+      // on multi-MiB logs. Disable its default multiline anchors to preserve
+      // the previous ECMAScript boundary behavior, including resumed searches.
+      static constexpr auto pattern_flags = boost::regex::ECMAScript | boost::regex::no_mod_m;
+      static constexpr auto user_pattern_flags = pattern_flags | boost::regex::icase;
       // Match only user components of conventional home-directory paths.
-      static const std::regex user_home_windows {R"((?:[A-Za-z]:[\\/]+Users[\\/]+)([^\\/,:;"'<>()[\]{}|]+))", std::regex_constants::icase};
-      static const std::regex user_home_posix {R"((?:^|[^A-Za-z0-9_])/(?:home|Users)/([^/\s:,;"'<>()[\]{}|]+))", std::regex_constants::icase};
+      static const boost::regex user_home_windows {R"((?:[A-Za-z]:[\\/]+Users[\\/]+)([^\\/,:;"'<>()[\]{}|]+))", user_pattern_flags};
+      static const boost::regex user_home_posix {R"((?:^|[^A-Za-z0-9_])/(?:home|Users)/([^/\s:,;"'<>()[\]{}|]+))", user_pattern_flags};
       // Explicit fields are safer to redact than arbitrary words that happen to look like names.
-      static const std::regex user_field_quoted {R"(\b(?:username|user_name|user)\b\s*[:=]\s*["']([^"']+)["'])", std::regex_constants::icase};
-      static const std::regex user_field_bare {R"(\b(?:username|user_name|user)\b\s*[:=]\s*([A-Za-z0-9._-]+))", std::regex_constants::icase};
-      static const std::regex ipv4_pattern {R"((?:^|[^0-9A-Za-z])((?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})(?:[^0-9A-Za-z]|$))"};
-      static const std::regex ipv6_candidate {R"((?:^|[^0-9A-Za-z:.])([0-9A-Fa-f:.]{2,})(?:[^0-9A-Za-z:.]|$))"};
-      static const std::regex mac_pattern {R"(\b([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})\b)"};
-      static const std::regex email_pattern {R"(\b[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b)"};
+      static const boost::regex user_field_quoted {R"(\b(?:username|user_name|user)\b\s*[:=]\s*["']([^"']+)["'])", user_pattern_flags};
+      static const boost::regex user_field_bare {R"(\b(?:username|user_name|user)\b\s*[:=]\s*([A-Za-z0-9._-]+))", user_pattern_flags};
+      static const boost::regex ipv4_pattern {R"((?:^|[^0-9A-Za-z])((?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})(?:[^0-9A-Za-z]|$))", pattern_flags};
+      static const boost::regex ipv6_candidate {R"((?:^|[^0-9A-Za-z:.])([0-9A-Fa-f:.]{2,})(?:[^0-9A-Za-z:.]|$))", pattern_flags};
+      static const boost::regex mac_pattern {R"(\b([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})\b)", pattern_flags};
+      static const boost::regex email_pattern {R"(\b[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b)", pattern_flags};
 
       add_matches(user_home_windows, 1, 10, "USER");
       add_matches(user_home_posix, 1, 10, "USER");
@@ -363,6 +369,50 @@ namespace log_export {
     std::vector<ZipDataEntry> entries_;
   };
 
+  // Windows resolves these roots through Known Folder APIs first and uses
+  // CSIDL only when none of the Known Folder paths yielded an available log.
+  // Keep this caller policy here so tests can inject the Playnite base visits.
+  template<typename Collection>
+  static bool add_playnite_logs_from_base(Collection &collection, const std::filesystem::path &base) {
+    static constexpr std::array<const wchar_t *, 3> filenames {L"playnite.log", L"extensions.log", L"launcher.log"};
+    bool any = false;
+    for (const auto *filename : filenames) {
+      const auto path = base / filename;
+      if (collection.add_file(path, path.filename().string())) {
+        any = true;
+      }
+    }
+    return any;
+  }
+
+  template<typename VisitKnownFolderRoots, typename VisitCsidlRoots, typename Collection>
+  static bool add_playnite_logs_from_known_or_csidl(VisitKnownFolderRoots &&visit_known_folder_roots, VisitCsidlRoots &&visit_csidl_roots, Collection &collection) {
+    bool found_playnite_logs = false;
+    const auto add_known_base = [&](const std::filesystem::path &playnite_base) {
+      if (add_playnite_logs_from_base(collection, playnite_base)) {
+        found_playnite_logs = true;
+      }
+    };
+    try {
+      visit_known_folder_roots(add_known_base);
+    } catch (...) {}
+    if (found_playnite_logs) {
+      return found_playnite_logs;
+    }
+
+    const auto add_csidl_base = [&](const std::filesystem::path &playnite_base) {
+      try {
+        if (add_playnite_logs_from_base(collection, playnite_base)) {
+          found_playnite_logs = true;
+        }
+      } catch (...) {}
+    };
+    try {
+      visit_csidl_roots(add_csidl_base);
+    } catch (...) {}
+    return found_playnite_logs;
+  }
+
   [[maybe_unused]] static std::string build_zip_from_entries(const std::vector<ZipDataEntry> &entries) {
     std::string out;
 
@@ -471,6 +521,27 @@ namespace log_export {
       year = 2107;
     }
     dos_date = static_cast<uint16_t>(((year - 1980) << 9) | (((tm.tm_mon + 1) & 0x0F) << 5) | (tm.tm_mday & 0x1F));
+  }
+
+  inline std::string make_support_log_archive_filename(const std::tm &tm) {
+    char filename[64];
+    std::snprintf(filename, sizeof(filename), "vibeshine_logs-%04d%02d%02d-%02d%02d%02d.zip", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    return filename;
+  }
+
+  // Build the archive before asking the caller for its filename. The Windows
+  // endpoint samples its timestamp after ZIP construction, as it did before
+  // this response path was extracted.
+  template<typename HeaderMap, typename Response, typename StatusCode, typename BuildArchive, typename BuildFilename>
+  static void write_archive_response(Response &&response, StatusCode status, const std::vector<ZipDataEntry> &entries, BuildArchive &&build_archive, BuildFilename &&build_filename) {
+    const auto zip = build_archive(entries);
+    const auto filename = build_filename();
+    HeaderMap headers;
+    headers.emplace("Content-Type", "application/zip");
+    headers.emplace("Content-Disposition", std::string("attachment; filename=\"") + filename + "\"");
+    headers.emplace("X-Frame-Options", "DENY");
+    headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
+    response->write(status, zip, headers);
   }
 
 }  // namespace log_export

@@ -4,6 +4,10 @@
 #include <fstream>
 #include <functional>
 #include <gtest/gtest.h>
+#include <map>
+#include <memory>
+#include <stdexcept>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -45,6 +49,19 @@ protected:
     const auto received = std::filebuf::xsgetn(data, count);
     bytes_returned += static_cast<std::size_t>(received);
     return received;
+  }
+};
+
+struct CapturedArchiveResponse {
+  int status = 0;
+  std::string body;
+  std::multimap<std::string, std::string> headers;
+
+  template<typename Status, typename HeaderMap>
+  void write(Status response_status, const std::string &response_body, const HeaderMap &response_headers) {
+    status = static_cast<int>(response_status);
+    body = response_body;
+    headers.insert(response_headers.begin(), response_headers.end());
   }
 };
 
@@ -261,27 +278,288 @@ TEST_F(LogExportReaderTest, DuplicateZipNameDoesNotHideUnavailableRequestedPaths
 }
 
 TEST_F(LogExportReaderTest, MissingKnownFolderDuplicateStillSelectsFallbackLogs) {
-  const auto session_log = write("session/launcher.log", "session\n");
+  const auto session_log = write("session/playnite.log", "session\n");
   const auto known_folder = root / "known/Playnite";
   fs::create_directories(known_folder);
   const auto fallback_log = write("csidl/Playnite/extensions.log", "fallback diagnostics\n");
   log_export::support_log_collection_t collection {128};
-  ASSERT_TRUE(collection.add_file(session_log, "launcher.log"));
+  ASSERT_TRUE(collection.add_file(session_log, "playnite.log"));
+  int known_folder_resolutions = 0;
+  int csidl_resolutions = 0;
+  const auto resolve_known_folders = [&](auto &&visit_root) {
+    ++known_folder_resolutions;
+    visit_root(root / "known" / "Playnite");
+  };
+  const auto resolve_csidl_folders = [&](auto &&visit_root) {
+    ++csidl_resolutions;
+    visit_root(root / "csidl" / "Playnite");
+  };
 
-  // Exercise the real collector's availability result used by the Windows
-  // discovery caller. This fixture does not emulate Known Folder/CSIDL APIs.
-  const bool known_folder_has_launcher = collection.add_file(known_folder / "launcher.log", "launcher.log");
-  bool selected_fallback = false;
-  if (!known_folder_has_launcher) {
-    selected_fallback = true;
-    EXPECT_TRUE(collection.add_file(fallback_log, "extensions.log"));
-  }
-  EXPECT_FALSE(known_folder_has_launcher);
-  EXPECT_TRUE(selected_fallback);
+  // This calls the same discovery policy and add-file path used by the
+  // Windows collector. The duplicate ZIP name is unavailable in the Known
+  // Folder path, so CSIDL must still contribute its extension log.
+  EXPECT_TRUE(log_export::add_playnite_logs_from_known_or_csidl(resolve_known_folders, resolve_csidl_folders, collection));
+  EXPECT_EQ(known_folder_resolutions, 1);
+  EXPECT_EQ(csidl_resolutions, 1);
   ASSERT_EQ(collection.entries().size(), 2u);
   EXPECT_EQ(collection.entries().back().name, "extensions.log");
   EXPECT_EQ(collection.entries().back().data, "fallback diagnostics\n");
   EXPECT_EQ(collection.bytes_read(), fs::file_size(session_log) + fs::file_size(fallback_log));
+}
+
+TEST_F(LogExportReaderTest, KnownFolderLogsSkipCsidlFallback) {
+  const auto known_log = write("known/Playnite/launcher.log", "known folder diagnostics\n");
+  log_export::support_log_collection_t collection {128};
+  int known_folder_resolutions = 0;
+  int csidl_resolutions = 0;
+  const auto resolve_known_folders = [&](auto &&visit_root) {
+    ++known_folder_resolutions;
+    visit_root(root / "known" / "Playnite");
+  };
+  const auto resolve_csidl_folders = [&](auto &&visit_root) {
+    ++csidl_resolutions;
+    visit_root(root / "csidl" / "Playnite");
+  };
+
+  EXPECT_TRUE(log_export::add_playnite_logs_from_known_or_csidl(resolve_known_folders, resolve_csidl_folders, collection));
+  EXPECT_EQ(known_folder_resolutions, 1);
+  EXPECT_EQ(csidl_resolutions, 0);
+  ASSERT_EQ(collection.entries().size(), 1u);
+  EXPECT_EQ(collection.entries().front().name, "launcher.log");
+  EXPECT_EQ(collection.entries().front().data, "known folder diagnostics\n");
+  EXPECT_EQ(collection.bytes_read(), fs::file_size(known_log));
+}
+
+TEST_F(LogExportReaderTest, CsidlRootFailureDoesNotSkipTheNextRoot) {
+  std::vector<std::string> events;
+
+  struct ThrowingCollection {
+    fs::path throwing_parent;
+    fs::path available_log;
+    std::vector<std::string> &events;
+
+    bool add_file(const fs::path &path, const std::string &) {
+      events.push_back("add:" + path.parent_path().parent_path().filename().string() + "/" + path.filename().string());
+      if (path.parent_path() == throwing_parent) {
+        throw std::runtime_error("injected path failure");
+      }
+      return path == available_log;
+    }
+  } collection {root / "broken/Playnite", root / "healthy/Playnite/extensions.log", events};
+
+  const auto resolve_known_folders = [](auto &&) {
+  };
+  const auto resolve_csidl_folders = [&](auto &&visit_root) {
+    events.emplace_back("resolve:broken");
+    visit_root(root / "broken" / "Playnite");
+    events.emplace_back("resolve:healthy");
+    visit_root(root / "healthy" / "Playnite");
+  };
+
+  EXPECT_TRUE(log_export::add_playnite_logs_from_known_or_csidl(resolve_known_folders, resolve_csidl_folders, collection));
+  EXPECT_EQ(events, (std::vector<std::string> {
+                      "resolve:broken",
+                      "add:broken/playnite.log",
+                      "resolve:healthy",
+                      "add:healthy/playnite.log",
+                      "add:healthy/extensions.log",
+                      "add:healthy/launcher.log",
+                    }));
+}
+
+TEST_F(LogExportReaderTest, KnownFolderReadsInterleaveWithRootResolution) {
+  write("roaming/Playnite/playnite.log", "roaming diagnostics\n");
+  write("local/Playnite/extensions.log", "local diagnostics\n");
+  std::vector<std::string> events;
+
+  struct RecordingCollection {
+    std::vector<std::string> &events;
+    log_export::support_log_collection_t inner {128};
+
+    bool add_file(const fs::path &path, const std::string &name) {
+      events.push_back("add:" + path.parent_path().parent_path().filename().string() + "/" + path.filename().string());
+      return inner.add_file(path, name);
+    }
+  } collection {events};
+
+  const auto visit_known_folders = [&](auto &&visit_root) {
+    events.emplace_back("resolve:roaming");
+    visit_root(root / "roaming" / "Playnite");
+    events.emplace_back("resolve:local");
+    visit_root(root / "local" / "Playnite");
+  };
+  const auto visit_csidl_folders = [&](auto &&) {
+    events.emplace_back("resolve:csidl");
+  };
+
+  EXPECT_TRUE(log_export::add_playnite_logs_from_known_or_csidl(visit_known_folders, visit_csidl_folders, collection));
+  EXPECT_EQ(events, (std::vector<std::string> {
+                      "resolve:roaming",
+                      "add:roaming/playnite.log",
+                      "add:roaming/extensions.log",
+                      "add:roaming/launcher.log",
+                      "resolve:local",
+                      "add:local/playnite.log",
+                      "add:local/extensions.log",
+                      "add:local/launcher.log",
+                    }));
+}
+
+TEST_F(LogExportReaderTest, KnownFolderReadFailureFallsBackToCsidlRoots) {
+  std::vector<std::string> events;
+
+  struct ThrowingCollection {
+    fs::path throwing_parent;
+    fs::path available_log;
+    std::vector<std::string> &events;
+
+    bool add_file(const fs::path &path, const std::string &) {
+      events.push_back("add:" + path.parent_path().parent_path().filename().string() + "/" + path.filename().string());
+      if (path.parent_path() == throwing_parent) {
+        throw std::runtime_error("injected Known Folder read failure");
+      }
+      return path == available_log;
+    }
+  } collection {root / "known/Playnite", root / "csidl/Playnite/extensions.log", events};
+
+  const auto visit_known_folders = [&](auto &&visit_root) {
+    events.emplace_back("resolve:known");
+    visit_root(root / "known" / "Playnite");
+    events.emplace_back("unexpected:next-known-root");
+  };
+  const auto visit_csidl_folders = [&](auto &&visit_root) {
+    events.emplace_back("resolve:csidl");
+    visit_root(root / "csidl" / "Playnite");
+  };
+
+  EXPECT_TRUE(log_export::add_playnite_logs_from_known_or_csidl(visit_known_folders, visit_csidl_folders, collection));
+  EXPECT_EQ(events, (std::vector<std::string> {
+                      "resolve:known",
+                      "add:known/playnite.log",
+                      "resolve:csidl",
+                      "add:csidl/playnite.log",
+                      "add:csidl/extensions.log",
+                      "add:csidl/launcher.log",
+                    }));
+}
+
+TEST_F(LogExportReaderTest, EmptyExportUsesArchiveHttpResponsePath) {
+  const auto response = std::make_shared<CapturedArchiveResponse>();
+  const std::vector<log_export::ZipDataEntry> entries;
+  std::vector<std::string> events;
+  const auto build_archive = [&](const auto &archive_entries) {
+    events.emplace_back("archive");
+    return log_export::build_zip_from_entries(archive_entries);
+  };
+  const auto make_filename = [&] {
+    events.emplace_back("filename");
+    return std::string("vibeshine_logs-20261021-123456.zip");
+  };
+
+  log_export::write_archive_response<std::multimap<std::string, std::string>>(
+    response,
+    200,
+    entries,
+    build_archive,
+    make_filename
+  );
+
+  EXPECT_EQ(events, (std::vector<std::string> {"archive", "filename"}));
+  EXPECT_EQ(response->status, 200);
+  ASSERT_EQ(response->body.size(), 22u);
+  EXPECT_EQ(response->body.substr(0, 4), std::string("PK\x05\x06", 4));
+  EXPECT_EQ(response->headers.count("Content-Type"), 1u);
+  const auto content_type = response->headers.find("Content-Type");
+  const auto content_disposition = response->headers.find("Content-Disposition");
+  const auto frame_options = response->headers.find("X-Frame-Options");
+  const auto content_security_policy = response->headers.find("Content-Security-Policy");
+  ASSERT_NE(content_type, response->headers.end());
+  ASSERT_NE(content_disposition, response->headers.end());
+  ASSERT_NE(frame_options, response->headers.end());
+  ASSERT_NE(content_security_policy, response->headers.end());
+  EXPECT_EQ(content_type->second, "application/zip");
+  EXPECT_EQ(content_disposition->second, "attachment; filename=\"vibeshine_logs-20261021-123456.zip\"");
+  EXPECT_EQ(frame_options->second, "DENY");
+  EXPECT_EQ(content_security_policy->second, "frame-ancestors 'none';");
+}
+
+TEST_F(LogExportReaderTest, NonEmptyExportPassesEntriesThroughArchiveHttpResponsePath) {
+  const auto response = std::make_shared<CapturedArchiveResponse>();
+  const std::vector<log_export::ZipDataEntry> entries {{"sample.log", "ok", std::nullopt}};
+  std::vector<std::string> events;
+  const auto build_archive = [&](const auto &archive_entries) {
+    events.emplace_back("archive");
+    return log_export::build_zip_from_entries(archive_entries);
+  };
+  const auto make_filename = [&] {
+    events.emplace_back("filename");
+    std::tm timestamp {};
+    timestamp.tm_year = 126;
+    timestamp.tm_mon = 9;
+    timestamp.tm_mday = 21;
+    timestamp.tm_hour = 12;
+    timestamp.tm_min = 34;
+    timestamp.tm_sec = 56;
+    return log_export::make_support_log_archive_filename(timestamp);
+  };
+
+  log_export::write_archive_response<std::multimap<std::string, std::string>>(
+    response,
+    200,
+    entries,
+    build_archive,
+    make_filename
+  );
+
+  EXPECT_EQ(events, (std::vector<std::string> {"archive", "filename"}));
+  const auto content_disposition = response->headers.find("Content-Disposition");
+  ASSERT_NE(content_disposition, response->headers.end());
+  EXPECT_EQ(content_disposition->second, "attachment; filename=\"vibeshine_logs-20261021-123456.zip\"");
+  ASSERT_GE(response->body.size(), 30u);
+  EXPECT_EQ(response->body.substr(0, 4), std::string("PK\x03\x04", 4));
+  const auto name_length = static_cast<unsigned char>(response->body[26]) | (static_cast<unsigned char>(response->body[27]) << 8);
+  const auto compressed_size = static_cast<std::uint32_t>(static_cast<unsigned char>(response->body[18])) |
+                               (static_cast<std::uint32_t>(static_cast<unsigned char>(response->body[19])) << 8) |
+                               (static_cast<std::uint32_t>(static_cast<unsigned char>(response->body[20])) << 16) |
+                               (static_cast<std::uint32_t>(static_cast<unsigned char>(response->body[21])) << 24);
+  ASSERT_EQ(response->body.substr(30, name_length), "sample.log");
+  EXPECT_EQ(response->body.substr(30 + name_length, compressed_size), "ok");
+  EXPECT_EQ(response->body.substr(response->body.size() - 22, 4), std::string("PK\x05\x06", 4));
+}
+
+TEST_F(LogExportReaderTest, ArchiveFilenameFormatPreservesTimestampFields) {
+  std::tm timestamp {};
+  timestamp.tm_year = 126;
+  timestamp.tm_mon = 9;
+  timestamp.tm_mday = 21;
+  timestamp.tm_hour = 12;
+  timestamp.tm_min = 34;
+  timestamp.tm_sec = 56;
+
+  EXPECT_EQ(log_export::make_support_log_archive_filename(timestamp), "vibeshine_logs-20261021-123456.zip");
+}
+
+TEST_F(LogExportReaderTest, ArchiveFailureDoesNotSampleFilenameOrWriteResponse) {
+  const auto response = std::make_shared<CapturedArchiveResponse>();
+  const std::vector<log_export::ZipDataEntry> entries;
+  std::vector<std::string> events;
+  const auto build_archive = [&](const auto &) -> std::string {
+    events.emplace_back("archive");
+    throw std::runtime_error("injected archive failure");
+  };
+  const auto make_filename = [&] {
+    events.emplace_back("filename");
+    return std::string("should-not-be-used.zip");
+  };
+  using HeaderMap = std::multimap<std::string, std::string>;
+
+  EXPECT_THROW(
+    (log_export::write_archive_response<HeaderMap>(response, 200, entries, build_archive, make_filename)),
+    std::runtime_error
+  );
+  EXPECT_EQ(events, (std::vector<std::string> {"archive"}));
+  EXPECT_EQ(response->status, 0);
+  EXPECT_TRUE(response->body.empty());
 }
 
 TEST_F(LogExportReaderTest, UnreadableDuplicateDoesNotReportPathAvailable) {

@@ -35,6 +35,7 @@ def program(root):
     legacy_adapter = function(legacy, "bool apply_snapshot(const display_device::DisplaySettingsSnapshot &snap, const layout_rotation_map_t *layout_rotations = nullptr)")
     return r'''
 #include <algorithm>
+#include <atomic>
 #include <cassert>
 #include <chrono>
 #include <iostream>
@@ -46,8 +47,23 @@ def program(root):
 #include <string>
 #include <thread>
 #include <vector>
+#include "src/platform/windows/display_helper_borrow_gate.h"
 #include "src/platform/windows/display_snapshot_restore.h"
 using namespace std::chrono_literals;
+namespace display_helper::borrow {
+  inline std::atomic<bool> &helper_process() { static std::atomic<bool> value {false}; return value; }
+  class native_mutation_scope_t {
+  public:
+    static native_mutation_scope_t enter(bool wait) {
+      native_mutation_scope_t result;
+      result.scope_ = wait ? process_gate().wait_enter() : process_gate().try_enter();
+      return result;
+    }
+    explicit operator bool() const { return static_cast<bool>(scope_); }
+  private:
+    gate_t::scope_t scope_;
+  };
+}
 namespace display_device {
   enum class DisplayRecoveryBehavior { Skip };
   struct DisplayRecoveryBehaviorGuard { explicit DisplayRecoveryBehaviorGuard(DisplayRecoveryBehavior) {} };

@@ -25,9 +25,22 @@ struct arrival_packet { uint8_t controllerNumber; uint8_t type; uint16_t capabil
 using PSS_CONTROLLER_ARRIVAL_PACKET = arrival_packet *;
 namespace platf {
   struct gamepad_id_t { int globalIndex; uint8_t clientRelativeIndex; };
-  struct gamepad_arrival_t { std::uint8_t type; std::uint16_t capabilities; std::uint32_t supportedButtons; bool persist_after_disconnect = false; };
+  struct gamepad_arrival_t {
+    uint8_t type;
+    uint16_t capabilities;
+    uint32_t supportedButtons;
+    bool persist_after_disconnect = false;
+    uint64_t speaker_owner = 0;
+  };
   int alloc_result = 0, alloc_calls = 0;
-  int alloc_gamepad(int, gamepad_id_t, gamepad_arrival_t, int) { ++alloc_calls; return alloc_result; }
+  std::vector<gamepad_id_t> allocated_gamepads;
+  int alloc_gamepad(int, gamepad_id_t id, gamepad_arrival_t, int) {
+    ++alloc_calls;
+    if (alloc_result == 0) {
+      allocated_gamepads.push_back(id);
+    }
+    return alloc_result;
+  }
 }
 int alloc_id(std::bitset<16> &mask) {
   for (int i = 0; i < 16; ++i) if (!mask[i]) { mask[i] = true; return i; }
@@ -61,6 +74,12 @@ std::vector<uint8_t> packet_bytes(uint32_t magic) {
   return data;
 }
 void passthrough_next_message(std::shared_ptr<input_t>) {}
+namespace geometry {
+  inline bool request_serialized_worker_wake(std::atomic_bool &scheduled) noexcept {
+    return !scheduled.exchange(true, std::memory_order_acq_rel);
+  }
+}
+
 '''
 
 TESTS = r'''
@@ -306,12 +325,32 @@ int main(int argc, char **argv) {
     assert(platf::gamepad_events.back().second.buttonFlags == 0);
     disconnect(a);
   } else if (test == "controller_mask_removes_other_slot") {
+    // Reserve one host slot so global IDs differ from client-relative indices.
+    const auto other_client_id = alloc_id(gamepadMask);
+    assert(other_client_id == 0);
     controller_packet p {0, 3, platf::BACK}; passthrough(a, &p);
     p.controllerNumber = 1; p.buttonFlags = 0; passthrough(a, &p);
+    const auto first_host_id = a->gamepads[0].id;
+    const auto second_host_id = a->gamepads[1].id;
+    assert(first_host_id >= 0 && second_host_id >= 0 && first_host_id != second_host_id);
+    assert(first_host_id != 0 && second_host_id != 1);
+    assert(platf::allocated_gamepads.size() == 2);
+    assert(platf::allocated_gamepads[0].globalIndex == first_host_id);
+    assert(platf::allocated_gamepads[0].clientRelativeIndex == 0);
+    assert(platf::allocated_gamepads[1].globalIndex == second_host_id);
+    assert(platf::allocated_gamepads[1].clientRelativeIndex == 1);
     p.activeGamepadMask = 2; passthrough(a, &p);
-    assert(a->gamepads[0].id == -1 && a->gamepads[1].id >= 0);
-    assert(task_pool.timers.empty() && platf::freed_gamepads.size() == 1);
+    assert(a->gamepads[0].id == -1 && a->gamepads[1].id == second_host_id);
+    assert(task_pool.timers.empty());
+    assert(platf::freed_gamepads == std::vector<int>{first_host_id});
+    // The freed global ID must return to the allocator, not only the platform.
+    p.controllerNumber = 0; p.activeGamepadMask = 3; passthrough(a, &p);
+    assert(a->gamepads[0].id == first_host_id && a->gamepads[1].id == second_host_id);
+    assert(platf::allocated_gamepads.size() == 3);
+    assert(platf::allocated_gamepads[2].globalIndex == first_host_id);
+    assert(platf::allocated_gamepads[2].clientRelativeIndex == 0);
     disconnect(a);
+    assert(platf::freed_gamepads == std::vector<int>{first_host_id, first_host_id, second_host_id});
   } else if (test == "touch_pen_destroyed_while_context_retained") {
     a->client_context = std::make_unique<platf::client_input_t>();
     auto retained = a; disconnect(a);

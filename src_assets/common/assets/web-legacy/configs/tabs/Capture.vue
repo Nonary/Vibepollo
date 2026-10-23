@@ -29,6 +29,7 @@ const showAll = () => !props.currentTab;
 const platform = computed(() =>
   (metadata.value?.platform || config.value?.platform || '').toString().toLowerCase(),
 );
+const rtxHdrSupported = computed(() => (metadata.value as any)?.rtx_hdr_supported === true);
 
 const gpuList = computed(() => {
   const raw = (metadata.value as any)?.gpus;
@@ -444,7 +445,7 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
       <ConfigFieldRenderer setting-key="encoder" v-model="config.encoder" />
 
       <section
-        v-if="platform === 'windows' && hasNvidia"
+        v-if="['windows', 'linux'].includes(platform) && hasNvidia && (platform !== 'linux' || rtxHdrSupported)"
         class="space-y-4 rounded-xl border border-dark/35 p-4 dark:border-light/25"
       >
         <div class="space-y-1">

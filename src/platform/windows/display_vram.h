@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <cstdint>
 #include <memory>
 
 // local includes
@@ -15,6 +16,8 @@
 #include <dxgi.h>
 
 namespace platf::dxgi {
+
+  class wgc_frame_record_t;
 
   /**
    * @brief Direct3D-backed image container used for WGC/DXGI capture paths.
@@ -31,6 +34,8 @@ namespace platf::dxgi {
     bool blank = true;  ///< True if contains no desktop or cursor content.
     uint32_t id = 0;  ///< Monotonically increasing identifier.
     DXGI_FORMAT format;  ///< Underlying DXGI texture format.
+    std::shared_ptr<wgc_frame_record_t> direct_frame_record;  ///< Set while this image aliases the WGC helper's shared texture.
+    std::uint64_t direct_frame_id = 0;  ///< Helper frame the capture thread claimed for a direct image.
 
     ~img_d3d_t() override {
       if (encoder_texture_handle) {

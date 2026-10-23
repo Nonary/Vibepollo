@@ -3,15 +3,20 @@
 
 Unit directives, payload paths and privilege boundaries are static contracts.
 Classifier, binding/stop decisions, pairing policy and status polling run in
-separate production-behavior tests. Remaining native caller/persistence/GPU
-integration guards below only inspect source text; they do not establish
-runtime behavior and must not be reported as such.
+separate production-behavior tests. The greeter-handoff checks below execute
+the production environment initializer and context function in focused
+fixtures; they do not qualify the installed service or display runtime. Other
+native caller/persistence/GPU integration guards below inspect source text.
 """
 
 import json
+import os
 import pathlib
 import re
+import shlex
+import subprocess
 import sys
+import tempfile
 
 
 def require(text: str, needle: str, label: str) -> None:
@@ -62,6 +67,8 @@ steam_launcher = (linux / "vibepollo-steam-launch.cpp").read_text()
 session_execution = launcher + "\n" + broker
 private_display = (root / "src/platform/linux/private_display.cpp").read_text()
 display_power = (linux / "vibepollo-display-power.h").read_text()
+display_borrow = (linux / "vibepollo-display-borrow.h").read_text()
+display_borrow_relay = (linux / "vibepollo-display-borrow-relay.h").read_text()
 display_power_client = (root / "src/platform/linux/display_power.cpp").read_text()
 frame_limiter = (root / "src/platform/linux/frame_limiter.cpp").read_text()
 provider_scan_protocol = (root / "src/provider_scan_protocol.cpp").read_text()
@@ -297,6 +304,170 @@ for forbidden in (
 require(host, "trap request_host_shutdown TERM INT HUP", "single service signal delivery")
 forbid(host, "trap 'forward_host_signal", "duplicate service signal delivery")
 
+# The greeter handoff adapter must consume the same target-specific environment
+# that the clean machine-host launcher exports. The policy tests below exercise
+# the state transitions with explicit contexts; this boundary catches a broken
+# production adapter that would leave those tests green while handoff metadata
+# is never recorded.
+handoff_function_start = private_display.find(
+    "handoff_policy::context_t snapshot_handoff_context()"
+)
+handoff_function_end_marker = "\n    }\n\n    std::map<std::string, std::string> physical_connector_identities"
+handoff_function_end = private_display.find(
+    handoff_function_end_marker, handoff_function_start
+)
+if handoff_function_start < 0 or handoff_function_end < 0:
+    raise AssertionError("production greeter-handoff context function is missing")
+handoff_function = private_display[
+    handoff_function_start : handoff_function_end + len("\n    }")
+]
+
+# Source the production launcher and execute its environment builder with
+# controlled session fields. Comparing expanded entries catches additional or
+# duplicate assignments created through valid Bash parameter expansion.
+require(host, "build_machine_host_environment() {", "machine-host environment builder")
+environment_builder_calls = list(
+    re.finditer(r"(?m)^[ \t]*build_machine_host_environment[ \t]*$", host)
+)
+if len(environment_builder_calls) != 1:
+    raise AssertionError("machine-host environment builder must be called exactly once")
+environment_builder_call = environment_builder_calls[0]
+clean_exec_match = re.search(
+    r'(?m)^[ \t]*capability_clean_exec /usr/bin/env -i "\$\{environment\[@\]\}"',
+    host,
+)
+if not clean_exec_match or clean_exec_match.start() < environment_builder_call.end():
+    raise AssertionError("machine-host clean exec does not consume the built environment array")
+environment_handoff = host[environment_builder_call.end() : clean_exec_match.start()]
+if re.sub(r"\\\n", "", environment_handoff).strip():
+    raise AssertionError("machine-host environment builder is not immediately followed by clean exec")
+shell_program = "\n".join(
+    (
+        "set -euo pipefail",
+        'source "$1"',
+        "session_backend=fixture-backend",
+        "session_role=greeter",
+        "session_user=fixture-session-user",
+        "session_uid=1201",
+        "session_gid=1202",
+        "session_groups=1202,1203",
+        "session_id=fixture-session-id",
+        "session_generation=73",
+        "session_home=/home/fixture-session-user",
+        "environment=()",
+        "build_machine_host_environment",
+        'printf \'%s\\0\' "${environment[@]}"',
+    )
+)
+expanded = subprocess.run(
+    ["/bin/bash", "-c", shell_program, "vibepollo-machine-host", str(linux / "vibepollo-machine-host")],
+    check=True,
+    capture_output=True,
+    env={
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        # Reproduces the v8 false negative if the builder gains an expansion
+        # that appends a second session-role assignment.
+        "handoff_role_override": "VIBEPOLLO_SESSION_ROLE=wrong",
+    },
+)
+actual_environment = expanded.stdout.decode().rstrip("\0").split("\0")
+expected_environment = [
+    "HOME=/var/lib/vibepollo",
+    "USER=vibepollo",
+    "LOGNAME=vibepollo",
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin",
+    "LANG=C.UTF-8",
+    "SHELL=/bin/sh",
+    "XDG_CONFIG_HOME=/var/lib",
+    "XDG_RUNTIME_DIR=/run/vibepollo/host",
+    "VIBEPOLLO_MACHINE_HOST=1",
+    "VIBEPOLLO_SESSION_TYPE=wayland",
+    "VIBEPOLLO_SESSION_BACKEND=fixture-backend",
+    "VIBEPOLLO_SESSION_ROLE=greeter",
+    "VIBEPOLLO_SESSION_USER=fixture-session-user",
+    "VIBEPOLLO_SESSION_UID=1201",
+    "VIBEPOLLO_SESSION_GID=1202",
+    "VIBEPOLLO_SESSION_GROUPS=1202,1203",
+    "VIBEPOLLO_SESSION_ID=fixture-session-id",
+    "VIBEPOLLO_SESSION_GENERATION=73",
+    "VIBEPOLLO_SESSION_HOME=/home/fixture-session-user",
+]
+if actual_environment != expected_environment:
+    raise AssertionError(
+        "machine-host environment expansion changed or duplicated a delivered value: "
+        f"{actual_environment!r}"
+    )
+
+# Compile and execute the exact production context function. The C++ compiler
+# handles line splicing, comments, and raw strings, and behavior assertions
+# prove the getenv values reach the expected context fields.
+context_test = '''#include <charconv>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <string>
+#include <string_view>
+#include <system_error>
+namespace platf::linux_private_display::handoff_policy {
+  struct context_t {
+    bool machine_host {false};
+    std::string boot_id;
+    std::string role;
+    std::uint64_t generation {0};
+  };
+}
+namespace platf::linux_private_display {
+  namespace {
+''' + handoff_function + '''
+  }
+}
+int main() {
+  if (::setenv("VIBEPOLLO_MACHINE_HOST", "1", 1) ||
+      ::setenv("VIBEPOLLO_SESSION_ROLE", "greeter", 1) ||
+      ::setenv("VIBEPOLLO_SESSION_GENERATION", "73", 1)) return 2;
+  const auto context = platf::linux_private_display::snapshot_handoff_context();
+  if (!context.machine_host || context.role != "greeter" ||
+      context.generation != 73 || context.boot_id.empty()) return 3;
+  if (::setenv("VIBEPOLLO_MACHINE_HOST", "0", 1) ||
+      ::setenv("VIBEPOLLO_SESSION_ROLE", "desktop", 1) ||
+      ::setenv("VIBEPOLLO_SESSION_GENERATION", "74", 1)) return 4;
+  const auto standalone = platf::linux_private_display::snapshot_handoff_context();
+  if (standalone.machine_host || standalone.role != "desktop" ||
+      standalone.generation != 0 || !standalone.boot_id.empty()) return 5;
+}
+'''
+with tempfile.TemporaryDirectory(prefix="vibepollo-handoff-contract-") as temporary:
+    source_file = pathlib.Path(temporary) / "handoff_context_contract.cpp"
+    executable = pathlib.Path(temporary) / "handoff_context_contract"
+    source_file.write_text(context_test)
+    compiler_command = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("CXX", "c++")
+    compiler = shlex.split(compiler_command)
+    if not compiler:
+        raise AssertionError("C++ compiler command is empty")
+    compiled = subprocess.run(
+        [*compiler, "-std=c++20", str(source_file), "-o", str(executable)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if compiled.returncode:
+        raise AssertionError(f"could not compile production handoff context:\n{compiled.stderr}")
+    executed = subprocess.run([str(executable)], check=False, capture_output=True, text=True)
+    if executed.returncode:
+        raise AssertionError(
+            f"production handoff context behavior failed with exit {executed.returncode}: "
+            f"{executed.stderr}"
+        )
+
+for variable in (
+    "VIBESHINE_MACHINE_HOST",
+    "VIBESHINE_SESSION_ROLE",
+    "VIBESHINE_SESSION_GENERATION",
+):
+    forbid(handoff_function, variable, "greeter-handoff source-only environment")
+require(host, 'capability_clean_exec /usr/bin/env -i "${environment[@]}"',
+        "machine-host greeter-handoff environment delivery")
+
 for variable in ("VIBEPOLLO_MACHINE_HOST", "VIBEPOLLO_SESSION_ROLE"):
     require(host, variable, "machine-host provider scan environment")
     require(provider_scan_protocol, f'std::getenv("{variable}")', "provider scan machine-session guard")
@@ -334,7 +505,7 @@ for invariant in (
     'std::getenv("VIBEPOLLO_MACHINE_HOST")',
     "machine_host_environment[0] == '1'",
     "machine_host_environment[1] == '\\0'",
-    "shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested, supervised_machine_host}",
+    "shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested, supervised_machine_host, shutdown_phase_state}",
     "if (supervised_machine_host_)",
     "supervised_machine_host_ ? std::chrono::seconds(15) : std::chrono::seconds(10)",
     "std::_Exit(lifetime::desired_exit_code)",
@@ -410,9 +581,26 @@ for operation, end_marker in (
 forbid(private_display, ").detach()", "owned restore worker lifetime")
 require(doctor_body, "helper_budget_available(helper_reply_timeout)", "full helper drain budget")
 require(doctor_body, "helper_completion_unknown.store(true", "uncertain completion fences later mutations")
+if not doctor_body.index("helper_completion_unknown.store(true") < doctor_body.index("std::unique_lock mutation_barrier"):
+    raise AssertionError("standalone helper uncertainty must publish before draining the mutation gate")
 require(doctor_body, 'std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr', "Apollo broker completion classification")
 require(private_display, "helper_budget_available(connector_reply_timeout)", "full connector drain budget")
+require(display_borrow, "DISPLAY_BORROW_FTRUNCATE(fd,1)", "durable write-ahead display mutation marker")
+require(display_borrow, "DISPLAY_BORROW_FDATASYNC(fd)==0", "marker sync before native action")
+require(display_borrow, "flock(fd,LOCK_EX|LOCK_NB)", "single exclusive borrow/mutation admission")
+require(display_borrow, "st.st_size==0", "empty-only clean marker state")
+require(display_borrow_relay, "display_borrow_clear_uncertainty(mutation_lock)", "clean release clears durable marker")
+require(display_power, "if(result && !display_borrow_clear_uncertainty(lock))result=false", "wake marker-clear failure propagates as failure")
+require(controller, "recover-display-fence", "explicit manual marker recovery")
+require(controller, "--acknowledge-display-state-inspected", "operator display-state acknowledgment")
+require(controller, 'system_unit_is_stopped "$controller_service"', "controller cannot restart admission during manual recovery")
+require(controller, "collect_stopped_broker_instances", "recovery waits for every broker instance to stop")
+require(controller, "/usr/bin/flock --exclusive --nonblock", "recovery requires an unowned lock file")
 require(broker, "now >= display_deadline", "broker-owned display request deadline")
+relay_worker = broker.split("static int relay_worker(", 1)[1].split("\n#include \"vibepollo-display-borrow-relay.h\"", 1)[0]
+require(relay_worker, "if(!display_borrow_clear_uncertainty(mutation_lock))", "marker clear failure reports unknown completion")
+if relay_worker.index("display_borrow_clear_uncertainty(mutation_lock)") > relay_worker.index("VIBEPOLLO_SESSION_EXIT"):
+    raise AssertionError("durable mutation marker must be retired before clean completion is acknowledged")
 require(broker, "if (!worker_exited) return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN", "no acknowledgement before reap")
 require(broker, "terminate_display_worker(worker, worker_exited, status, signal_cross_uid_worker)", "display cancellation before acknowledgement")
 require(broker, "display_mutating && (cancelled || WIFSIGNALED(status))", "interrupted compositor mutations remain uncertain")
@@ -434,7 +622,8 @@ if execute_request.index("drop_to_session(identity)") > execute_request.index('e
 for forbidden in ("chvt", "ActivateSession", "SwitchTo", "RestartUnit", "SetBrightness"):
     forbid(display_power, forbidden, "passive display power recovery")
 require(display_power, 'setenv("QT_QPA_PLATFORM", "wayland", 1)', "Wayland DPMS transport")
-require(display_power, 'write(STDOUT_FILENO, "R", 1)', "power readiness handshake")
+display_power_compact = re.sub(r"\s+", "", display_power)
+require(display_power_compact, 'write(STDOUT_FILENO,"R",1)==1', "power readiness handshake")
 require(display_power_client, 'token == \'R\'', "power readiness consumption")
 require(display_power_client, "std::chrono::seconds(8)", "bounded power readiness")
 require(display_power_client, "std::weak_ptr<lease_t> shared_lease", "shared power broker admission")
@@ -446,10 +635,19 @@ if prepare.index("display_power::acquire()") > prepare.index("session.virtual_di
     raise AssertionError("power recovery must precede display topology preparation")
 if prepare.index("return result;") > prepare.index("cancel_scheduled_revert()"):
     raise AssertionError("failed power admission must preserve scheduled display cleanup")
-require(rtsp, "snapshot->display_power_guard = display_power_guard", "pending-to-startup power handoff")
+pending_handoff = rtsp.split("bool retain_pending_runtime_holds(", 1)[1].split("\n    void session_clear", 1)[0]
+require(pending_handoff, "entry.session->unique_id == snapshot->unique_id", "pending-to-startup power handoff identity guard")
+require(pending_handoff, "entry.expires_at > now", "pending-to-startup power handoff freshness guard")
+require(pending_handoff, "snapshot->display_power_guard = entry.session->display_power_guard", "pending-to-startup power handoff")
 require(stream, "session->display_power_guard = launch_session.display_power_guard", "active capture power ownership")
 require(stream, "session.display_power_guard.reset()", "capture teardown releases display power")
 forbid(linux_misc, "display_power::acquire()", "retained shared runtime must not inhibit sleep")
+# Idle screen-off of a private-only topology wedged NVIDIA GSP with no client
+# left. Its hold blocks only screen changes and ends with the restore.
+require(broker, '!strcmp(argv[1], "display-retain") && argc == 2', "fixed retained screen operation")
+require(display_power, "retained_inhibition_policies = 4u", "retained screen hold never inhibits suspend")
+require(display_power_client, 'start_ready("display-retain")', "retained screen hold is not the capture lease")
+require(private_display, "manager.retained_screen_hold.reset()", "restore releases retained screen hold")
 
 require(host, "readonly machine_profile=/var/lib/vibepollo", "machine host")
 require(host, '"HOME=$machine_profile"', "machine host HOME isolation")

@@ -698,39 +698,45 @@ vibepollo_select_upgrade_kill_mode() {
 
 vibepollo_prepare_host_upgrade_fence() (
   local temporary
-  vibepollo_package_preserve_unowned_host_mask || exit 1
+  vibepollo_fence_phase_failed() {
+    printf 'error: vibepollo host-upgrade fence preparation failed at phase: %s\n' "$1" >&2 || true
+    exit 1
+  }
+  vibepollo_package_preserve_unowned_host_mask || vibepollo_fence_phase_failed preserve-unowned-mask
   [ "$vibepollo_package_preserve_host_mask" -eq 0 ] || exit 0
-  [[ ! -L "$vibepollo_host_upgrade_dropin_dir" && ! -L "$vibepollo_host_upgrade_dropin" ]] || exit 1
-  install -d -o root -g root -m 0755 -- "$vibepollo_host_upgrade_dropin_dir" || exit 1
+  [[ ! -L "$vibepollo_host_upgrade_dropin_dir" ]] || vibepollo_fence_phase_failed reject-dropin-directory-symlink
+  [[ ! -L "$vibepollo_host_upgrade_dropin" ]] || vibepollo_fence_phase_failed reject-dropin-file-symlink
+  install -d -o root -g root -m 0755 -- "$vibepollo_host_upgrade_dropin_dir" || vibepollo_fence_phase_failed create-dropin-directory
   [[ -d "$vibepollo_host_upgrade_dropin_dir" && ! -L "$vibepollo_host_upgrade_dropin_dir" &&
      $(stat -c '%u:%g:%a' -- "$vibepollo_host_upgrade_dropin_dir") == \
-     '0:0:755' ]] || exit 1
-  temporary=$(mktemp /run/vibepollo-host-upgrade.XXXXXX) || exit 1
+     '0:0:755' ]] || vibepollo_fence_phase_failed verify-dropin-directory
+  temporary=$(mktemp /run/vibepollo-host-upgrade.XXXXXX) || vibepollo_fence_phase_failed create-temporary-dropin
   trap 'rm -f -- "$temporary"' EXIT
-  [[ "$vibepollo_upgrade_kill_mode" =~ ^(mixed|process|control-group)$ ]] || exit 1
+  [[ "$vibepollo_upgrade_kill_mode" =~ ^(mixed|process|control-group)$ ]] || vibepollo_fence_phase_failed validate-kill-mode
   printf '[Unit]\nRefuseManualStart=yes\n\n[Service]\nKillMode=%s\nSendSIGKILL=no\nRestart=no\n' \
-    "$vibepollo_upgrade_kill_mode" >"$temporary" || exit 1
-  chmod 0600 -- "$temporary" || exit 1
+    "$vibepollo_upgrade_kill_mode" >"$temporary" || vibepollo_fence_phase_failed write-temporary-dropin
+  chmod 0600 -- "$temporary" || vibepollo_fence_phase_failed set-temporary-mode
   if [[ -e "$vibepollo_host_upgrade_dropin" ]]; then
     [[ -f "$vibepollo_host_upgrade_dropin" && ! -L "$vibepollo_host_upgrade_dropin" &&
        $(stat -c '%u:%g:%a:%h' -- "$vibepollo_host_upgrade_dropin") == \
-       '0:0:644:1' ]] || exit 1
+       '0:0:644:1' ]] || vibepollo_fence_phase_failed validate-existing-dropin
     if cmp -s -- "$temporary" "$vibepollo_host_upgrade_dropin"; then
-      vibepollo_package_record_owned fence "$vibepollo_host_upgrade_dropin" || exit 1
+      vibepollo_package_record_owned fence "$vibepollo_host_upgrade_dropin" || vibepollo_fence_phase_failed record-existing-dropin-ownership
       exit 0
     fi
     # A retry may select a new stop mode after the old host finishes. Only an
     # unchanged owned fence can be replaced, and only with an empty old host.
-    vibepollo_unit_is_quiescent vibepollo.service && vibepollo_package_no_jobs || exit 1
-    vibepollo_package_remove_owned fence "$vibepollo_host_upgrade_dropin" || exit 1
-    [ ! -e "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ] || exit 1
-    rm -f -- "$vibepollo_package_transaction/fence.owned" || exit 1
+    vibepollo_unit_is_quiescent vibepollo.service || vibepollo_fence_phase_failed verify-host-quiescent-for-replacement
+    vibepollo_package_no_jobs || vibepollo_fence_phase_failed verify-no-package-jobs-for-replacement
+    vibepollo_package_remove_owned fence "$vibepollo_host_upgrade_dropin" || vibepollo_fence_phase_failed remove-owned-dropin
+    [ ! -e "$vibepollo_host_upgrade_dropin" ] && [ ! -L "$vibepollo_host_upgrade_dropin" ] || vibepollo_fence_phase_failed verify-old-dropin-removed
+    rm -f -- "$vibepollo_package_transaction/fence.owned" || vibepollo_fence_phase_failed remove-owned-dropin-record
   fi
-  install -o root -g root -m 0644 -- "$temporary" "$vibepollo_host_upgrade_dropin" || exit 1
+  install -o root -g root -m 0644 -- "$temporary" "$vibepollo_host_upgrade_dropin" || vibepollo_fence_phase_failed install-dropin
   [[ -f "$vibepollo_host_upgrade_dropin" && ! -L "$vibepollo_host_upgrade_dropin" &&
      $(stat -c '%u:%g:%a:%h' -- "$vibepollo_host_upgrade_dropin") == \
-     '0:0:644:1' ]] || exit 1
-  vibepollo_package_record_owned fence "$vibepollo_host_upgrade_dropin" || exit 1
+     '0:0:644:1' ]] || vibepollo_fence_phase_failed verify-installed-dropin
+  vibepollo_package_record_owned fence "$vibepollo_host_upgrade_dropin" || vibepollo_fence_phase_failed record-dropin-ownership
 )
 
 vibepollo_activate_host_upgrade_fence() {

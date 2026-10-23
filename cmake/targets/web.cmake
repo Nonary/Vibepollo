@@ -35,9 +35,14 @@ list(REMOVE_DUPLICATES SUNSHINE_WEB_SOURCES)
 
 find_program(SUNSHINE_NPM_EXECUTABLE NAMES npm.cmd npm)
 
+# web_ui depends on both entrypoints so deleting either rebuilds the bundle.
+# Makefile generators need a build rule for each dependency, not BYPRODUCTS.
 if(SUNSHINE_NPM_EXECUTABLE)
     add_custom_command(
-        OUTPUT "${SUNSHINE_WEB_STAMP}"
+        OUTPUT
+            "${SUNSHINE_WEB_STAMP}"
+            "${SUNSHINE_LEGACY_WEB_OUTPUT_DIR}/index.html"
+            "${SUNSHINE_WEB_OUTPUT_DIR}/index.html"
         COMMAND "${CMAKE_COMMAND}" -E chdir "${SUNSHINE_LEGACY_WEB_SOURCE_DIR}"
                 "${SUNSHINE_NPM_EXECUTABLE}" ci --ignore-scripts --no-audit --no-fund --prefer-offline
         COMMAND "${CMAKE_COMMAND}" -E chdir "${SUNSHINE_LEGACY_WEB_SOURCE_DIR}"
@@ -50,9 +55,6 @@ if(SUNSHINE_NPM_EXECUTABLE)
                 "${SUNSHINE_NPM_EXECUTABLE}" run build
         COMMAND "${CMAKE_COMMAND}" -E touch "${SUNSHINE_WEB_STAMP}"
         WORKING_DIRECTORY "${SUNSHINE_WEB_SOURCE_DIR}"
-        BYPRODUCTS
-            "${SUNSHINE_LEGACY_WEB_OUTPUT_DIR}/index.html"
-            "${SUNSHINE_WEB_OUTPUT_DIR}/index.html"
         DEPENDS ${SUNSHINE_WEB_SOURCES}
         COMMENT "Building the Vibepollo browser interface"
         USES_TERMINAL

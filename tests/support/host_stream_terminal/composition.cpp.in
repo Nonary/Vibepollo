@@ -1,4 +1,5 @@
 #include "src/host_stream_control.h"
+#include "src/display_target_lease.h"
 #include "src/app_audio_termination.h"
 #include "src/remote_display_topology.h"
 #include <algorithm>
@@ -100,7 +101,9 @@ struct launch_session_t {
  int guide_button=0;
  std::shared_ptr<launch_session_t> clone_for_startup() const;
  bool input_only=false,gcpersist=false;int perm=0;std::vector<int> client_do_cmds,client_undo_cmds;
- unsigned id=1;std::string unique_id="id";int fps=60000;remote_session::role_e role=remote_session::role_e::input;std::uint64_t role_generation=1;std::string client_uuid="one",surround_params;
+ unsigned id=1;std::string unique_id="id";int fps=60000;remote_session::role_e role=remote_session::role_e::input;std::uint64_t role_generation=1;std::string client_uuid="one",surround_params,monitor_profile_uuid;
+ std::optional<display_target::descriptor_t> exact_monitor_target;
+ std::shared_ptr<void> exact_target_hold;
  std::array<std::uint8_t,16> virtual_display_guid_bytes{};
  std::shared_ptr<void> audio_context_guard,display_power_guard;
  std::string remote_capture_output,rtsp_source_address,av_ping_payload,client_name,device_name,normal_vdd_owner_uuid;
@@ -193,7 +196,7 @@ void blocked_cleanup(Pause &pause,const char *name,std::function<void()> cleanup
  check(waited && !before && physical && !late_ordinary,name);
 }
 int main() {
- launch_session_t metadata;metadata.guide_button=37;auto copied=metadata.clone_for_startup();check(copied->guide_button==37,"actual startup snapshot preserves Guide metadata");
+ launch_session_t metadata;metadata.guide_button=37;metadata.monitor_profile_uuid="exact-monitor-profile";auto copied=metadata.clone_for_startup();check(copied->guide_button==37,"actual startup snapshot preserves Guide metadata");check(copied->monitor_profile_uuid=="exact-monitor-profile","actual startup snapshot preserves Monitor profile metadata");
  reset();running=1;join_pause.reset(true);server._session_state->sessions.insert(std::make_shared<stream::session_t>());
  blocked_cleanup(join_pause,"actual natural clear drains removed owner before recovery",[]{server.clear(false);});
  reset();expiry_pause.reset(true);auto session=std::make_shared<launch_session_t>();server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{session,std::chrono::steady_clock::now()-1s});
@@ -255,8 +258,15 @@ int main() {
  topology.activate_remote_monitor("owner","owner",{});fail=true;terminal();
  check(topology.managed_client_identity_count()==1 && !physical,"actual topology apply failure prevents final physical cleanup");
  fail=false;terminal();check(topology.managed_client_identity_count()==0 && physical,"topology retry drains owners and permits recovery");
- reset();topology.set_runtime_callbacks({.apply_composed_topology=[](const auto &){return false;}});terminal();
- check(!physical,"empty-map topology failure also prevents final physical cleanup");
+ // A clean idle topology has no restore work; do not reapply the desktop.
+ reset();bool applied_idle=false;topology.set_runtime_callbacks({.apply_composed_topology=[&](const auto &){applied_idle=true;return false;}});terminal();
+ check(physical && !applied_idle,"clean idle topology permits recovery without reapplying displays");
+ // A removed display can leave restore work even after its identity is gone.
+ reset();fail=false;topology.set_runtime_callbacks({.create_or_reclaim=[](const auto &,const auto &,const auto &){return true;},.apply_composed_topology=[&](const auto &){return !fail;},.exact_target_has_current_mode_and_dxgi=[](const auto &,const auto &){return std::optional<std::string>{"display"};},.terminate_owned_display=[](const auto &){return true;}});
+ topology.activate_or_resume("removed","removed",{},1);fail=true;topology.explicit_release("removed",1,"terminal removal");
+ check(topology.managed_client_identity_count()==0 && !topology.shutdown_complete(),"removed display retains pending physical restore");
+ terminal();check(!physical,"empty-map pending restore failure prevents final physical cleanup");
+ fail=false;terminal();check(physical && topology.shutdown_complete(),"empty-map pending restore succeeds on retry");
  auto fresh=host_stream_control::start_guard_t(host_stream_control::request_ticket());check(bool(fresh),"fresh starts remain eligible after terminal reopen");
  return failures?1:0;
 }

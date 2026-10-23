@@ -16,6 +16,7 @@ fixture = r'''
 #include <cassert>
 #include <cstdlib>
 #include <string>
+#include <fstream>
 #include <nlohmann/json.hpp>
 nlohmann::json metadata() {
   nlohmann::json output_tree;

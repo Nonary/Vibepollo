@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { localRoute, test, expect, type Page } from './fixtures';
@@ -397,6 +398,52 @@ test('bulk unpair requires a confirmation and calls the existing endpoint', asyn
   await page.getByRole('dialog').getByRole('button', { name: 'Unpair all devices' }).click();
   await expect.poll(() => calls).toBe(1);
 });
+
+test('Windows maintenance uses server-directed download markup', async ({ page }) => {
+  await host(page, 'windows');
+  await page.goto('/v2/maintenance');
+  const link = page.getByRole('link', { name: 'Download logs bundle' });
+  await expect(link).toBeVisible();
+  await expect(link).toHaveAttribute('href', '/api/logs/export');
+  // Structural guard only; the download cases below exercise response behavior.
+  // Match Logs navigation: do not supply a client-side download filename hint.
+  await expect(link).not.toHaveAttribute('download');
+});
+
+for (const entryPoint of ['maintenance', 'logs']) {
+  test(`Windows ${entryPoint} downloads the server-named log bundle`, async ({ page, context }) => {
+    await host(page, 'windows');
+    // A valid empty ZIP, served with the Windows endpoint's response headers.
+    const archive = Buffer.from('504b0506000000000000000000000000000000000000', 'hex');
+    const filename = 'vibepollo_logs-20261022-123456.zip';
+    const requests: { method: string; cookie: string | null }[] = [];
+    await context.addCookies([
+      { name: 'session', value: 'log-bundle-test', url: 'http://127.0.0.1:5173' },
+    ]);
+    await localRoute(page, '**/api/logs/export', async (route) => {
+      requests.push({
+        method: route.request().method(),
+        cookie: await route.request().headerValue('cookie'),
+      });
+      await route.fulfill({
+        contentType: 'application/zip',
+        headers: { 'Content-Disposition': `attachment; filename="${filename}"` },
+        body: archive,
+      });
+    });
+    await page.goto(`/v2/${entryPoint}`);
+    const downloadStarted = page.waitForEvent('download');
+    await page
+      .getByRole(entryPoint === 'maintenance' ? 'link' : 'button', { name: 'Download logs bundle' })
+      .click();
+    const download = await downloadStarted;
+    expect(download.suggestedFilename()).toBe(filename);
+    expect(await download.failure()).toBeNull();
+    expect(await readFile((await download.path())!)).toEqual(archive);
+    expect(requests).toEqual([{ method: 'GET', cookie: 'session=log-bundle-test' }]);
+    await expect(page).toHaveURL(`/v2/${entryPoint}`);
+  });
+}
 
 test('Linux maintenance offers logs and display setup', async ({ page }) => {
   await host(page);

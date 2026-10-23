@@ -80,6 +80,29 @@ source under BSD-2-Clause; its notices are included with the bundled package.
 Windows distributions also include the HIDMaestro and libvirtualgamepad MIT
 notices in `licenses/dualsense_usbip_NOTICES.txt`.
 
+## Diagnosing missing waveform feedback
+
+Enable Debug logging, start a fresh stream, then reproduce native haptics in the
+game. For the affected controller, check these boundaries in order:
+
+- `received nonzero USB actuator PCM`: the host received nonzero actuator bytes.
+  This alone does not mean a frame was forwarded.
+- `PCM not forwarded`: gives the admission reason, such as an inactive binding,
+  an endpoint not ready, missing controller capability, or a missing queue.
+- `PCM frame accepted by feedback queue`: a complete 240-frame block reached the
+  host's feedback queue. A rejection instead means that queue was full or stopped.
+- `Dropping waveform haptics ... mlFeatureFlags=`: the connection did not negotiate
+  waveform support, even if its individual controller advertised the capability.
+- `Waveform haptics ENet queue accepted frame`: ENet accepted an outgoing frame.
+  This is not proof of delivery or playback. The same diagnostic reports a
+  rejection, negotiated flags, and the peer's channel count.
+
+These diagnostics are bounded per controller binding or stream. Resume starts
+fresh backend diagnostics so a previous connection cannot hide new failures.
+They contain controller indices and protocol state, not audio samples. If ENet
+accepts frames but the controller remains silent, client reception and rendering
+still require investigation; do not treat host queue acceptance as a hardware fix.
+
 ## Earlier process-local audio implementation
 
 The source tree retains the earlier `tools/vibepollo_dualsense_haptics.exe` and

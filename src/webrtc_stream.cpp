@@ -251,10 +251,11 @@ namespace webrtc_stream {
       const bool shared_virtual_display_mode =
         requested_virtual_display_mode == config::video_t::virtual_display_mode_e::shared;
       auto shared_virtual_display_uuid = VDISPLAY::persistentVirtualDisplayUuid();
-      if (shared_virtual_display_mode && !http::shared_virtual_display_guid.empty()) {
+      const auto shared_guid_snapshot=http::shared_virtual_display_guid_snapshot();
+      if (shared_virtual_display_mode && !shared_guid_snapshot.empty()) {
         try {
           shared_virtual_display_uuid =
-            uuid_util::uuid_t::parse(http::shared_virtual_display_guid);
+            uuid_util::uuid_t::parse(shared_guid_snapshot);
         } catch (...) {
           // Creation uses the same persistent fallback and repairs the stored value.
         }
@@ -443,11 +444,11 @@ namespace webrtc_stream {
 
       uuid_util::uuid_t session_uuid;
       if (shared_mode) {
-        if (auto parsed = parse_uuid(http::shared_virtual_display_guid)) {
+        if (auto parsed = parse_uuid(http::shared_virtual_display_guid_snapshot())) {
           session_uuid = *parsed;
         } else {
           session_uuid = VDISPLAY::persistentVirtualDisplayUuid();
-          http::shared_virtual_display_guid = session_uuid.string();
+          http::set_shared_virtual_display_guid(session_uuid.string());
         }
       } else if (auto parsed = parse_uuid(session->unique_id)) {
         session_uuid = *parsed;
@@ -3282,6 +3283,9 @@ namespace webrtc_stream {
 
       const int raw_requested_app_id = options.app_id.value_or(0);
       const auto requested_app_ctx = raw_requested_app_id > 0 ? proc::proc.resolve_app(raw_requested_app_id) : std::optional<proc::ctx_t> {};
+      if (requested_app_ctx && requested_app_ctx->remote_monitor_profile) {
+        return std::string {"Remote Monitor profiles require a paired Moonlight client."};
+      }
       const int requested_app_id = requested_app_ctx ? (int) util::from_view(requested_app_ctx->id) : raw_requested_app_id;
       const bool resume_only = options.resume.value_or(false);
 
@@ -3465,7 +3469,7 @@ namespace webrtc_stream {
         if (webrtc_capture.stream_start_params) {
           webrtc_capture.stream_start_params->uses_virtual_display = launch_session->virtual_display;
         }
-        if (launch_session->virtual_display_hdr_enabled == false) {
+        if (launch_session->virtual_display_hdr_enabled == false && !rtsp_stream::rtx_hdr_conversion_requested(*launch_session, config::video)) {
           video_config.dynamicRange = 0;
           video_config.force_sdr = true;
         }
@@ -3511,7 +3515,7 @@ namespace webrtc_stream {
             !platf::linux_display::backend().apply_session(*launch_session)) {
           return std::string {"Failed to activate the Linux private streaming display."};
         }
-        if (launch_session->virtual_display_hdr_enabled == false) {
+        if (launch_session->virtual_display_hdr_enabled == false && !rtsp_stream::rtx_hdr_conversion_requested(*launch_session, config::video)) {
           video_config.dynamicRange = 0;
           video_config.force_sdr = true;
         }
@@ -3557,7 +3561,7 @@ namespace webrtc_stream {
       apply_rtsp_video_overrides(video_config, rtsp_config);
       apply_rtx_hdr_stream_policy(video_config);
 #ifdef __linux__
-      if (launch_session->virtual_display_hdr_enabled == false) {
+      if (launch_session->virtual_display_hdr_enabled == false && !rtsp_stream::rtx_hdr_conversion_requested(*launch_session, config::video)) {
         video_config.dynamicRange = 0;
         video_config.force_sdr = true;
       }

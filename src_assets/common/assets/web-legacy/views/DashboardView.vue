@@ -1256,7 +1256,7 @@ const playniteUpdateAvailable = computed(() => {
 
 const playniteApps = computed(() => getAppsSnapshot().filter((app) => isPlayniteApp(app)));
 const playniteAutoSyncedAppsCount = computed(() => {
-  return playniteApps.value.filter((app) => app['playnite-managed'] === 'auto').length;
+  return playniteApps.value.filter((app) => app['playnite-managed'] === 'auto' && app['remote-monitor-profile'] !== true).length;
 });
 const hasPlayniteFullscreenApp = computed(() => {
   return getAppsSnapshot().some((app) => isPlayniteFullscreenEntry(app));
@@ -1321,28 +1321,30 @@ async function purgePlayniteGames() {
   try {
     await refreshAppsSnapshotStrict();
     const snapshot = getAppsSnapshot();
-    const playniteApps = snapshot.filter((app) => isPlayniteApp(app) && !!app.uuid);
+    const playniteApps = snapshot.filter((app) => isPlayniteApp(app) && app['remote-monitor-profile'] !== true && !!app.uuid);
     if (!playniteApps.length) {
       message.info($t('playnite.no_apps_to_purge'));
       await refreshPlayniteAndApps();
       return;
     }
+    let removed = 0;
     for (const app of playniteApps) {
       const r = await http.delete(`./api/apps/${encodeURIComponent(String(app.uuid))}`, {
+        data: { 'provider-maintenance': true },
         validateStatus: () => true,
       });
       const body = r.data as any;
       const ok = r.status >= 200 && r.status < 300 && body && body.status === true;
-      if (!ok) {
+      if (!ok || !Number.isInteger(body.removed) || body.removed < 0) {
         const err = (body && (body.error || body.message)) || `HTTP ${r.status}`;
         throw new Error(err);
       }
+      removed += body.removed;
     }
     try {
       await configStore.fetchConfig(true);
     } catch {}
     await refreshPlayniteAndApps();
-    const removed = playniteApps.length;
     message.success($t('playnite.apps_purged', { count: removed }));
   } catch (e: any) {
     message.error(
@@ -1359,7 +1361,7 @@ async function purgePlayniteGames() {
 function openPurgePlayniteGamesConfirm() {
   dialog.warning({
     title: $t('playnite.purge_apps_title'),
-    content: $t('playnite.purge_apps_body'),
+    content: `${$t('playnite.purge_apps_body')} ${$t('playnite.monitor_profiles_retained')}`,
     positiveText: $t('_common.delete'),
     negativeText: $t('_common.cancel'),
     onPositiveClick: async () => {

@@ -1,3 +1,4 @@
+#include "src/platform/windows/display_helper_borrow_native.h"
 /**
  * @file src/platform/windows/display_helper_integration.cpp
  */
@@ -37,6 +38,7 @@
 
   // sunshine
   #include "display_helper_integration.h"
+  #include "src/platform/windows/display_helper_reactivation.h"
   #include "src/globals.h"
   #include "src/logging.h"
   #include "src/platform/windows/display_helper_coordinator.h"
@@ -527,6 +529,8 @@ namespace {
     const display_helper_integration::DisplayTopologyDefinition &topology,
     const char *label
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+    if (!borrowed_output_mutation) return false;
     if (topology.topology.empty() && topology.monitor_positions.empty()) {
       return true;
     }
@@ -585,6 +589,8 @@ namespace {
   display_device::SettingsManagerInterface::ApplyResult apply_in_process(
     const display_helper_integration::DisplayApplyRequest &request
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+    if (!borrowed_output_mutation) return display_device::SettingsManagerInterface::ApplyResult::DevicePrepFailed;
     if (!request.configuration) {
       BOOST_LOG(error) << "Display helper (in-process): no configuration provided for APPLY request.";
       return display_device::SettingsManagerInterface::ApplyResult::DevicePrepFailed;
@@ -1015,6 +1021,8 @@ namespace {
   }
 
   static bool restore_physical_settings_snapshot(const physical_settings_snapshot_t &snapshot) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+    if (!borrowed_output_mutation) return false;
     try {
       auto api = std::make_shared<display_device::WinApiLayer>();
       auto win_dd = std::make_shared<display_device::WinDisplayDevice>(api);
@@ -2607,6 +2615,33 @@ namespace display_helper_integration {
     return std::chrono::milliseconds(remaining_us > 0 ? remaining_us / 1000 : 0);
   }
 
+  bool reactivate_owned_virtual_display(
+    const std::string &device_id,
+    const std::function<bool()> &validate_owner,
+    std::function<bool()> cancelled
+  ) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(2500);
+    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
+    if (!lock_pending_apply_execution(execution_lock, cancelled, deadline) || cancellation_requested(cancelled) ||
+        has_pending_apply() || !validate_owner() || cancellation_requested(cancelled)) {
+      return false;
+    }
+    // A speculative repair must not supersede a startup wait. Holding the
+    // normal admission gate through the correlated reply preserves APPLY and
+    // REVERT ordering for this owned target.
+    const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+      deadline - std::chrono::steady_clock::now()
+    );
+    if (remaining <= std::chrono::milliseconds::zero()) {
+      return false;
+    }
+    return platf::display_helper_client::send_owned_reactivation(
+      device_id,
+      std::move(cancelled),
+      static_cast<int>(remaining.count())
+    );
+  }
+
   bool apply(
     const DisplayApplyRequest &request,
     ApplyVerificationTicket *verification_ticket,
@@ -2614,6 +2649,8 @@ namespace display_helper_integration {
     ApplyRetryPolicy retry_policy,
     std::chrono::steady_clock::time_point startup_deadline,
     const bool shutdown_class_caller) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+    if (!borrowed_output_mutation) return false;
     const auto verification_timeout =
       retry_policy == ApplyRetryPolicy::StreamStart ?
         kStreamStartApplyVerificationTimeout :
@@ -2682,6 +2719,8 @@ namespace display_helper_integration {
     RecoveryTicket *recovery_ticket,
     const RevertOwnershipPolicy ownership_policy,
     const FinalRestoreDisplayPolicy display_policy) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+    if (!borrowed_output_mutation) return false;
     if (recovery_ticket) *recovery_ticket = {};
     const bool managed_cleanup_allowed = remote_display_topology::instance().generic_virtual_display_cleanup_allowed();
     const bool retained_normal_restore_allowed =
@@ -2796,6 +2835,8 @@ namespace display_helper_integration {
   }
 
   bool run_terminal_physical_recovery(const std::function<bool()> &recover) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+    if (!borrowed_output_mutation) return false;
     std::unique_lock execution_lock(pending_apply_execution_mutex());
     invalidate_apply_verification();
     clear_pending_apply_queue_locked();
@@ -2953,6 +2994,8 @@ namespace display_helper_integration {
   }
 
   bool apply_pending_if_ready(std::function<bool()> cancellation_predicate) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+    if (!borrowed_output_mutation) return false;
     const auto cancelled = [&] {
       return cancellation_predicate && cancellation_predicate();
     };
@@ -3423,6 +3466,8 @@ namespace display_helper_integration {
   }
 
   bool apply_remote_composed_topology(const DisplayTopologyDefinition &topology) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
+    if (!borrowed_output_mutation) return false;
     return apply_topology_definition(topology, "remote-monitor coordinator");
   }
 

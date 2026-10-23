@@ -26,6 +26,8 @@ def function(source, marker, last=False):
 PRELUDE = r'''
 #include "src/platform/linux/kmsgrab_hdr.h"
 #include "src/platform/linux/session_backend.h"
+#include "src/capture_recovery.h"
+#include "src/input_geometry_policy.h"
 #include <algorithm>
 #include <cassert>
 #include <chrono>
@@ -86,10 +88,19 @@ namespace safe {
     auto &unsafe() { return items; }
     std::optional<T> pop() { if (probe::on_pop) probe::on_pop(); if (items.empty()) return {}; auto t=std::move(items.front()); items.pop_front(); return t; }
     template<class D> std::optional<T> pop(D) { return pop(); }
+    std::vector<T> drain() {
+      std::vector<T> result;
+      result.reserve(items.size());
+      std::move(items.begin(), items.end(), std::back_inserter(result));
+      items.clear();
+      return result;
+    }
     void raise(const T &) { ++probe::deliveries; if (probe::on_frame) probe::on_frame(); }
   };
   struct signal_t { void raise(bool) { probe::reinitializing=true; if (probe::on_reinit) probe::on_reinit(); } void reset() { probe::reinitializing=false; } };
+  class mail_raw_t { public: template<class T> class event_t {}; };
 }
+namespace input { struct touch_port_t {}; }
 namespace platf {
   struct img_t {
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp, host_processing_timestamp, capture_pacing_timestamp;
@@ -109,17 +120,20 @@ namespace video {
     int dynamicRange=1, encoderCscMode=2, chromaSamplingType=0;
     capture_source_e capture_source=capture_source_e::active_output;
     std::optional<std::string> capture_output;
+    std::function<bool()> capture_target_valid;
   };
 @@COLOR_FUNCTIONS@@
 }
 namespace platf {
   struct encode_device_t {
     virtual ~encode_device_t() = default;
+    virtual bool supports_rtx_hdr() const { return false; }
     video::sunshine_colorspace_t colorspace;
     bool rtx_hdr_active{}, hdr_metadata_valid{};
     SS_HDR_METADATA hdr_metadata{};
   };
   struct display_t {
+    std::uint64_t recovery_capture_instance = 0;
     virtual ~display_t() = default;
     virtual bool is_hdr() = 0;
     virtual bool get_hdr_metadata(SS_HDR_METADATA&) = 0;
@@ -133,6 +147,13 @@ namespace platf {
     std::unique_ptr<encode_device_t> make_nvenc_encode_device(pix_fmt_e p) { return make_avcodec_encode_device(p); }
     std::unique_ptr<encode_device_t> make_amf_encode_device(pix_fmt_e p) { return make_avcodec_encode_device(p); }
   };
+}
+void raise_touch_port_if_geometry_changed(
+  const safe::mail_raw_t::event_t<input::touch_port_t> &,
+  platf::display_t *,
+  const video::config_t &
+) {}
+namespace platf {
   namespace kms {
     struct prop_blob_t {
       drmModePropertyBlobPtr p; prop_blob_t(drmModePropertyBlobPtr p):p(p) {}
@@ -215,6 +236,7 @@ namespace video {
   struct capture_ctx_t {
     config_t config;
     std::shared_ptr<safe::queue_t<std::shared_ptr<platf::img_t>>> images;
+    safe::mail_raw_t::event_t<input::touch_port_t> touch_port_events;
   };
   struct capture_pacing_context_t {};
   bool display_cursor=false;
@@ -247,6 +269,7 @@ namespace video {
   auto await_capture_config(auto&,auto&,auto) { return std::optional<config_t>(test_config); }
   auto capture_config_for_consumers(auto&,auto) { return std::optional<config_t>(test_config); }
   bool same_capture_pacing(auto&,auto&,auto) { return true; }
+  bool same_capture_demand(auto&,auto&,auto) { return true; }
   template<class... T> void refresh_displays(int, std::vector<std::string> &names, int &index, T&&...) { names={"Virtual-1"}; index=0; }
   bool ensure_virtual_display_ready(auto&,int,bool) { return true; }
   void wait_before_display_retry(size_t&) { test_queue->stop(); }
@@ -281,7 +304,7 @@ namespace proc { struct proc_t { std::string display_name; }; inline proc_t proc
 namespace video {
 @@CAPTURE_THREAD@@
   using encode_e = platf::capture_e;
-  struct sync_context_t { config_t config; };
+  struct sync_context_t { config_t config; safe::mail_raw_t::event_t<input::touch_port_t> touch_port_events; };
   struct sync_lifetime_t { sync_lifetime_t() { ++probe::sync_live_sessions; } ~sync_lifetime_t() { --probe::sync_live_sessions; } };
   struct sync_session_t { std::shared_ptr<platf::display_t> display; std::shared_ptr<sync_lifetime_t> lifetime; };
   std::optional<sync_session_t> make_synced_session(std::shared_ptr<platf::display_t> disp, const encoder_t&, platf::img_t&, sync_context_t&) {

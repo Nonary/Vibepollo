@@ -41,6 +41,17 @@ function daily(date: string, base = '2.0.0'): UpdateRelease {
     },
   };
 }
+function nightly(date: string, sha = 'a'.repeat(40), base = '2.0.1'): UpdateRelease {
+  const compact = date.replaceAll('-', '');
+  const tag = base + '-nightly.d' + compact + '.' + sha.slice(0, 12);
+  return {
+    ...release(tag, true),
+    assets: [...assets, { name: 'nightly-metadata.json', state: 'uploaded', size: 100 },
+      { name: 'SHA256SUMS', state: 'uploaded', size: 100 }],
+    nightly_metadata: { schema_version: 1, channel: 'nightly', tag, version: tag,
+      source_commit: sha, nightly_sequence: Number(compact) },
+  };
+}
 const releases = [
   release('v2.0.0-beta.10', true),
   release('v1.9.0-stable.2'),
@@ -226,6 +237,25 @@ test('SemVer GitHub nightly tags notify shipped stable clients and retain metada
     {...next, nightly_metadata: {...next.nightly_metadata, version: '2.0.2-daily.d20261012.1+aaaaaaaaaaaa'}},
     {...next, assets: assets},
   ]) assert.equal(selectAvailableUpdate('2.0.0', [changed], true), null);
+});
+
+test('new nightly updates preserve legacy upgrade, date order and SHA-as-identity', () => {
+  const old = '2.0.1-daily.d20261022.2+aaaaaaaaaaaa';
+  const current = nightly('2026-10-22', 'b'.repeat(40));
+  const sameDate = nightly('2026-10-22', 'c'.repeat(40));
+  const tomorrow = nightly('2026-10-23', '0'.repeat(40));
+  assert.equal(selectAvailableUpdate(old, [current], true)?.tag, current.tag_name);
+  assert.equal(selectAvailableUpdate(current.tag_name!, [current], true), null);
+  assert.equal(selectAvailableUpdate(current.tag_name!, [sameDate], true), null);
+  assert.equal(selectAvailableUpdate(current.tag_name!, [tomorrow], true)?.tag, tomorrow.tag_name);
+  assert.equal(selectAvailableUpdate('2.0.0', [tomorrow], false), null);
+  assert.equal(selectAvailableUpdate('2.0.1', [tomorrow], true), null);
+  assert.equal(selectAvailableUpdate(current.tag_name!, [release('2.0.1')], true)?.tag, '2.0.1');
+  for (const tamper of [
+    { ...current, nightly_metadata: { ...current.nightly_metadata, source_commit: 'c'.repeat(40) } },
+    { ...current, nightly_metadata: { ...current.nightly_metadata, version: current.tag_name + '+bbbb' } },
+    { ...current, assets },
+  ]) assert.equal(selectAvailableUpdate('2.0.0', [tamper], true), null);
 });
 
 test('daily availability uses only release API requests and embedded validated identity', async () => {

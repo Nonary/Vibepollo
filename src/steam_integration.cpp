@@ -489,6 +489,14 @@ namespace {
     std::transform(value.begin(), value.end(), value.begin(), [](unsigned char ch) {
       return static_cast<char>(std::tolower(ch));
     });
+#ifdef _WIN32
+    // Windows installs do not contain Linux-only depots. Selecting their paths
+    // can make even the Steam broker fail before launch (ERROR_DIRECTORY).
+    if (value.empty() || value.find("windows") != std::string::npos) {
+      return "windows";
+    }
+    return {};
+#else
     if (value.find("linux") != std::string::npos) {
       return "linux";
     }
@@ -496,6 +504,7 @@ namespace {
       return "windows";
     }
     return {};
+#endif
   }
 
   void apply_launch_node(platf::steam::game_t &game, const vdf_node &appinfo, std::string_view required_os = {}) {
@@ -1521,6 +1530,13 @@ namespace platf::steam {
       } else {
         shell_command = command + " " + shell_command;
       }
+    }
+    // The desktop-session launcher inherits the broker's cwd, not Steam's
+    // per-game working directory. Enter it before evaluating launch options
+    // as well as the game, and never launch from an unrelated cwd on failure.
+    if (!game.launch_working_dir.empty()) {
+      shell_command = "cd -- " + shell_quote(game.launch_working_dir.generic_string()) +
+                      " || exit $?; " + shell_command;
     }
     // Steam Launch Options are shell expressions, not argv fragments. They
     // commonly begin with environment assignments and may contain wrapper

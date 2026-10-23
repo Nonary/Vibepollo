@@ -91,7 +91,9 @@ internal static class LegacyDispatch {
             Products = new List<InstallerRunner.InstalledProductInfo> { new InstallerRunner.InstalledProductInfo {
               Kind = kind, IsPerUser = perUser, IsWindowsInstaller = false, RegistryPath = kind.ToString(), UninstallString = "legacy.exe /S" } };
             Calls = 0; ExitCode = code; Elevated = false;
-            var result = (InstallerResult)method.Invoke(null, new object[] { phase, true, true });
+            var arguments = new object[] { phase, true, true, null };
+            var result = (InstallerResult)method.Invoke(null, arguments);
+            Check(arguments[3] == null, "legacy non-MSI dispatch must not create MSI recovery state");
             Check(Calls == 1, kind + " must reach its uninstaller during " + phase);
             Check(result.ExitCode == code, "preserve success, reboot, and failure outcomes");
             Check(Elevated == !perUser, "preserve HKCU command elevation restriction");

@@ -4,13 +4,14 @@
  */
 
 #include "app_catalog_policy.h"
+#include "remote_session.h"
 
 #include <algorithm>
 #include <array>
 #include <boost/crc.hpp>
 #include <cctype>
+#include <charconv>
 #include <cstdint>
-#include <cstdlib>
 #include <filesystem>
 #include <sstream>
 
@@ -25,11 +26,35 @@ namespace proc::catalog {
         const auto suffix = std::to_string(*index);
         crc.process_bytes(suffix.data(), suffix.size());
       }
-      return std::to_string(std::abs(static_cast<std::int32_t>(crc.checksum())));
+      const auto signed_crc = static_cast<std::int32_t>(crc.checksum());
+      return std::to_string(signed_crc < 0 ? -static_cast<std::int64_t>(signed_crc) : signed_crc);
+    }
+
+    bool usable_configured_id(const std::string &id) {
+      std::int32_t value {};
+      const auto [end, error] = std::from_chars(id.data(), id.data() + id.size(), value);
+      if (error != std::errc {} || end != id.data() + id.size() || value <= 0 || id != std::to_string(value)) {
+        return false;
+      }
+      // Admission and routing must agree on all current and legacy controls.
+      return remote_session::configured_app_id(value);
+    }
+
+    bool unavailable_id(const std::string &id, const std::set<std::string> &occupied) {
+      return !usable_configured_id(id) || occupied.contains(id);
+    }
+
+    std::string available_id(std::string preferred, const app_identity_t &app, int index, const std::set<std::string> &occupied) {
+      // Keep existing compatible IDs whenever available. Only exhausted,
+      // reserved or malformed candidates use the deterministic retry sequence.
+      for (std::uint64_t attempt = 0; unavailable_id(preferred, occupied); ++attempt) {
+        preferred = numeric_id({app.name, "\n", app.uuid, "\n", app.legacy_image_identity, "\n", app.art_version, "\ncollision\n", std::to_string(index), "\n", std::to_string(attempt)});
+      }
+      return preferred;
     }
 
     void remember_alias(alias_state_t &state, const std::string &alias) {
-      if (!alias.empty() && alias != state.current_id) {
+      if (usable_configured_id(alias) && alias != state.current_id) {
         state.aliases.insert(alias);
       }
     }
@@ -184,7 +209,7 @@ namespace proc::catalog {
     bool &state_changed) {
     const auto legacy_ids = calculate_ids(app.name, app.uuid, app.legacy_image_identity, index);
     if (app.uuid.empty()) {
-      app.id = occupied_ids.contains(std::get<0>(legacy_ids)) ? std::get<1>(legacy_ids) : std::get<0>(legacy_ids);
+      app.id = available_id(unavailable_id(std::get<0>(legacy_ids), occupied_ids) ? std::get<1>(legacy_ids) : std::get<0>(legacy_ids), app, index, occupied_ids);
       occupied_ids.insert(app.id);
       return;
     }
@@ -211,16 +236,16 @@ namespace proc::catalog {
         (!app.art_version.empty() && state.current_id == std::get<0>(legacy_ids))) {
       const auto previous = state.current_id;
       const auto versioned = calculate_versioned_ids(app.uuid, app.art_version, index);
-      state.current_id = occupied_ids.contains(std::get<0>(versioned)) ? std::get<1>(versioned) : std::get<0>(versioned);
+      state.current_id = available_id(unavailable_id(std::get<0>(versioned), occupied_ids) ? std::get<1>(versioned) : std::get<0>(versioned), app, index, occupied_ids);
       state.cover_fingerprint = app.art_version;
       remember_alias(state, previous);
       remember_alias(state, std::get<0>(legacy_ids));
       state_changed = true;
     }
-    if (occupied_ids.contains(state.current_id)) {
+    if (unavailable_id(state.current_id, occupied_ids)) {
       remember_alias(state, state.current_id);
       const auto versioned = calculate_versioned_ids(app.uuid, app.art_version, index);
-      state.current_id = occupied_ids.contains(std::get<1>(versioned)) ? std::get<1>(legacy_ids) : std::get<1>(versioned);
+      state.current_id = available_id(unavailable_id(std::get<1>(versioned), occupied_ids) ? std::get<1>(legacy_ids) : std::get<1>(versioned), app, index, occupied_ids);
       state_changed = true;
     }
     app.id = state.current_id;
@@ -257,7 +282,7 @@ namespace proc::catalog {
       std::vector<std::string> filtered;
       std::set<std::string> seen;
       for (const auto &alias : app.aliases) {
-        if (alias.empty() || alias == app.id || !seen.insert(alias).second || current_ids.contains(alias) || alias_counts[alias] > 1) {
+        if (!usable_configured_id(alias) || alias == app.id || !seen.insert(alias).second || current_ids.contains(alias) || alias_counts[alias] > 1) {
           state_changed = true;
           continue;
         }

@@ -147,7 +147,8 @@ def main():
                 (include_directory / "host_stream_control.h").write_text(subprocess.check_output(
                     ["git", "-C", str(args.repository), "show", f"{args.revision}:{header_path}"], text=True))
         subprocess.run([args.compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror",
-                        "-I", str(include_directory), str(source), "-o", str(binary)], check=True)
+                        "-I", str(args.repository), "-iquote", str(include_directory),
+                        str(source), "-o", str(binary)], check=True)
         failed = []
         for case in CASES:
             result = subprocess.run([str(binary), case], check=False, capture_output=True, text=True)

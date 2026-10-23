@@ -16,9 +16,9 @@ internal static class InstallSuccessRegression {
   static T Field<T>(InstallerWindow window, string name) {
     return (T)typeof(InstallerWindow).GetField(name, PrivateInstance).GetValue(window);
   }
-  static List<string> Failures(string path) {
+  static List<string> Failures(string path, bool sunshineSelected = true) {
     return (List<string>)typeof(InstallerRunner).GetMethod("CollectInstallComponentFailures", PrivateStatic)
-      .Invoke(null, new object[] { path, true });
+      .Invoke(null, new object[] { path, sunshineSelected });
   }
   static bool Reboot(string path) {
     return (bool)typeof(InstallerRunner).GetMethod("InstallLogIndicatesDriverRebootRequired", PrivateStatic)
@@ -85,6 +85,37 @@ internal static class InstallSuccessRegression {
       File.WriteAllText(path, marker);
       Check(Failures(path).Count > 0, marker + ": genuine component error retained");
     }
+    var displayWarning = Path.Combine(directory, "display-inventory-warning.log");
+    // The saved report has no driver prefix and a warning wrapped across an
+    // interleaved MSI action boundary. Sunshine then reports healthy retention.
+    File.WriteAllLines(displayWarning, new[] {
+      "MSI (s): Executing op: ActionStart(Name=InstallSudovda,,)",
+      "WixQuietExec64: WARNING: VIRTUAL_DISPLAY_DRIVER_WARNING: Optional driver update skipped; virtual",
+      "MSI (s): Executing op: ActionStart(Name=InstallVirtualDisplayDriver,,)",
+      "WixQuietExec64: display may be unavailable. Driver safety inventory timed out after 15 seconds; driver unchanged.",
+      "WixQuietExec64: Driver component 1.6.4.0 skipped: installed driver retained.",
+      "WixQuietExec64: Present equal/newer device reports healthy; no device changes required."
+    });
+    var displayFailures = string.Join("\n", Failures(displayWarning));
+    Check(displayFailures.Contains("SudoVDA"), "Fallback SudoVDA warning must name the actual component");
+    Check(displayFailures.Contains("timed out after 15 seconds"), "64-bit wrapped driver diagnostic must retain its cause");
+    Check(!displayFailures.Contains("Vibepollo Display Driver setup"), "Healthy selected Sunshine driver must not inherit fallback warning");
+    File.WriteAllLines(displayWarning, new[] {
+      "MSI (s): Executing op: ActionStart(Name=InstallVirtualDisplayDriver,,)",
+      "WixQuietExec64: [SunshineVirtualDisplay] VIRTUAL_DISPLAY_DRIVER_WARNING: signature rejected"
+    });
+    displayFailures = string.Join("\n", Failures(displayWarning, false));
+    Check(displayFailures.Contains("Vibepollo Display Driver") && displayFailures.Contains("signature rejected"),
+      "Actual Sunshine failure must retain its identity and detail regardless of selected fallback");
+    File.WriteAllText(displayWarning, "CustomAction InstallSudovda returned actual error code 1603");
+    Check(string.Join("\n", Failures(displayWarning)).Contains("SudoVDA"), "SudoVDA action failure must remain visible");
+    File.WriteAllLines(displayWarning, new[] {
+      "WixQuietExec64: [SudoVDA] VIRTUAL_DISPLAY_DRIVER_WARNING: fallback inventory unavailable",
+      "WixQuietExec64: [SunshineVirtualDisplay] VIRTUAL_DISPLAY_DRIVER_WARNING: selected package rejected"
+    });
+    var separateFailures = Failures(displayWarning);
+    Check(separateFailures.Count == 4 && separateFailures[1].Contains("selected package rejected")
+      && separateFailures[3].Contains("fallback inventory unavailable"), "Separate driver failures must retain separate diagnostics");
     Console.WriteLine("Production log classification and completion UI regressions passed; no installer, service, driver or trust actions executed.");
     return 0;
   }

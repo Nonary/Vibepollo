@@ -181,11 +181,12 @@ namespace rtsp_stream {
     // per-frame RTX HDR runtime still bypasses conversion while the foreground is
     // desktop or any non-matching app, so we can turn RTX HDR off without changing
     // WGC capture format or reinitializing the encoder.
-    // TrueHDR conversion lives in the avcodec/NVENC/AMF encode devices; the PyroWave
-    // encoder converts on its own device and has no SDR->HDR stage.
+    // PyroWave runs TrueHDR on its own conversion device on both platforms.
     config.rtx_hdr_active = config::runtime_config_override_enabled("rtx_hdr") &&
                             config::video.rtx_hdr.enabled &&
+#if !defined(SUNSHINE_ENABLE_NV_TRUEHDR)
                             config.videoFormat != pyrowave::protocol::BITSTREAM_FORMAT &&
+#endif
                             config.dynamicRange > 0 &&
                             !config.prefer_sdr_10bit &&
                             !config.force_sdr;
@@ -204,6 +205,8 @@ namespace rtsp_stream {
     snapshot->id = id;
     snapshot->role = role;
     snapshot->role_generation = role_generation;
+    snapshot->monitor_profile_uuid = monitor_profile_uuid;
+    snapshot->exact_monitor_target = exact_monitor_target;
     snapshot->secondary_game_client = secondary_game_client;
     snapshot->remote_capture_output = remote_capture_output;
     snapshot->rtsp_source_address = rtsp_source_address;
@@ -982,12 +985,13 @@ namespace rtsp_stream {
     // Socket aliases can outlive registry removal. Retire outside both mutexes;
     // synchronize the audio field with the existing paused-app retirement path.
     void release_pending_runtime_holds(const std::shared_ptr<launch_session_t> &pending) {
-      std::shared_ptr<void> audio_hold, power_hold;
+      std::shared_ptr<void> audio_hold, power_hold, target_hold;
       {
         std::lock_guard lock {_launch_sessions_mutex};
         std::lock_guard audio_lock {audio::launch_audio_guard_mutex};
         audio_hold = std::move(pending->audio_context_guard);
         power_hold = std::move(pending->display_power_guard);
+        target_hold = std::move(pending->exact_target_hold);
       }
     }
 
@@ -999,6 +1003,7 @@ namespace rtsp_stream {
             entry.session->unique_id == snapshot->unique_id && entry.expires_at > now) {
           audio::copy_launch_audio_guard(*entry.session, *snapshot);
           snapshot->display_power_guard = entry.session->display_power_guard;
+          snapshot->exact_target_hold = entry.session->exact_target_hold;
           return true;
         }
       }
@@ -1064,7 +1069,9 @@ namespace rtsp_stream {
       return static_cast<int>(_session_state->sessions.size());
     }
 
-    bool has_pending_launch_or_startup() {
+    // Vibepollo stores launch entries separately; this query never expires them,
+    // so either mode provides the conservative non-reentrant snapshot.
+    bool has_pending_launch_or_startup([[maybe_unused]] bool expire_pending = true) {
       bool has_pending_launch = false;
       {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
@@ -1858,8 +1865,8 @@ namespace rtsp_stream {
     server.session_clear(launch_session_id);
   }
 
-  bool has_pending_launch_or_startup() {
-    return server.has_pending_launch_or_startup();
+  bool has_pending_launch_or_startup(bool expire_pending) {
+    return server.has_pending_launch_or_startup(expire_pending);
   }
 
   void set_vulkan_hdr_layer_pending_stream(bool active) {
@@ -2630,6 +2637,7 @@ namespace rtsp_stream {
         auto release_startup_holds = util::fail_guard([&] {
           launch_session->audio_context_guard.reset();
           launch_session->display_power_guard.reset();
+          launch_session->exact_target_hold.reset();
         });
         config::maybe_apply_deferred();
         auto _hot_apply_gate = config::acquire_apply_read_gate();

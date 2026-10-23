@@ -197,6 +197,10 @@ namespace display_helper::v2 {
     return display_.enumerate(display_device::DeviceEnumerationDetail::Minimal);
   }
 
+  std::optional<EnumeratedDeviceList> SnapshotService::try_enumerate() const {
+    return display_.try_enumerate(display_device::DeviceEnumerationDetail::Minimal);
+  }
+
   codec::layout_rotation_map_t SnapshotService::capture_layouts(const std::set<std::string> &device_ids) const {
     return display_.capture_layout_rotations(device_ids);
   }

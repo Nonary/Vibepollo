@@ -859,31 +859,7 @@ namespace confighttp {
       }
     } catch (...) {}
 
-    auto add_playnite_from_base = [&](const std::filesystem::path &base) {
-      bool any = false;
-      {
-        auto p = base / L"playnite.log";
-        if (collection.add_file(p, p.filename().string())) {
-          any = true;
-        }
-      }
-      {
-        auto p = base / L"extensions.log";
-        if (collection.add_file(p, p.filename().string())) {
-          any = true;
-        }
-      }
-      {
-        auto p = base / L"launcher.log";
-        if (collection.add_file(p, p.filename().string())) {
-          any = true;
-        }
-      }
-      return any;
-    };
-
-    bool got_playnite_logs = false;
-    try {
+    const auto visit_known_folder_roots = [&](auto &&visit_root) {
       platf::dxgi::safe_token user_token;
       user_token.reset(platf::dxgi::retrieve_users_token(false));
       auto add_from_known = [&](REFKNOWNFOLDERID id) {
@@ -891,29 +867,27 @@ namespace confighttp {
         if (SUCCEEDED(SHGetKnownFolderPath(id, 0, user_token.get(), &pathW)) && pathW) {
           std::filesystem::path base = std::filesystem::path(pathW) / L"Playnite";
           CoTaskMemFree(pathW);
-          if (add_playnite_from_base(base)) {
-            got_playnite_logs = true;
-          }
+          visit_root(base);
         }
       };
       add_from_known(FOLDERID_RoamingAppData);
       add_from_known(FOLDERID_LocalAppData);
-    } catch (...) {}
+    };
 
-    if (!got_playnite_logs) {
-      try {
-        wchar_t buf[MAX_PATH] = {};
-        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, buf))) {
-          got_playnite_logs |= add_playnite_from_base(std::filesystem::path(buf) / L"Playnite");
-        }
-      } catch (...) {}
-      try {
-        wchar_t buf[MAX_PATH] = {};
-        if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, buf))) {
-          got_playnite_logs |= add_playnite_from_base(std::filesystem::path(buf) / L"Playnite");
-        }
-      } catch (...) {}
-    }
+    const auto visit_csidl_roots = [&](auto &&visit_root) {
+      auto add_from_csidl = [&](int folder) {
+        try {
+          wchar_t buf[MAX_PATH] = {};
+          if (SUCCEEDED(SHGetFolderPathW(nullptr, folder, nullptr, SHGFP_TYPE_CURRENT, buf))) {
+            visit_root(std::filesystem::path(buf) / L"Playnite");
+          }
+        } catch (...) {}
+      };
+      add_from_csidl(CSIDL_APPDATA);
+      add_from_csidl(CSIDL_LOCAL_APPDATA);
+    };
+
+    add_playnite_logs_from_known_or_csidl(visit_known_folder_roots, visit_csidl_roots, collection);
 
     // One scan per directory, newest few files per helper prefix. The previous
     // shape re-enumerated the directory once per prefix and read every session
@@ -1085,21 +1059,21 @@ namespace confighttp {
     print_req(request);
     try {
       auto entries = collect_support_logs();
-      std::string zip = build_zip_from_entries(entries);
 
-      char fname[64];
-      std::time_t tt = std::time(nullptr);
-      std::tm tm {};
-      localtime_s(&tm, &tt);
-      std::snprintf(fname, sizeof(fname), "vibeshine_logs-%04d%02d%02d-%02d%02d%02d.zip", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
-
-      SimpleWeb::CaseInsensitiveMultimap headers;
-      headers.emplace("Content-Type", "application/zip");
-      std::string cd = std::string("attachment; filename=\"") + fname + "\"";
-      headers.emplace("Content-Disposition", cd);
-      headers.emplace("X-Frame-Options", "DENY");
-      headers.emplace("Content-Security-Policy", "frame-ancestors 'none';");
-      response->write(SimpleWeb::StatusCode::success_ok, zip, headers);
+      write_archive_response<SimpleWeb::CaseInsensitiveMultimap>(
+        response,
+        SimpleWeb::StatusCode::success_ok,
+        entries,
+        [](const std::vector<ZipDataEntry> &archive_entries) {
+          return build_zip_from_entries(archive_entries);
+        },
+        [] {
+          std::time_t tt = std::time(nullptr);
+          std::tm tm {};
+          localtime_s(&tm, &tt);
+          return make_support_log_archive_filename(tm);
+        }
+      );
     } catch (std::exception &e) {
       bad_request(response, request, e.what());
     }

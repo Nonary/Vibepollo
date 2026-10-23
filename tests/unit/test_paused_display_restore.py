@@ -69,6 +69,7 @@ program = r'''
 #include <string>
 #include <string_view>
 #include <vector>
+#include "src/display_target_lease.h"
 // Load the actual admission guard before selecting the fixture platform.
 #include "src/host_stream_control.h"
 #ifndef _WIN32
@@ -197,6 +198,25 @@ void reset() {
 }
 int main() {
   using namespace stream::session;
+  {
+    const display_target::descriptor_t target {
+      display_target::platform_e::windows_device,
+      display_target::kind_e::physical,
+      "DISPLAY-LEASED"
+    };
+    const display_target::mode_t mode {1920, 1080, 60000, false};
+    auto protected_target = display_target::leases().acquire(
+      "paused-restore-test", 1, target, mode,
+      [&](const display_target::descriptor_t &requested) -> std::optional<display_target::observation_t> {
+        return display_target::observation_t {requested, mode, "\\\\.\\DISPLAY1", {}};
+      });
+    assert(protected_target);
+    reset();
+    assert(!finalize_shared_runtime_if_idle("borrowed-output", {}));
+    assert(fake::dispatches == 1 && fake::removals == 0 && fake::platform_stops == 0);
+    assert(display_helper_integration::last_retention_policy == display_helper_integration::FinalRestoreDisplayPolicy::Retain);
+    display_target::leases().release("paused-restore-test", 1);
+  }
   reset();
   config::video.dd.remove_virtual_display_after_restore = true;
   assert(!finalize_shared_runtime_if_idle("pause-retains", {}));

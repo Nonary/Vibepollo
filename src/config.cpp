@@ -66,6 +66,7 @@
 
 #ifdef __linux__
   #include "platform/linux/private_display.h"
+  #include "platform/linux/rtx_hdr_runtime.h"
 #endif
 
 #ifdef _WIN32
@@ -980,6 +981,7 @@ namespace config {
     true,  // wgc_pacing_smoothing
     "1920x1080x60",  // fallback_mode
     false,  // ignore_encoder_probe_failure
+    true  // wgc_direct_encoder_input
   };
 
   audio_t audio {
@@ -999,6 +1001,7 @@ namespace config {
 
     20,  // fecPercentage
     64,  // video_max_batch_size_kb
+    false,  // pacing_batch_demand_limit (experimental per-call demand-based sizing; default off)
     20,  // pyrowave_critical_fec_percentage
 
     ENCRYPTION_MODE_NEVER,  // lan_encryption_mode
@@ -1917,6 +1920,7 @@ namespace config {
 
     string_f(vars, "capture", video.capture);
     bool_f(vars, "wgc_pacing_smoothing", video.wgc_pacing_smoothing);
+    bool_f(vars, "wgc_direct_encoder_input", video.wgc_direct_encoder_input);
     string_f(vars, "encoder", video.encoder);
     const auto configured_encoder = video.encoder;
     video.encoder = std::string(nvenc::canonical_encoder_name(video.encoder));
@@ -2220,6 +2224,7 @@ namespace config {
     vars.erase("pyrowave_send_rate_mbps");
     int_between_f(vars, "pyrowave_critical_fec_percentage", stream.pyrowave_critical_fec_percentage, {0, 255});
     int_between_f(vars, "video_max_batch_size_kb", stream.video_max_batch_size_kb, {0, 64});
+    bool_f(vars, "pacing_batch_demand_limit", stream.pacing_batch_demand_limit);
     if (stream.video_max_batch_size_kb == 0) {
       stream.video_max_batch_size_kb = 64;
     } else if (stream.video_max_batch_size_kb != 16 && stream.video_max_batch_size_kb != 32 && stream.video_max_batch_size_kb != 64) {
@@ -2449,6 +2454,9 @@ namespace config {
     // Publish only after parsing and apply_config side effects succeed. Reset
     // and failed applies leave the preceding completed settings visible.
     g_hardware_metrics_config.publish({sunshine.hardware_metrics, sunshine.hardware_metrics_interval});
+#ifdef __linux__
+    platf::rtx_hdr::notify_live_settings_changed();
+#endif
   }
 
   int parse(int argc, char *argv[]) {
@@ -2788,6 +2796,7 @@ namespace config {
         // Codec / capture negotiation
         "fec_percentage",
         "video_max_batch_size_kb",
+        "pacing_batch_demand_limit",
         "pyrowave_critical_fec_percentage",
         "qp",
         "min_threads",

@@ -1,3 +1,4 @@
+#include "src/platform/windows/display_helper_borrow_native.h"
 #include "src/platform/windows/display_helper_v2/win_platform_workarounds.h"
 #include "src/platform/windows/display_helper_shell_refresh_policy.h"
 
@@ -71,6 +72,8 @@ namespace display_helper::v2 {
       const auto delay = hdr_blank_delay_;
       hdr_blank_pending_ = false;
       lock.unlock();
+      auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(true, [&] { return stop_token.stop_requested(); });
+      if (!borrow_mutation) { lock.lock(); break; }
       try {
         auto api = std::make_shared<display_device::WinApiLayer>();
         display_device::WinDisplayDevice display(api);
@@ -82,6 +85,8 @@ namespace display_helper::v2 {
   }
 
   void WinPlatformWorkarounds::refresh_shell() {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+    if (!borrow_mutation) return;
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
     // SPIF_SENDCHANGE broadcasts synchronously without the timeout used by
     // the bounded messages below. A hung desktop application can therefore
@@ -139,6 +144,8 @@ namespace display_helper::v2 {
 
       shell_broadcast_pending_ = false;
       lock.unlock();
+      auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(true, [&] { return stop_token.stop_requested(); });
+      if (!borrow_mutation) { lock.lock(); break; }
       // SendMessageTimeout(HWND_BROADCAST, ...) waits up to its timeout for
       // every top-level window. Keep the legacy notifications, but a slow or
       // hung window must never delay the verification result that opens WGC.

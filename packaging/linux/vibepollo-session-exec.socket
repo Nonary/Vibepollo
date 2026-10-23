@@ -1,6 +1,14 @@
 [Unit]
 Description=Vibepollo session execution broker socket
 Documentation=https://github.com/Nonary/Vibepollo
+# This socket starts with the desktop controller, after basic.target. The
+# default Before=sockets.target would close a cycle through basic.target and
+# logind. Retain the other socket defaults explicitly.
+DefaultDependencies=no
+Requires=sysinit.target
+After=sysinit.target
+Conflicts=shutdown.target
+Before=shutdown.target
 After=vibepollo-session-controller.service
 # Keep admission alive until the GPU host has drained every already-accepted
 # compositor request during machine shutdown. Controller cleanup stops this

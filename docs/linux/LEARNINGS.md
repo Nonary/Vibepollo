@@ -37,6 +37,20 @@ and wakes again after logind's resume notification. Subsequent launches issue
 a bounded wake against the existing lease. Retained virtual outputs, paused
 applications and input-only clients do not own the lease; teardown releases it
 after capture/display cleanup. Greeters can wake without a PowerDevil service.
+
+A retained private topology still needs a narrower hold. On 2026-10-22 a
+resumable Desktop stream ended at 04:31:14.5 and left Virtual-1 as the only lit
+output (HDMI disabled, restore pending). Exactly 600 s later KWin began the
+default idle screen-off: logind's `dpms animation` delay inhibitor was created
+at 04:41:14.505 and never released. KWin 6.8 implements DPMS as an output
+configuration transaction with test commits on every GPU. NVIDIA's RC watchdog
+reported a locked GPU at 04:41:30, followed by Xid 119 GSP RPC timeouts and
+KWin blocked in the RM lock. Earlier idle gaps that night never reached
+screen-off and survived. Once an applied private layout leaves no physical
+output lit, the private display therefore owns a separate `display-retain`
+worker until the pre-stream topology is restored. It inhibits only
+ChangeScreenSettings (dimming/screen-off), never suspend, and never issues a
+DPMS command; a lit physical screen keeps normal idle behavior.
 If the session/system bus itself disconnects, the next acquisition replaces
 the dead worker without dropping existing owners. An unreapable DPMS child
 terminates the lease instead of spawning repeated stuck children.

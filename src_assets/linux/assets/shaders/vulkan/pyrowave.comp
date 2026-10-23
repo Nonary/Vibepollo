@@ -16,7 +16,11 @@ layout(std140,set=0,binding=6) uniform Params {
   int use_lut;
   int transfer; // 0: native, 1: scRGB -> SDR, 2: scRGB -> PQ, 3: SDR -> PQ
   int output_hdr;
+  int truehdr_stage; // 1: compose SDR input, 2: sample TrueHDR output
+  float white_nits;
 } p;
+layout(std430,set=0,binding=7) writeonly buffer HDRInput { uint sdr_pixels[]; };
+layout(std430,set=0,binding=8) readonly buffer HDROutput { uint hdr_pixels[]; };
 vec3 srgb_to_linear(vec3 c) {
   return mix(c / 12.92, pow(max((c + 0.055) / 1.055, 0.0), vec3(2.4)), greaterThan(c, vec3(0.04045)));
 }
@@ -30,6 +34,10 @@ vec3 to_2020(vec3 c) {
               dot(c, vec3(0.016391,0.088013,0.895595)));
 }
 vec3 sample_rgb(ivec2 pos) {
+  if (p.truehdr_stage == 2) {
+    uint v = hdr_pixels[pos.y*p.output_size.x+pos.x];
+    return vec3(v&1023u,(v>>10)&1023u,(v>>20)&1023u)/1023.0;
+  }
   vec2 uv = (vec2(p.crop.xy) + (vec2(pos)+0.5)*vec2(p.crop.zw)/vec2(p.output_size)) / vec2(textureSize(source_image,0));
   if (p.invert_y != 0) uv.y = 1.0-uv.y;
   vec3 rgb = texture(source_image,uv).rgb;
@@ -42,14 +50,14 @@ vec3 sample_rgb(ivec2 pos) {
   }
   if (p.transfer == 1) rgb = mix(12.92*max(rgb,0.0),1.055*pow(max(rgb,0.0),vec3(1.0/2.4))-0.055,greaterThan(rgb,vec3(0.0031308)));
   if (p.transfer == 2) rgb = pq(to_2020(rgb)*80.0);
-  if (p.transfer == 3) rgb = pq(to_2020(srgb_to_linear(rgb))*100.0);
+  if (p.transfer == 3) rgb = pq(to_2020(srgb_to_linear(rgb))*p.white_nits);
   ivec2 cp = pos-p.cursor_rect.xy;
   if (p.cursor_rect.z>0 && all(greaterThanEqual(cp,ivec2(0))) && all(lessThan(cp,p.cursor_rect.zw))) {
     vec4 c = texture(cursor_image,(vec2(cp)+0.5)/vec2(p.cursor_rect.zw));
     // DRM cursors contain premultiplied alpha; convert their unassociated SDR
     // color to the output transfer function before compositing an HDR frame.
     if (p.output_hdr != 0 && c.a > 0.0)
-      c.rgb = pq(to_2020(srgb_to_linear(c.rgb/c.a))*100.0)*c.a;
+      c.rgb = pq(to_2020(srgb_to_linear(c.rgb/c.a))*p.white_nits)*c.a;
     rgb = c.rgb + rgb*(1.0-c.a);
   }
   return rgb;
@@ -58,6 +66,10 @@ void main() {
   ivec2 pos = ivec2(gl_GlobalInvocationID.xy);
   if (any(greaterThanEqual(pos,p.output_size))) return;
   vec3 rgb = sample_rgb(pos);
+  if (p.truehdr_stage == 1) {
+    sdr_pixels[pos.y*p.output_size.x+pos.x] = packUnorm4x8(vec4(rgb,1.0));
+    return;
+  }
   imageStore(y_plane,pos,vec4(dot(p.y,vec4(rgb,1.0))));
   ivec2 cp=pos;
   if (p.subsampled != 0) {

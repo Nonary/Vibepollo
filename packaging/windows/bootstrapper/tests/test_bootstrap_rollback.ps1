@@ -10,7 +10,7 @@ New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
 # files; it cannot install products or change registry/services/drivers/trust.
 $boundaries = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'rollback_boundary_methods.cs.in') -Raw -Encoding UTF8
 $boundaryMethods = [regex]::Matches($boundaries, '(?ms)^    (?:private|public) static [^\r\n]+\b(?<name>\w+)\([^\r\n]*\) \{\r?\n.*?^    \}')
-if ($boundaryMethods.Count -ne 11) { throw 'Expected ten shared and one optional downstream rollback test boundary' }
+if ($boundaryMethods.Count -ne 17) { throw 'Expected sixteen shared and one optional downstream rollback test boundary' }
 foreach ($boundary in $boundaryMethods) {
     $name = $boundary.Groups['name'].Value
     $parameters = if ($name -eq 'TryGetPayloadMsiInfo') { '\(string msiPath\)' } else { '\(' }

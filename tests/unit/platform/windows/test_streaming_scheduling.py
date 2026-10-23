@@ -22,7 +22,7 @@ SCENARIOS = (
     "unmatched-stop", "foreign-native", "foreign-winmm",
     "balanced-cycles", "mixed-backends", "mouse-keys", "paused-watchdog",
     "priority-normal", "priority-above-normal", "priority-below-normal",
-    "priority-idle", "priority-high", "priority-realtime",
+    "priority-idle", "priority-high", "priority-realtime", "lifecycle-logs",
 )
 
 

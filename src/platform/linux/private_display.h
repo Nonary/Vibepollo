@@ -5,6 +5,7 @@
 #pragma once
 
 #include "src/remote_display_topology.h"
+#include "src/display_target_lease.h"
 
 #include <chrono>
 #include <display_device/types.h>
@@ -72,6 +73,8 @@ namespace platf::linux_private_display {
 
   /** Release only this client's connector reservation; topology apply performs the disable. */
   bool remote_remove_owned_display(const std::string &client_uuid);
+
+  std::optional<display_target::observation_t> observe_exact_target(const display_target::descriptor_t &target);
 
   /** Inspect stable ownership while constructing the Remote Monitor baseline. */
   bool is_private_output(const std::string &output_name);

@@ -80,6 +80,9 @@ namespace display_helper::v2 {
     /// True once SettingsManager may have retained transaction state. Recovery
     /// or an explicit RESET must discard it before an unrelated later session.
     bool staged_state_prepared = false;
+    /// Original topology retained for Exclusive rollback after apply or gate failure.
+    std::optional<ActiveTopology> exclusive_pre_apply_topology;
+    bool exclusive_rollback_only = false;
   };
 
   struct RecoveryOutcome {

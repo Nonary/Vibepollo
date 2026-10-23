@@ -39,12 +39,36 @@ json daily(std::string day, std::string base = "2.0.0") {
   result["nightly_metadata"]={{"schema_version",1},{"channel","nightly"},{"tag",result["tag_name"]},{"version",base+"-daily.d202610"+day+"+aaaaaaaaaaaa"},{"source_commit",std::string(40,'a')},{"nightly_sequence",std::stoi("202610"+day)}};
   return result;
 }
+json nightly(std::string day, std::string sha = std::string(40, 'b')) {
+  auto tag = "2.0.1-nightly.d202610" + day + "." + sha.substr(0, 12);
+  auto result = release(tag, true);
+  for (auto name : {"nightly-metadata.json", "SHA256SUMS"}) result["assets"].push_back({{"name",name},{"state","uploaded"},{"size",100}});
+  result["nightly_metadata"] = {{"schema_version",1},{"channel","nightly"},{"tag",tag},{"version",tag},
+                                 {"source_commit",sha},{"nightly_sequence",std::stoi("202610"+day)}};
+  return result;
+}
 int main() {
   auto select = [](json releases, const std::string &installed, bool pre) {
     for (auto &item : releases) if (item.is_object() && item.contains("nightly_metadata"))
       item["body"] = "<!-- nightly-identity: " + item["nightly_metadata"].dump() + " -->\n";
     return release_selection::select(releases, installed, pre);
   };
+  auto current_nightly = nightly("22");
+  auto next_nightly = nightly("23", std::string(40, '0'));
+  auto same_day_nightly = nightly("22", std::string(40, 'c'));
+  auto with_body = [](json item) {
+    item["body"] = "<!-- nightly-identity: " + item["nightly_metadata"].dump() + " -->\n";
+    return item;
+  };
+  assert(!release_selection::select(json::array({with_body(current_nightly)}), "2.0.1-daily.d20261022.2+aaaaaaaaaaaa", true).is_null());
+  assert(release_selection::select(json::array({with_body(current_nightly)}), current_nightly["tag_name"], true).is_null());
+  assert(release_selection::select(json::array({with_body(same_day_nightly)}), current_nightly["tag_name"], true).is_null());
+  assert(!release_selection::select(json::array({with_body(next_nightly)}), current_nightly["tag_name"], true).is_null());
+  assert(release_selection::select(json::array({with_body(next_nightly)}), "2.0.0", false).is_null());
+  assert(release_selection::select(json::array({with_body(next_nightly)}), "2.0.1", true).is_null());
+  auto tampered_nightly = current_nightly;
+  tampered_nightly["nightly_metadata"]["source_commit"] = std::string(40, 'c');
+  assert(release_selection::select(json::array({with_body(tampered_nightly)}), "2.0.0", true).is_null());
   auto api = daily("12", "2.0.1");
   api["body"] = "<!-- nightly-identity: " + api["nightly_metadata"].dump() + " -->\n";
   api.erase("nightly_metadata");

@@ -21,11 +21,27 @@ namespace display_helper::v2 {
     /// may set their supplied base topology once immediately before this call;
     /// the backend must still receive the original device-preparation request.
     virtual ApplyStatus apply(const SingleDisplayConfiguration &config) = 0;
+    /// Reactivate one verified virtual target in place, without replaying the
+    /// session topology or resetting restore state. Other backends may decline.
+    virtual ApplyStatus reactivate_virtual_target(
+      const SingleDisplayConfiguration &,
+      const std::function<bool()> &
+    ) {
+      return ApplyStatus::HelperUnavailable;
+    }
     virtual bool blank_hdr_states(std::chrono::milliseconds, const std::function<bool()> &) {
       return true;
     }
     virtual ApplyStatus apply_topology(const ActiveTopology &topology) = 0;
     virtual EnumeratedDeviceList enumerate(display_device::DeviceEnumerationDetail detail) = 0;
+    /// Return nullopt when an enumeration observation could not be obtained.
+    /// A successful empty list remains distinguishable from an unavailable
+    /// observation. The default adapts existing implementations that expose
+    /// only the legacy list-returning API.
+    virtual std::optional<EnumeratedDeviceList> try_enumerate(
+      display_device::DeviceEnumerationDetail detail) {
+      return enumerate(detail);
+    }
     virtual ActiveTopology capture_topology() = 0;
     /// Validate a topology stored in a restore snapshot. Structurally invalid
     /// snapshots must be rejected; transient OS validation failures should be

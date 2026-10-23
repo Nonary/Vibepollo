@@ -190,6 +190,50 @@ TEST(ThreadSafeEventTests, UnchangedGenerationDoesNotWaitForPayloadConstruction)
   }
 }
 
+TEST(ThreadSafeEventTests, LateOlderSnapshotCannotReplaceNewerPublishedVersion) {
+  using namespace std::chrono_literals;
+  struct snapshot_t {
+    std::uint64_t generation;
+    std::uint64_t sequence;
+  };
+  const auto is_older = [](const snapshot_t &candidate, const snapshot_t &current) {
+    return candidate.generation < current.generation ||
+           (candidate.generation == current.generation && candidate.sequence < current.sequence);
+  };
+
+  safe::event_t<snapshot_t> event;
+  std::promise<void> older_snapshot_ready;
+  auto older_snapshot_ready_future = older_snapshot_ready.get_future();
+  std::promise<void> allow_older_raise;
+  auto allow_older_raise_future = allow_older_raise.get_future().share();
+  std::atomic_bool older_accepted {true};
+  std::thread older_publisher {[&] {
+    const snapshot_t stale {9, 11};
+    older_snapshot_ready.set_value();
+    allow_older_raise_future.wait();
+    older_accepted.store(event.raise_monotonic(stale, is_older), std::memory_order_release);
+  }};
+
+  const auto older_ready = older_snapshot_ready_future.wait_for(2s) == std::future_status::ready;
+  if (older_ready) {
+    EXPECT_TRUE(event.raise_monotonic(snapshot_t {9, 12}, is_older));
+    const auto latest_before = event.view(0ms);
+    EXPECT_TRUE(latest_before);
+    if (latest_before) {
+      EXPECT_EQ(latest_before->sequence, 12);
+    }
+  }
+  allow_older_raise.set_value();
+  older_publisher.join();
+
+  ASSERT_TRUE(older_ready);
+  EXPECT_FALSE(older_accepted.load(std::memory_order_acquire));
+  const auto latest = event.view(0ms);
+  ASSERT_TRUE(latest);
+  EXPECT_EQ(latest->generation, 9);
+  EXPECT_EQ(latest->sequence, 12);
+}
+
 TEST(MailRegistryTests, QueueLookupReplacesExpiredPost) {
   constexpr auto id = "stale_queue";
   auto mail = std::make_shared<safe::mail_raw_t>();
@@ -283,6 +327,22 @@ TEST(ThreadSafeQueueTests, NonpositivePollsPreserveQueueStateAndConsumeReadyValu
   EXPECT_EQ(queue.pop(-1ms), 7);
   EXPECT_EQ(queue.pop(0ms), 9);
   EXPECT_FALSE(queue.pop(0ms));
+}
+
+TEST(ThreadSafeQueueTests, DrainConsumesEveryQueuedValueAndClearsReadiness) {
+  using namespace std::chrono_literals;
+  safe::queue_t<int> queue {4};
+  ASSERT_TRUE(queue.try_raise(7));
+  ASSERT_TRUE(queue.try_raise(9));
+
+  const auto values = queue.drain();
+  EXPECT_EQ(values, (std::vector<int> {7, 9}));
+  EXPECT_FALSE(queue.peek());
+  EXPECT_TRUE(queue.running());
+  EXPECT_FALSE(queue.pop(0ms));
+
+  queue.stop();
+  EXPECT_TRUE(queue.drain().empty());
 }
 
 TEST(ThreadSafeQueueTests, PositiveTimeoutWaitsForProducer) {

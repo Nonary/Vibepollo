@@ -311,7 +311,7 @@ void production_mutation(Time display_startup_deadline, std::function<bool()> di
   auto apply_virtual_display_request = [&](bool requested) { if (requested) ++mutations; };
 ''' + mutation_gate + '\n' + mutation_call + r'''
 }
-bool first_launch_tv_off(Time deadline) {
+bool first_launch_tv_off(Time deadline, bool include_identity_log_fields) {
   bool request_virtual_display = false, preserve_requested_output = false;
   [[maybe_unused]] bool has_app_output_override = false, pinned_virtual_display_mode_disabled = false;
   [[maybe_unused]] std::optional<std::string> app_output_override, pending_output_override;
@@ -331,10 +331,12 @@ void reset() {
 }
 int main() {
 ''' + (ordered_tests if preflight else '') + r'''
-  reset();
-  require(first_launch_tv_off(fake_now + 2s), "TV-off first launch did not recover its stale pipe");
-  require(fast_calls == 2 && reset_calls == 1 && ping_calls == 1 && !g_restore_expected && killed == 0,
-          "successful reconnect did not dispatch exactly one retry and clear restore guard");
+  for (bool include_identity_log_fields : {true, false}) {
+    reset();
+    require(first_launch_tv_off(fake_now + 2s, include_identity_log_fields), "TV-off first launch did not recover its stale pipe");
+    require(fast_calls == 2 && reset_calls == 1 && ping_calls == 1 && !g_restore_expected && killed == 0,
+            "successful reconnect did not dispatch exactly one retry and clear restore guard");
+  }
   reset(); ping_ok = false; g_last_revert_us = now_steady_us();
   require(!admit(fake_now + 2s, [] { return false; }) && g_restore_expected && killed == 0,
           "failed admission erased guard or killed a restoring helper");
@@ -680,6 +682,7 @@ void prepare_resume(ResumeSession &session, bool request_virtual_display) {
   bool retained_resume_recovery_rearm = false;
   std::string virtual_display_stable_id, virtual_display_stable_guid;
   std::optional<std::string> pending_output_override, app_output_override;
+  const bool include_identity_log_fields = true;
   auto reserve_normal_vdd_identity = [] { return identity_available; };
   auto apply_framegen_refresh_policy = [](bool) {};
   const auto display_startup_deadline = fake_now + 2s;
@@ -758,8 +761,9 @@ namespace rtsp_stream {
 int disabled_requests = 0, creation_mutations = 0, preapply_requests = 0, apply_calls = 0;
 Time entry_deadline {}, apply_deadline {};
 bool entry_input_only = false;
+namespace dispatch { bool include_request_identity_log_fields(int) { return true; } }
 std::shared_ptr<rtsp_stream::launch_session_t> make_launch_session_from_snapshot(
-  int, bool input_only, int, int, const int *, int) {
+  int, bool input_only, int, int, const int *, int, bool, bool) {
   require(reset_calls == 1 || shutting_down || fake_now >= entry_deadline,
           "ordinary session construction bypassed unconditional production preflight");
   auto session = std::make_shared<rtsp_stream::launch_session_t>();
@@ -770,7 +774,7 @@ namespace display_helper_integration {
   constexpr auto kStreamStartApplyVerificationTimeout = 2s;
   enum class ApplyRetryPolicy { StreamStart };
   namespace helpers {
-    std::optional<int> build_request_from_session(int, const rtsp_stream::launch_session_t &) {
+    std::optional<int> build_request_from_session(int, const rtsp_stream::launch_session_t &, bool) {
       ++preapply_requests;
       return 1;
     }
@@ -786,7 +790,7 @@ void prepare_virtual_display_for_session(
   std::optional<video::encoder_probe_adapter_hint_lease_t> &,
   VDISPLAY::policy::retained_resume_recovery_rearm_t *,
   const std::function<void()> &disarm_startup_restore,
-  const std::function<bool()> &display_startup_cancelled, Time display_startup_deadline) {
+  const std::function<bool()> &display_startup_cancelled, Time display_startup_deadline, bool, bool) {
   entry_deadline = display_startup_deadline;
   auto disable_virtual_display_request = [] { ++disabled_requests; };
 """ + input_guard + r"""
@@ -796,7 +800,7 @@ void prepare_virtual_display_for_session(
 }
 void production_ordinary_launch_entry(int appid, const std::string &appuuid_str) {
   audio::display_change_hold_t request_audio_hold {[] { return std::shared_ptr<void>{}; }};
-  int host_audio = 0, args = 0, verified_client = 0, request_client_identity = 0, request = 0;
+  int host_audio = 0, args = 0, verified_client = 0, request_client_identity = 0, request = 0, trace_id = 0;
   bool no_active_sessions = true;
   [[maybe_unused]] bool revert_display_configuration = false;
 """ + classification + r"""

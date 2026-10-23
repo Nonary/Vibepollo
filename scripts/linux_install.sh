@@ -778,7 +778,7 @@ download_release_package() {
     checksum_actual=$(sha256sum "$local_package" | awk '{print $1}')
     [[ "$checksum_actual" == "$checksum_expected" ]] || die "checksum mismatch for ${asset_name}; refusing to install"
     ok "Package checksum matches SHA256SUMS."
-  elif [[ "$tag" == daily-* || "$tag" == *-daily.d* ]]; then
+  elif [[ "$tag" == daily-* || "$tag" == *-daily.d* || "$tag" == *-nightly.d* ]]; then
     die "nightly checksums unavailable; refusing to install"
   fi
 

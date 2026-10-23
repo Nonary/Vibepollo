@@ -34,9 +34,9 @@ namespace platf::linux_display {
         const bool virtual_requested = session.virtual_display ||
           session.client_virtual_display_override.value_or(session.client_requests_virtual_display) ||
           session.virtual_display_mode_override.value_or(config::video.virtual_display_mode) != config::video_t::virtual_display_mode_e::disabled;
-        if (virtual_requested || rtsp_stream::effective_hdr_requested(session)) {
+        if (virtual_requested || rtsp_stream::hdr_capture_required(session, config::video)) {
           session.virtual_display_failed = true;
-          return {false, {}, "Hyprland KMS supports existing physical SDR outputs only; disable private/Remote Monitor and HDR requests"};
+          return {false, {}, "Hyprland KMS supports existing physical SDR outputs only; disable private/Remote Monitor and native HDR capture requests"};
         }
         const auto devices = enumerate_devices(display_device::DeviceEnumerationDetail::Full);
         const auto requested = session.output_name_override.value_or(config::video.output_name);

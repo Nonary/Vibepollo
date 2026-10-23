@@ -28,6 +28,7 @@
 #include <memory>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include <d3d11.h>
 #include <dxgi.h>
@@ -39,6 +40,7 @@ namespace pyrowave::d3d11 {
     linear_sdr,  ///< FP16 scRGB capture, SDR stream: apply the sRGB curve.
     pq,  ///< FP16 scRGB capture, HDR stream: Rec. 2100 PQ.
     sdr_to_pq,  ///< UNORM sRGB capture, HDR stream: SDR white at `sdr_white_nits`.
+    truehdr_pq,  ///< NGX FP16 scRGB with compensation for its 1000-nit ceiling.
   };
 
   /// Same layout as video::color_t (one float4 per plane row, then two ranges).
@@ -52,6 +54,8 @@ namespace pyrowave::d3d11 {
 
   static_assert(sizeof(color_matrix_t) == 64, "color_matrix_t must match the HLSL cbuffer");
 
+  struct source_t;
+
   struct core_config_t {
     int width = 0;  ///< Encoded width; even for 4:2:0.
     int height = 0;  ///< Encoded height; even for 4:2:0.
@@ -61,6 +65,51 @@ namespace pyrowave::d3d11 {
     std::wstring shader_path;  ///< Full path of convert_pyrowave_cs.hlsl.
     float sdr_white_nits = 100.0f;  ///< For transfer_e::sdr_to_pq.
     std::chrono::milliseconds capture_wait {};  ///< Negotiated frame interval, rounded up.
+    // Optional RGB processing on a persistent private snapshot. Capture ownership
+    // is released before this callback; its borrowed SRV must survive encode().
+    std::function<bool(ID3D11Texture2D *, source_t &)> transform_rgb;
+    bool experimental_d3d12_conversion = false;  ///< Build-gated conversion-only prototype; D3D11 fallback.
+  };
+
+  /// Caller attestation, not a generic shared_ptr guarantee. Every writer of
+  /// the exact capture resource must acquire its keyed mutex first. The host's
+  /// async pool additionally excludes a pinned existing image control block;
+  /// standalone callers must provide the same no-write-through-release contract.
+  enum class source_lease_e { unproven, async_capture_pool, keyed_standalone };
+
+  // Exact acquired interface ownership. Pin before AcquireSync, arm only on S_OK.
+  // Transfer is pointer/scalar-only and never reacquires or releases ownership.
+  class capture_mutex_guard_t {
+  public:
+    explicit capture_mutex_guard_t(IDXGIKeyedMutex *mutex = nullptr) noexcept:
+        mutex_(mutex) {
+      if (mutex_) mutex_->AddRef();
+    }
+    capture_mutex_guard_t(const capture_mutex_guard_t &) = delete;
+    capture_mutex_guard_t &operator=(const capture_mutex_guard_t &) = delete;
+    ~capture_mutex_guard_t() { reset(); }
+    void arm() noexcept { acquired_ = true; }
+    [[nodiscard]] IDXGIKeyedMutex *held() const noexcept { return acquired_ ? mutex_ : nullptr; }
+    // The exact interface pinned before AcquireSync. Unlike held(), this is
+    // non-null before acquisition so the caller can acquire through the pin.
+    [[nodiscard]] IDXGIKeyedMutex *pinned() const noexcept { return mutex_; }
+    [[nodiscard]] bool empty() const noexcept { return mutex_ == nullptr; }
+    // Requires an empty destination, checked before command preparation.
+    void take(capture_mutex_guard_t &from) noexcept {
+      mutex_ = std::exchange(from.mutex_, nullptr);
+      acquired_ = std::exchange(from.acquired_, false);
+    }
+    HRESULT release() noexcept {
+      if (!std::exchange(acquired_, false)) return S_OK;
+      return mutex_->ReleaseSync(0);  // One attempt, including an ambiguous failure.
+    }
+    void reset() noexcept {
+      release();
+      if (auto *mutex = std::exchange(mutex_, nullptr)) mutex->Release();
+    }
+  private:
+    IDXGIKeyedMutex *mutex_ = nullptr;
+    bool acquired_ = false;
   };
 
   /// A captured frame, already opened on core_t::device().
@@ -70,7 +119,15 @@ namespace pyrowave::d3d11 {
     unsigned width = 0;  ///< Texture extent before rotation.
     unsigned height = 0;
     transfer_e transfer = transfer_e::unorm;
+    float sdr_white_nits = 0.0f;  ///< Zero uses the session default.
+    float luminance_scale = 1.0f;  ///< Linear scale for transfer_e::truehdr_pq.
     int rotate_texture_steps = 0;  ///< Quarter turns, as passed to Sunshine's vertex shaders.
+    // Optional for D3D11. D3D12 nonblank copies require this explicit lease,
+    // an existing image/source control block, and exact original COM identities.
+    source_lease_e lease = source_lease_e::unproven;
+    std::shared_ptr<const void> capture_owner;
+    ID3D11Texture2D *capture_texture = nullptr;
+    IDXGIKeyedMutex *capture_mutex = nullptr;
   };
 
   struct framing_params_t {
@@ -110,6 +167,9 @@ namespace pyrowave::d3d11 {
 
     /// The private D3D11 device captured textures must be opened on.
     [[nodiscard]] ID3D11Device *device() const;
+
+    /// Reports the selected producer, so native tests cannot silently test fallback.
+    [[nodiscard]] bool using_d3d12_conversion() const;
 
     /**
      * @brief Convert and encode one frame, appending the framed frame to `out`.

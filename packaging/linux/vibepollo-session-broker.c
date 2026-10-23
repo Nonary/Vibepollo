@@ -28,6 +28,8 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "vibepollo-display-borrow.h"
+
 static const char session_path[] = "/run/vibepollo/session.env";
 static const char command_manifest_path[] = "/etc/vibepollo/session-commands";
 static const char command_manifest_header[] = "# vibepollo-session-commands-v2";
@@ -1278,6 +1280,16 @@ static bool managed_focus_arguments_are_safe(int argc, char **argv) {
          parse_number(argv[6], 0, 1, &first);
 }
 
+static bool rtx_hdr_foreground_arguments_are_safe(int argc, char **argv) {
+  unsigned long id = 0;
+  if (argc != 4) return false;
+  if (!strcmp(argv[2], "steam") || !strcmp(argv[2], "lutris"))
+    return parse_number(argv[3], 1, !strcmp(argv[2], "steam") ? UINT32_MAX : LONG_MAX, &id);
+  // Compared as data to the selected user's active /proc executable, never
+  // executed or interpreted by a shell. No filesystem contents are returned.
+  return !strcmp(argv[2], "executable") && argv[3][0] && strlen(argv[3]) <= 4096;
+}
+
 static bool display_observe_arguments_are_safe(int argc, char **argv) {
   return argc == 2 && (!strcmp(argv[1], "display-observe") || !strcmp(argv[1], "display-observe-events"));
 }
@@ -1321,9 +1333,9 @@ static int execute_request(int argc, char **argv,
                            gid_t service_gid) {
   if (argc < 2) return 2;
   enum operation {
-    DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_OBSERVE, DISPLAY_POWER, DISPLAY_WAKE, TOUCH_MAP, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
+    DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_OBSERVE, DISPLAY_POWER, DISPLAY_WAKE, DISPLAY_INHIBIT, DISPLAY_RETAIN, TOUCH_MAP, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
     AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS, LUTRIS_WAYLAND_HDR, MANAGED_FOCUS,
-    PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, APP, APP_WAYLAND_HDR
+    PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, RTX_HDR_FOREGROUND, APP, APP_WAYLAND_HDR
   } operation;
   unsigned long first_number = 0, second_number = 0, third_number = 0;
   unsigned char channel_mapping[8] = {0};
@@ -1343,8 +1355,10 @@ static int execute_request(int argc, char **argv,
 #ifdef VIBEPOLLO_HAVE_WAYLAND_OBSERVER
   else if (display_observe_arguments_are_safe(argc, argv)) operation = DISPLAY_OBSERVE;
 #endif
+  else if (display_borrow_request(argc,argv) && !strcmp(identity->role,"desktop")) operation = DISPLAY_INHIBIT;
   else if (!strcmp(argv[1], "display-power") && argc == 2) operation = DISPLAY_POWER;
   else if (!strcmp(argv[1], "display-wake") && argc == 2) operation = DISPLAY_WAKE;
+  else if (!strcmp(argv[1], "display-retain") && argc == 2) operation = DISPLAY_RETAIN;
   else if (!strcmp(argv[1], "touch-map") && argc == 4 &&
            touch_map_arguments_are_safe(argv[2], argv[3])) operation = TOUCH_MAP;
   else if (!strcmp(argv[1], "display-apply") && display_apply_arguments_are_safe(argc, argv)) operation = DISPLAY_APPLY;
@@ -1375,6 +1389,9 @@ static int execute_request(int argc, char **argv,
   else if (!strcmp(argv[1], "managed-focus") &&
            managed_focus_arguments_are_safe(argc, argv) &&
            !strcmp(identity->role, "desktop")) operation = MANAGED_FOCUS;
+  else if (!strcmp(argv[1], "rtx-hdr-foreground") &&
+           rtx_hdr_foreground_arguments_are_safe(argc, argv) &&
+           !strcmp(identity->role, "desktop")) operation = RTX_HDR_FOREGROUND;
   else if (!strcmp(argv[1], "provider-steam-scan") && argc == 2 && !strcmp(identity->role, "desktop")) operation = PROVIDER_STEAM_SCAN;
   else if (!strcmp(argv[1], "provider-lutris-scan") && argc == 2 && !strcmp(identity->role, "desktop")) operation = PROVIDER_LUTRIS_SCAN;
   else if (argc == 2 && !strcmp(identity->role, "desktop") &&
@@ -1414,11 +1431,21 @@ static int execute_request(int argc, char **argv,
       execv("/usr/libexec/vibeshine/vibepollo-touch-map", arguments);
       break;
     }
+    case DISPLAY_INHIBIT: {
+      if(fcntl(DISPLAY_BORROW_LOCK_FD,F_SETFD,0)<0 || setenv(DISPLAY_BORROW_LOCK_ENV,"198",1))return 126;
+      char *const arguments[]={"vibepollo-display-power","inhibit-v2",argv[2],NULL};
+      execv("/usr/libexec/vibeshine/vibepollo-display-power",arguments);
+      break;
+    }
     case DISPLAY_POWER:
-    case DISPLAY_WAKE: {
+    case DISPLAY_WAKE:
+    case DISPLAY_RETAIN: {
+      const bool desktop = !strcmp(identity->role, "desktop");
+      if(fcntl(DISPLAY_BORROW_LOCK_FD,F_GETFD)>=0 && (fcntl(DISPLAY_BORROW_LOCK_FD,F_SETFD,0)<0 || setenv(DISPLAY_BORROW_LOCK_ENV,"198",1)))return 126;
       char *const arguments[] = {"vibepollo-display-power",
         operation == DISPLAY_WAKE ? "wake" :
-        (!strcmp(identity->role, "desktop") ? "desktop" : "greeter"), NULL};
+        operation == DISPLAY_RETAIN ? (desktop ? "retain" : "retain-greeter") :
+        (desktop ? "desktop" : "greeter"), NULL};
       execv("/usr/libexec/vibeshine/vibepollo-display-power", arguments);
       break;
     }
@@ -1528,6 +1555,13 @@ static int execute_request(int argc, char **argv,
     case MANAGED_FOCUS: {
       char *const arguments[] = {"/usr/libexec/vibeshine/vibepollo-app-focus", "--managed",
                                 argv[2], argv[3], argv[4], argv[5], argv[6], NULL};
+      return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
+    }
+    case RTX_HDR_FOREGROUND: {
+      // KWin must read a temporary script from the desktop runtime directory.
+      // ProtectHome=read-only in this broker namespace prevents creating it;
+      // observe through the same supervised user boundary as managed focus.
+      char *const arguments[] = {"/usr/libexec/vibeshine/vibepollo-app-focus", "--foreground", argv[2], argv[3], NULL};
       return exec_user_service(identity, NULL, arguments, false, false, 0, NULL);
     }
     case LUTRIS:
@@ -1737,7 +1771,9 @@ static pid_t spawn_worker(struct decoded_request *request,
                           const struct session_identity *identity,
                           gid_t service_gid, int output_fd[2]) {
   int output[2] = {-1, -1}, error_output[2] = {-1, -1};
-  if (!make_output_pipe(output) || !make_output_pipe(error_output)) {
+  const bool borrow=display_borrow_request(request->argc,request->argv);
+  const bool output_ready=borrow?socketpair(AF_UNIX,SOCK_SEQPACKET|SOCK_CLOEXEC|SOCK_NONBLOCK,0,output)==0:make_output_pipe(output);
+  if (!output_ready || !make_output_pipe(error_output)) {
     if (output[0] >= 0) close(output[0]);
     if (output[1] >= 0) close(output[1]);
     return -1;
@@ -1844,7 +1880,8 @@ static int display_worker_completion_status(int status, bool cancelled, bool dis
 
 static int relay_worker(int socket_fd, pid_t worker, int output_fd[2],
                         const struct session_identity *identity,
-                        gid_t service_gid, bool display_request, bool display_mutating) {
+                        gid_t service_gid, bool display_request, bool display_mutating,
+                        int mutation_lock, bool native_mutation) {
   bool worker_exited = false;
   int status = 126 << 8;
   const char *cancellation_reason = NULL;
@@ -1927,7 +1964,18 @@ static int relay_worker(int socket_fd, pid_t worker, int output_fd[2],
   // A failed reap must never look like completion. Closing the connection
   // makes session-exec report unknown completion and the host fail closed.
   if (!worker_exited) return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
-  const int exit_code = display_worker_completion_status(status, cancellation_reason != NULL, display_mutating);
+  int exit_code = display_worker_completion_status(status, cancellation_reason != NULL, display_mutating);
+  if(native_mutation) {
+    if(exit_code==0) {
+      // The helper's clean result is known before retiring the durable marker.
+      // A failed clear is reported as unknown; the on-disk state remains either
+      // sticky (safe denial) or empty after a confirmed clean operation.
+      if(!display_borrow_clear_uncertainty(mutation_lock))
+        exit_code=VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
+    } else {
+      display_borrow_note_mutation_unknown(mutation_lock);
+    }
+  }
   if (cancellation_reason) {
     (void) send_frame(socket_fd, VIBEPOLLO_SESSION_STDERR, identity->generation, 0,
                       cancellation_reason, strlen(cancellation_reason));
@@ -1936,6 +1984,8 @@ static int relay_worker(int socket_fd, pid_t worker, int output_fd[2],
                     exit_code, NULL, 0);
   return exit_code;
 }
+
+#include "vibepollo-display-borrow-relay.h"
 
 int main(int argc, char **argv) {
   if (!sanitize_startup_capabilities()) return 126;
@@ -1971,18 +2021,53 @@ int main(int argc, char **argv) {
     free(packet);
     return 126;
   }
+  const bool borrow=display_borrow_request(request.argc,request.argv);
+  const bool mutation_context=display_mutation_request(request.argc,request.argv);
+  const bool native_mutation=mutation_context || (!borrow && request.argc>=2 && !strcmp(request.argv[1],"display-apply"));
+  const bool lock_required=borrow || mutation_context || (request.argc>=2 &&
+    (!strcmp(request.argv[1],"display-apply") || !strcmp(request.argv[1],"display-power") || !strcmp(request.argv[1],"display-wake")));
+  int mutation_lock=-1;
+  if(lock_required) {
+    mutation_lock=display_borrow_open_lock();
+    if(mutation_lock<0 || (borrow && strcmp(identity.role,"desktop")) ||
+       !display_borrow_acquire_lock(mutation_lock,borrow,native_mutation)) {
+      if(mutation_lock>=0)close(mutation_lock);
+      send_rejection(STDIN_FILENO,identity.generation,"Display mutation/borrow admission unavailable or fenced.\n");free(packet);return 126;
+    }
+    if(dup2(mutation_lock,DISPLAY_BORROW_LOCK_FD)<0) {
+      if(borrow || native_mutation)(void)display_borrow_clear_uncertainty(mutation_lock);
+      close(mutation_lock);free(packet);return 126;
+    }
+    if(fcntl(DISPLAY_BORROW_LOCK_FD,F_SETFD,FD_CLOEXEC)<0) {
+      if(borrow || native_mutation)(void)display_borrow_clear_uncertainty(mutation_lock);
+      close(DISPLAY_BORROW_LOCK_FD);close(mutation_lock);free(packet);return 126;
+    }
+  }
   int output_fd[2] = {-1, -1};
+  if(mutation_context) {
+    const int result=relay_display_borrow(STDIN_FILENO,0,output_fd,&identity,service_gid,request.argv[2],mutation_lock);
+    close(mutation_lock);close(DISPLAY_BORROW_LOCK_FD);free(packet);return result;
+  }
   const pid_t worker = spawn_worker(&request, &identity, service_gid, output_fd);
   if (worker < 0) {
+    if(borrow || native_mutation)(void)display_borrow_clear_uncertainty(mutation_lock);
+    if(mutation_lock>=0) {close(mutation_lock);close(DISPLAY_BORROW_LOCK_FD);}
     send_rejection(STDIN_FILENO, request.header.generation,
                    "Vibepollo could not start the session request.\n");
     free(packet);
     return 126;
   }
+  if(borrow) {
+    const int result=relay_display_borrow(STDIN_FILENO,worker,output_fd,&identity,service_gid,request.argv[2],mutation_lock);
+    close(mutation_lock);close(DISPLAY_BORROW_LOCK_FD);free(packet);return result;
+  }
   const bool display_request = display_request_uses_bounded_reply(request.argc, request.argv);
   const bool display_mutating = request.argc >= 2 && display_request_is_mutating(request.argv[1]);
   const int result = relay_worker(STDIN_FILENO, worker, output_fd, &identity, service_gid,
-                                 display_request, display_mutating);
+                                 display_request, display_mutating, mutation_lock, native_mutation);
+  if(mutation_lock>=0) {
+    close(mutation_lock);close(DISPLAY_BORROW_LOCK_FD);
+  }
   free(packet);
   return result;
 }

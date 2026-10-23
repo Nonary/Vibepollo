@@ -45,7 +45,12 @@ namespace {
       applied_configuration = config;
       // Model SettingsManager's cached initial topology overriding a freshly
       // staged topology unless its transaction has explicitly been reset.
-      if (cached_settings_topology) topology = *cached_settings_topology;
+      if (cached_settings_topology) {
+        topology = *cached_settings_topology;
+      }
+      if (settings_topology_override) {
+        topology = *settings_topology_override;
+      }
       return apply_status;
     }
 
@@ -188,6 +193,7 @@ namespace {
     display_helper::v2::ApplyStatus apply_status = display_helper::v2::ApplyStatus::Ok;
     display_helper::v2::ApplyStatus apply_topology_status = display_helper::v2::ApplyStatus::Ok;
     std::optional<display_device::ActiveTopology> applied_topology_override;
+    std::optional<display_device::ActiveTopology> settings_topology_override;
     std::optional<display_device::SingleDisplayConfiguration> applied_configuration;
     display_device::EnumeratedDeviceList enumerated_devices;
     display_device::ActiveTopology topology;
@@ -789,6 +795,53 @@ TEST(DisplayHelperV2VerificationOperation, PreservesDefaultRequestAndVerifiesPla
   EXPECT_EQ(display.verification_target->duplicate_device_ids, target.duplicate_device_ids);
 }
 
+TEST(DisplayHelperV2VerificationOperation, RejectsExtraOutputsWhenExactTopologyIsSupplied) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  display.topology = display_device::ActiveTopology {{"PHYSICAL"}, {"VDD-TARGET"}};
+  display_helper::v2::VerificationOperation operation(display, clock);
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-TARGET";
+  request.virtual_layout = "exclusive";
+  request.topology = display_device::ActiveTopology {{"VDD-TARGET"}};
+  display_helper::v2::CancellationSource source;
+
+  EXPECT_FALSE(operation.run(request, request.topology, std::nullopt, source.token()));
+  EXPECT_EQ(clock.slept_for, std::chrono::milliseconds::zero());
+}
+
+TEST(DisplayHelperV2VerificationOperation, ExclusiveContractAppliesWhenCallerOmitsExpectedTopology) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  display.topology = display_device::ActiveTopology {{"VDD-TARGET"}};
+  display_helper::v2::VerificationOperation operation(display, clock);
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-TARGET";
+  request.virtual_layout = "exclusive";
+  request.topology = display_device::ActiveTopology {{"VDD-TARGET"}};
+  display_helper::v2::CancellationSource source;
+
+  EXPECT_TRUE(operation.run(request, std::nullopt, std::nullopt, source.token()));
+  EXPECT_EQ(clock.slept_for, std::chrono::milliseconds(250));
+}
+
+TEST(DisplayHelperV2VerificationOperation, ExclusiveContractRejectsUnavailableTopologyReadback) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  display.topology.clear();
+  display_helper::v2::VerificationOperation operation(display, clock);
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-TARGET";
+  request.virtual_layout = "exclusive";
+  display_helper::v2::CancellationSource source;
+
+  EXPECT_FALSE(operation.run(request, std::nullopt, std::nullopt, source.token()));
+  EXPECT_EQ(clock.slept_for, std::chrono::milliseconds::zero());
+}
+
 TEST(DisplayHelperV2VerificationOperation, RejectsWhenTargetedSettingsQueryCannotFindDevice) {
   FakeClock clock;
   FakeDisplaySettings display;
@@ -840,6 +893,39 @@ TEST(DisplayHelperV2ApplyOperation, DoesNotPollTopologyEnumerationBeforeApplying
   ASSERT_NE(topology, display.events.end());
   ASSERT_NE(settings, display.events.end());
   EXPECT_LT(topology, settings);
+}
+
+TEST(DisplayHelperV2ApplyOperation, ExclusiveApplyFailureRestoresPreApplyTopologyWithoutStagingTarget) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  const display_device::ActiveTopology original {{"PHYSICAL"}};
+  display.topology = original;
+  display.settings_topology_override = display_device::ActiveTopology {{"VDD-TARGET"}};
+  display.apply_status = display_helper::v2::ApplyStatus::Retryable;
+
+  display_helper::v2::ApplyOperation operation(display, clock);
+  display_helper::v2::ApplyRequest request;
+  display_device::SingleDisplayConfiguration config;
+  config.m_device_id = "VDD-TARGET";
+  config.m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay;
+  request.configuration = config;
+  request.topology = display_device::ActiveTopology {{"VDD-TARGET"}};
+  request.virtual_layout = "exclusive";
+
+  display_helper::v2::CancellationSource source;
+  const auto outcome = operation.run(request, source.token());
+
+  EXPECT_EQ(outcome.status, display_helper::v2::ApplyStatus::Retryable);
+  ASSERT_TRUE(outcome.exclusive_pre_apply_topology);
+  EXPECT_EQ(*outcome.exclusive_pre_apply_topology, original);
+  EXPECT_EQ(display.topology, original);
+  EXPECT_EQ(display.apply_calls, 1);
+  EXPECT_EQ(display.apply_topology_calls, 1);
+  const auto settings = std::ranges::find(display.events, "settings");
+  const auto topology = std::ranges::find(display.events, "topology");
+  ASSERT_NE(settings, display.events.end());
+  ASSERT_NE(topology, display.events.end());
+  EXPECT_LT(settings, topology);
 }
 
 TEST(DisplayHelperV2ApplyOperation, CancellationAfterRecoveryBoundarySkipsDisplayMutation) {

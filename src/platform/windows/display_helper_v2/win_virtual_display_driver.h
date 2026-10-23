@@ -1,5 +1,7 @@
 #pragma once
 
+#include "src/platform/windows/display_helper_borrow_native.h"
+
 #include "src/platform/windows/display_helper_v2/interfaces.h"
 
 #include <boost/algorithm/string/predicate.hpp>
@@ -27,11 +29,15 @@ namespace display_helper::v2 {
     }
 
     bool disable() override {
+      auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrow_mutation) return false;
       close_handle();
       return true;
     }
 
     bool enable() override {
+      auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrow_mutation) return false;
       if (handle_ != INVALID_HANDLE_VALUE && handle_ != nullptr) {
         return true;
       }
@@ -40,12 +46,20 @@ namespace display_helper::v2 {
     }
 
     bool is_available() override {
+      auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrow_mutation) return false;
       HANDLE h = SUDOVDA::OpenDevice(&SUDOVDA::SUVDA_INTERFACE_GUID);
       if (h == INVALID_HANDLE_VALUE || h == nullptr) {
         return false;
       }
       CloseHandle(h);
       return true;
+    }
+
+    // Called only after the producer mutation gate is closed and drained.
+    std::uint64_t control_handle_for_borrow() const {
+      return handle_ != INVALID_HANDLE_VALUE && handle_ != nullptr ?
+        static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(handle_)) : 0;
     }
 
     std::string device_id() override {
@@ -108,6 +122,8 @@ namespace display_helper::v2 {
 
   private:
     void close_handle() {
+      auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrow_mutation) return ;
       if (handle_ != INVALID_HANDLE_VALUE && handle_ != nullptr) {
         CloseHandle(handle_);
         handle_ = INVALID_HANDLE_VALUE;

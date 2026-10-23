@@ -306,7 +306,7 @@ else()
         endif()
     endif()
 
-    if("${PROJECT_VERSION_FULL}" MATCHES "-daily\\.")
+    if("${PROJECT_VERSION_FULL}" MATCHES "-(daily|nightly)\\.")
         _wv_daily_release_anchor("${_merged_tag_lines}" "${_major}" "${_minor}" "${_patch}" _anchor_time)
         if(NOT "${_anchor_time}" MATCHES "^[0-9]+$" AND _patch GREATER 0)
             math(EXPR _previous_patch "${_patch} - 1")

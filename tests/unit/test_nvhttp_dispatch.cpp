@@ -74,8 +74,10 @@ namespace {
 
     safe::mail_t mail = std::make_shared<safe::mail_raw_t>();
     runtime::packet_queues_t queues = runtime::packet_queues<int, int>(mail, "shutdown", "video", "audio");
+    std::atomic<int> broadcast_start_count {0};
     safe::shared_t<context_t> broadcast {
       [&](context_t &) {
+        ++broadcast_start_count;
         auto startup = queues.reset_for_start();
         return 0;
       },
@@ -178,6 +180,48 @@ namespace {
     pending.back()();
   }
 
+  TEST_F(NvhttpDispatch, DelayedPairedBitrateHandlerCannotRestartAfterTeardownCompletes) {
+    const auto identity = pairing::resolve_paired_client(paired_clients, "certificate-a");
+    ASSERT_EQ(identity.status, pairing::paired_client_resolution_e::authorized);
+    const std::string uuid {paired_clients[identity.index].uuid};
+    auto owner = broadcast.ref();
+    ASSERT_TRUE(owner);
+
+    transport.pause = true;
+    auto teardown_entered = transport.entered.get_future();
+    std::thread teardown([&] {
+      owner.release();
+    });
+    auto cleanup = util::fail_guard([&] {
+      transport.release.set_value();
+      if (teardown.joinable()) {
+        teardown.join();
+      }
+      transport.pause = false;
+    });
+    ASSERT_EQ(teardown_entered.wait_for(2s), std::future_status::ready);
+
+    auto response = std::make_shared<response_t>();
+    int result = -99;
+    dispatch(response, "bitrate", [&, uuid] {
+      result = controls.set_bitrate_for_sessions(uuid, 12000);
+    });
+    ASSERT_EQ(pending.size(), 1);
+    EXPECT_EQ(result, -99) << "the admitted handler is still queued";
+
+    // Finish teardown before running the already-admitted handler. Its control
+    // lookup must see the idle broadcast and leave it idle.
+    transport.release.set_value();
+    teardown.join();
+    transport.pause = false;
+    cleanup.disable();
+
+    pending.front()();
+    EXPECT_EQ(result, 0);
+    EXPECT_EQ(broadcast_start_count.load(), 1) << "a delayed bitrate request must not start a fresh broadcast";
+    EXPECT_FALSE(broadcast.try_ref());
+  }
+
   TEST_F(NvhttpDispatch, PairedClientFilteringAndPolicyRejectionSurviveDispatch) {
     const auto identity = pairing::resolve_paired_client(paired_clients, "certificate-a");
     ASSERT_EQ(identity.status, pairing::paired_client_resolution_e::authorized);
@@ -185,11 +229,13 @@ namespace {
     auto owner = broadcast.ref();
     ASSERT_TRUE(owner);
     int bitrate_a = 1000, requested_a = 1000, bitrate_b = 2000, requested_b = 2000;
+    std::atomic<int> pacing_bitrate_a {1000};
+    std::atomic<int> pacing_bitrate_b {2000};
     auto event_a = mail->event<int>("bitrate-a");
     auto event_b = mail->event<int>("bitrate-b");
     owner->sessions = {
-      {client_a, bitrate_a, requested_a, {}, event_a},
-      {client_b, bitrate_b, requested_b, {}, event_b},
+      {client_a, bitrate_a, requested_a, pacing_bitrate_a, {}, event_a},
+      {client_b, bitrate_b, requested_b, pacing_bitrate_b, {}, event_b},
     };
     auto response = std::make_shared<response_t>();
     int result = -99;
@@ -201,9 +247,11 @@ namespace {
     EXPECT_EQ(result, 1);
     EXPECT_EQ(bitrate_a, 12000);
     EXPECT_EQ(requested_a, 12000);
+    EXPECT_EQ(pacing_bitrate_a.load(std::memory_order_relaxed), 12000);
     EXPECT_EQ(event_a->pop(0ms), 12000);
     EXPECT_EQ(bitrate_b, 2000);
     EXPECT_EQ(requested_b, 2000);
+    EXPECT_EQ(pacing_bitrate_b.load(std::memory_order_relaxed), 2000);
     EXPECT_FALSE(event_b->peek());
 
     admit = false;
@@ -214,6 +262,7 @@ namespace {
     EXPECT_EQ(result, -1);
     EXPECT_EQ(bitrate_a, 12000);
     EXPECT_EQ(requested_a, 12000);
+    EXPECT_EQ(pacing_bitrate_a.load(std::memory_order_relaxed), 12000);
     EXPECT_FALSE(event_a->peek());
     EXPECT_TRUE(response->body.empty()) << "accepted dispatch leaves the handler responsible for its response";
     owner.release();
@@ -232,5 +281,120 @@ namespace {
     EXPECT_EQ(pending.size(), 1);
     pending.front()();
     EXPECT_FALSE(stale_bitrate);
+  }
+
+  TEST_F(NvhttpDispatch, RequestIdentityLogFieldsAreLimitedToUntracedCalls) {
+    EXPECT_TRUE(nvhttp::dispatch::include_request_identity_log_fields(0));
+    EXPECT_FALSE(nvhttp::dispatch::include_request_identity_log_fields(1));
+    EXPECT_FALSE(nvhttp::dispatch::include_request_identity_log_fields(0x443));
+  }
+
+  TEST_F(NvhttpDispatch, ResumeTraceDistinguishesBusyRejectionFromHandlerEntry) {
+    using stage_e = nvhttp::dispatch::trace_stage_e;
+    auto launch_response = std::make_shared<response_t>();
+    dispatch(launch_response, "launch", [] {
+    });
+
+    auto resume_busy_response = std::make_shared<response_t>();
+    std::vector<stage_e> busy_events;
+    bool busy_handler_entered = false;
+    nvhttp::dispatch::run_blocking(admission, [&](auto admitted) {
+      pending.emplace_back(std::move(admitted));
+    },
+                                   resume_busy_response,
+                                   "resume",
+                                   [&] {
+                                     busy_handler_entered = true;
+                                   },
+                                   [&](const nvhttp::dispatch::trace_event_t &event) {
+                                     busy_events.push_back(event.stage);
+                                   });
+
+    EXPECT_FALSE(busy_handler_entered);
+    EXPECT_EQ(busy_events, (std::vector<stage_e> {stage_e::busy_response_write_returned}));
+    EXPECT_EQ(read_response(*resume_busy_response).get<int>("root.<xmlattr>.status_code"), 503);
+    EXPECT_EQ(pending.size(), 1);
+
+    // Negative control: free the same production admission gate, then submit
+    // an identical Resume handler and verify that it reaches the executor.
+    pending.front()();
+    auto resume_admitted_response = std::make_shared<response_t>();
+    std::vector<stage_e> admitted_events;
+    bool admitted_handler_entered = false;
+    nvhttp::dispatch::run_blocking(admission, [&](auto admitted) {
+      pending.emplace_back(std::move(admitted));
+    },
+                                   resume_admitted_response,
+                                   "resume",
+                                   [&] {
+                                     admitted_handler_entered = true;
+                                   },
+                                   [&](const nvhttp::dispatch::trace_event_t &event) {
+                                     admitted_events.push_back(event.stage);
+                                   });
+    EXPECT_EQ(admitted_events, (std::vector<stage_e> {stage_e::submit_returned}));
+    EXPECT_FALSE(admitted_handler_entered);
+    ASSERT_EQ(pending.size(), 2);
+    pending.back()();
+    EXPECT_TRUE(admitted_handler_entered);
+    EXPECT_EQ(admitted_events, (std::vector<stage_e> {stage_e::submit_returned, stage_e::worker_started, stage_e::worker_completed}));
+  }
+
+  TEST_F(NvhttpDispatch, ResumeTraceNamesPostSubmitEventWithoutAssumingWorkerOrder) {
+    using stage_e = nvhttp::dispatch::trace_stage_e;
+    single_flight::admission_t inline_admission;
+    auto response = std::make_shared<response_t>();
+    std::vector<stage_e> events;
+    bool handler_entered = false;
+
+    nvhttp::dispatch::run_blocking(inline_admission, [](auto task) {
+      task();
+    },
+                                   response,
+                                   "resume",
+                                   [&] {
+                                     handler_entered = true;
+                                   },
+                                   [&](const nvhttp::dispatch::trace_event_t &event) {
+                                     events.push_back(event.stage);
+                                   });
+
+    EXPECT_TRUE(handler_entered);
+    EXPECT_EQ(events, (std::vector<stage_e> {stage_e::worker_started, stage_e::worker_completed, stage_e::submit_returned}));
+  }
+
+  TEST_F(NvhttpDispatch, ResumeTraceRecordsHostCanceledStartResponse) {
+    using stage_e = nvhttp::dispatch::trace_stage_e;
+    auto response = std::make_shared<response_t>();
+    std::vector<stage_e> events;
+    bool handler_entered = false;
+
+    nvhttp::dispatch::run_start(admission, [&](auto admitted) {
+      pending.emplace_back(std::move(admitted));
+    },
+                            response,
+                            "resume",
+                            [&] {
+                              handler_entered = true;
+                            },
+                            [&](const nvhttp::dispatch::trace_event_t &event) {
+                              events.push_back(event.stage);
+                            });
+
+    ASSERT_EQ(pending.size(), 1);
+    ASSERT_TRUE(host_stream_control::terminate([] {
+      return true;
+    }, [] {
+    })) << "test should advance the host-start epoch before the queued worker runs";
+
+    pending.front()();
+    EXPECT_FALSE(handler_entered);
+    EXPECT_EQ(read_response(*response).get<int>("root.<xmlattr>.status_code"), 503);
+    EXPECT_EQ(events, (std::vector<stage_e> {
+      stage_e::submit_returned,
+      stage_e::worker_started,
+      stage_e::host_start_canceled_response_write_returned,
+      stage_e::worker_completed,
+    }));
   }
 }  // namespace

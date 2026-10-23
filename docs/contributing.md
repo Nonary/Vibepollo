@@ -2,6 +2,28 @@
 Read our contribution guide in our organization level
 [docs](https://docs.lizardbyte.dev/latest/developers/contributing.html).
 
+## Canary and stable releases
+
+Target `canary` for contributions. Trusted contributors with repository write
+access can push directly to it. The nightly workflow runs at 06:32 UTC every
+day and builds the exact remote `canary` commit, including all commits in its
+history. A successful Windows and Linux qualification publishes a prerelease;
+an unchanged source is skipped. New commits after the source is selected wait
+for the next nightly.
+
+`master` remains the default branch and the stable review lane. The maintainer
+reviews and promotes selected changes from `canary` for stable releases;
+nightly publication never promotes changes automatically.
+
+Repository rules reserve updates to `master` and non-nightly release tags for
+administrators, and prevent contributor force pushes or deletion of `canary`.
+Repository write access is broader than a single branch, so grant it only to
+trusted contributors. Keep these protections in place when adding writers.
+
+Workflow changes must be reviewed and synchronized to both `master` and
+`canary`: nightly publication requires identical `.github/workflows` trees.
+See [daily prereleases](daily-prereleases.md) for activation and qualification.
+
 ## Recommended Tools
 
 | Tool                                                                                                                                                                           | Description                                                             |

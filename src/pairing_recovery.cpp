@@ -32,6 +32,7 @@
 // clang-format off: SDDL declarations require the Windows types first.
   #include <Windows.h>
   #include <sddl.h>
+  #include <shellapi.h>
 // clang-format on
 #else
   #include <fcntl.h>
@@ -520,10 +521,145 @@ namespace pairing_recovery {
     }
   }
 
+  // Reuse the bounded, no-follow input and private, create-only output helpers.
+  // This is an explicit destructive reset candidate, never automatic recovery.
+  int run_auxiliary(int argc, const char *const argv[], std::ostream &out, std::ostream &error) {
+    try {
+      require(argc >= 2, "Usage: --auxiliary-recovery inspect INPUT | prepare-reset INPUT --expect-snapshot TOKEN --accept-token-and-metadata-loss --confirm-separate-auxiliary-state --output NEW_DIRECTORY");
+      const std::string_view operation = argv[0];
+      require(operation == "inspect" || operation == "prepare-reset", "Auxiliary operation must be inspect or prepare-reset.");
+      std::string expected, destination;
+      bool accept_loss = false;
+      bool confirm_separate = false;
+      for (int i = 2; i < argc; ++i) {
+        require(operation == "prepare-reset", "Inspection does not accept reset options.");
+        const std::string_view option = argv[i];
+        if (option == "--accept-token-and-metadata-loss" && !accept_loss) {
+          accept_loss = true;
+        } else if (option == "--confirm-separate-auxiliary-state" && !confirm_separate) {
+          confirm_separate = true;
+        } else if (option == "--expect-snapshot" && expected.empty() && i + 1 < argc) {
+          expected = argv[++i];
+        } else if (option == "--output" && destination.empty() && i + 1 < argc) {
+          destination = argv[++i];
+        } else {
+          throw recovery_error_t("Unknown, repeated or incomplete auxiliary recovery option.");
+        }
+      }
+      const auto source = utf8_path(argv[1]);
+      // Zero-filled snapshots have no embedded identity. The name check catches
+      // obvious mistakes; the operator must confirm configured path separation.
+      require(source.filename() == "vibeshine_state.json", "Use copies of the configured vibeshine_state.json and its .bak. Custom filenames are not supported.");
+      const auto bytes = read_snapshot(source);
+      auto backup_path = source;
+      backup_path += ".bak";
+      const auto backup = read_snapshot(backup_path);
+      const auto zero_filled = [](const std::string &contents) {
+        return contents.find_first_not_of('\0') == std::string::npos;
+      };
+      require(zero_filled(bytes) && zero_filled(backup), "Reset is limited to two existing empty or entirely zero-filled auxiliary snapshots. Nonzero, missing or unreadable state requires separate investigation; no files were changed.");
+      const auto primary_hash = sha256(bytes);
+      const auto backup_hash = sha256(backup);
+      const auto token = sha256("auxiliary-reset:" + primary_hash + ":" + backup_hash);
+      json report = {{"schema_version", 1}, {"operation", "auxiliary_reset_not_recovery"}, {"snapshot_token", token}, {"primary_sha256", primary_hash}, {"backup_sha256", backup_hash}, {"lost_state", {"API tokens", "Web UI sessions", "application ID aliases", "display metadata", "crash dismissal and notification metadata"}}, {"warning", "This cannot recover lost data. Verify the configured auxiliary file is separate from pairing state and Web UI credentials before preparing or installing a reset."}};
+      if (operation == "inspect") {
+        out << report.dump(2, ' ', true) << '\n';
+        return 0;
+      }
+      require(accept_loss, "Reset requires --accept-token-and-metadata-loss. Existing API tokens, Web UI sessions and auxiliary metadata cannot be recovered.");
+      require(confirm_separate, "Reset requires --confirm-separate-auxiliary-state after verifying the configured auxiliary and pairing paths differ.");
+      require(!expected.empty() && expected == token, "Snapshot changed or --expect-snapshot does not match inspection. Inspect the current copies again.");
+      require(!destination.empty(), "Preparation requires --output NEW_DIRECTORY.");
+      // Explicit empty token containers also prevent startup migration from
+      // resurrecting stale tokens retained in older primary-state snapshots.
+      const std::string candidate = "{\n  \"root\": {\n    \"api_tokens\": [],\n    \"session_tokens\": []\n  }\n}\n";
+      const auto output = utf8_path(destination);
+      create_private_directory(output);
+      write_new_file(output / "primary.original.json", bytes);
+      write_new_file(output / "backup.original.json", backup);
+      write_new_file(output / "vibeshine_state.reset.json", candidate);
+      write_new_file(output / "vibeshine_state.reset.json.bak", candidate);
+      require(read_snapshot(output / "primary.original.json") == bytes && read_snapshot(output / "backup.original.json") == backup && read_snapshot(output / "vibeshine_state.reset.json") == candidate && read_snapshot(output / "vibeshine_state.reset.json.bak") == candidate, "Output read-back verification failed; do not use the incomplete output directory.");
+      report["candidate_sha256"] = sha256(candidate);
+      report["operator_confirmed_separate_auxiliary_state"] = true;
+      report["complete"] = true;
+      // Complete manifest is published last, as for pairing recovery.
+      write_new_file(output / "recovery.json", report.dump(2, ' ', true) + "\n");
+      out << "Auxiliary RESET candidate prepared, not installed. No lost data was recovered. Original snapshots, pairing state and credentials were not changed. Review recovery.json before offline installation of both reset copies.\n";
+      return 0;
+    } catch (const recovery_error_t &exception) {
+      error << exception.what() << '\n';
+      return 2;
+    } catch (const std::exception &) {
+      error << "Auxiliary reset preparation failed; originals were not changed. Do not use an output directory without a complete recovery.json manifest.\n";
+      return 2;
+    }
+  }
+
   std::optional<int> dispatch(int argc, const char *const argv[], std::ostream &out, std::ostream &error) {
+    if (argc >= 2 && std::string_view(argv[1]) == "--auxiliary-recovery") {
+      return run_auxiliary(argc - 2, argv + 2, out, error);
+    }
     if (argc < 2 || std::string_view(argv[1]) != "--pairing-recovery") {
       return std::nullopt;
     }
     return run(argc - 2, argv + 2, out, error);
+  }
+#ifdef _WIN32
+  std::optional<int> dispatch_windows_command_line(const wchar_t *command_line, std::ostream &out, std::ostream &error) {
+    try {
+      require(command_line && *command_line, "Could not read the wide recovery command line.");
+      int count = 0;
+      auto *wide = CommandLineToArgvW(command_line, &count);
+      require(wide != nullptr, "Could not parse the wide recovery command line.");
+      const auto release = [](wchar_t **arguments) {
+        LocalFree(arguments);
+      };
+      std::unique_ptr<wchar_t *, decltype(release)> owner(wide, release);
+      if (count < 2 || (std::wstring_view(wide[1]) != L"--pairing-recovery" && std::wstring_view(wide[1]) != L"--auxiliary-recovery")) {
+        return std::nullopt;
+      }
+      std::vector<std::string> utf8;
+      utf8.reserve(static_cast<std::size_t>(count));
+      for (int i = 0; i < count; ++i) {
+        const auto size = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide[i], -1, nullptr, 0, nullptr, nullptr);
+        require(size > 0, "Recovery arguments contain invalid Unicode.");
+        std::string converted(static_cast<std::size_t>(size), '\0');
+        require(WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wide[i], -1, converted.data(), size, nullptr, nullptr) == size, "Could not convert recovery arguments to UTF-8.");
+        converted.pop_back();  // The conversion count includes the terminating NUL.
+        utf8.push_back(std::move(converted));
+      }
+      std::vector<const char *> arguments;
+      arguments.reserve(utf8.size());
+      for (const auto &argument : utf8) {
+        arguments.push_back(argument.c_str());
+      }
+      return dispatch(count, arguments.data(), out, error);
+    } catch (const recovery_error_t &exception) {
+      error << exception.what() << '\n';
+    } catch (const std::exception &) {
+      error << "Could not prepare Unicode recovery arguments; no snapshots were changed.\n";
+    }
+    return 2;
+  }
+#endif
+
+  std::optional<int> dispatch_native(int argc, const char *const argv[], std::ostream &out, std::ostream &error) {
+#ifdef _WIN32
+    // Only these ASCII flags are read from CRT argv. All actual arguments come
+    // from UTF-16: ACP argv may already have replaced non-ACP characters with '?'.
+    // Do not reinterpret or change encoding for unrelated host CLI options.
+    if (argc < 2 || (std::string_view(argv[1]) != "--pairing-recovery" && std::string_view(argv[1]) != "--auxiliary-recovery")) {
+      return std::nullopt;
+    }
+    const auto result = dispatch_windows_command_line(GetCommandLineW(), out, error);
+    if (!result) {
+      error << "Wide recovery command line did not match the explicit recovery flag.\n";
+      return 2;
+    }
+    return result;
+#else
+    return dispatch(argc, argv, out, error);
+#endif
   }
 }  // namespace pairing_recovery

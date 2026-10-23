@@ -6,13 +6,13 @@
 
 #include <src/platform/windows/present_timing_policy.h>
 #include <src/platform/windows/wgc_capture_policy.h>
-
 #include <cstdint>
 #include <cstdlib>
 #include <vector>
 
 namespace {
   using platf::dxgi::present_timing::refiner_t;
+  using platf::dxgi::present_timing::source_identity_t;
 
   // Microsecond clock; a 116 FPS stream on the 4x (464 Hz) virtual display.
   constexpr std::int64_t grid = 2155;
@@ -38,6 +38,14 @@ namespace {
       game.ready.push_back(present + latency);
     }
     return game;
+  }
+
+  void add_latency_samples(refiner_t &refiner, const std::int64_t first_composition, const std::int64_t latency) {
+    for (int k = 0; k < static_cast<int>(refiner_t::minimum_latency_samples); ++k) {
+      const auto composition = first_composition + k * 10000;
+      const std::vector<std::int64_t> presents {composition - latency};
+      refiner.refine(composition, grid, presents, minimum_step, stale);
+    }
   }
 
   struct errors_t {
@@ -137,6 +145,72 @@ TEST(PresentTimingPolicy, SourceResetKeepsStampsMonotonic) {
   refiner.reset_source();
   const auto second = refiner.refine(50 * grid + grid, grid, {}, minimum_step, stale).stamp;
   EXPECT_GT(second, first);
+}
+
+TEST(PresentTimingPolicy, SourceIdentityIncludesProcessAndSwapchain) {
+  source_identity_t identity;
+  constexpr std::uint32_t first_pid = 100;
+  constexpr std::uint32_t second_pid = 200;
+  constexpr std::uint64_t reused_swapchain = 0x1234;
+  constexpr std::uint64_t replacement_swapchain = 0x5678;
+
+  EXPECT_EQ(identity.preferred_swapchain(first_pid), 0u);
+  EXPECT_TRUE(identity.update(first_pid, reused_swapchain));
+  EXPECT_EQ(identity.preferred_swapchain(first_pid), reused_swapchain);
+
+  // Stable process/chain is a negative control: it keeps its preference and
+  // does not request a refiner reset.
+  EXPECT_FALSE(identity.update(first_pid, reused_swapchain));
+  EXPECT_EQ(identity.preferred_swapchain(first_pid), reused_swapchain);
+
+  // The previous process's pointer must not be preferred by another PID,
+  // even when the allocator reuses the same numeric address.
+  EXPECT_EQ(identity.preferred_swapchain(second_pid), 0u);
+  EXPECT_TRUE(identity.update(second_pid, reused_swapchain));
+  EXPECT_FALSE(identity.update(second_pid, reused_swapchain));
+
+  // A chain change within one process still requests a reset, and a lost
+  // source resets once before remaining stable at zero.
+  EXPECT_TRUE(identity.update(second_pid, replacement_swapchain));
+  EXPECT_TRUE(identity.update(second_pid, 0));
+  EXPECT_FALSE(identity.update(second_pid, 0));
+}
+
+TEST(PresentTimingPolicy, ProcessChangeWithReusedPointerClearsLearnedLatency) {
+  source_identity_t identity;
+  refiner_t refiner;
+  constexpr std::uint32_t first_pid = 100;
+  constexpr std::uint32_t second_pid = 200;
+  constexpr std::uint64_t reused_swapchain = 0x1234;
+
+  ASSERT_TRUE(identity.update(first_pid, reused_swapchain));
+  add_latency_samples(refiner, 1000000, 3000);
+  ASSERT_EQ(refiner.latency(), 3000);
+
+  // Negative control: observing the same source does not discard useful
+  // history.
+  if (identity.update(first_pid, reused_swapchain)) {
+    refiner.reset_source();
+  }
+  EXPECT_EQ(refiner.latency(), 3000);
+
+  // Production asks for no preferred chain after a PID change. If selection
+  // returns the same numeric address, the full identity still changes and
+  // the old process's latency samples are discarded.
+  EXPECT_EQ(identity.preferred_swapchain(second_pid), 0u);
+  if (identity.update(second_pid, reused_swapchain)) {
+    refiner.reset_source();
+  }
+  EXPECT_EQ(refiner.latency(), 0);
+
+  // Once the new process has trained the refiner, the same PID+chain pair is
+  // stable and its samples remain available.
+  add_latency_samples(refiner, 1300000, 7000);
+  ASSERT_EQ(refiner.latency(), 7000);
+  if (identity.update(second_pid, reused_swapchain)) {
+    refiner.reset_source();
+  }
+  EXPECT_EQ(refiner.latency(), 7000);
 }
 
 TEST(WgcCapturePolicy, SystemRelativeTimeConvertsToPerformanceCounterTicks) {

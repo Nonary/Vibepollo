@@ -18,7 +18,9 @@
 #include <src/state_storage_policy.h>
 #include <sstream>
 
-#ifndef _WIN32
+#ifdef _WIN32
+  #include <Windows.h>
+#else
   #include <csignal>
   #include <sys/resource.h>
   #include <sys/stat.h>
@@ -282,7 +284,13 @@ TEST_F(PairingRecovery, MalformedNativePermissionsNeverProduceCandidates) {
 
 TEST_F(PairingRecovery, NativeDuplicateToleranceIsExplicitAndKeepsTypedValidation) {
   auto strict = state;
-  EXPECT_FALSE(nvhttp::state_policy::normalize_snapshot(strict, parsed_identity));
+  std::vector<statefile::policy::collapsed_pairing_record_t> collapsed;
+  ASSERT_TRUE(nvhttp::state_policy::normalize_snapshot(strict, parsed_identity, false, &collapsed));
+  ASSERT_EQ(collapsed.size(), 1u);
+  EXPECT_EQ(collapsed[0].kept_uuid, first_uuid);
+  EXPECT_EQ(collapsed[0].dropped_uuid, second_uuid);
+  ASSERT_EQ(strict["root"]["named_devices"].size(), 2u);
+  EXPECT_EQ(strict["root"]["named_devices"][0]["name"], "first");
   auto inspected = state;
   EXPECT_TRUE(nvhttp::state_policy::normalize_snapshot(inspected, parsed_identity, true));
   inspected = state;
@@ -371,6 +379,46 @@ TEST_F(PairingRecovery, SnapshotTokenBindsPrimaryAndBackupIncludingMissingBackup
   EXPECT_FALSE(fs::exists(output / "backup.original.json"));
 }
 
+TEST_F(PairingRecovery, ValidDivergentBackupIsPreservedButNeverSelectedOrMerged) {
+  const auto primary = read(input);
+  auto backup_state = state;
+  backup_state["username"] = "backup-owner";
+  backup_state["password"] = "backup-password-hash";
+  backup_state["salt"] = "backup-salt";
+  auto backup_only = state["root"]["named_devices"][2];
+  backup_only["uuid"] = "22222222-2222-2222-2222-222222222224";
+  backup_only["name"] = "backup-only-client";
+  backup_only["enabled"] = "true";
+  backup_only["config_overrides"]["output_name"] = "backup-output";
+  backup_state["root"]["named_devices"] = json::array({backup_only});
+  const auto backup = backup_state.dump(2) + "\n";
+  boost::property_tree::ptree validated_backup;
+  std::istringstream backup_stream(backup);
+  boost::property_tree::read_json(backup_stream, validated_backup);
+  ASSERT_TRUE(statefile::policy::valid_primary_state(validated_backup, false));
+  write(input.string() + ".bak", backup);
+
+  ASSERT_EQ(invoke({"inspect", input.string()}), 0) << stderr_stream.str();
+  const auto inspection = json::parse(stdout_stream.str());
+  ASSERT_EQ(inspection["duplicate_groups"].size(), 1u);
+  ASSERT_EQ(inspection["duplicate_groups"][0]["records"].size(), 2u);
+  EXPECT_EQ(inspection["duplicate_groups"][0]["records"][0]["uuid"], first_uuid);
+  EXPECT_EQ(inspection["duplicate_groups"][0]["records"][1]["uuid"], second_uuid);
+  EXPECT_EQ(inspection["backup_sha256"], digest(backup));
+
+  ASSERT_EQ(prepare({first_uuid}, inspection["snapshot_token"].get<std::string>()), 0) << stderr_stream.str();
+  auto expected = state;
+  expected["root"]["named_devices"].erase(1);
+  const auto candidate = read(output / "sunshine_state.reconciled.json");
+  EXPECT_EQ(json::parse(candidate), expected);
+  EXPECT_EQ(candidate.find("backup-only-client"), std::string::npos);
+  EXPECT_EQ(candidate.find("backup-owner"), std::string::npos);
+  EXPECT_EQ(read(output / "primary.original.json"), primary);
+  EXPECT_EQ(read(output / "backup.original.json"), backup);
+  EXPECT_EQ(read(input), primary);
+  EXPECT_EQ(read(input.string() + ".bak"), backup);
+}
+
 TEST_F(PairingRecovery, ExistingOutputAndLinksCannotOverwriteOriginalSnapshots) {
   ASSERT_TRUE(fs::create_directory(output));
   write(output / "sentinel", "preserve");
@@ -394,20 +442,21 @@ TEST_F(PairingRecovery, InvalidCertificatesAndDuplicateKeysFailWithoutEchoingSec
   EXPECT_FALSE(fs::exists(output));
 }
 
-TEST_F(PairingRecovery, LegacyAliasesArePreservedButUnresolvedLegacyDuplicatesRefuseCandidate) {
+TEST_F(PairingRecovery, LegacyAliasesAndRepeatedLegacyCertificatesArePreservedInTheCandidate) {
   const auto cert = state["root"]["named_devices"][0]["cert"];
   state["root"]["devices"] = {{{"uniqueid", "legacy"}, {"certs", {cert}}}};
   save();
   ASSERT_EQ(prepare({first_uuid}), 0) << stderr_stream.str();
   EXPECT_EQ(json::parse(read(output / "sunshine_state.reconciled.json"))["root"]["devices"], state["root"]["devices"]);
   fs::remove_all(output);
-  // A legacy-only duplicate is outside this named-client recovery operation.
+  // Startup collapses a repeated legacy-only certificate losslessly, so it no
+  // longer blocks a candidate. This named-client operation leaves it untouched.
   state["root"]["named_devices"].erase(2);
   const auto legacy_cert = certificate(2);
   state["root"]["devices"][0]["certs"] = {legacy_cert, legacy_cert};
   save();
-  EXPECT_EQ(prepare({first_uuid}), 2);
-  EXPECT_FALSE(fs::exists(output));
+  ASSERT_EQ(prepare({first_uuid}), 0) << stderr_stream.str();
+  EXPECT_EQ(json::parse(read(output / "sunshine_state.reconciled.json"))["root"]["devices"], state["root"]["devices"]);
 }
 
 TEST_F(PairingRecovery, BoundedInputAndNestingAreEnforcedBeforeOutput) {
@@ -558,7 +607,7 @@ TEST_F(PairingRecovery, CandidateIsAnExactSourceSpliceRatherThanAJsonRoundTrip) 
   EXPECT_EQ(read(input), original);
 }
 
-TEST_F(PairingRecovery, OriginalDuplicateRejectionAndExplicitCandidateAcceptanceUseProductionPolicies) {
+TEST_F(PairingRecovery, StartupCollapseMatchesAnExplicitFirstRecordCandidate) {
   namespace policy = statefile::policy;
   namespace authorization_policy = nvhttp::pairing_policy;
   const auto original = read(input);
@@ -566,22 +615,22 @@ TEST_F(PairingRecovery, OriginalDuplicateRejectionAndExplicitCandidateAcceptance
   std::istringstream initial(original);
   boost::property_tree::read_json(initial, before);
   ASSERT_TRUE(policy::valid_primary_state(before, false));
-  // Real baseline normalization rejects the reported shape. No copied validator
-  // or fake certificate identities: crypto.cpp parses the actual test PEMs.
-  std::string reason;
-  EXPECT_FALSE(policy::normalize_legacy_pairing_state(before, parsed_identity, &reason));
-  EXPECT_NE(reason.find("duplicates"), std::string::npos);
+  // The raw shape is ambiguous to authorization, so startup normalizes it first.
+  // No copied validator or fake certificate identities: crypto.cpp parses the
+  // actual test PEMs.
   const auto presented = parsed_identity(state["root"]["named_devices"][0]["cert"].get<std::string>()).value();
   EXPECT_EQ(authorization(state, presented), authorization_policy::paired_client_resolution_e::invalid_state);
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(before, parsed_identity));
+  EXPECT_TRUE(policy::valid_primary_state(before, false));
   ASSERT_EQ(prepare({first_uuid}), 0) << stderr_stream.str();
   const auto candidate_bytes = read(output / "sunshine_state.reconciled.json");
   boost::property_tree::ptree after;
   std::istringstream candidate(candidate_bytes);
   boost::property_tree::read_json(candidate, after);
+  EXPECT_EQ(before, after);
   EXPECT_TRUE(policy::normalize_legacy_pairing_state(after, parsed_identity));
-  EXPECT_TRUE(policy::valid_primary_state(after, false));
   EXPECT_EQ(authorization(json::parse(candidate_bytes), presented), authorization_policy::paired_client_resolution_e::authorized);
-  EXPECT_EQ(read(input), original);  // Recovery does not make startup repair automatic.
+  EXPECT_EQ(read(input), original);  // Recovery never changes its input.
 }
 
 TEST_F(PairingRecovery, SelectingARevokedSurvivorStillDeniesItsCertificateThroughProductionAuthorization) {
@@ -655,5 +704,254 @@ TEST_F(PairingRecovery, RealPartialWriteFailureLeavesOriginalsAndNoCompleteManif
   EXPECT_LT(fs::file_size(output / "backup.original.json"), backup.size());
   EXPECT_FALSE(fs::exists(output / "sunshine_state.reconciled.json"));
   EXPECT_FALSE(fs::exists(output / "recovery.json"));
+}
+#endif
+
+class AuxiliaryRecovery: public PairingRecovery {
+protected:
+  void SetUp() override {
+    PairingRecovery::SetUp();
+    input = directory / "vibeshine_state.json";
+    write(input, std::string(512, '\0'));
+    write(input.string() + ".bak", std::string(256, '\0'));
+  }
+
+  std::optional<int> inspect() {
+    return dispatch({"sunshine", "--auxiliary-recovery", "inspect", input.string()});
+  }
+
+  std::string auxiliary_token() {
+    EXPECT_EQ(inspect(), 0) << stderr_stream.str();
+    return json::parse(stdout_stream.str()).at("snapshot_token");
+  }
+
+  std::optional<int> reset(const std::string &token) {
+    return dispatch({"sunshine", "--auxiliary-recovery", "prepare-reset", input.string(), "--expect-snapshot", token, "--accept-token-and-metadata-loss", "--confirm-separate-auxiliary-state", "--output", output.string()});
+  }
+};
+
+TEST_F(AuxiliaryRecovery, ExplicitResetPreservesOriginalsAndCannotResurrectTokens) {
+  const auto pairing = state.dump();
+  write(directory / "sunshine_state.json", pairing);
+  const auto primary = read(input), backup = read(input.string() + ".bak");
+  const auto inspected = auxiliary_token();
+  EXPECT_FALSE(fs::exists(output));
+  ASSERT_EQ(reset(inspected), 0) << stderr_stream.str();
+  EXPECT_EQ(read(input), primary);
+  EXPECT_EQ(read(input.string() + ".bak"), backup);
+  EXPECT_EQ(read(output / "primary.original.json"), primary);
+  EXPECT_EQ(read(output / "backup.original.json"), backup);
+  EXPECT_EQ(read(directory / "sunshine_state.json"), pairing);
+  const auto candidate = read(output / "vibeshine_state.reset.json");
+  EXPECT_EQ(read(output / "vibeshine_state.reset.json.bak"), candidate);
+  const auto state = json::parse(candidate);
+  EXPECT_EQ(state["root"]["api_tokens"], json::array());
+  EXPECT_EQ(state["root"]["session_tokens"], json::array());
+  EXPECT_EQ(state.size(), 1u);
+  EXPECT_EQ(state["root"].size(), 2u);
+  EXPECT_FALSE(fs::exists(output / "sunshine_state.reconciled.json"));
+  const auto report = json::parse(read(output / "recovery.json"));
+  EXPECT_EQ(report["operation"], "auxiliary_reset_not_recovery");
+  EXPECT_EQ(report["complete"], true);
+  EXPECT_EQ(report["operator_confirmed_separate_auxiliary_state"], true);
+  EXPECT_EQ(report["candidate_sha256"], digest(candidate));
+  boost::property_tree::ptree loaded;
+  EXPECT_EQ(statefile::policy::load_vibeshine_state("auxiliary", loaded, [&](const std::string &) {
+              return statefile::policy::read_result_t {statefile::policy::read_status_e::loaded, candidate};
+            },
+                                                    [](const std::string &, const std::string &) {
+                                                      ADD_FAILURE() << "Validated identical reset copies should not be rewritten";
+                                                      return false;
+                                                    }),
+            statefile::policy::load_result_e::loaded);
+}
+
+TEST_F(AuxiliaryRecovery, RequiresExplicitLossAcceptance) {
+  const auto inspected = auxiliary_token();
+  EXPECT_EQ(dispatch({"sunshine", "--auxiliary-recovery", "prepare-reset", input.string(), "--expect-snapshot", inspected, "--output", output.string()}), 2);
+  EXPECT_NE(stderr_stream.str().find("--accept-token-and-metadata-loss"), std::string::npos);
+  EXPECT_FALSE(fs::exists(output));
+}
+
+TEST_F(AuxiliaryRecovery, RequiresSeparateStateConfirmation) {
+  const auto inspected = auxiliary_token();
+  EXPECT_EQ(dispatch({"sunshine", "--auxiliary-recovery", "prepare-reset", input.string(), "--expect-snapshot", inspected, "--accept-token-and-metadata-loss", "--output", output.string()}), 2);
+  EXPECT_NE(stderr_stream.str().find("--confirm-separate-auxiliary-state"), std::string::npos);
+  EXPECT_FALSE(fs::exists(output));
+}
+
+TEST_F(AuxiliaryRecovery, BothSnapshotsAreBoundToInspection) {
+  const auto inspected = auxiliary_token();
+  write(input.string() + ".bak", std::string(128, '\0'));
+  EXPECT_EQ(reset(inspected), 2);
+  EXPECT_FALSE(fs::exists(output));
+  const auto fresh = auxiliary_token();
+  write(input, std::string(64, '\0'));
+  EXPECT_EQ(reset(fresh), 2);
+  EXPECT_FALSE(fs::exists(output));
+}
+
+TEST_F(AuxiliaryRecovery, RejectsNonzeroMissingOrUninspectableCopies) {
+  for (const auto &path : {input, fs::path(input.string() + ".bak")}) {
+    for (const auto &bytes : {std::string("{\"root\":{\"session_tokens\":[]}}"), std::string("{broken"), std::string(" \n"), std::string("\0x", 2)}) {
+      write(path, bytes);
+      EXPECT_EQ(inspect(), 2);
+      EXPECT_FALSE(fs::exists(output));
+    }
+    fs::remove(path);
+    EXPECT_EQ(inspect(), 2);
+    fs::create_directory(path);
+    EXPECT_EQ(inspect(), 2);
+    fs::remove(path);
+    write(path, std::string(512, '\0'));
+  }
+}
+
+TEST_F(AuxiliaryRecovery, DoesNotAcceptPairingOrCustomStateFilenames) {
+  const auto auxiliary = input;
+  for (const auto name : {"sunshine_state.json", "custom.json"}) {
+    input = directory / name;
+    write(input, std::string(20, '\0'));
+    write(input.string() + ".bak", std::string(20, '\0'));
+    EXPECT_EQ(inspect(), 2);
+    EXPECT_FALSE(fs::exists(output));
+  }
+  input = auxiliary;
+}
+
+TEST_F(AuxiliaryRecovery, EmptySnapshotsAreExplicitlyResettableButOutputCannotBeReused) {
+  write(input, "");
+  write(input.string() + ".bak", "");
+  const auto inspected = auxiliary_token();
+  ASSERT_EQ(reset(inspected), 0) << stderr_stream.str();
+  const auto candidate = read(output / "vibeshine_state.reset.json");
+  EXPECT_EQ(reset(inspected), 2);
+  EXPECT_EQ(read(output / "vibeshine_state.reset.json"), candidate);
+}
+
+TEST_F(AuxiliaryRecovery, RejectsUnknownRepeatedAndMissingOptions) {
+  for (const auto &arguments : std::vector<std::vector<std::string>> {
+         {"sunshine", "--auxiliary-recovery"},
+         {"sunshine", "--auxiliary-recovery", "inspect", input.string(), "--accept-token-and-metadata-loss"},
+         {"sunshine", "--auxiliary-recovery", "prepare-reset", input.string(), "--expect-snapshot"},
+         {"sunshine", "--auxiliary-recovery", "prepare-reset", input.string(), "--accept-token-and-metadata-loss", "--accept-token-and-metadata-loss"},
+         {"sunshine", "--auxiliary-recovery", "prepare", input.string()},
+         {"sunshine", "--auxiliary-recovery", "prepare-reset", input.string(), "--unknown"}
+       }) {
+    EXPECT_EQ(dispatch(arguments), 2);
+    EXPECT_FALSE(fs::exists(output));
+  }
+}
+
+#ifndef _WIN32
+TEST_F(AuxiliaryRecovery, RejectsSymlinksAndCreatesPrivateOutput) {
+  const auto primary = read(input);
+  fs::rename(input, directory / "saved-input");
+  fs::create_symlink(directory / "saved-input", input);
+  EXPECT_EQ(inspect(), 2);
+  fs::remove(input);
+  write(input, primary);
+  ASSERT_EQ(reset(auxiliary_token()), 0);
+  struct stat information {};
+  ASSERT_EQ(::stat(output.c_str(), &information), 0);
+  EXPECT_EQ(information.st_mode & 0777, 0700);
+  for (const auto &entry : fs::directory_iterator(output)) {
+    ASSERT_EQ(::stat(entry.path().c_str(), &information), 0);
+    EXPECT_EQ(information.st_mode & 0777, 0600);
+  }
+}
+#endif
+
+TEST_F(AuxiliaryRecovery, OversizeZeroFilesCannotBypassInputBound) {
+  write(input, std::string(16 * 1024 * 1024 + 1, '\0'));
+  EXPECT_EQ(inspect(), 2);
+  EXPECT_FALSE(fs::exists(output));
+}
+
+#ifndef _WIN32
+TEST_F(AuxiliaryRecovery, PartialWriteCannotProduceCompleteResetManifest) {
+  const auto inspected = auxiliary_token();
+  const auto primary = read(input), backup = read(input.string() + ".bak");
+  const auto child = ::fork();
+  ASSERT_GE(child, 0);
+  if (child == 0) {
+    ::signal(SIGXFSZ, SIG_IGN);
+    const rlimit limit {16, 16};
+    if (::setrlimit(RLIMIT_FSIZE, &limit) != 0) {
+      std::_Exit(3);
+    }
+    std::_Exit(reset(inspected) == 2 ? 0 : 1);
+  }
+  int status = 0;
+  ASSERT_EQ(::waitpid(child, &status, 0), child);
+  ASSERT_TRUE(WIFEXITED(status));
+  ASSERT_EQ(WEXITSTATUS(status), 0);
+  EXPECT_EQ(read(input), primary);
+  EXPECT_EQ(read(input.string() + ".bak"), backup);
+  EXPECT_FALSE(fs::exists(output / "recovery.json"));
+  EXPECT_FALSE(fs::exists(output / "vibeshine_state.reset.json"));
+}
+#endif
+
+TEST_F(AuxiliaryRecovery, Utf8DispatcherPreservesUnicodeInputAndOutputPaths) {
+  const auto unicode = directory / std::filesystem::path(u8"caf\u00e9 \u6d4b\u8bd5 \U0001f4c1");
+  ASSERT_TRUE(fs::create_directory(unicode));
+  input = unicode / "vibeshine_state.json";
+  output = unicode / std::filesystem::path(u8"r\u00e9sultat \u8f93\u51fa");
+  write(input, std::string(32, '\0'));
+  auto backup = input;
+  backup += ".bak";
+  write(backup, std::string(16, '\0'));
+  const auto encode = [](const fs::path &path) {
+    const auto utf8 = path.u8string();
+    return std::string(reinterpret_cast<const char *>(utf8.data()), utf8.size());
+  };
+  // dispatch explicitly accepts UTF-8. The Windows native entry adapter is
+  // separately exercised below; never supply an ACP .string() to this boundary.
+  ASSERT_EQ(dispatch({"sunshine", "--auxiliary-recovery", "inspect", encode(input)}), 0) << stderr_stream.str();
+  const std::string token = json::parse(stdout_stream.str()).at("snapshot_token");
+  ASSERT_EQ(dispatch({"sunshine", "--auxiliary-recovery", "prepare-reset", encode(input), "--expect-snapshot", token, "--accept-token-and-metadata-loss", "--confirm-separate-auxiliary-state", "--output", encode(output)}), 0) << stderr_stream.str();
+  EXPECT_TRUE(fs::exists(output / "recovery.json"));
+  EXPECT_EQ(read(input), std::string(32, '\0'));
+}
+
+TEST_F(AuxiliaryRecovery, NativeBoundaryLeavesUnrelatedCliAlone) {
+  const char *arguments[] {"sunshine", "--config", "non-UTF8-\xE9"};
+  EXPECT_EQ(pairing_recovery::dispatch_native(3, arguments, stdout_stream, stderr_stream), std::nullopt);
+  EXPECT_TRUE(stdout_stream.str().empty());
+  EXPECT_TRUE(stderr_stream.str().empty());
+}
+
+#ifdef _WIN32
+TEST_F(AuxiliaryRecovery, WindowsWideCommandLinePreservesCp1252AndNonAcpPaths) {
+  for (const std::wstring name : {L"caf\u00e9 \u20ac", L"\u6d4b\u8bd5 \U0001f4c1"}) {
+    const auto unicode = directory / name;
+    ASSERT_TRUE(fs::create_directory(unicode));
+    input = unicode / L"vibeshine_state.json";
+    output = unicode / (L"output " + name);
+    write(input, std::string(32, '\0'));
+    auto backup = input;
+    backup += L".bak";
+    write(backup, std::string(16, '\0'));
+    const auto prefix = L"\"C:\\Program Files\\Sunshine\\sunshine.exe\" --auxiliary-recovery ";
+    const auto inspect_command = prefix + std::wstring(L"inspect \"") + input.wstring() + L"\"";
+    stdout_stream.str({});
+    stderr_stream.str({});
+    ASSERT_EQ(pairing_recovery::dispatch_windows_command_line(inspect_command.c_str(), stdout_stream, stderr_stream), 0) << stderr_stream.str();
+    const std::string token = json::parse(stdout_stream.str()).at("snapshot_token");
+    const auto prepare_command = prefix + std::wstring(L"prepare-reset \"") + input.wstring() + L"\" --expect-snapshot " +
+                                 std::wstring(token.begin(), token.end()) + L" --accept-token-and-metadata-loss --confirm-separate-auxiliary-state --output \"" + output.wstring() + L"\"";
+    ASSERT_EQ(pairing_recovery::dispatch_windows_command_line(prepare_command.c_str(), stdout_stream, stderr_stream), 0) << stderr_stream.str();
+    EXPECT_TRUE(fs::exists(output / "recovery.json"));
+    EXPECT_EQ(read(input), std::string(32, '\0'));
+    EXPECT_EQ(read(backup), std::string(16, '\0'));
+  }
+}
+
+TEST_F(AuxiliaryRecovery, WindowsWideConversionRejectsInvalidUtf16WithoutOutput) {
+  const auto command = std::wstring(L"sunshine --auxiliary-recovery inspect \"") + wchar_t(0xD800) + L"\"";
+  EXPECT_EQ(pairing_recovery::dispatch_windows_command_line(command.c_str(), stdout_stream, stderr_stream), 2);
+  EXPECT_NE(stderr_stream.str().find("invalid Unicode"), std::string::npos);
+  EXPECT_FALSE(fs::exists(output));
 }
 #endif
