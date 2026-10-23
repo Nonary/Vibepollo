@@ -128,6 +128,7 @@ using image_event_t = safe::event_t<std::shared_ptr<platf::img_t>>;
 struct capture_ctx_t { std::shared_ptr<image_event_t> images; config_t config; };
 using video::capture_config_for_consumers;
 using video::same_capture_pacing;
+using video::same_capture_demand;
 using video::await_capture_config;
 int failures = 0;
 void check(bool value, const char *label) {
@@ -334,7 +335,7 @@ def main():
     # Before the repair these helpers do not exist. They are unused by the
     # shipping callback, allowing the exact same fixture to expose its behavior.
     if 'capture_config_for_consumers' not in (root / 'src/video_capture_source.h').read_text():
-        text = text.replace('using video::capture_config_for_consumers;', '').replace('using video::same_capture_pacing;', '')
+        text = text.replace('using video::capture_config_for_consumers;', '').replace('using video::same_capture_pacing;', '').replace('using video::same_capture_demand;', '')
     if 'await_capture_config' not in (root / 'src/video_capture_source.h').read_text():
         text = text.replace('using video::await_capture_config;', '')
     with tempfile.TemporaryDirectory(prefix='capture-demand-') as directory:

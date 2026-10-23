@@ -269,6 +269,7 @@ namespace video {
   auto await_capture_config(auto&,auto&,auto) { return std::optional<config_t>(test_config); }
   auto capture_config_for_consumers(auto&,auto) { return std::optional<config_t>(test_config); }
   bool same_capture_pacing(auto&,auto&,auto) { return true; }
+  bool same_capture_demand(auto&,auto&,auto) { return true; }
   template<class... T> void refresh_displays(int, std::vector<std::string> &names, int &index, T&&...) { names={"Virtual-1"}; index=0; }
   bool ensure_virtual_display_ready(auto&,int,bool) { return true; }
   void wait_before_display_retry(size_t&) { test_queue->stop(); }

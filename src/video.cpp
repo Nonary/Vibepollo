@@ -1172,6 +1172,10 @@ namespace video {
       return device->convert(img);
     }
 
+    platf::converted_frame_t converted_frame() const override {
+      return device ? device->converted_frame : platf::converted_frame_t {};
+    }
+
     void request_idr_frame() override {
       if (device && device->frame) {
         auto &frame = device->frame;
@@ -1269,6 +1273,10 @@ namespace video {
       return device->convert(img);
     }
 
+    platf::converted_frame_t converted_frame() const override {
+      return device ? device->converted_frame : platf::converted_frame_t {};
+    }
+
     void request_idr_frame() override {
       force_idr = true;
     }
@@ -1348,10 +1356,14 @@ namespace video {
         return -1;
       }
       const auto result = device->convert(img);
-      if (result == 0) {
+      if (result == 0 && !device->converted_frame.repeats_previous) {
         fresh_conversion_pending = true;
       }
       return result;
+    }
+
+    platf::converted_frame_t converted_frame() const override {
+      return device ? device->converted_frame : platf::converted_frame_t {};
     }
 
     void request_idr_frame() override {
@@ -3384,8 +3396,7 @@ namespace video {
         }
 
         const auto pacing = capture_pacing_for_display();
-        if (const auto demand = capture_config_for_consumers(capture_ctxs, pacing);
-            demand && !same_capture_pacing(producer_config, *demand, pacing)) {
+        if (const auto demand = capture_config_for_consumers(capture_ctxs, pacing); demand && !same_capture_demand(producer_config, *demand, pacing)) {
           // Reuse the existing serialized teardown: all encoders release the
           // old display before its single replacement is created. This also
           // refreshes WGC admission and the capture loop's pacing state.
@@ -5411,10 +5422,14 @@ namespace video {
       uint64_t pop_timeouts = 0;
       uint64_t gate_skipped = 0;
       uint64_t converted = 0;
+      uint64_t repeated_inputs = 0;
       uint64_t encoded = 0;
       uint64_t dropped_submissions = 0;
       std::chrono::steady_clock::time_point last_log = std::chrono::steady_clock::now();
     } loop_stats;
+
+    // A keyframe request that arrived with an input the conversion then reported as a repeat.
+    bool retry_idr = false;
 
     while (true) {
       raise_touch_port_if_geometry_changed(touch_port_event, disp.get(), config);
@@ -5425,6 +5440,7 @@ namespace video {
                          << " pop_timeouts=" << loop_stats.pop_timeouts
                          << " gate_skipped=" << loop_stats.gate_skipped
                          << " converted=" << loop_stats.converted
+                         << " repeated_inputs=" << loop_stats.repeated_inputs
                          << " encoded=" << loop_stats.encoded
                          << " dropped_submissions=" << loop_stats.dropped_submissions
                          << " frame_nr=" << frame_nr;
@@ -5466,7 +5482,7 @@ namespace video {
         }
       }
 
-      bool requested_idr_frame = false;
+      bool requested_idr_frame = std::exchange(retry_idr, false);
 
       while (invalidate_ref_frames_events->peek()) {
         if (auto frames = invalidate_ref_frames_events->pop(0ms)) {
@@ -5583,6 +5599,18 @@ namespace video {
             native_amf_runtime_failed = native_amf_session;
             break;
           }
+
+          // Direct WGC input reads the helper's live frame, so the conversion reports
+          // which frame it actually got. Pixels this session already sent would only
+          // repeat that frame; wait for the next capture instead.
+          const auto converted = policy::resolve_converted_input(session->converted_frame(), capture_timestamp, host_processing_timestamp);
+          if (!converted.encode) {
+            ++loop_stats.repeated_inputs;
+            // Skipping must not delay a requested keyframe until the next capture: carry
+            // it into the next iteration, which encodes the last input without waiting.
+            retry_idr = policy::retry_idr_after_repeat(converted, requested_idr_frame);
+            continue;
+          }
           ++loop_stats.converted;
 
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
@@ -5601,6 +5629,12 @@ namespace video {
 
           if (!placeholder_input) {
             bootstrap_state.real_frame_seen = true;
+            // Direct WGC input can convert a newer frame than the one claimed: the
+            // converted frame's stamps replace the claimed ones, and the pacing
+            // smoothing below starts from them.
+            capture_timestamp = converted.frame_timestamp;
+            host_processing_timestamp = converted.host_processing_timestamp;
+            frame_timestamp = capture_timestamp;
             if (!encode_frame_timestamp) {
               encode_frame_timestamp = *frame_timestamp;
             }
@@ -6106,7 +6140,9 @@ namespace video {
             continue;
           }
 
+          bool idr_requested = false;
           if (ctx->idr_events->peek()) {
+            idr_requested = true;
             pos->session->request_idr_frame();
             ctx->idr_events->pop();
           }
@@ -6155,6 +6191,16 @@ namespace video {
               continue;
             }
 
+            // Direct WGC input: encode the frame the conversion actually read, and
+            // skip pixels this session already sent rather than repeating them.
+            const auto converted = policy::resolve_converted_input(pos->session->converted_frame(), capture_timestamp, host_processing_timestamp);
+            if (!converted.encode && !policy::retry_idr_after_repeat(converted, idr_requested)) {
+              ++pos;
+              continue;
+            }
+            // Otherwise a requested keyframe is not delayed behind the repeat: the last
+            // input is encoded as the IDR now, unstamped like the no-new-frame path.
+
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
             if (refresh_rtx_hdr_metadata_if_needed(
                   ctx->config,
@@ -6171,6 +6217,8 @@ namespace video {
 
             if (!placeholder_input) {
               pos->bootstrap.real_frame_seen = true;
+              capture_timestamp = converted.frame_timestamp;
+              host_processing_timestamp = converted.host_processing_timestamp;
               frame_timestamp = capture_timestamp;
             }
           } else {
