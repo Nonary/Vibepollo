@@ -75,6 +75,8 @@ def main():
     parser.add_argument('--build-dir', type=Path)
     parser.add_argument('--compiler', default='g++')
     parser.add_argument('--sanitize', action='store_true')
+    parser.add_argument('--json-include', default='',
+                        help='Semicolon-separated include directories from the CMake JSON target')
     args = parser.parse_args()
     with tempfile.TemporaryDirectory() as temporary:
         build = args.build_dir or Path(temporary)
@@ -83,6 +85,9 @@ def main():
         cpp.write_text(fixture(args.source))
         exe = build / 'remote_input_reconnect'
         flags = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if args.sanitize else []
+        # The JSON dependency may be fetched into the build tree rather than
+        # installed globally. Match the include paths resolved by CMake.
+        flags += ['-I' + include for include in args.json_include.split(';') if include]
         subprocess.run([args.compiler, '-std=c++23', '-O0', '-g', '-pthread', *flags,
                         '-I' + str(args.source), str(cpp),
                         str(args.source / 'src/remote_session.cpp'),
