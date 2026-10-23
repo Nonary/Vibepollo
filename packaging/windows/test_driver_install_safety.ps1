@@ -182,6 +182,7 @@ try {
     foreach ($action in @('UninstallSudovda','UninstallVirtualDisplayDriver','RemoveVirtualGamepadRoot')) {
         Assert-That ($wix -match ('<Custom Action="'+$action+'"[^>]*>[^<]*NOT UPGRADINGPRODUCTCODE')) "Upgrade driver removal must be guarded: $action"
     }
+    & (Join-Path $RepositoryRoot 'packaging/windows/test_display_inventory_query.ps1') -RepositoryRoot $RepositoryRoot
     $bootstrap=Get-Content (Join-Path $RepositoryRoot 'packaging/windows/bootstrapper/VibeshineInstaller.cs') -Raw
     Assert-That ($bootstrap.Contains('args.Add("UPGRADINGPRODUCTCODE=1")')) 'Bootstrapper pre-uninstall must preserve drivers'
     Assert-That (([regex]::Matches($bootstrap, 'args.Add\("UPGRADINGPRODUCTCODE=1"\)')).Count -eq 2) 'Both MSI pre-uninstall routes must preserve drivers'

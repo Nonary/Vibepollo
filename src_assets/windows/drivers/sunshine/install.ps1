@@ -147,7 +147,9 @@ $ErrorActionPreference = 'Stop'
 try {
     $requestJson = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('__REQUEST__'))
     $request = ConvertFrom-Json -InputObject $requestJson -ErrorAction Stop
-    $packages = @(Get-WindowsDriver -Online -All -ErrorAction Stop | Where-Object {
+    # These custom display packages cannot be inbox Windows drivers. Including
+    # inbox packages makes this bounded query spend most of its budget on DISM.
+    $packages = @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
         [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq [string]$request.InfName
     } | ForEach-Object {
         [pscustomobject]@{ OriginalFileName = [string]$_.OriginalFileName; Driver = [string]$_.Driver }
