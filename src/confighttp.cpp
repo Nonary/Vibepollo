@@ -2697,7 +2697,8 @@ namespace confighttp {
     try {
 #ifdef _WIN32
       // An inventory read must not replace a live stream's captured baseline.
-      if (remote_display_topology::instance().managed_client_identity_count() != 0) {
+      if (display_helper_integration::coordinator_baseline_protected() ||
+          remote_display_topology::instance().managed_client_identity_count() != 0) {
         return;
       }
 #endif
