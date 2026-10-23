@@ -296,7 +296,8 @@ namespace video {
 
     virtual void request_normal_frame() = 0;
 
-    virtual void invalidate_ref_frames(int64_t first_frame, int64_t last_frame) = 0;
+    // Returns false when invalidation falls back to a requested IDR.
+    virtual bool invalidate_ref_frames(int64_t first_frame, int64_t last_frame) = 0;
 
     /**
      * @brief Apply a new encoder bitrate to the live encoder without rebuilding it.

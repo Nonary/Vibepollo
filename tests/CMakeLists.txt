@@ -1870,6 +1870,10 @@ endif()
 # Compile extracted production AMF submission and delivery without a GPU.
 find_program(SUNSHINE_TEST_AMF_CXX NAMES g++)
 if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_AMF_CXX)
+    add_test(NAME regression_video_rfi_retry
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_video_rfi_retry.py"
+            --compiler "${SUNSHINE_TEST_AMF_CXX}")
+    set_tests_properties(regression_video_rfi_retry PROPERTIES LABELS "component" TIMEOUT 60)
     add_test(NAME regression_amf_output_first_retry
         COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_amf_output_first_retry.py"
