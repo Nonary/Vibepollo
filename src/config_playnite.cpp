@@ -9,6 +9,7 @@
 #include "src/confighttp.h"
 #include "src/file_handler.h"
 #include "src/logging.h"
+#include "src/remote_monitor_profile_policy.h"
 #include "src/platform/common.h"
 #ifdef _WIN32
   #include "src/platform/windows/playnite_integration.h"
@@ -71,7 +72,7 @@ namespace config {
       };
       int idx = -1;
       for (size_t i = 0; i < apps.size(); ++i) {
-        if (is_fs(apps[i])) {
+        if (!remote_session::marked_monitor_profile(apps[i]) && is_fs(apps[i])) {
           idx = static_cast<int>(i);
           break;
         }

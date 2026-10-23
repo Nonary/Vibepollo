@@ -11,8 +11,20 @@
   #include <functional>
   #include <optional>
   #include <string>
+  #include "src/platform/windows/display_helper_borrow_protocol.h"
 
 namespace platf::display_helper_client {
+  // Independent exact-version handshake; no old APPLY/DISARM capability is
+  // accepted. Unknown completion is returned explicitly for the native fence.
+  std::optional<::display_helper::borrow::result_t> acquire_borrow_quiescence(
+    const ::display_helper::borrow::request_t &request,
+    std::chrono::steady_clock::time_point deadline,
+    const std::function<bool()> &cancelled,
+    bool &completion_unknown);
+  bool release_borrow_quiescence(
+    const ::display_helper::borrow::token_t &token,
+    std::chrono::steady_clock::time_point deadline);
+
   enum class RecoveryStatus : std::uint8_t {
     Unknown = 0,
     Active = 1,
@@ -58,6 +70,14 @@ namespace platf::display_helper_client {
   // True only after this live pipe has acknowledged a tagged v2 APPLY. An
   // unknown/legacy connection must use dispatch-only snapshot semantics.
   bool uses_v2_response_protocol();
+
+  // Reactivate the currently verified session's exact target without sending
+  // its full topology or reset state. Requires an acknowledged v2 session.
+  bool send_owned_reactivation(
+    const std::string &device_id,
+    std::function<bool()> cancelled,
+    int timeout_ms = 2500
+  );
 
   // Change only one display's refresh rate. This does not alter session snapshots,
   // topology, resolution, HDR, or the helper's restore state.

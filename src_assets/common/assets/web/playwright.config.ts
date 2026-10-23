@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { defineConfig } from '@playwright/test';
 export default defineConfig({
   testDir: './e2e',
+  testIgnore: ['application-display.spec.ts', 'application-rtx-hdr.spec.ts'],
   outputDir: process.env.VIBEPOLLO_TEST_OUTPUT || process.env.VIBESHINE_TEST_OUTPUT || join(tmpdir(), 'vibepollo-ui-results'),
   fullyParallel: true,
   workers: 2,

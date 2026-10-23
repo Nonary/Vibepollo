@@ -296,6 +296,54 @@ capabilities are separate from HDR capture: Gamescope's PipeWire backend still
 verifies the HDR extension and negotiated pixel format. This does not create
 an independent headless compositor or implement Remote Monitor topology there.
 
+#### Session display-preparation precedence
+
+`src/session_display_policy.h` resolves preparation when RTSP and WebRTC build
+launch metadata. Client generic `dd_configuration_option` overrides both dedicated
+and generic application preparation. Dedicated application preparation takes
+precedence over its same-application generic representation; unset fields inherit
+the effective global configuration.
+
+An explicit application/client virtual target, virtual mode, or virtual layout
+can lift a lower-level VerifyOnly preparation to the layout's normal preparation.
+For example, global VerifyOnly plus an application extended-primary virtual
+layout prepares the virtual display as primary. An explicit VerifyOnly at the
+same or a higher level remains authoritative. Without a higher virtual override,
+VerifyOnly still verifies an existing extended target without preparing topology.
+Physical selections and explicit client disables do not trigger this promotion.
+The explicit preparation and deferred virtual-only promotion are stored on the
+launch session; they never write into the configuration file or runtime/global
+settings. Windows configuration, monitor-position, and request helpers consume
+that same policy. Linux private-display mode parsing consumes the same effective
+preparation after reserving the virtual target. Promotion applies only while
+creating or configuring a virtual target; a fallback to physical capture retains
+VerifyOnly. WebRTC resolves it before virtual-output selection is consumed.
+Vibepollo also finalizes preparation after resume fills in the running app's
+display settings, retaining the verified client's original display choice.
+These policy rules do not establish that a physical monitor honors a disable
+request; that requires separate runtime evidence.
+
+#### Nonblocking client display warning
+
+After normal RTSP launch/resume admission succeeds, `nvhttp.cpp` can add the
+optional XML field `clientWarning=virtual_display_disabled_by_client`. It requires
+an actual `virtualDisplay=0` request, an otherwise virtual effective choice, and
+a successful session without a newly selected virtual output. It excludes joins of an existing capture output,
+virtual output, creation failures and Linux backends that only capture an existing
+compositor scene. Assembly captures warning intent from the same app/client snapshots using the
+explicit-choice resolver. The response observer never re-reads mutable settings; it never changes display selection, preparation,
+authentication, success status or persistent settings. Resume uses the application
+actually resolved into the session; it does not import missing app policy merely
+for the warning. Absence of `virtualDisplay` always inherits.
+
+A session flag does not certify the later capture target or physical scanout;
+the warning describes the suppressed request and continued existing-display stream.
+Only a client implementing this optional code can display the warning. Nonary
+Moonlight has a bounded, localized, temporary in-stream overlay receiver, but does
+not itself send the explicit disable today. Unchanged Artemis clients can ignore
+the field. An app virtual request that still creates a virtual display is silent;
+this extension does not change that platform-dependent display policy.
+
 #### Launch + display prep (Windows-specific heavy lifting)
 
 If an app must be launched, it uses the same process infrastructure as classic sessions (`proc::proc.execute(...)`). It also prepares the display environment (virtual display, display helper integration) before capture:
@@ -848,3 +896,28 @@ the HTTPS peer for at most 1500 ms, then starts the measured two-second probe
 using the client's observed UDP source port. This establishes outbound UDP
 state on both peers without changing firewall rules. Warmups and handshake
 time are excluded from results; legacy clients retain the original transfer.
+
+## Managed application focus timing
+
+Timing follow-up reviewed from source primary `97835dbfb14faafd8b4f13d98bc00cc921d45296`
+(2026-10-18). `src/managed_app_focus.h` owns the shared steady-clock discovery
+and activation bounds. Steam/Lutris sessions and both Playnite game launch
+branches wait up to `max(180s, app_focus_timeout_secs)` for eligible window
+identities. Each unseen process/window identity arms the configured focus
+window, capped by the original hard limit; observations and status refreshes do
+not move that limit or restore confirmed-success counts. Expired activation
+windows permit further discovery but no activation of stale windows.
+
+Windows retains visible, unowned target-window discovery and confirms the
+specific window/PID; direct Playnite keeps its foreground confirmation dedupe
+and Lossless Scaling refocus callback. The fullscreen library UI has its own
+existing focus budget. Linux resolves the installed Steam/Lutris catalog target,
+filters process identity (including protected Steam exclusions), then inspects
+KWin normal taskbar windows by PID/internalId before activating a selected ID.
+The same script handles native Wayland and XWayland windows. Each script is
+one-shot and unloaded. Broker/session generation cancellation remains external
+to the timing budget. macOS observes Core Graphics window ID/PID/geometry for
+target applications before existing AppKit activation; it requests no new
+Accessibility or capture permission. Windows and macOS own cancellable workers
+joined on session destruction. An exhausted confirmation count or exit-on-first
+ends a session even if a later replacement window would otherwise be eligible.

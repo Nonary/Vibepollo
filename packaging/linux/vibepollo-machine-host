@@ -26,8 +26,8 @@ readonly maximum_raw_command_bytes=16384
 readonly maximum_normalized_command_bytes=65535
 readonly maximum_command_manifest_bytes=1048576
 
-desktop_user=''; desktop_uid=''; desktop_gid=''; desktop_home=''
-session_id=''; session_generation=''; session_user=''; session_uid=''; session_gid=''; session_home=''; session_runtime=''; session_display=''; session_xdisplay=''; session_xauthority=''; session_groups=''; session_role=''
+desktop_user=''; desktop_uid=''; desktop_gid=''; desktop_home=''; desktop_backend=kwin
+session_id=''; session_generation=''; session_user=''; session_uid=''; session_gid=''; session_home=''; session_runtime=''; session_display=''; session_xdisplay=''; session_xauthority=''; session_groups=''; session_role=''; session_backend=kwin; session_compositor=''
 authorization_role=''; authorization_directory=''; authorization_command=''
 declare -A application_environment=()
 
@@ -61,7 +61,7 @@ resolve_desktop_identity() {
 }
 
 read_desktop_user() {
-  local source=$1 attributes key value line selected=''
+  local source=$1 attributes key value line selected='' backend_seen=0
   [[ -f "$source" && ! -L "$source" ]] || return 1
   attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$source") || return 1
   [[ "$attributes" == 'root:root:600' ]] || { fail "$source must be root:root mode 0600"; return 1; }
@@ -69,8 +69,13 @@ read_desktop_user() {
     [[ -n "$line" && "$line" != \#* ]] || continue; key=${line%%=*}; value=${line#*=}
     case "$key" in
       desktop_user) [[ -z "$selected" ]] || { fail 'multiple desktop users selected'; return 1; }; selected=$value ;;
+      desktop_backend)
+        ((backend_seen == 0)) && [[ "$value" == kwin || "$value" == hyprland-kms ]] ||
+          { fail 'invalid desktop backend'; return 1; }
+        backend_seen=1
+        ;;
       # Accept only a valid obsolete UUID while configure-auto atomically
-      # rewrites the policy to its canonical desktop-user-only form.
+      # rewrites the policy to its canonical desktop-user/backend form.
       allowed_client_uuid)
         value=${value^^}
         [[ "$value" =~ ^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$ ]] ||
@@ -83,19 +88,32 @@ read_desktop_user() {
 }
 
 
+read_desktop_backend() {
+  local source=$1 line
+  read_desktop_user "$source" >/dev/null || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in desktop_backend=*) /usr/bin/printf '%s\n' "${line#*=}"; return ;; esac
+  done <"$source"
+  /usr/bin/printf 'kwin\n'
+}
+
 load_settings() {
   local selected
   selected=$(read_desktop_user "$settings_file") || { fail "missing settings: $settings_file"; return 1; }
+  desktop_backend=$(read_desktop_backend "$settings_file") || return 1
   resolve_desktop_identity "$selected"
 }
 
 write_settings() {
-  local requested_user=$1 temporary
+  local requested_user=$1 temporary selected_backend=kwin
+  if [[ -e "$settings_file" || -L "$settings_file" ]]; then
+    selected_backend=$(read_desktop_backend "$settings_file") || return 1
+  fi
   require_root configure || return 1
   resolve_desktop_identity "$requested_user" || return 1
   /usr/bin/install -d -o root -g root -m 0755 /etc/vibepollo || return 1
   temporary=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .machine.XXXXXX) || return 1
-  /usr/bin/printf 'desktop_user=%s\n' "$desktop_user" >"$temporary" || return 1
+  /usr/bin/printf 'desktop_user=%s\ndesktop_backend=%s\n' "$desktop_user" "$selected_backend" >"$temporary" || return 1
   /usr/bin/chown root:root "$temporary" || return 1
   /usr/bin/chmod 0600 "$temporary" || return 1
   /usr/bin/mv -fT -- "$temporary" "$settings_file"
@@ -631,7 +649,7 @@ load_session() {
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" == *=* ]] || fail 'malformed session environment'
     key=${line%%=*}; value=${line#*=}
-    [[ "$key" =~ ^(session|generation|user|uid|gid|home|runtime|display|xdisplay|xauthority|groups|role)$ ]] || fail "unknown session key: $key"
+    [[ "$key" =~ ^(session|generation|user|uid|gid|home|runtime|display|xdisplay|xauthority|groups|role|backend|compositor)$ ]] || fail "unknown session key: $key"
     [[ -z ${seen[$key]:-} ]] || fail "duplicate session key: $key"
     seen[$key]=1
     case "$key" in
@@ -647,9 +665,16 @@ load_session() {
       xauthority) session_xauthority=$value ;;
       groups) session_groups=$value ;;
       role) session_role=$value ;;
+      backend) session_backend=$value ;;
+      compositor) session_compositor=$value ;;
     esac
   done <"$session_file"
-  ((${#seen[@]} == 12)) || fail 'incomplete session environment'
+  if [[ -z ${seen[backend]:-} && -z ${seen[compositor]:-} ]]; then
+    session_backend=kwin; session_compositor=''
+  else
+    [[ -n ${seen[backend]:-} && -n ${seen[compositor]:-} ]] || fail 'incomplete backend record'
+  fi
+  ((${#seen[@]} == 12 || ${#seen[@]} == 14)) || fail 'incomplete session environment'
   valid_user "$session_user"
   [[ "$session_id" =~ ^[A-Za-z0-9_.-]+$ && "$session_generation" =~ ^[1-9][0-9]*$ &&
      "$session_uid" =~ ^[1-9][0-9]*$ && "$session_gid" =~ ^[1-9][0-9]*$ &&
@@ -660,11 +685,15 @@ load_session() {
   IFS=: read -r account_name _ account_uid account_gid _ account_home _ <<<"$entry"
   [[ "$account_name" == "$session_user" && "$account_uid" == "$session_uid" &&
      "$account_gid" == "$session_gid" && "$account_home" == "$session_home" ]] || fail 'session account does not match the trusted record'
-  if [[ "$session_role" == desktop ]]; then
+  [[ "$session_backend" == kwin && -z "$session_compositor" ||
+     "$session_backend" == hyprland-kms && "$session_role" == desktop &&
+     "$session_compositor" =~ ^[0-9a-f]{32}-[1-9][0-9]*-[1-9][0-9]*$ && "$session_compositor" != 00000000000000000000000000000000-* ]] ||
+    fail 'invalid backend record'
+  if [[ "$session_role" == desktop && "$session_backend" == kwin ]]; then
     [[ "$session_xdisplay" =~ ^:[0-9]+(\.[0-9]+)?$ && "$session_xauthority" == "$session_runtime"/* &&
        "$session_xauthority" != */../* && "$session_xauthority" != */.. ]] || fail 'desktop X11 record is invalid'
   else
-    [[ -z "$session_xdisplay" && -z "$session_xauthority" ]] || fail 'greeter record must not contain X11 credentials'
+    [[ -z "$session_xdisplay" && -z "$session_xauthority" ]] || fail 'Wayland-only record must not contain X11 credentials'
   fi
 }
 
@@ -781,6 +810,20 @@ finally:
 PY
 }
 
+hyprland_host_overrides() {
+  # This supported slice captures existing physical scanout through KMS. The
+  # service UID cannot open a desktop user's Wayland socket for wlr capture.
+  /usr/bin/printf '%s\n' 'capture=kms' 'virtual_display_mode=disabled'
+}
+
+build_machine_host_environment() {
+  environment=("HOME=$machine_profile" "USER=$service_user" "LOGNAME=$service_user" "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin" "LANG=C.UTF-8" "SHELL=/bin/sh" \
+    "XDG_CONFIG_HOME=/var/lib" "XDG_RUNTIME_DIR=/run/vibepollo/host" "VIBEPOLLO_MACHINE_HOST=1" \
+    "VIBEPOLLO_SESSION_TYPE=wayland" "VIBEPOLLO_SESSION_BACKEND=$session_backend" \
+    "VIBEPOLLO_SESSION_ROLE=$session_role" "VIBEPOLLO_SESSION_USER=$session_user" "VIBEPOLLO_SESSION_UID=$session_uid" "VIBEPOLLO_SESSION_GID=$session_gid" "VIBEPOLLO_SESSION_GROUPS=$session_groups" \
+    "VIBEPOLLO_SESSION_ID=$session_id" "VIBEPOLLO_SESSION_GENERATION=$session_generation" "VIBEPOLLO_SESSION_HOME=$session_home")
+}
+
 run_host() {
   local host_capabilities host_log='' host_log_directory=$machine_profile/logs
   local host_log_prefix candidate readiness_attempt state status readiness_failed=0
@@ -821,6 +864,10 @@ run_host() {
     previous_host_logs["$candidate"]=1
   done
   overrides+=("log_path=$host_log_prefix")
+  if [[ "$session_backend" == hyprland-kms ]]; then
+    local override
+    while IFS= read -r override; do overrides+=("$override"); done < <(hyprland_host_overrides)
+  fi
   if [[ "$session_role" == greeter ]]; then
     # The greeter has no interactive fallback, so pin the proven NVENC path on
     # NVIDIA hosts. Other GPUs keep automatic encoder selection (VAAPI/software).
@@ -829,11 +876,6 @@ run_host() {
     # can open a browser on the greeter itself, and pairing a new Moonlight
     # client needs the PIN entered there. The Web UI login still gates it.
     overrides+=('min_log_level=info' 'virtual_display_mode=shared' 'virtual_display_layout=exclusive' 'dd_config_revert_on_disconnect=enabled' 'dd_config_revert_delay=0' 'origin_web_ui_allowed=lan' 'session_history_enabled=disabled' 'frame_limiter_enable=false' 'file_apps=/usr/share/vibepollo/prelogin/apps.json'); fi
-  environment=("HOME=$machine_profile" "USER=$service_user" "LOGNAME=$service_user" "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin" "LANG=C.UTF-8" "SHELL=/bin/sh" \
-    "XDG_CONFIG_HOME=/var/lib" "XDG_RUNTIME_DIR=/run/vibepollo/host" "VIBEPOLLO_MACHINE_HOST=1" \
-    "VIBEPOLLO_SESSION_TYPE=wayland" \
-    "VIBEPOLLO_SESSION_ROLE=$session_role" "VIBEPOLLO_SESSION_USER=$session_user" "VIBEPOLLO_SESSION_UID=$session_uid" "VIBEPOLLO_SESSION_GID=$session_gid" "VIBEPOLLO_SESSION_GROUPS=$session_groups" \
-    "VIBEPOLLO_SESSION_ID=$session_id" "VIBEPOLLO_SESSION_GENERATION=$session_generation" "VIBEPOLLO_SESSION_HOME=$session_home")
   request_host_shutdown() {
     shutting_down=1
     # A signal can arrive before the background child's PID is assigned. Keep
@@ -874,6 +916,7 @@ run_host() {
   # remain connected while the host drains capture and encoding; their early
   # death cancels applications through the broker before that drain finishes.
   trap request_host_shutdown TERM INT HUP
+  build_machine_host_environment
   capability_clean_exec /usr/bin/env -i "${environment[@]}" \
     "$machine_host_executable" "$machine_profile/vibepollo.conf" "${overrides[@]}" &
   host_pid=$!
@@ -948,7 +991,22 @@ control_group_is_empty() {
      "$control_group" != */.. && "$control_group" != *$'\n'* ]] || return 1
   cgroup_path=/sys/fs/cgroup$control_group
   if [[ ! -e "$cgroup_path" && ! -L "$cgroup_path" ]]; then
-    return 0
+    # Shell existence tests also fail on denied lookup. Only ENOENT
+    # proves absence; errors or a path that reappeared stay blocked.
+    [ -x /usr/bin/python3 ] || return 1
+    timeout --signal=KILL 5 /usr/bin/python3 -I - "$cgroup_path" <<'PY'
+import os
+import sys
+
+try:
+    os.lstat(sys.argv[1])
+except FileNotFoundError:
+    sys.exit(0)
+except OSError:
+    pass
+sys.exit(1)
+PY
+    return $?
   fi
   [[ -d "$cgroup_path" && ! -L "$cgroup_path" &&
      -f "$cgroup_path/cgroup.events" && ! -L "$cgroup_path/cgroup.events" ]] || return 1

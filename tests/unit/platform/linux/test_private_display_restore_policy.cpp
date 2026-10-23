@@ -8,6 +8,7 @@
 #include <map>
 #include <nlohmann/json.hpp>
 #include <src/platform/linux/private_display_restore_policy.h>
+#include <src/platform/linux/private_display_handoff_policy.h>
 #include <src/platform/linux/private_display_snapshot_policy.h>
 #include <vector>
 
@@ -1021,4 +1022,188 @@ TEST(LinuxPrivateDisplaySnapshot, LegacyIdleBaselineDoesNotBecomeArmedByStartupR
     EXPECT_EQ(snapshot.has_value(), active_private);
     if (snapshot) EXPECT_EQ(*snapshot, original);
   }
+}
+
+namespace handoff_policy = platf::linux_private_display::handoff_policy;
+
+namespace {
+  const std::map<std::string, std::string> handoff_identities {{"DP-1", "/sys/devices/pci/drm/card1-DP-1:edid"}};
+
+  json greeter_handoff_record() {
+    auto saved = external_desktop();
+    saved["outputs"][1] = saved_mode_output();
+    return {{"version", 1}, {"owner", "957:greeter"}, {"restore_pending", true}, {"topology", saved},
+            {"machine_handoff", {{"boot_id", "boot-a"}, {"role", "greeter"}, {"generation", std::uint64_t {7}},
+                                  {"physical_identities", handoff_identities}}}};
+  }
+
+  json orphan_desktop() {
+    auto current = greeter_handoff_record()["topology"];
+    current["outputs"][1]["enabled"] = false;
+    current["outputs"].push_back({{"name", "Virtual-1"}, {"connected", true}, {"enabled", true}});
+    return current;
+  }
+
+  std::optional<json> adopt_greeter(const json &record, const json &current = orphan_desktop(),
+                                   const handoff_policy::context_t &context = {true, "boot-a", "desktop", 8},
+                                   const std::map<std::string, std::string> &identities = handoff_identities) {
+    return handoff_policy::adopt(record.dump(), "1000:desktop", context, current, identities);
+  }
+}
+
+TEST(LinuxPrivateDisplayHandoff, TransfersOnlyPendingPrecedingMachineGreeterPhysicalIntent) {
+  const auto record = greeter_handoff_record();
+  EXPECT_FALSE(snapshot_policy::decode<json>(record.dump(), "1000:desktop"));
+  const auto adopted = adopt_greeter(record);
+  ASSERT_TRUE(adopted);
+  EXPECT_EQ(*adopted, record["topology"]);
+  EXPECT_FALSE((*adopted)["outputs"][0]["enabled"]); // Deliberately disabled panel stays disabled.
+  EXPECT_TRUE((*adopted)["outputs"][1]["enabled"]);
+
+  auto current = orphan_desktop();
+  current["outputs"][1]["currentModeId"] = "90";
+  current["outputs"][1]["modes"][0]["id"] = "90";
+  EXPECT_TRUE(adopt_greeter(record, current)); // KWin mode identifiers change across compositors.
+}
+
+TEST(LinuxPrivateDisplayHandoff, RefusesOtherBootGenerationRoleAndStandaloneRecords) {
+  const auto record = greeter_handoff_record();
+  for (const auto &context : {
+         handoff_policy::context_t {false, "boot-a", "desktop", 8},
+         handoff_policy::context_t {true, "boot-b", "desktop", 8},
+         handoff_policy::context_t {true, "", "desktop", 8},
+         handoff_policy::context_t {true, "boot-a", "greeter", 8},
+         handoff_policy::context_t {true, "boot-a", "desktop", 7},
+         handoff_policy::context_t {true, "boot-a", "desktop", 9},
+         handoff_policy::context_t {true, "boot-a", "desktop", 0}}) {
+    EXPECT_FALSE(adopt_greeter(record, orphan_desktop(), context));
+  }
+  for (const auto &owner : {"1001:desktop", "1000:desktop", "957:standalone"}) {
+    auto other = record;
+    other["owner"] = owner;
+    EXPECT_FALSE(adopt_greeter(other));
+  }
+}
+
+TEST(LinuxPrivateDisplayHandoff, LegacyIdleMalformedAndDisabledBaselinesDoNotAuthorizeTransfer) {
+  const auto original = greeter_handoff_record();
+  for (const auto &change : {
+         json {{"restore_pending", false}}, json {{"restore_pending", "true"}},
+         json {{"machine_handoff", nullptr}},
+         json {{"machine_handoff", {{"boot_id", "boot-a"}, {"role", "greeter"}, {"generation", "7"}}}}}) {
+    auto record = original;
+    record.update(change);
+    EXPECT_FALSE(adopt_greeter(record));
+  }
+  auto record = original;
+  record.erase("machine_handoff");
+  EXPECT_FALSE(adopt_greeter(record));
+  EXPECT_TRUE(snapshot_policy::decode<json>(record.dump(), "957:greeter"));
+  record = original;
+  record.erase("restore_pending");
+  EXPECT_FALSE(adopt_greeter(record));
+  record = original;
+  record["topology"]["outputs"][1]["enabled"] = false;
+  EXPECT_FALSE(adopt_greeter(record)); // Headless intent cannot synthesize a physical enable.
+}
+
+TEST(LinuxPrivateDisplayHandoff, EnabledPhysicalLayoutBlocksTransferAndRetiredVirtualOutputRetainsIntent) {
+  const auto record = greeter_handoff_record();
+  auto current = orphan_desktop();
+  current["outputs"][1]["enabled"] = true;
+  EXPECT_FALSE(adopt_greeter(record, current));
+  current = orphan_desktop();
+  current["outputs"].erase(2);
+  const auto adopted_without_orphan = adopt_greeter(record, current);
+  ASSERT_TRUE(adopted_without_orphan);
+  EXPECT_EQ(*adopted_without_orphan, record["topology"]);
+  std::optional<json> startup_snapshot = *adopted_without_orphan;
+  unsigned startup_writes = 0;
+  EXPECT_EQ(snapshot_policy::prepare_startup(startup_snapshot, current, {"Virtual-1"},
+    [&](const json &) { ++startup_writes; return true; }), snapshot_policy::startup_action_e::recover);
+  EXPECT_EQ(startup_writes, 0u); // Startup must not replace the pending greeter layout with the disabled live state.
+  EXPECT_EQ(*startup_snapshot, record["topology"]);
+  current = orphan_desktop();
+  current["outputs"][2]["connected"] = false;
+  EXPECT_TRUE(adopt_greeter(record, current));
+}
+
+TEST(LinuxPrivateDisplayHandoff, RequiresConnectedExactPhysicalIdentityAndUsableSavedMode) {
+  const auto record = greeter_handoff_record();
+  auto current = orphan_desktop();
+  current["outputs"][1]["connected"] = false;
+  EXPECT_FALSE(adopt_greeter(record, current));
+  EXPECT_FALSE(adopt_greeter(record, orphan_desktop(), {true, "boot-a", "desktop", 8}, {}));
+  EXPECT_FALSE(adopt_greeter(record, orphan_desktop(), {true, "boot-a", "desktop", 8},
+                             {{"DP-1", "/sys/devices/pci/drm/card1-DP-1:different-edid"}}));
+  current = orphan_desktop();
+  current["outputs"][1]["modes"][0]["size"]["width"] = 1920;
+  EXPECT_FALSE(adopt_greeter(record, current));
+}
+
+TEST(LinuxPrivateDisplayHandoff, ReboundIntentSurvivesDesktopRestartAndVirtualOnlyAcquisition) {
+  auto record = greeter_handoff_record();
+  const auto adopted = adopt_greeter(record);
+  ASSERT_TRUE(adopted);
+  record["owner"] = "1000:desktop";
+  record["greeter_handoff"] = true;
+  record["machine_handoff"]["role"] = "desktop";
+  record["machine_handoff"]["generation"] = std::uint64_t {8};
+  bool pending = false;
+  auto restart_snapshot = snapshot_policy::decode<json>(record.dump(), "1000:desktop", &pending);
+  ASSERT_TRUE(restart_snapshot);
+  EXPECT_TRUE(pending);
+  EXPECT_EQ(*restart_snapshot, *adopted);
+  unsigned writes = 0;
+  ASSERT_TRUE(snapshot_policy::capture(restart_snapshot, orphan_desktop(), {"Virtual-1"}, false,
+                                       [&](const json &) { ++writes; return true; }));
+  EXPECT_EQ(writes, 0u);
+  EXPECT_EQ(*restart_snapshot, *adopted); // Never replace real intent with the all-disabled live topology.
+  EXPECT_FALSE(adopt_greeter(record)); // Further foreign transfer is not authorized.
+}
+
+TEST(LinuxPrivateDisplayHandoff, PendingBaselineSurvivesOrphanDisappearanceBeforeNewAcquisition) {
+  const auto original = greeter_handoff_record()["topology"];
+  std::optional<json> snapshot = original;
+  auto current = orphan_desktop();
+  current["outputs"].erase(2);
+  unsigned writes = 0;
+  ASSERT_TRUE(handoff_policy::capture(snapshot, current, {"Virtual-1"}, false, true,
+                                      [&](const json &) { ++writes; return true; }));
+  EXPECT_EQ(writes, 0u);
+  EXPECT_EQ(*snapshot, original);
+
+  // A real enabled idle physical layout may replace the imported intent.
+  current["outputs"][1]["enabled"] = true;
+  current["outputs"][1]["scale"] = 2.0;
+  ASSERT_TRUE(handoff_policy::capture(snapshot, current, {"Virtual-1"}, false, true,
+                                      [&](const json &) { ++writes; return true; }));
+  EXPECT_EQ(writes, 1u);
+  EXPECT_EQ(*snapshot, current);
+}
+
+TEST(LinuxPrivateDisplayHandoff, ImmediateSameGreeterRebindPreservesIntentForNextDesktop) {
+  const auto record = greeter_handoff_record();
+  const auto refreshed = handoff_policy::refresh_greeter_generation(record.dump(), "957:greeter",
+    {true, "boot-a", "greeter", 8}, orphan_desktop(), handoff_identities);
+  ASSERT_TRUE(refreshed);
+  EXPECT_EQ((*refreshed)["machine_handoff"]["generation"], 8u);
+  EXPECT_EQ((*refreshed)["machine_handoff"]["physical_identities"], record["machine_handoff"]["physical_identities"]);
+  EXPECT_EQ((*refreshed)["topology"], record["topology"]);
+  EXPECT_TRUE((*refreshed)["restore_pending"]);
+  EXPECT_TRUE(adopt_greeter(*refreshed, orphan_desktop(), {true, "boot-a", "desktop", 9}));
+
+  for (const auto &context : {
+         handoff_policy::context_t {true, "boot-a", "greeter", 7},
+         handoff_policy::context_t {true, "boot-a", "greeter", 9},
+         handoff_policy::context_t {true, "boot-b", "greeter", 8},
+         handoff_policy::context_t {true, "boot-a", "desktop", 8},
+         handoff_policy::context_t {false, "boot-a", "greeter", 8}}) {
+    EXPECT_FALSE(handoff_policy::refresh_greeter_generation(record.dump(), "957:greeter",
+      context, orphan_desktop(), handoff_identities));
+  }
+  EXPECT_FALSE(handoff_policy::refresh_greeter_generation(record.dump(), "958:greeter",
+    {true, "boot-a", "greeter", 8}, orphan_desktop(), handoff_identities));
+  EXPECT_FALSE(handoff_policy::refresh_greeter_generation(record.dump(), "957:greeter",
+    {true, "boot-a", "greeter", 8}, orphan_desktop(), std::map<std::string, std::string> {{"DP-1", "changed-monitor"}}));
 }

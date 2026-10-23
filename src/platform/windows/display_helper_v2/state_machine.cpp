@@ -15,6 +15,39 @@ namespace display_helper::v2 {
     constexpr std::size_t kMaxVirtualIdentityDiscoveriesPerSession = 2;
     constexpr std::size_t kMaxVirtualIdentityRepairsPerSession = 2;
 
+    bool is_exclusive_request(const ApplyRequest &request) {
+      return request.virtual_layout && boost::iequals(*request.virtual_layout, "exclusive");
+    }
+
+    bool is_exclusive_singleton(const ActiveTopology &topology, const std::string &device_id) {
+      return topology.size() == 1 && topology.front().size() == 1 &&
+             boost::iequals(topology.front().front(), device_id);
+    }
+
+    bool ensure_exclusive_topology(ApplyRequest &request) {
+      if (!is_exclusive_request(request)) {
+        return true;
+      }
+      if (!request.configuration || request.configuration->m_device_id.empty()) {
+        return false;
+      }
+
+      // Exclusive owns exactly its configured device. Never let a stale
+      // nonempty topology broaden that contract or silently retarget the apply.
+      const ActiveTopology expected {{request.configuration->m_device_id}};
+      if (request.topology && !request.topology->empty() && !is_exclusive_singleton(*request.topology, request.configuration->m_device_id)) {
+        return false;
+      }
+      request.topology = expected;
+      return true;
+    }
+
+    void reset_exclusive_rollback_snapshot_for_verified_reapply(ApplyRequest &request, bool session_was_verified) {
+      if (session_was_verified && is_exclusive_request(request)) {
+        request.exclusive_pre_apply_topology.reset();
+      }
+    }
+
     const char *state_to_string(State state) {
       switch (state) {
         case State::Waiting:
@@ -117,6 +150,18 @@ namespace display_helper::v2 {
       return std::nullopt;
     }
 
+    // Positions are part of the saved display baseline. Windows gathers them
+    // through a separate enumeration from the active topology, so a transient
+    // query mismatch can leave a retained output without an origin. Reject the
+    // capture so callers retry instead of persisting an incomplete layout.
+    for (const auto &device_id : codec::flatten_topology_device_ids(filtered->m_topology)) {
+      if (!filtered->m_origins.count(device_id)) {
+        BOOST_LOG(warning) << "Skipping display snapshot save (" << (reason ? reason : "snapshot")
+                           << "); captured origin missing for topology device: " << device_id << ".";
+        return std::nullopt;
+      }
+    }
+
     const auto layout_ids_vec = codec::flatten_topology_device_ids(filtered->m_topology);
     const std::set<std::string> layout_ids(layout_ids_vec.begin(), layout_ids_vec.end());
     auto layouts = service_.capture_layouts(layout_ids);
@@ -172,11 +217,24 @@ namespace display_helper::v2 {
     return replaced;
   }
 
-  std::optional<ActiveTopology> SnapshotLedger::topology_with_returned_active_baseline_devices(
+  std::optional<ActiveTopology> SnapshotLedger::topology_with_returned_baseline_devices(
     const std::string &virtual_device_id,
-    const std::vector<std::string> &exclusions) {
-    const auto devices = service_.enumerate();
-    const auto active_topology = service_.capture().m_topology;
+    const std::vector<std::string> &exclusions,
+    std::set<std::string> &observed_absent_devices,
+    std::set<std::string> &observed_disabled_devices) {
+    display_device::EnumeratedDeviceList devices;
+    ActiveTopology active_topology;
+    try {
+      const auto enumerated = service_.try_enumerate();
+      if (!enumerated) {
+        return std::nullopt;
+      }
+      devices = *enumerated;
+      active_topology = service_.capture().m_topology;
+    } catch (const std::exception &ex) {
+      BOOST_LOG(debug) << "Display helper: physical return observation unavailable: " << ex.what();
+      return std::nullopt;
+    }
 
     const auto contains_id = [](const auto &ids, const std::string &needle) {
       return std::any_of(ids.begin(), ids.end(), [&needle](const std::string &candidate) {
@@ -194,18 +252,55 @@ namespace display_helper::v2 {
       return std::nullopt;
     }
 
+    // Require every captured active path, including the virtual target, to be
+    // represented before changing the session's observations.
+    for (const auto &group : active_topology) {
+      for (const auto &id : group) {
+        if (id.empty() || !std::any_of(devices.begin(), devices.end(), [&](const auto &device) {
+              return boost::iequals(device.m_device_id, id) && device.m_info.has_value();
+            })) {
+          return std::nullopt;
+        }
+      }
+    }
+
     const auto excluded = [&exclusions](const std::string &needle) {
       return std::any_of(exclusions.begin(), exclusions.end(), [&needle](const std::string &candidate) {
         return boost::iequals(candidate, needle);
       });
     };
-    const auto active_physical_device = [&devices](const std::string &needle) {
-      return std::any_of(devices.begin(), devices.end(), [&needle](const auto &device) {
-        return !device.m_device_id.empty() &&
-               boost::iequals(device.m_device_id, needle) &&
-               device.m_info.has_value() &&
-               !codec::is_virtual_display_device(device);
+    const auto returned_physical_device = [&devices, &observed_absent_devices, &observed_disabled_devices](const std::string &needle) {
+      const auto found = std::find_if(devices.begin(), devices.end(), [&needle](const auto &device) {
+        return !device.m_device_id.empty() && boost::iequals(device.m_device_id, needle);
       });
+      const auto normalized = codec::normalize_device_id(needle);
+      if (found == devices.end()) {
+        // A saved active baseline provides layout intent; a disappearance
+        // distinguishes a powered-off monitor from a connected disabled one.
+        if (!observed_disabled_devices.contains(normalized)) {
+          observed_absent_devices.insert(normalized);
+        }
+        return false;
+      }
+      if (codec::is_virtual_display_device(*found)) {
+        observed_absent_devices.erase(normalized);
+        return false;
+      }
+      if (found->m_info.has_value()) {
+        // A healthy return completes this power cycle. Do not let its old
+        // disappearance override a later deliberate disable while connected.
+        observed_absent_devices.erase(normalized);
+        observed_disabled_devices.erase(normalized);
+        return true;
+      }
+      if (observed_absent_devices.contains(normalized)) {
+        return true;
+      }
+      // Seeing a connected disabled output is newer intent than the saved
+      // baseline. Keep it passive through subsequent power cycles until an
+      // active observation establishes that it has been enabled again.
+      observed_disabled_devices.insert(normalized);
+      return false;
     };
 
     std::optional<Snapshot> baseline;
@@ -228,7 +323,7 @@ namespace display_helper::v2 {
         if (!device_id.empty() &&
             !boost::iequals(device_id, virtual_device_id) &&
             !excluded(device_id) &&
-            active_physical_device(device_id)) {
+            returned_physical_device(device_id)) {
           active_group.push_back(device_id);
         }
       }
@@ -262,7 +357,6 @@ namespace display_helper::v2 {
       return std::nullopt;
     }
 
-    BOOST_LOG(info) << "Display helper: an active physical baseline device is missing from the live topology; admitting one bounded topology repair.";
     return candidate;
   }
 
@@ -299,8 +393,13 @@ namespace display_helper::v2 {
         }
       }
 
+      const auto enumerated = service_.try_enumerate();
+      if (!enumerated) {
+        return std::nullopt;
+      }
+
       std::set<std::string> present;
-      for (const auto &device : service_.enumerate()) {
+      for (const auto &device : *enumerated) {
         const auto normalized = codec::normalize_device_id(device.m_device_id);
         if (required.contains(normalized) && !codec::is_virtual_display_device(device)) {
           present.insert(normalized);
@@ -383,6 +482,8 @@ namespace display_helper::v2 {
     virtual_identity_repairs_remaining_ = 0;
     baseline_topology_repair_available_ = false;
     baseline_topology_repair_in_flight_ = false;
+    observed_absent_baseline_devices_.clear();
+    observed_disabled_baseline_devices_.clear();
     expected_topology_.reset();
     if (delete_restore_task) {
       system_.delete_restore_task();
@@ -440,6 +541,15 @@ namespace display_helper::v2 {
 
   void StateMachine::enter_steady_state() {
     if (current_request_.virtual_layout.has_value()) {
+      if (baseline_topology_repair_available_ && current_request_.configuration) {
+        // A monitor can already be powered off when APPLY verifies. Observe
+        // its absence now so the first return event retains that evidence.
+        (void) snapshots_.topology_with_returned_baseline_devices(
+          current_request_.configuration->m_device_id,
+          exclusions_vector(),
+          observed_absent_baseline_devices_,
+          observed_disabled_baseline_devices_);
+      }
       transition(State::VirtualDisplayMonitoring, ApplyAction::Apply, ApplyStatus::Ok);
     } else {
       transition(State::Waiting, ApplyAction::Apply, ApplyStatus::Ok);
@@ -454,7 +564,64 @@ namespace display_helper::v2 {
     transient_disconnect_settlement_requested_ = false;
     transient_disconnect_check_pending_ = false;
     transient_disconnect_repair_in_flight_ = false;
+    transient_disconnect_settlement_deferred_by_staged_reset_ = false;
+    transient_disconnect_settlement_deferred_final_check_ = false;
+    transient_disconnect_final_check_pending_ = false;
     next_transient_disconnect_check_ = 0;
+    transient_disconnect_topology_.reset();
+    transient_disconnect_rollback_verification_ = false;
+  }
+
+  void StateMachine::defer_transient_disconnect_settlement_for_staged_reset() {
+    if (!transient_disconnect_settlement_requested_) {
+      return;
+    }
+
+    if (transient_disconnect_check_pending_) {
+      // A delayed disconnect check can be waiting in AsyncDispatcher's timer
+      // queue while RESET reaches the worker first. Invalidate that old result
+      // before RESET drains any newer mutation intent.
+      system_.cancel_operations();
+      transient_disconnect_check_pending_ = false;
+      if (transient_disconnect_final_check_pending_) {
+        transient_disconnect_settlement_deferred_final_check_ = true;
+      } else if (next_transient_disconnect_check_ > 0) {
+        // A canceled timer has not consumed a verification attempt.
+        --next_transient_disconnect_check_;
+      }
+    }
+    transient_disconnect_settlement_deferred_by_staged_reset_ = true;
+    transient_disconnect_final_check_pending_ = false;
+  }
+
+  void StateMachine::resume_transient_disconnect_settlement_after_staged_reset() {
+    if (!transient_disconnect_settlement_deferred_by_staged_reset_ || staged_state_reset_pending_) {
+      return;
+    }
+
+    transient_disconnect_settlement_deferred_by_staged_reset_ = false;
+    if (!transient_disconnect_settlement_requested_ || mutation_worker_active()) {
+      return;
+    }
+    if (!session_was_verified_ && state_ == State::Verification) {
+      // Let the original Apply gate complete before starting a second readback.
+      // Its completion will resume the still-pending disconnect settlement.
+      return;
+    }
+
+    if (transient_disconnect_settlement_deferred_final_check_) {
+      transient_disconnect_settlement_deferred_final_check_ = false;
+      dispatch_transient_disconnect_final_verification();
+      return;
+    }
+
+    // A queued identity repair that survives connection-epoch validation takes
+    // ownership after RESET and continues through its normal Apply/verification
+    // lifecycle. Otherwise the deferred bounded check resumes after RESET.
+    if (!transient_disconnect_check_pending_) {
+      prepare_transient_disconnect_settlement();
+    }
+    (void) dispatch_next_transient_disconnect_verification();
   }
 
   void StateMachine::prepare_transient_disconnect_settlement() {
@@ -480,6 +647,11 @@ namespace display_helper::v2 {
   }
 
   bool StateMachine::dispatch_next_transient_disconnect_verification() {
+    if (staged_state_reset_pending_ && transient_disconnect_settlement_requested_) {
+      transient_disconnect_settlement_deferred_by_staged_reset_ = true;
+      return true;
+    }
+
     static constexpr std::array kDelays {
       std::chrono::milliseconds(250),
       std::chrono::milliseconds(750),
@@ -487,9 +659,20 @@ namespace display_helper::v2 {
     if (transient_disconnect_check_pending_) {
       return true;
     }
-    if (!transient_disconnect_settlement_requested_ ||
-        next_transient_disconnect_check_ >= kDelays.size() ||
-        !current_request_.configuration) {
+    if (!transient_disconnect_settlement_requested_ || !current_request_.configuration) {
+      reset_transient_disconnect_settlement();
+      return false;
+    }
+    if (next_transient_disconnect_check_ >= kDelays.size()) {
+      if (transient_disconnect_topology_ && !transient_disconnect_topology_->empty() &&
+          (transient_disconnect_rollback_verification_ || is_exclusive_request(current_request_))) {
+        // Keep the exact topology and settlement ownership through the final
+        // probe. Resetting here would make its completion look superseded;
+        // rollback also needs its saved topology because the current identity
+        // was retired by the replacement attempt.
+        dispatch_transient_disconnect_final_verification();
+        return true;
+      }
       reset_transient_disconnect_settlement();
       return false;
     }
@@ -499,13 +682,30 @@ namespace display_helper::v2 {
     BOOST_LOG(info) << "Display helper: validating recent disconnected APPLY after " << delay.count()
                     << "ms before deciding whether a repair is needed.";
     transition(State::Verification, ApplyAction::Apply);
+    const auto verification_topology = (is_exclusive_request(current_request_) || transient_disconnect_rollback_verification_) ?
+                                         (transient_disconnect_topology_ ? transient_disconnect_topology_ : current_request_.topology) :
+                                         std::nullopt;
     apply_.dispatch_verification(
-      verification_request(),
-      std::nullopt,
-      resolved_target_,
+      transient_disconnect_verification_request(),
+      verification_topology,
+      transient_disconnect_rollback_verification_ ? std::nullopt : resolved_target_,
       delay,
-      VerificationPurpose::TransientDisconnect);
+      VerificationPurpose::TransientDisconnect
+    );
     return true;
+  }
+
+  void StateMachine::dispatch_transient_disconnect_final_verification() {
+    transient_disconnect_check_pending_ = true;
+    transient_disconnect_final_check_pending_ = true;
+    transition(State::Verification, ApplyAction::Apply);
+    apply_.dispatch_verification(
+      transient_disconnect_verification_request(),
+      transient_disconnect_topology_ ? transient_disconnect_topology_ : current_request_.topology,
+      transient_disconnect_rollback_verification_ ? std::nullopt : resolved_target_,
+      std::chrono::milliseconds(0),
+      VerificationPurpose::TransientDisconnectFinal
+    );
   }
 
   void StateMachine::dispatch_transient_disconnect_repair() {
@@ -518,6 +718,18 @@ namespace display_helper::v2 {
     BOOST_LOG(warning) << "Display helper: recent disconnected APPLY did not stick; repairing now.";
     transition(State::InProgress, ApplyAction::Apply, ApplyStatus::VerificationFailed);
     dispatch_settings_only_repair();
+  }
+
+  void StateMachine::dispatch_exclusive_topology_rollback() {
+    if (!is_exclusive_request(current_request_) || !current_request_.exclusive_pre_apply_topology || current_request_.exclusive_pre_apply_topology->empty()) {
+      return;
+    }
+
+    auto rollback = current_request_;
+    rollback.settings_only_repair = false;
+    rollback.exclusive_topology_rollback_only = true;
+    transition(State::InProgress, ApplyAction::Apply, ApplyStatus::VerificationFailed);
+    dispatch_apply_worker(rollback, std::chrono::milliseconds(0), false);
   }
 
   void StateMachine::dispatch_settings_only_repair() {
@@ -736,6 +948,23 @@ namespace display_helper::v2 {
     return current_request_;
   }
 
+  ApplyRequest StateMachine::transient_disconnect_verification_request() const {
+    auto request = verification_request();
+    if (transient_disconnect_rollback_verification_) {
+      // The identity-replacement request no longer describes the desktop
+      // restored by Exclusive rollback. Ask VerificationOperation to check the
+      // exact topology only; carrying the replacement configuration would
+      // reject the restored singleton and could reapply the retired identity.
+      request.configuration.reset();
+      request.virtual_layout.reset();
+      request.settings_only_repair = false;
+      request.repair_target.reset();
+      request.exclusive_pre_apply_topology.reset();
+      request.exclusive_topology_rollback_only = false;
+    }
+    return request;
+  }
+
   void StateMachine::retarget_virtual_display_device_id_if_needed(const std::string &resolved) {
     if (!current_request_.virtual_layout.has_value()) {
       return;
@@ -846,20 +1075,31 @@ namespace display_helper::v2 {
   }
 
   bool StateMachine::begin_transient_disconnect_settlement() {
-    if (!should_defer_disconnect_recovery() || !current_request_.configuration) {
-      return false;
-    }
+    // Once this disconnect has claimed the bounded settlement lane, repeated
+    // pipe-break observations must remain idempotent even if the five-second
+    // admission window expires while a serialized rollback is still running.
     if (transient_disconnect_settlement_requested_) {
       return true;
     }
+    if (!should_defer_disconnect_recovery() || !current_request_.configuration) {
+      return false;
+    }
 
     transient_disconnect_settlement_requested_ = true;
+    if (is_exclusive_request(current_request_) && current_request_.topology && !current_request_.topology->empty()) {
+      transient_disconnect_topology_ = current_request_.topology;
+    }
     // A recent disconnect owns the only delayed verification lane: its short
     // 250/750ms verify-before-repair sequence. Prepare it only after the active
     // mutation is known to be finished; cancelling a live APPLY would discard
     // its authoritative completion boundary.
     if (!mutation_worker_active()) {
       prepare_transient_disconnect_settlement();
+    }
+
+    if (staged_state_reset_pending_) {
+      defer_transient_disconnect_settlement_for_staged_reset();
+      return true;
     }
 
     if (mutation_worker_active() || (!session_was_verified_ && state_ == State::Verification)) {
@@ -928,14 +1168,37 @@ namespace display_helper::v2 {
     const auto notification = std::make_tuple(ticket, status, event, epoch);
     if (last_recovery_notification_ == notification) return;
     last_recovery_notification_ = notification;
-    // An unsolicited update is a hint. Only a requested park ACK may authorize
-    // the host to remove a target after checking its own ownership state.
+    // A failed update is a hint; only a requested park ACK confirms failed
+    // recovery is quiescent. Restored is terminal success with no active or
+    // queued mutation, published before exit retires its generation.
     recovery_status_result_callback_(ticket, status, event, false, epoch);
   }
 
   void StateMachine::handle_apply_command(const ApplyCommand &command) {
     if (is_stale_connection(command.connection_epoch)) {
       BOOST_LOG(debug) << "Display helper: ignoring APPLY from a retired IPC connection.";
+      return;
+    }
+    if (command.request.reactivation_of) {
+      const auto &config = command.request.configuration;
+      const bool admitted = state_ == State::VirtualDisplayMonitoring && session_was_verified_ && recovery_armed_ &&
+                            !explicit_recovery_required_ && !mutation_worker_active() && !staged_state_reset_pending_ &&
+                            deferred_mutation_commands_.empty() && current_request_.virtual_layout &&
+                            current_request_.configuration && config && current_request_.request_id != 0 &&
+                            *command.request.reactivation_of == current_request_.request_id &&
+                            command.connection_epoch == current_connection_epoch_ && !config->m_device_id.empty() &&
+                            boost::iequals(config->m_device_id, current_request_.configuration->m_device_id);
+      if (!admitted) {
+        if (apply_result_callback_) {
+          apply_result_callback_(ApplyStatus::Retryable, command.connection_epoch, command.request.request_id);
+        }
+        return;
+      }
+      auto repair = current_request_;
+      repair.reactivation_only = true;
+      repair.deadline = command.request.deadline;
+      active_reactivation_ = command;
+      dispatch_apply_worker(repair, std::chrono::milliseconds(0), false);
       return;
     }
     recovery_status_policy_.supersede();
@@ -990,6 +1253,8 @@ namespace display_helper::v2 {
     reset_apply_verification_state();
     baseline_topology_repair_available_ = false;
     baseline_topology_repair_in_flight_ = false;
+    observed_absent_baseline_devices_.clear();
+    observed_disabled_baseline_devices_.clear();
     expected_topology_.reset();
 
     if (current_request_.snapshot_exclusions) {
@@ -998,6 +1263,13 @@ namespace display_helper::v2 {
 
     if (!current_request_.configuration) {
       BOOST_LOG(error) << "Display helper: rejecting Apply command without a configuration.";
+      send_apply_result(ApplyStatus::InvalidRequest);
+      transition(State::Waiting, ApplyAction::Apply, ApplyStatus::InvalidRequest);
+      return;
+    }
+
+    if (!ensure_exclusive_topology(current_request_)) {
+      BOOST_LOG(error) << "Display helper: rejecting Exclusive APPLY without a target identity.";
       send_apply_result(ApplyStatus::InvalidRequest);
       transition(State::Waiting, ApplyAction::Apply, ApplyStatus::InvalidRequest);
       return;
@@ -1074,6 +1346,7 @@ namespace display_helper::v2 {
     // client Apply. Preserve its published result flags, request id, heartbeat,
     // and verified-session status so the repair cannot emit a second response.
     deferred_apply_completion_.reset();
+    reset_exclusive_rollback_snapshot_for_verified_reapply(current_request_, session_was_verified_);
     retarget_virtual_display_device_id_if_needed(resolved_device_id);
     verification_reapply_available_ = true;
     transition(State::InProgress, ApplyAction::Apply);
@@ -1121,6 +1394,8 @@ namespace display_helper::v2 {
     deferred_apply_completion_.reset();
     baseline_topology_repair_available_ = false;
     baseline_topology_repair_in_flight_ = false;
+    observed_absent_baseline_devices_.clear();
+    observed_disabled_baseline_devices_.clear();
     expected_topology_.reset();
     // Disconnect-triggered reverts honor the restore-on-disconnect policy: a
     // paused stream with revert_on_disconnect=false must preserve its display
@@ -1212,6 +1487,8 @@ namespace display_helper::v2 {
     deferred_apply_completion_.reset();
     baseline_topology_repair_available_ = false;
     baseline_topology_repair_in_flight_ = false;
+    observed_absent_baseline_devices_.clear();
+    observed_disabled_baseline_devices_.clear();
     expected_topology_.reset();
 
     BOOST_LOG(info) << "Display helper: received Disarm command, resetting state";
@@ -1325,6 +1602,8 @@ namespace display_helper::v2 {
       return;
     }
 
+    defer_transient_disconnect_settlement_for_staged_reset();
+
     BOOST_LOG(info) << "Display helper: received RESET command; resetting staged settings persistence.";
     begin_staged_state_reset();
   }
@@ -1418,6 +1697,7 @@ namespace display_helper::v2 {
 
     if (is_stale(completed.generation)) {
       if (completed_owns_active_worker) {
+        active_reactivation_.reset();
         if (completed.display_may_have_changed) {
           retain_recovery_after_display_mutation(completed);
           unconfirmed_cancelled_mutation_ = true;
@@ -1442,6 +1722,22 @@ namespace display_helper::v2 {
       return;
     }
 
+    if (active_reactivation_) {
+      const auto repair = std::exchange(active_reactivation_, std::nullopt);
+      auto status = completed.status;
+      if (has_deferred_apply_intent() || is_stale_connection(repair->connection_epoch)) {
+        status = ApplyStatus::Retryable;
+      }
+      if (apply_result_callback_) {
+        apply_result_callback_(status, repair->connection_epoch, repair->request.request_id);
+      }
+      if (verification_result_callback_) {
+        verification_result_callback_(status == ApplyStatus::Ok, repair->connection_epoch, repair->request.request_id);
+      }
+      drain_deferred_mutation_commands();
+      return;
+    }
+
     finish_apply_completed(completed);
   }
 
@@ -1450,6 +1746,14 @@ namespace display_helper::v2 {
     baseline_topology_repair_in_flight_ = false;
     if (!baseline_topology_repair || completed.resolved_target) {
       resolved_target_ = completed.resolved_target;
+    }
+    if (is_exclusive_request(current_request_) && completed.exclusive_pre_apply_topology && !completed.exclusive_pre_apply_topology->empty()) {
+      current_request_.exclusive_pre_apply_topology = completed.exclusive_pre_apply_topology;
+    }
+    if (completed.exclusive_rollback_only && transient_disconnect_settlement_requested_ &&
+        completed.exclusive_pre_apply_topology && !completed.exclusive_pre_apply_topology->empty()) {
+      transient_disconnect_topology_ = completed.exclusive_pre_apply_topology;
+      transient_disconnect_rollback_verification_ = true;
     }
 
     if (completed.status == ApplyStatus::Ok || completed.display_may_have_changed) {
@@ -1471,6 +1775,45 @@ namespace display_helper::v2 {
       if (!restore_task_created_) {
         BOOST_LOG(warning) << "Display helper v2: could not arm a durable restore task after display mutation.";
       }
+    }
+
+    if (completed.exclusive_rollback_only) {
+      if (completed.status != ApplyStatus::Ok) {
+        BOOST_LOG(error) << "Display helper: Exclusive topology rollback after failed verification was not confirmed.";
+      }
+      send_apply_result(ApplyStatus::VerificationFailed);
+      if (apply_result_sent_ && !verification_result_sent_) {
+        send_verification_result(false);
+      }
+      if (!recovery_armed_) {
+        system_.disarm_heartbeat();
+      }
+      if (session_was_verified_) {
+        BOOST_LOG(warning) << "Display helper: Exclusive rollback completed after a failed verified-session repair; preserving the live session.";
+        enter_steady_state();
+      } else {
+        transition(State::Waiting, ApplyAction::Apply, ApplyStatus::VerificationFailed);
+      }
+      drain_deferred_mutation_commands();
+      // A disconnect may have claimed the bounded settlement lane while this
+      // rollback-only mutation owned the worker fence. Give any queued reconnect
+      // or control intent first chance to supersede it, then resume the delayed
+      // checks only if the same disconnected session still owns the request.
+      if (transient_disconnect_settlement_requested_ && !mutation_worker_active()) {
+        if (staged_state_reset_pending_) {
+          transient_disconnect_settlement_deferred_by_staged_reset_ = true;
+        } else if (transient_disconnect_settlement_deferred_final_check_) {
+          transient_disconnect_settlement_deferred_final_check_ = false;
+          dispatch_transient_disconnect_final_verification();
+          return;
+        } else {
+          prepare_transient_disconnect_settlement();
+          if (dispatch_next_transient_disconnect_verification()) {
+            return;
+          }
+        }
+      }
+      return;
     }
 
     if (has_deferred_apply_intent()) {
@@ -1500,7 +1843,20 @@ namespace display_helper::v2 {
         // v1's disconnected settle worker applies immediately after a failed
         // check, then waits for the next 250/750ms slot before checking again.
         transient_disconnect_repair_in_flight_ = false;
+        drain_deferred_mutation_commands();
+        if (!transient_disconnect_settlement_requested_ || mutation_worker_active()) {
+          return;
+        }
+        if (staged_state_reset_pending_) {
+          defer_transient_disconnect_settlement_for_staged_reset();
+          return;
+        }
         if (dispatch_next_transient_disconnect_verification()) {
+          return;
+        }
+
+        if (is_exclusive_request(current_request_) && current_request_.topology) {
+          dispatch_transient_disconnect_final_verification();
           return;
         }
 
@@ -1516,12 +1872,17 @@ namespace display_helper::v2 {
       }
 
       transition(State::Verification, ApplyAction::Apply, completed.status);
+      auto verification_topology = baseline_topology_repair ? expected_topology_ : std::nullopt;
+      if (!baseline_topology_repair && is_exclusive_request(current_request_)) {
+        verification_topology = current_request_.topology;
+      }
       apply_.dispatch_verification(
         verification_request(),
-        baseline_topology_repair ? expected_topology_ : std::nullopt,
+        verification_topology,
         resolved_target_,
         std::chrono::milliseconds(0),
-        baseline_topology_repair ? VerificationPurpose::BaselineTopologyRepair : VerificationPurpose::Initial);
+        baseline_topology_repair ? VerificationPurpose::BaselineTopologyRepair : VerificationPurpose::Initial
+      );
       // RESET is intentionally non-cancelling, mirroring v1's synchronous
       // reset-persistence request. It can run now that SettingsManager has
       // finished mutating, while verification remains read-only.
@@ -1541,8 +1902,25 @@ namespace display_helper::v2 {
 
     if (transient_disconnect_settlement_requested_) {
       transient_disconnect_repair_in_flight_ = false;
+      drain_deferred_mutation_commands();
+      if (!transient_disconnect_settlement_requested_ || mutation_worker_active()) {
+        return;
+      }
+      if (staged_state_reset_pending_) {
+        defer_transient_disconnect_settlement_for_staged_reset();
+        return;
+      }
       if (dispatch_next_transient_disconnect_verification()) {
         return;
+      }
+      if (is_exclusive_request(current_request_) && current_request_.topology) {
+        reset_transient_disconnect_settlement();
+        session_was_verified_ = false;
+        BOOST_LOG(warning) << "Display helper: Exclusive disconnect repair failed after its bounded checks; beginning recovery.";
+        if (recovery_armed_) {
+          start_recovery(std::chrono::milliseconds(0), ApplyAction::Apply);
+          return;
+        }
       }
     }
 
@@ -1595,11 +1973,39 @@ namespace display_helper::v2 {
       return;
     }
 
-    const bool transient_disconnect_check = completed.purpose == VerificationPurpose::TransientDisconnect;
+    const bool transient_disconnect_final_check = completed.purpose == VerificationPurpose::TransientDisconnectFinal;
+    const bool transient_disconnect_check = completed.purpose == VerificationPurpose::TransientDisconnect ||
+                                            transient_disconnect_final_check;
     const bool baseline_topology_admission_check = completed.purpose == VerificationPurpose::BaselineTopologyReturn;
     const bool baseline_topology_repair_check = completed.purpose == VerificationPurpose::BaselineTopologyRepair;
+    if (transient_disconnect_check && (!transient_disconnect_settlement_requested_ || !transient_disconnect_check_pending_)) {
+      BOOST_LOG(debug) << "Display helper: ignoring superseded transient disconnect verification completion.";
+      return;
+    }
     if (transient_disconnect_check) {
       transient_disconnect_check_pending_ = false;
+      transient_disconnect_final_check_pending_ = false;
+    }
+
+    if (transient_disconnect_final_check) {
+      reset_transient_disconnect_settlement();
+      if (completed.success) {
+        if (!session_was_verified_) {
+          session_was_verified_ = true;
+          activate_recovery_lease();
+          unconfirmed_cancelled_mutation_ = false;
+        }
+        enter_steady_state();
+      } else {
+        session_was_verified_ = false;
+        BOOST_LOG(warning) << "Display helper: final Exclusive disconnect check did not confirm the singleton topology; beginning recovery.";
+        if (recovery_armed_) {
+          start_recovery(std::chrono::milliseconds(0), ApplyAction::Apply);
+        } else {
+          transition(State::Waiting, ApplyAction::Apply, ApplyStatus::VerificationFailed);
+        }
+      }
+      return;
     }
 
     if (transient_disconnect_check) {
@@ -1615,6 +2021,13 @@ namespace display_helper::v2 {
         }
         reset_transient_disconnect_settlement();
         enter_steady_state();
+      } else if (transient_disconnect_rollback_verification_) {
+        // The replacement configuration was retired by rollback. Retry the
+        // restored-topology check, then let the final exact probe choose
+        // recovery; never repair using the replacement identity.
+        if (!dispatch_next_transient_disconnect_verification()) {
+          dispatch_transient_disconnect_final_verification();
+        }
       } else if (current_request_.configuration) {
         dispatch_transient_disconnect_repair();
       } else {
@@ -1684,6 +2097,9 @@ namespace display_helper::v2 {
       transition(State::InProgress, ApplyAction::Apply, ApplyStatus::VerificationFailed);
       auto repair_request = current_request_;
       repair_request.topology = expected_topology_;
+      // SettingsManager must adopt the enlarged physical topology instead of
+      // rebuilding this repair from its cached, monitor-missing initial state.
+      repair_request.refresh_settings_baseline = true;
       dispatch_apply_worker(repair_request, std::chrono::milliseconds(0), false);
       return;
     }
@@ -1697,6 +2113,14 @@ namespace display_helper::v2 {
 
     if (dispatch_next_verification_reapply()) {
       return;
+    }
+
+    if (is_exclusive_request(current_request_) && current_request_.exclusive_pre_apply_topology) {
+      BOOST_LOG(warning) << "Display helper: bounded Exclusive verification retry failed; restoring the pre-APPLY topology.";
+      dispatch_exclusive_topology_rollback();
+      if (mutation_worker_active()) {
+        return;
+      }
     }
 
     if (session_was_verified_) {
@@ -1759,10 +2183,13 @@ namespace display_helper::v2 {
     }
     if (exit_after_staged_state_reset_ && !staged_state_reset_pending_) {
       exit_after_staged_state_reset_ = false;
+      notify_recovery_status();
       if (exit_callback_) {
         exit_callback_(0);
       }
+      return;
     }
+    resume_transient_disconnect_settlement_after_staged_reset();
   }
 
   void StateMachine::handle_refresh_rate_completed(const RefreshRateCompleted &completed) {
@@ -1935,6 +2362,9 @@ namespace display_helper::v2 {
         // reset. Keep the helper alive until its ordered completion arrives.
         return;
       }
+      // The exit callback retires the mutation generation. Publish the exact
+      // terminal result first, while its connection and generation still match.
+      notify_recovery_status();
       if (exit_callback_) {
         exit_callback_(0);
       }
@@ -1979,7 +2409,8 @@ namespace display_helper::v2 {
 
     const bool topology_evidence_event = event.event == DisplayEvent::DisplayChange ||
                                          event.event == DisplayEvent::PowerResume ||
-                                         event.event == DisplayEvent::DeviceArrival;
+                                         event.event == DisplayEvent::DeviceArrival ||
+                                         event.event == DisplayEvent::DeviceRemoval;
     if (state_ == State::VirtualDisplayMonitoring &&
         baseline_topology_repair_available_ &&
         topology_evidence_event &&
@@ -1987,9 +2418,12 @@ namespace display_helper::v2 {
         current_request_.virtual_layout &&
         !mutation_worker_active() &&
         !staged_state_reset_pending_) {
-      if (auto repaired_topology = snapshots_.topology_with_returned_active_baseline_devices(
+      if (auto repaired_topology = snapshots_.topology_with_returned_baseline_devices(
             current_request_.configuration->m_device_id,
-            exclusions_vector())) {
+            exclusions_vector(),
+            observed_absent_baseline_devices_,
+            observed_disabled_baseline_devices_)) {
+        BOOST_LOG(info) << "Display helper: a returned physical baseline device is missing from the live topology; admitting one bounded topology repair.";
         // The exact virtual configuration remains the capture target. Only the
         // live topology contract is extended, and one admission per explicit
         // APPLY prevents the resulting Windows notifications from looping.
@@ -2079,6 +2513,7 @@ namespace display_helper::v2 {
       if (!consume_virtual_identity_repair()) {
         return;
       }
+      reset_exclusive_rollback_snapshot_for_verified_reapply(current_request_, session_was_verified_);
       retarget_virtual_display_device_id_if_needed(resolved);
       verification_reapply_available_ = true;
       transition(State::InProgress, ApplyAction::Apply);
@@ -2127,6 +2562,7 @@ namespace display_helper::v2 {
       if (!consume_virtual_identity_repair()) {
         return;
       }
+      reset_exclusive_rollback_snapshot_for_verified_reapply(current_request_, session_was_verified_);
       retarget_virtual_display_device_id_if_needed(resolved);
       verification_reapply_available_ = true;
       transition(State::InProgress, ApplyAction::Apply);
@@ -2263,6 +2699,8 @@ namespace display_helper::v2 {
     reset_apply_verification_state();
     baseline_topology_repair_available_ = false;
     baseline_topology_repair_in_flight_ = false;
+    observed_absent_baseline_devices_.clear();
+    observed_disabled_baseline_devices_.clear();
     expected_topology_.reset();
     golden_health_.reset_request_tracking();
     scheduler_.arm_primary(system_.now(), std::chrono::milliseconds(5000));

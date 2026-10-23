@@ -10,6 +10,23 @@
 
 namespace display_helper::v2 {
   namespace {
+    bool is_exclusive_request(const ApplyRequest &request) {
+      return request.virtual_layout && boost::iequals(*request.virtual_layout, "exclusive");
+    }
+
+    bool is_exclusive_singleton(const ActiveTopology &topology, const std::string &device_id) {
+      return topology.size() == 1 && topology.front().size() == 1 &&
+             boost::iequals(topology.front().front(), device_id);
+    }
+
+    bool restore_exclusive_topology(IDisplaySettings &display, const ActiveTopology &topology) {
+      if (topology.empty() || display.apply_topology(topology) != ApplyStatus::Ok) {
+        return false;
+      }
+      const auto restored = display.capture_topology();
+      return !restored.empty() && display.is_topology_same(topology, restored);
+    }
+
     const char *tier_to_string(SnapshotTier tier) {
       switch (tier) {
         case SnapshotTier::Current:
@@ -52,6 +69,43 @@ namespace display_helper::v2 {
         return target;
       }
       return std::nullopt;
+    }
+
+    // Recovery writes only fields present in the saved snapshot. Unknown HDR,
+    // empty primary, and legacy snapshots without origins are therefore
+    // unrequested fields, while topology and display modes remain exact. An
+    // empty mode map cannot prove a restorable display mode and fails closed.
+    bool recovery_snapshot_matches(const Snapshot &current, const Snapshot &requested) {
+      if (requested.m_modes.empty() ||
+          codec::canonical_topology(current.m_topology) != codec::canonical_topology(requested.m_topology) ||
+          !topology::equal_display_modes(current.m_modes, requested.m_modes)) {
+        return false;
+      }
+
+      if (!requested.m_primary_device.empty() && current.m_primary_device != requested.m_primary_device) {
+        return false;
+      }
+
+      for (const auto &[id, requested_state] : requested.m_hdr_states) {
+        if (!requested_state) {
+          continue;
+        }
+        const auto current_state = current.m_hdr_states.find(id);
+        if (current_state == current.m_hdr_states.end() || !current_state->second ||
+            current_state->second != requested_state) {
+          return false;
+        }
+      }
+
+      for (const auto &[id, requested_origin] : requested.m_origins) {
+        const auto current_origin = current.m_origins.find(id);
+        if (current_origin == current.m_origins.end() ||
+            current_origin->second.m_x != requested_origin.m_x ||
+            current_origin->second.m_y != requested_origin.m_y) {
+          return false;
+        }
+      }
+      return true;
     }
 
   }  // namespace
@@ -265,6 +319,9 @@ namespace display_helper::v2 {
     bool durable_recovery_already_attempted) {
     ApplyOutcome outcome;
     outcome.virtual_display_requested = request.virtual_layout.has_value();
+    outcome.exclusive_pre_apply_topology = request.exclusive_pre_apply_topology;
+    outcome.exclusive_rollback_only = request.exclusive_topology_rollback_only;
+    const bool exclusive = is_exclusive_request(request);
     bool durable_recovery_armed = durable_recovery_already_armed;
     bool durable_recovery_attempted = durable_recovery_already_armed || durable_recovery_already_attempted;
     outcome.durable_recovery_armed = durable_recovery_armed;
@@ -280,6 +337,18 @@ namespace display_helper::v2 {
       durable_recovery_armed = arm_durable_recovery_boundary();
       return durable_recovery_armed;
     };
+    if (request.exclusive_topology_rollback_only) {
+      if (!exclusive || !request.configuration || request.configuration->m_device_id.empty() || !request.exclusive_pre_apply_topology || request.exclusive_pre_apply_topology->empty()) {
+        outcome.status = ApplyStatus::InvalidRequest;
+        return outcome;
+      }
+      outcome.display_may_have_changed = true;
+      outcome.status = restore_exclusive_topology(display_, *request.exclusive_pre_apply_topology) ?
+                         ApplyStatus::Ok :
+                         ApplyStatus::Fatal;
+      return outcome;
+    }
+
     if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
       outcome.status = ApplyStatus::Fatal;
       return outcome;
@@ -287,6 +356,33 @@ namespace display_helper::v2 {
 
     if (!request.configuration) {
       outcome.status = ApplyStatus::InvalidRequest;
+      return outcome;
+    }
+
+    std::optional<ActiveTopology> exclusive_contract;
+    if (exclusive) {
+      if (request.configuration->m_device_id.empty()) {
+        outcome.status = ApplyStatus::InvalidRequest;
+        return outcome;
+      }
+      exclusive_contract = ActiveTopology {{request.configuration->m_device_id}};
+      if (request.topology && !request.topology->empty() && !is_exclusive_singleton(*request.topology, request.configuration->m_device_id)) {
+        outcome.status = ApplyStatus::InvalidRequest;
+        return outcome;
+      }
+    }
+
+    if (request.reactivation_only) {
+      // The verified live transaction already owns the durable restore lease.
+      // Do not snapshot, reset SettingsManager, toggle unrelated HDR, or replay
+      // the original physical topology and position overrides in this lane.
+      outcome.display_may_have_changed = true;
+      outcome.status = display_.reactivate_virtual_target(*request.configuration, [&] {
+        return token.is_cancelled() || clock_.now() >= request.deadline;
+      });
+      if (token.is_cancelled() || clock_.now() >= request.deadline) {
+        outcome.status = ApplyStatus::Fatal;
+      }
       return outcome;
     }
 
@@ -306,8 +402,16 @@ namespace display_helper::v2 {
       outcome.display_may_have_changed = true;
       outcome.durable_recovery_attempted = true;
       outcome.staged_state_prepared = true;
+      if (exclusive && (!request.exclusive_pre_apply_topology || request.exclusive_pre_apply_topology->empty())) {
+        outcome.status = ApplyStatus::Fatal;
+        return outcome;
+      }
       outcome.status = display_.apply(*request.configuration);
       if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
+        outcome.status = ApplyStatus::Fatal;
+      }
+      if (exclusive && outcome.status != ApplyStatus::Ok && !restore_exclusive_topology(display_, *request.exclusive_pre_apply_topology)) {
+        BOOST_LOG(error) << "Display helper v2: failed to restore pre-APPLY Exclusive topology after settings-only apply failure.";
         outcome.status = ApplyStatus::Fatal;
       }
       return outcome;
@@ -317,7 +421,8 @@ namespace display_helper::v2 {
     // against the supplied staging topology and no global display-stack
     // recovery. Recovery belongs to REVERT, where a broad topology jog is
     // intentional; doing it here destabilizes DWM immediately before capture.
-    auto preflight = display_.preflight_apply(*request.configuration, request.topology);
+    const auto &preflight_topology = exclusive ? exclusive_contract : request.topology;
+    auto preflight = display_.preflight_apply(*request.configuration, preflight_topology);
     if (preflight.status != ApplyStatus::Ok || !preflight.plan) {
       BOOST_LOG(error) << "Display helper v2: configuration failed the non-mutating APPLY preflight.";
       outcome.status = preflight.status == ApplyStatus::Ok ? ApplyStatus::Fatal : preflight.status;
@@ -342,6 +447,30 @@ namespace display_helper::v2 {
       return outcome;
     }
 
+    if (exclusive) {
+      if (!outcome.exclusive_pre_apply_topology) {
+        outcome.exclusive_pre_apply_topology = display_.capture_topology();
+      }
+      if (!outcome.exclusive_pre_apply_topology || outcome.exclusive_pre_apply_topology->empty()) {
+        BOOST_LOG(error) << "Display helper v2: refusing Exclusive APPLY without a readable pre-APPLY topology for rollback.";
+        outcome.exclusive_pre_apply_topology.reset();
+        outcome.status = ApplyStatus::Fatal;
+        return outcome;
+      }
+    }
+
+    if (request.refresh_settings_baseline && request.topology &&
+        request.configuration->m_device_prep != SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay) {
+      // A staged live topology cannot override SettingsManager's cached initial
+      // topology. Reset only that transaction; durable restore snapshots belong
+      // to the separate snapshot store and must retain the session baseline.
+      if (!display_.reset_staged_apply_state()) {
+        BOOST_LOG(error) << "Display helper v2: could not refresh the enlarged physical settings baseline.";
+        outcome.status = ApplyStatus::Fatal;
+        return outcome;
+      }
+    }
+
     // Arm the durable restore lease once, immediately before the first possible
     // mutation. The preflight above is deliberately read-only.
     if (mutation_boundary_) {
@@ -357,10 +486,11 @@ namespace display_helper::v2 {
       return outcome;
     }
 
-    // The supplied topology is a base, not an exact post-apply contract. Set it
-    // once as v1 does, then let one original SettingsManager request own
-    // topology, primary, mode, HDR, and its transactional rollback guards.
-    if (request.topology && display_.topology_is_valid(*request.topology)) {
+    // Ordinary requests stage their supplied base before SettingsManager.
+    // Exclusive lets EnsureOnlyDisplay apply its singleton inside the
+    // SettingsManager transaction, preserving the true pre-APPLY rollback
+    // topology captured above.
+    if (!exclusive && request.topology && display_.topology_is_valid(*request.topology)) {
       outcome.display_may_have_changed = true;
       (void) display_.apply_topology(*request.topology);
     }
@@ -377,6 +507,9 @@ namespace display_helper::v2 {
 
     if ((token.is_cancelled() || clock_.now() >= request.deadline)) {
       outcome.status = ApplyStatus::Fatal;
+      if (exclusive && !restore_exclusive_topology(display_, *outcome.exclusive_pre_apply_topology)) {
+        BOOST_LOG(error) << "Display helper v2: failed to restore pre-APPLY Exclusive topology after cancellation.";
+      }
       return outcome;
     }
 
@@ -396,6 +529,11 @@ namespace display_helper::v2 {
       }
     }
     if (clock_.now() >= request.deadline) outcome.status = ApplyStatus::Fatal;
+
+    if (exclusive && outcome.status != ApplyStatus::Ok && !restore_exclusive_topology(display_, *outcome.exclusive_pre_apply_topology)) {
+      BOOST_LOG(error) << "Display helper v2: failed to restore pre-APPLY Exclusive topology after apply failure.";
+      outcome.status = ApplyStatus::Fatal;
+    }
 
     return outcome;
   }
@@ -569,21 +707,33 @@ namespace display_helper::v2 {
       return false;
     }
 
+    std::optional<ActiveTopology> exclusive_contract;
+    if (is_exclusive_request(request)) {
+      if (!request.configuration || request.configuration->m_device_id.empty()) {
+        return false;
+      }
+      exclusive_contract = ActiveTopology {{request.configuration->m_device_id}};
+      if ((request.topology && !request.topology->empty() && !is_exclusive_singleton(*request.topology, request.configuration->m_device_id)) || (expected_topology && !is_exclusive_singleton(*expected_topology, request.configuration->m_device_id))) {
+        return false;
+      }
+    }
+    const auto &topology_contract = exclusive_contract ? exclusive_contract : expected_topology;
+
     // Observe immediately, then confirm the same target 250 ms later. This is
     // the legacy helper's capture-readiness boundary; sleeping before the first
     // sample only serialized another quarter second onto every stable start.
-    // Sticky verification re-evaluates any explicit exact topology contract
-    // supplied by a future caller, plus the resolved target and requested
-    // settings. Normal APPLY treats `sunshine_topology` as a staging/base
-    // topology, matching v1, so unrelated paths may be adjusted while a
-    // sleeping monitor comes online.
+    // Verification re-evaluates an explicit exact topology contract, plus the
+    // resolved target and requested settings. Ordinary APPLY treats
+    // `sunshine_topology` as a staging/base topology, matching v1, so unrelated
+    // paths may be adjusted while a sleeping monitor comes online. Exclusive
+    // APPLY supplies its requested singleton as an exact contract.
     const auto matches_requested_state = [&]() {
       std::optional<ActiveTopology> current_topology;
-      if (expected_topology) {
+      if (topology_contract) {
         current_topology = display_.capture_topology();
       }
-      if (expected_topology) {
-        if (!current_topology || !display_.is_topology_same(*expected_topology, *current_topology)) {
+      if (topology_contract) {
+        if (!current_topology || (exclusive_contract && current_topology->empty()) || !display_.is_topology_same(*topology_contract, *current_topology)) {
           return false;
         }
       }
@@ -714,12 +864,35 @@ namespace display_helper::v2 {
     if (token.is_cancelled()) {
       return false;
     }
-    const bool state_ok = got_stable && codec::equal_snapshots_strict(cur, loaded.snapshot) &&
-                          quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+    bool state_ok = got_stable && recovery_snapshot_matches(cur, loaded.snapshot);
+    if (state_ok) {
+      state_ok = quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+    }
+    // quiet_period proves stability between its own captures, but does not
+    // return its final observation. Re-read the requested fields after quiet
+    // so a stable change during that window cannot pass confirmation.
+    if (state_ok && !token.is_cancelled()) {
+      Snapshot after_quiet;
+      const bool got_after_quiet = read_stable_snapshot(
+        after_quiet,
+        std::chrono::milliseconds(2000),
+        std::chrono::milliseconds(150),
+        token);
+      state_ok = got_after_quiet && !token.is_cancelled() &&
+                 recovery_snapshot_matches(after_quiet, loaded.snapshot);
+      if (state_ok) {
+        cur = std::move(after_quiet);
+      }
+    } else {
+      state_ok = false;
+    }
+    if (token.is_cancelled()) {
+      return false;
+    }
     // Rotation is not part of the snapshot, so the quiet period cannot observe
     // rotation drift; the layout must be checked after it, not before.
     const bool layout_ok = !loaded.has_layout_data || display_.current_layout_matches(loaded.layout_rotations);
-    const bool ok = state_ok && layout_ok;
+    const bool ok = !token.is_cancelled() && state_ok && layout_ok;
     if (ok) {
       BOOST_LOG(info) << "Restore (" << label << "): current state already matches baseline; skipping apply.";
     }
@@ -730,6 +903,13 @@ namespace display_helper::v2 {
     const auto &base = loaded.snapshot;
     const auto &layouts = loaded.layout_rotations;
     const bool require_layout_match = loaded.has_layout_data;
+    // A topology left after filtering is not enough to perform a safe
+    // restoration when every saved display mode was filtered out. Keep the
+    // snapshot unconfirmed and leave the live display stack untouched.
+    if (base.m_modes.empty()) {
+      BOOST_LOG(warning) << "Restore (" << label << "): no saved display modes remain; refusing to mutate the display.";
+      return false;
+    }
     if (!require_layout_match && loaded.snapshot_version < codec::kSnapshotLayoutVersionLatest) {
       BOOST_LOG(info) << label << " snapshot uses legacy schema (version "
                       << loaded.snapshot_version << "): no display layout metadata.";
@@ -768,7 +948,7 @@ namespace display_helper::v2 {
           return false;
         }
       }
-      return true;
+      return !token.is_cancelled() && display_.apply_snapshot_hdr_states(base);
     };
 
     auto verify_once = [&](const char *attempt) -> bool {
@@ -777,12 +957,32 @@ namespace display_helper::v2 {
       if (token.is_cancelled()) {
         return false;
       }
-      const bool state_ok = got_stable && codec::equal_snapshots_strict(cur, base) &&
-                            quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+      bool state_ok = got_stable && recovery_snapshot_matches(cur, base);
+      if (state_ok) {
+        state_ok = quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
+      }
+      if (state_ok && !token.is_cancelled()) {
+        Snapshot after_quiet;
+        const bool got_after_quiet = read_stable_snapshot(
+          after_quiet,
+          std::chrono::milliseconds(2000),
+          std::chrono::milliseconds(150),
+          token);
+        state_ok = got_after_quiet && !token.is_cancelled() &&
+                   recovery_snapshot_matches(after_quiet, base);
+        if (state_ok) {
+          cur = std::move(after_quiet);
+        }
+      } else {
+        state_ok = false;
+      }
+      if (token.is_cancelled()) {
+        return false;
+      }
       // Same ordering as confirm_matches: rotation drift is invisible to the
       // quiet period, so the layout check must come after it.
       const bool layout_ok = !require_layout_match || display_.current_layout_matches(layouts);
-      const bool ok = state_ok && layout_ok;
+      const bool ok = !token.is_cancelled() && state_ok && layout_ok;
       BOOST_LOG(info) << "Restore (" << label << ") attempt " << attempt << ": before_sig=" << before_sig
                       << ", current_sig=" << codec::signature(cur)
                       << ", baseline_sig=" << codec::signature(base)
@@ -795,28 +995,28 @@ namespace display_helper::v2 {
     // pointer transform is still stale after a virtual-display session
     // (Vibepollo #406). When the matching fast path confirms a baseline that
     // holds a non-default rotation, force a same-value rotation refresh so the
-    // driver rebuilds that transform. Best-effort by design: a confirmed
-    // restore must never fail on this.
-    const auto reassert_rotations_after_match = [&]() {
+    // driver rebuilds that transform. A refresh failure is best-effort, but
+    // any mode-set can invalidate the earlier color/state confirmation.
+    const auto reassert_rotations_after_match = [&]() -> bool {
       if (!require_layout_match || layouts.empty() || token.is_cancelled()) {
-        return;
+        return !token.is_cancelled();
       }
       const bool any_non_default = std::any_of(layouts.begin(), layouts.end(), [](const auto &entry) {
         return entry.second != 0;
       });
       if (!any_non_default) {
-        return;
+        return true;
       }
       if (!display_.reassert_layout_rotations(layouts)) {
-        BOOST_LOG(warning) << "Restore (" << label << "): rotation reassert failed; keeping confirmed restore.";
+        BOOST_LOG(warning) << "Restore (" << label << "): rotation reassert failed; checking final state.";
       }
+      return !token.is_cancelled() && display_.apply_snapshot_hdr_states(base) && verify_once("rotation refresh");
     };
 
     if (token.is_cancelled()) {
       return false;
     }
-    if (confirm_matches(loaded, label, token)) {
-      reassert_rotations_after_match();
+    if (confirm_matches(loaded, label, token) && reassert_rotations_after_match()) {
       return true;
     }
 
@@ -833,8 +1033,7 @@ namespace display_helper::v2 {
     if (token.is_cancelled() || !wait_with_cancel(std::chrono::milliseconds(700), token)) {
       return false;
     }
-    if (confirm_matches(loaded, label, token)) {
-      reassert_rotations_after_match();
+    if (confirm_matches(loaded, label, token) && reassert_rotations_after_match()) {
       return true;
     }
     const bool second_apply_succeeded = apply_once();
@@ -939,6 +1138,73 @@ namespace display_helper::v2 {
                     << ", previous=" << (removed_previous ? "true" : "false");
   }
 
+  std::optional<Snapshot> RecoveryOperation::live_desktop_to_preserve(const Snapshot &baseline) {
+    if (!state_.preserve_active_physical_primary.load(std::memory_order_acquire) ||
+        state_.always_restore_from_golden.load(std::memory_order_acquire)) {
+      return std::nullopt;
+    }
+
+    auto live = display_.capture_snapshot();
+    const auto primary = codec::normalize_device_id(live.m_primary_device);
+    if (primary.empty() || !display_.topology_is_valid(live.m_topology)) {
+      return std::nullopt;
+    }
+    const auto live_ids = codec::topology_device_set(live.m_topology);
+    if (std::none_of(live_ids.begin(), live_ids.end(), [&](const auto &id) {
+          return codec::normalize_device_id(id) == primary;
+        })) {
+      return std::nullopt;
+    }
+    const auto baseline_ids = codec::topology_device_set(baseline.m_topology);
+    if (std::any_of(baseline_ids.begin(), baseline_ids.end(), [&](const auto &id) {
+          return codec::normalize_device_id(id) == primary;
+        })) {
+      return std::nullopt;
+    }
+    // The stale narrowed baseline must still be active within the live
+    // desktop. A physical dummy plug or TV can be the primary of an
+    // interrupted stream while the saved desktop monitors remain disabled.
+    for (const auto &baseline_id : baseline_ids) {
+      const auto normalized = codec::normalize_device_id(baseline_id);
+      if (std::none_of(live_ids.begin(), live_ids.end(), [&](const auto &id) {
+            return codec::normalize_device_id(id) == normalized;
+          })) {
+        return std::nullopt;
+      }
+    }
+    const auto exclusions = state_.exclusions();
+    if (std::any_of(exclusions.begin(), exclusions.end(), [&](const auto &id) {
+          return codec::normalize_device_id(id) == primary;
+        })) {
+      return std::nullopt;
+    }
+
+    const auto devices = display_.enumerate(display_device::DeviceEnumerationDetail::Minimal);
+    bool physical_primary_active = false;
+    for (const auto &device : devices) {
+      if (!codec::is_active_display_device(device)) {
+        continue;
+      }
+      // A virtual output still active at logon means the interrupted stream
+      // desktop needs recovery. Keep the exact saved baseline in that case.
+      if (codec::is_virtual_display_device(device)) {
+        return std::nullopt;
+      }
+      if (!device.m_display_name.empty() &&
+          codec::normalize_device_id(device.m_device_id) == primary &&
+          live.m_modes.contains(live.m_primary_device)) {
+        physical_primary_active = true;
+      }
+    }
+    if (!physical_primary_active) {
+      return std::nullopt;
+    }
+
+    BOOST_LOG(warning) << "Boot restore: session snapshot omits the active physical primary "
+                       << live.m_primary_device << "; preserving the current physical desktop.";
+    return live;
+  }
+
   RecoveryOutcome RecoveryOperation::run(const CancellationToken &token) {
     RecoveryOutcome outcome;
     if (token.is_cancelled()) {
@@ -957,6 +1223,7 @@ namespace display_helper::v2 {
     }
 
     std::optional<Snapshot> restored;
+    bool preserved_live_desktop = false;
 
     auto try_golden = [&]() -> bool {
       if (token.is_cancelled()) {
@@ -1011,10 +1278,20 @@ namespace display_helper::v2 {
         BOOST_LOG(info) << label << " snapshot rejected due to invalid topology.";
         return false;
       }
-      if (apply_and_confirm(*loaded, label, token)) {
+      bool preserve_live = false;
+      if (auto live = live_desktop_to_preserve(loaded->snapshot)) {
+        loaded->snapshot = std::move(*live);
+        loaded->has_layout_data = false;
+        loaded->layout_rotations.clear();
+        preserve_live = true;
+      }
+      // Confirm the live desktop through the normal stable-read/quiet-period
+      // gate. If it drifts, retry without applying a captured live topology.
+      if (preserve_live ? confirm_matches(*loaded, label, token) : apply_and_confirm(*loaded, label, token)) {
         if (token.is_cancelled()) {
           return false;
         }
+        preserved_live_desktop = preserve_live;
         outcome.staged_state_reset_attempted = true;
         outcome.staged_state_reset_succeeded = display_.reset_staged_apply_state();
         if (!outcome.staged_state_reset_succeeded) {
@@ -1033,7 +1310,7 @@ namespace display_helper::v2 {
       if (try_session(SnapshotTier::Current, "current", attempted_current)) {
         // Confirmed on screen; skip only the tier housekeeping when a
         // supersession arrived after try_session's own cancellation check.
-        if (!token.is_cancelled()) {
+        if (!preserved_live_desktop && !token.is_cancelled()) {
           (void) storage_.promote_current_to_previous();
         }
         return true;
@@ -1053,7 +1330,7 @@ namespace display_helper::v2 {
 
       bool attempted_previous = false;
       if (try_session(SnapshotTier::Previous, "previous", attempted_previous)) {
-        if (attempted_current && !token.is_cancelled()) {
+        if (!preserved_live_desktop && attempted_current && !token.is_cancelled()) {
           BOOST_LOG(warning) << "Restore: previous snapshot recovered the desktop; retaining the unconfirmed current baseline for a later restore.";
         }
         return true;

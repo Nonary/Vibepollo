@@ -19,6 +19,7 @@ class Program
     static void Assert(bool condition, string text) { if (!condition) throw new Exception(text); Console.WriteLine("PASS: " + text); }
     static void Main()
     {
+        AuthenticationTests.Run();
         AcceptDuringStop("launcher", false);
         AcceptDuringStop("sunshine", true);
         CancelledReaderStillCleansUp();

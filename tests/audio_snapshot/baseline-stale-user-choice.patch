@@ -1,0 +1,19 @@
+--- a/src/audio_role_control.h
++++ b/src/audio_role_control.h
+@@ -222,16 +222,6 @@
+           continue;
+         }
+         const auto role = static_cast<Role>(n);
+-        // Best effort: preserve choices observed by this final check. MMDevice
+-        // has no atomic default-role compare-and-set; a change during the
+-        // subsequent endpoint write can still be overwritten.
+-        const auto latest = devices_.defaults()[n];
+-        if (latest != assigned_) {
+-          if (!registry_.publish(epoch, role, latest)) {
+-            break;
+-          }
+-          continue;
+-        }
+         auto result = write(epoch, role, captured_[n]);
+         if (!result) {
+           break;

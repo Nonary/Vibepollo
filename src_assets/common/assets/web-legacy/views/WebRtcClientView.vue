@@ -257,6 +257,7 @@
             <i :class="terminatePending ? 'fas fa-circle-notch fa-spin' : 'fas fa-rectangle-xmark'"></i>
           </button>
 
+          <p>{{ $t('webrtc.touch_input_hint') }}</p>
           <div class="quick-toggles">
             <label class="toggle" :title="$t('webrtc.enable_input_forwarding')">
               <n-switch v-model:value="inputEnabled" :disabled="!isConnected" size="small" />

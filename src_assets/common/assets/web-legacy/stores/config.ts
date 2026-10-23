@@ -6,6 +6,7 @@ import { http } from '@/http';
 export interface MetaInfo {
   platform?: string;
   architecture?: string;
+  linux?: { machine_host?: boolean };
   status?: boolean;
   version?: string;
   commit?: string;
@@ -110,6 +111,8 @@ const defaultGroups = [
       motion_as_ds4: 'enabled',
       touchpad_as_ds4: 'enabled',
       back_button_timeout: -1,
+      guide_button_key: 0,
+      guide_button_controller: 0,
       keyboard: 'enabled',
       key_repeat_delay: 500,
       key_repeat_frequency: 24.9,
@@ -155,11 +158,14 @@ const defaultGroups = [
       dd_hdr_option: 'auto',
       dd_hdr_request_override: 'auto',
       dd_config_revert_delay: 3000,
+      dd_remove_virtual_display_after_restore: 'disabled',
       dd_config_revert_on_disconnect: 'disabled',
       dd_paused_virtual_display_timeout_secs: 0,
       dd_always_restore_from_golden: false,
       dd_display_helper_engine: 'auto',
       dd_snapshot_exclude_devices: [] as Array<string>,
+      end_stream_hotkey: '',
+      end_stream_hotkey_modifiers: 'ctrl+alt+shift',
       dd_snapshot_restore_hotkey: '',
       dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
       dd_use_sunshine_virtual_display_driver: true,
@@ -202,6 +208,7 @@ const defaultGroups = [
       lan_encryption_mode: 0,
       wan_encryption_mode: 1,
       ping_timeout: 10000,
+      control_peer_timeout: 0,
       video_max_batch_size_kb: 64,
       pyrowave_critical_fec_percentage: 20,
     },

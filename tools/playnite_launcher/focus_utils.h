@@ -17,6 +17,12 @@ namespace playnite_launcher::focus {
   std::vector<DWORD> find_pids_under_install_dir_sorted(const std::wstring &install_dir);
   std::vector<DWORD> find_pids_under_install_dir_sorted(const std::wstring &install_dir, bool require_window);
 
+  // Existing process/path and visible top-level window eligibility, without
+  // blocking discovery. A basename fallback is retained for legacy metadata.
+  std::vector<HWND> discover_game_windows(const std::wstring &install_dir, const std::wstring &game_exe = {}, bool prefer_exe = false);
+  std::string window_identity(HWND window);
+  bool focus_game_window(HWND window, std::function<bool()> cancel = {});
+
   bool focus_by_install_dir_extended(const std::wstring &install_dir, int max_successes, int total_wait_sec, bool exit_on_first, std::function<bool()> cancel = {}, DWORD *confirmed_pid_out = nullptr);
 
   bool get_process_image_path(DWORD pid, std::wstring &out);

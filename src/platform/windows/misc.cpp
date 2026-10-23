@@ -94,31 +94,125 @@ extern "C" {
 
 namespace {
 
-  std::atomic<bool> used_nt_set_timer_resolution = false;
   struct screen_saver_context_t {
     std::mutex mutex;
     platf::screen_saver_state_t state;
   };
   const auto screen_saver_context = std::make_shared<screen_saver_context_t>();
 
-  bool nt_set_timer_resolution_max() {
+  using namespace std::literals;
+
+  // Scheduling setup is process-wide. Keep it until the final streaming
+  // owner leaves, and retain failed cleanup obligations for a later stop/cycle.
+  std::mutex streaming_scheduling_mutex;
+  std::size_t streaming_scheduling_users = 0;
+  std::optional<ULONG> owned_nt_timer_resolution;
+  bool owned_time_period = false;
+  std::optional<DWORD> previous_priority_class;
+
+  bool nt_set_timer_resolution_max(ULONG &requested_resolution) {
     ULONG maximum;
     ULONG minimum;
     if (ULONG current; !NT_SUCCESS(NtQueryTimerResolution(&minimum, &maximum, &current)) ||
                        !NT_SUCCESS(NtSetTimerResolution(maximum, TRUE, &current))) {
       return false;
     }
+    requested_resolution = maximum;
     return true;
   }
 
-  bool nt_set_timer_resolution_min() {
-    ULONG maximum;
-    ULONG minimum;
-    if (ULONG current; !NT_SUCCESS(NtQueryTimerResolution(&minimum, &maximum, &current)) ||
-                       !NT_SUCCESS(NtSetTimerResolution(minimum, TRUE, &current))) {
-      return false;
+  void acquire_streaming_scheduling() {
+    const auto lock = std::lock_guard(streaming_scheduling_mutex);
+    if (streaming_scheduling_users++ > 0) {
+      return;
     }
-    return true;
+
+    // Reuse an outstanding request if the preceding stream's release failed.
+    if (!owned_nt_timer_resolution && !owned_time_period) {
+      ULONG requested_resolution;
+      if (nt_set_timer_resolution_max(requested_resolution)) {
+        owned_nt_timer_resolution = requested_resolution;
+        BOOST_LOG(info) << "Stream scheduling acquired native timer resolution request "sv << requested_resolution << " (100-ns units)"sv;
+      } else {
+        BOOST_LOG(error) << "NtSetTimerResolution() failed, falling back to timeBeginPeriod()";
+        const auto result = timeBeginPeriod(1);
+        owned_time_period = result == TIMERR_NOERROR;
+        if (owned_time_period) {
+          BOOST_LOG(info) << "Stream scheduling acquired WinMM 1 ms timer period"sv;
+        } else {
+          BOOST_LOG(warning) << "Unable to begin timer period: "sv << result;
+        }
+      }
+    }
+
+    // Only change priority when we can restore the class that we replaced.
+    if (!previous_priority_class) {
+      const auto priority = GetPriorityClass(GetCurrentProcess());
+      if (!priority) {
+        const auto winerr = GetLastError();
+        BOOST_LOG(warning) << "Unable to get process priority class: "sv << winerr;
+      } else if (priority != HIGH_PRIORITY_CLASS) {
+        if (SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS)) {
+          previous_priority_class = priority;
+          BOOST_LOG(info) << "Stream scheduling raised process priority from "sv << priority << " to HIGH_PRIORITY_CLASS"sv;
+        } else {
+          const auto winerr = GetLastError();
+          BOOST_LOG(warning) << "Unable to raise process priority class: "sv << winerr;
+        }
+      } else {
+        BOOST_LOG(info) << "Stream scheduling kept the preexisting HIGH_PRIORITY_CLASS unchanged"sv;
+      }
+    }
+  }
+
+  void release_streaming_scheduling() {
+    const auto lock = std::lock_guard(streaming_scheduling_mutex);
+    if (streaming_scheduling_users > 0 && --streaming_scheduling_users > 0) {
+      return;
+    }
+
+    // Preserve a later external priority change. On failure, keep the original
+    // snapshot so another stop or streaming cycle can retry restoration.
+    if (previous_priority_class) {
+      const auto priority = GetPriorityClass(GetCurrentProcess());
+      if (!priority) {
+        const auto winerr = GetLastError();
+        BOOST_LOG(warning) << "Unable to get process priority class for restoration: "sv << winerr;
+      } else if (priority != HIGH_PRIORITY_CLASS) {
+        previous_priority_class.reset();
+        BOOST_LOG(info) << "Stream scheduling preserved externally changed process priority class "sv << priority;
+      } else if (SetPriorityClass(GetCurrentProcess(), *previous_priority_class)) {
+        const auto restored_priority = *previous_priority_class;
+        previous_priority_class.reset();
+        BOOST_LOG(info) << "Stream scheduling restored process priority class "sv << restored_priority;
+      } else {
+        const auto winerr = GetLastError();
+        BOOST_LOG(warning) << "Unable to restore process priority class: "sv << winerr;
+      }
+    }
+
+    // Release the exact request we acquired, never request a new resolution on
+    // teardown or end a WinMM period that did not successfully begin.
+    if (owned_nt_timer_resolution) {
+      ULONG current;
+      const auto released_resolution = *owned_nt_timer_resolution;
+      const auto status = NtSetTimerResolution(*owned_nt_timer_resolution, FALSE, &current);
+      if (NT_SUCCESS(status)) {
+        owned_nt_timer_resolution.reset();
+        BOOST_LOG(info) << "Stream scheduling released native timer resolution request "sv << released_resolution;
+      } else {
+        BOOST_LOG(error) << "Unable to release native timer resolution: "sv << status;
+      }
+    }
+    if (owned_time_period) {
+      const auto result = timeEndPeriod(1);
+      if (result == TIMERR_NOERROR) {
+        owned_time_period = false;
+        BOOST_LOG(info) << "Stream scheduling released WinMM 1 ms timer period"sv;
+      } else {
+        BOOST_LOG(warning) << "Unable to end timer period: "sv << result;
+      }
+    }
   }
 
 }  // namespace
@@ -1590,17 +1684,7 @@ namespace platf {
     // Enable MMCSS scheduling for DWM
     DwmEnableMMCSS(true);
 
-    // Reduce timer period to 0.5ms
-    if (nt_set_timer_resolution_max()) {
-      used_nt_set_timer_resolution = true;
-    } else {
-      BOOST_LOG(error) << "NtSetTimerResolution() failed, falling back to timeBeginPeriod()";
-      timeBeginPeriod(1);
-      used_nt_set_timer_resolution = false;
-    }
-
-    // Promote ourselves to high priority class
-    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    acquire_streaming_scheduling();
 
     // Start display helper watchdog to self-heal helper crashes during active stream
     display_helper_integration::start_watchdog();
@@ -1695,18 +1779,7 @@ namespace platf {
     } else {
       BOOST_LOG(debug) << "Display helper: keeping watchdog alive while session is paused (awaiting /resume).";
     }
-    // Demote ourselves back to normal priority class
-    SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
-
-    // End our 0.5ms timer request
-    if (used_nt_set_timer_resolution) {
-      used_nt_set_timer_resolution = false;
-      if (!nt_set_timer_resolution_min()) {
-        BOOST_LOG(error) << "nt_set_timer_resolution_min() failed even though nt_set_timer_resolution_max() succeeded";
-      }
-    } else {
-      timeEndPeriod(1);
-    }
+    release_streaming_scheduling();
 
     // Disable MMCSS scheduling for DWM
     DwmEnableMMCSS(false);
@@ -2570,6 +2643,7 @@ namespace platf {
         .luid = adapter.desc.AdapterLuid,
         .description = to_utf8(adapter.desc.Description),
         .pnp_id = adapter.pnp_id.value_or(std::string {}),
+        .vendor_id = adapter.desc.VendorId,
         .dedicated_video_memory = adapter.desc.DedicatedVideoMemory,
         .shared_system_memory = adapter.desc.SharedSystemMemory,
       };
@@ -2726,6 +2800,7 @@ namespace platf {
           .luid = adapter_desc.AdapterLuid,
           .description = to_utf8(adapter_desc.Description),
           .pnp_id = query_adapter_pnp_id(adapter_desc.AdapterLuid).value_or(std::string {}),
+          .vendor_id = adapter_desc.VendorId,
           .dedicated_video_memory = adapter_desc.DedicatedVideoMemory,
           .shared_system_memory = adapter_desc.SharedSystemMemory,
         };

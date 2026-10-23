@@ -30,6 +30,7 @@ on:
     branches:
       - main
       - master
+      - canary
 
 concurrency:
   group: "${{ github.workflow }}-${{ github.ref }}"
@@ -236,10 +237,11 @@ jobs:
     uses: ./.github/workflows/ci-windows.yml
     with:
       use_self_hosted: ${{ github.event_name == 'workflow_dispatch' && inputs.use_self_hosted }}
-      build_only: ${{ needs.release-candidate.outputs.should_release == 'true' }}
+      # CI validates MSI packaging; consumer setup EXEs belong to release workflows.
+      build_only: true
       build_tests: ${{ needs.release-candidate.outputs.should_release == 'true' }}
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
-      release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0' }}
+      release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0-pr-validation' }}
       release_tag: ${{ needs.release-candidate.outputs.tag_name }}
       release_artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       symbol_product_name: Vibepollo
@@ -268,7 +270,7 @@ jobs:
       use_self_hosted: ${{ github.event_name == 'workflow_dispatch' && inputs.use_self_hosted }}
       artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
-      release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0' }}
+      release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0-pr-validation' }}
 
   build-macos:
     name: macOS

@@ -87,6 +87,9 @@ endif()
 if (TARGET sunshine_wgc_capture)
     install(TARGETS sunshine_wgc_capture RUNTIME DESTINATION "tools" COMPONENT application)
 endif()
+if (TARGET sunshine_end_stream_hotkey)
+    install(TARGETS sunshine_end_stream_hotkey RUNTIME DESTINATION "tools" COMPONENT application)
+endif()
 if (TARGET sunshine_display_helper)
     install(TARGETS sunshine_display_helper RUNTIME DESTINATION "tools" COMPONENT application)
 endif()
@@ -624,5 +627,6 @@ set(CPACK_COMPONENT_FIREWALL_GROUP "Scripts")
 
 # gamepad scripts are bundled under assets and not exposed as a separate component
 
-# include specific packaging (WiX only)
+# include generator-specific packaging
 include(${CMAKE_MODULE_PATH}/packaging/windows_wix.cmake)
+include(${CMAKE_MODULE_PATH}/packaging/windows_portable.cmake)

@@ -79,7 +79,7 @@ running kernel, installs the package from the signed repository (or the latest G
 the repository is unavailable), opens firewalld or ufw, and tells you whether to reboot:
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/vibe-test/scripts/linux_install.sh
+curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/master/scripts/linux_install.sh
 sudo bash linux_install.sh
 ```
 
@@ -352,12 +352,22 @@ the stream starts. The managed virtual display replaces dummy plugs.
 
 ### Configuration
 
-Sunshine is configured via the web ui, which is available on [https://localhost:47990](https://localhost:47990)
-by default. You may replace *localhost* with your internal ip address.
+Vibepollo is configured via the Web UI at [https://localhost:47990](https://localhost:47990)
+on the host by default. From another device on your LAN, replace only `localhost` with
+the host's LAN IP address, for example `https://192.168.1.10:47990`. Keep the `https://`
+prefix: entering just an IP address and port can make the browser try plain HTTP,
+which the HTTPS Web UI port does not accept. If you changed the base `port` setting,
+use the Web UI port shown in the startup log instead of `47990`.
+
+For an empty response or other connection failure, see
+[Web UI Access](troubleshooting.md#web-ui-access) before changing firewall or access settings.
 
 > [!NOTE]
-> Ignore any warning given by your browser about "insecure website". This is due to the SSL certificate
-> being self-signed.
+> The default certificate is self-signed, so your browser may show a certificate-trust
+> warning even when you use HTTPS. This is separate from a plain-HTTP connection failure.
+> Do not enter credentials if you cannot verify that you are connecting to your own host.
+> For warning-free access, use a certificate trusted by your browser and valid for the
+> hostname or IP address in the URL. Switching to HTTP does not solve certificate trust.
 
 > [!CAUTION]
 > If running for the first time, make sure to note the username and password that you created.

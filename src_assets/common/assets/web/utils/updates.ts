@@ -50,7 +50,8 @@ function asset(release: UpdateRelease, name: string): boolean {
 
 export function isDailyTag(tag: string): boolean {
   return /^daily-\d{4}-\d{2}-\d{2}(?:\.(?:[1-9][0-9]{0,2}))?$/.test(tag) ||
-    /^\d+\.\d+\.\d+-daily\.d\d{8}(?:\.(?:[1-9][0-9]{0,2}))?$/.test(tag);
+    /^\d+\.\d+\.\d+-daily\.d\d{8}(?:\.(?:[1-9][0-9]{0,2}))?$/.test(tag) ||
+    /^\d+\.\d+\.\d+-nightly\.d\d{8}\.[0-9a-f]{12}$/.test(tag);
 }
 
 export function validNightlyMetadata(
@@ -58,6 +59,14 @@ export function validNightlyMetadata(
   metadata: Record<string, unknown> | undefined,
 ): boolean {
   if (!isDailyTag(tag) || !metadata || typeof metadata !== 'object') return false;
+  const nightly = tag.match(/^\d+\.\d+\.\d+-nightly\.d(\d{8})\.([0-9a-f]{12})$/);
+  if (nightly) {
+    const source = metadata['source_commit'];
+    return orderedVersion(tag) && metadata['schema_version'] === 1 && metadata['channel'] === 'nightly' &&
+      metadata['tag'] === tag && metadata['version'] === tag &&
+      metadata['nightly_sequence'] === Number(nightly[1]) &&
+      typeof source === 'string' && /^[0-9a-f]{40}$/.test(source) && source.slice(0, 12) === nightly[2];
+  }
   if (!tag.startsWith('daily-')) {
     const match = tag.match(/^\d+\.\d+\.\d+-daily\.d(\d{4})(\d{2})(\d{2})(\.[1-9][0-9]{0,2})?$/);
     const source = metadata['source_commit'];
@@ -142,7 +151,7 @@ export function completeRelease(
 }
 
 function nightlyVersion(version: string): boolean {
-  return version.includes('-daily.d');
+  return version.includes('-daily.d') || version.includes('-nightly.d');
 }
 function sameBase(left: string, right: string): boolean {
   return parseChangelogVersion(left).coreVersion === parseChangelogVersion(right).coreVersion;
@@ -151,6 +160,10 @@ function compareNotificationVersions(left: string, right: string): number {
   const a = nightlyVersion(left),
     b = nightlyVersion(right);
   if (sameBase(left, right) && a !== b) return a ? -1 : 1;
+  // A SHA suffix identifies a build; it cannot order two builds on one day.
+  const dated = /^\d+\.\d+\.\d+-nightly\.d(\d{8})\.[0-9a-f]{12}$/;
+  const l = left.match(dated), r = right.match(dated);
+  if (l && r && sameBase(left, right) && l[1] === r[1]) return 0;
   return compareChangelogTags(left, right);
 }
 

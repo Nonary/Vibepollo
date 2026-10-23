@@ -318,6 +318,14 @@ int main(void) {
   CHECK(execute_request(7, focus_request, &focus_greeter, getgid()) == 126);
 
   CHECK(!check_display_request_limits());
+  CHECK(touch_map_arguments_are_safe("event27", "Virtual-1"));
+  CHECK(touch_map_arguments_are_safe("event0", "DP-3"));
+  CHECK(!touch_map_arguments_are_safe("event27/../event1", "Virtual-1"));
+  CHECK(!touch_map_arguments_are_safe("event", "Virtual-1"));
+  CHECK(!touch_map_arguments_are_safe("event27", ""));
+  CHECK(!touch_map_arguments_are_safe("event27", "Virtual-1;rm"));
+  CHECK(!touch_map_arguments_are_safe("event27", "../Virtual-1"));
+
   CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://open/bigpicture"), "steam://open/bigpicture"));
   CHECK(!strcmp(steam_big_picture_uri("setsid steam steam://close/bigpicture"), "steam://close/bigpicture"));
   CHECK(!steam_big_picture_uri(NULL));

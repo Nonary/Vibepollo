@@ -45,3 +45,20 @@ TEST(DisplayHelperRequestPolicy, ExtendedMergeRetainsPeersAndRestoresMissingClon
   EXPECT_EQ(merged, (std::vector<std::vector<std::string>> {{"PHYSICAL", "cloned"}, {"peer"}, {"second"}, {"tablet"}}));
   EXPECT_EQ(policy::merge_extended_topology(merged, {{"physical", "cloned"}, {"second"}}, "TABLET"), merged);
 }
+
+TEST(DisplayHelperRequestPolicy, ReturnedPhysicalOutputRequiresFreshSettingsBaseline) {
+  const std::vector<std::vector<std::string>> baseline {{"PRIMARY"}};
+  const std::vector<std::vector<std::string>> live {{"PRIMARY"}, {"SCEPTRE"}, {"PEER"}, {"VIRTUAL"}};
+  EXPECT_TRUE(policy::physical_topology_extends_baseline(baseline, {{"primary"}, {"SCEPTRE"}}));
+  EXPECT_TRUE(policy::physical_topology_extends_baseline(baseline, {{"primary", "SCEPTRE"}}));
+  EXPECT_EQ(policy::merge_extended_topology(live, baseline, "virtual"), live);
+  EXPECT_EQ(baseline, (std::vector<std::vector<std::string>> {{"PRIMARY"}}));
+}
+
+TEST(DisplayHelperRequestPolicy, PartialEmptyOrCaseOnlyPhysicalEnumerationKeepsSettingsBaseline) {
+  const std::vector<std::vector<std::string>> baseline {{"PRIMARY", "CLONE"}, {"SECONDARY"}};
+  EXPECT_FALSE(policy::physical_topology_extends_baseline(baseline, {}));
+  EXPECT_FALSE(policy::physical_topology_extends_baseline(baseline, {{"primary"}, {"", "CLONE", "clone"}}));
+  EXPECT_FALSE(policy::physical_topology_extends_baseline(baseline, {{"secondary"}}));
+  EXPECT_TRUE(policy::physical_topology_extends_baseline(baseline, {{"NEW_A", "NEW_B", "new_a"}}));
+}

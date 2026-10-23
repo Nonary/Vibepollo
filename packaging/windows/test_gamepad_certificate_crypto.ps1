@@ -6,6 +6,8 @@ $source=Join-Path $RepositoryRoot 'src_assets/windows/drivers/vhf-gamepad/instal
 $tokens=$null; $errors=$null
 $ast=[Management.Automation.Language.Parser]::ParseFile($source,[ref]$tokens,[ref]$errors)
 if($errors.Count){throw ($errors | Out-String)}
+$compiler=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Add-DriverInteropType'},$true)
+. ([scriptblock]::Create($compiler.Extent.Text))
 $initializer=$ast.Find({param($n)$n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Initialize-LocalGamepadTrustValidation'},$true)
 . ([scriptblock]::Create($initializer.Extent.Text))
 Initialize-LocalGamepadTrustValidation

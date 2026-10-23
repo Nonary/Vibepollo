@@ -232,6 +232,7 @@ namespace platf {
     std::optional<LUID> luid;
     std::string description;
     std::string pnp_id;
+    std::uint32_t vendor_id = 0;
     std::uint64_t dedicated_video_memory = 0;
     std::uint64_t shared_system_memory = 0;
 

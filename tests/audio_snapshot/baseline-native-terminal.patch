@@ -1,0 +1,21 @@
+--- a/src/app_audio_termination.h
++++ b/src/app_audio_termination.h
+@@ -34,17 +34,7 @@
+   template<class Session, class MarkTerminal>
+   void begin_app_audio_termination(const std::shared_ptr<Session> &metadata,
+                                    MarkTerminal &&mark_terminal) {
+-    std::shared_ptr<void> app_audio;
+-    if (metadata) {
+-      std::lock_guard lock(launch_audio_guard_mutex);
+-      if (metadata.use_count() == 1) {
+-        app_audio = std::move(metadata->audio_context_guard);
+-      }
+-    }
+-    // Drop outside the metadata mutex: final context release can call the OS.
+-    // While the app is still active, this first retains its control; the marker
+-    // then starts restoration before the caller's display cleanup.
+-    app_audio.reset();
++    (void) metadata;
+     std::forward<MarkTerminal>(mark_terminal)();
+   }
+ }  // namespace audio

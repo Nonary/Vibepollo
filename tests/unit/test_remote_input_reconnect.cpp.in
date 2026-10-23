@@ -1,0 +1,571 @@
+// Production NVHTTP and stream matching bodies are inserted unchanged.
+// RTSP operations below are deterministic boundary adapters; the real target
+// registry is exercised separately by test_host_stream_terminal_composition.py.
+#include "src/host_stream_control.h"
+#include "src/remote_session.h"
+#include "src/rtsp_pending_policy.h"
+
+#include <atomic>
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <unordered_map>
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <condition_variable>
+#include <iostream>
+#include <map>
+#include <stdexcept>
+#include <thread>
+#include <vector>
+
+using remote_session::control_e;
+using remote_session::role_e;
+
+void check(bool condition, const char *message) {
+  if (!condition) {
+    throw std::runtime_error(message);
+  }
+}
+
+struct log_t {
+  template<class T>
+  log_t &operator<<(const T &) {
+    return *this;
+  }
+};
+
+#define BOOST_LOG(level) \
+  log_t {}
+int config_clears = 0, draining = 0, finalizes = 0;
+std::function<void()> after_disconnect;
+std::function<void()> during_activity_check, before_cleanup_lock;
+thread_local bool expiry_worker = false, retry_worker = false;
+thread_local int cleanup_lock_depth = 0;
+
+// Observe the lock attempt without changing the production critical sections.
+struct observed_mutex_t {
+  std::mutex mutex;
+
+  void lock() {
+    if (retry_worker && before_cleanup_lock) {
+      before_cleanup_lock();
+    }
+    mutex.lock();
+    ++cleanup_lock_depth;
+  }
+
+  void unlock() {
+    --cleanup_lock_depth;
+    mutex.unlock();
+  }
+};
+
+void set_vulkan_hdr_layer_streaming_active(bool) {}
+
+namespace config {
+  struct {
+    std::chrono::seconds ping_timeout {30};
+  } stream;
+
+  std::unordered_map<std::string, std::string> runtime_overrides;
+  int sets = 0;
+  std::atomic<int> applies {0};
+
+  void set_runtime_config_overrides(std::unordered_map<std::string, std::string> overrides) {
+    ++sets;
+    runtime_overrides = std::move(overrides);
+  }
+
+  void clear_runtime_config_overrides() {
+    ++config_clears;
+    runtime_overrides.clear();
+  }
+
+  void apply_config_now() {
+    check(cleanup_lock_depth == 0, "config apply must not retain the input cleanup lock");
+    ++applies;
+  }
+}  // namespace config
+
+namespace proc {
+  struct {
+    int app_id = 0;
+
+    int current_app_id() {
+      return app_id;
+    }
+  } proc;
+}  // namespace proc
+
+#ifdef _WIN32
+namespace VDISPLAY {
+  std::optional<std::uint32_t> hdr_profile_peak_luminance_nits(const std::string &) {
+    return std::nullopt;
+  }
+}  // namespace VDISPLAY
+#endif
+
+namespace remote_display_topology {
+  struct topology_t {
+    int managed_client_identity_count() {
+      return 0;
+    }
+  };
+
+  topology_t &instance() {
+    static topology_t value;
+    return value;
+  }
+}  // namespace remote_display_topology
+
+namespace nvhttp {
+  std::mutex lifecycle, remote_http_control_transition_mutex, normal_http_app_transition_mutex;
+  observed_mutex_t remote_input_cleanup_mutex;
+
+  std::mutex &stream_lifecycle_mutex() {
+    return lifecycle;
+  }
+
+  bool has_stream_session_activity(bool expire_pending = true);
+  /* @OWNERS@ */
+}  // namespace nvhttp
+
+namespace stream {
+  struct session_t {
+    std::string device_uuid, history_uuid;
+    role_e remote_role;
+    std::uint64_t remote_role_generation;
+    int stops = 0, joins = 0;
+  };
+
+  namespace session {
+    /* @MATCHES@ */
+    void stop(session_t &session) {
+      ++session.stops;
+    }
+
+    void join(session_t &session, bool lifecycle_lock_held) {
+      check(cleanup_lock_depth == 0, "transport join must not retain the input cleanup lock");
+      check(lifecycle_lock_held, "replacement must transfer its lifecycle lock to join");
+      check(++session.joins == 1, "transport must join exactly once");
+      nvhttp::notify_remote_input_transport_lost(session.device_uuid, session.remote_role_generation);
+    }
+
+    struct shared_runtime_finalize_context_t {
+      std::optional<std::array<std::uint8_t, 16>> virtual_display_guid_bytes;
+    };
+
+    bool finalize_shared_runtime_if_idle(const char *, const shared_runtime_finalize_context_t &) {
+      ++finalizes;
+      return true;
+    }
+  }  // namespace session
+}  // namespace stream
+
+namespace rtsp_stream {
+  struct launch_session_t {
+    std::uint32_t id;
+    std::string unique_id, client_uuid, rtsp_source_address;
+    role_e role;
+    std::uint64_t role_generation;
+    bool rtsp_cipher = false;
+    std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
+    std::shared_ptr<void> audio_context_guard, display_power_guard, exact_target_hold;
+  };
+
+  struct sessions_t {
+    std::vector<std::shared_ptr<stream::session_t>> sessions;
+    std::map<stream::session_t *, std::string> client_uuids;
+    std::map<stream::session_t *, bool> vulkan_hdr_layer_sessions;
+    std::mutex mutex;
+
+    auto lock() {
+      return std::unique_lock {mutex};
+    }
+
+    sessions_t *operator->() {
+      return this;
+    }
+  };
+
+  // Fake RTSP boundary for the NVHTTP scheduling tests. This intentionally
+  // models no target registry implementation and does not claim to test it.
+  struct server_t {
+    struct fake_pending_t {
+      std::shared_ptr<launch_session_t> session;
+      std::chrono::steady_clock::time_point expires_at;
+    };
+    std::mutex pending_launches_mutex;
+    std::unordered_map<std::uint32_t, fake_pending_t> pending_launches;
+    sessions_t _session_state;
+    void release_pending_runtime_holds(const std::shared_ptr<launch_session_t>& session) {
+      session->audio_context_guard.reset(); session->display_power_guard.reset(); session->exact_target_hold.reset();
+    }
+    bool retain_pending_runtime_holds(const std::shared_ptr<launch_session_t>& session) {
+      std::lock_guard lock {pending_launches_mutex};
+      auto it=pending_launches.find(session->id);
+      return it!=pending_launches.end() && it->second.session->unique_id==session->unique_id && it->second.expires_at>std::chrono::steady_clock::now();
+    }
+    void expire_pending_locked(std::chrono::steady_clock::time_point now, std::vector<std::shared_ptr<launch_session_t>>* expired) {
+      for(auto it=pending_launches.begin(); it!=pending_launches.end();) {
+        if(it->second.expires_at>now) ++it;
+        else { expired->push_back(it->second.session); it=pending_launches.erase(it); }
+      }
+    }
+    void notify_expired_pending(const std::vector<std::shared_ptr<launch_session_t>>& expired) {
+      for(const auto& session:expired) {
+        release_pending_runtime_holds(session);
+        if(session->role==role_e::input) nvhttp::notify_remote_input_transport_lost(session->client_uuid,session->role_generation);
+      }
+    }
+    void expire_pending() {
+      std::vector<std::shared_ptr<launch_session_t>> expired;
+      { std::lock_guard lock {pending_launches_mutex}; expire_pending_locked(std::chrono::steady_clock::now(),&expired); }
+      notify_expired_pending(expired);
+    }
+    bool has_pending_launch_or_startup(bool expire=true) {
+      if(expire) expire_pending();
+      std::lock_guard lock {pending_launches_mutex}; return !pending_launches.empty();
+    }
+    bool session_raise(std::shared_ptr<launch_session_t> candidate) {
+      expire_pending(); std::lock_guard lock {pending_launches_mutex};
+      if(!candidate || candidate->id==0 || pending_launches.contains(candidate->id)) return false;
+      for(const auto& [id,entry]:pending_launches)
+        if(!candidate->rtsp_cipher && !entry.session->rtsp_cipher && entry.session->rtsp_source_address==candidate->rtsp_source_address) return false;
+      pending_launches.emplace(candidate->id,fake_pending_t{candidate,std::chrono::steady_clock::now()+config::stream.ping_timeout}); return true;
+    }
+    bool disconnect_remote_role(std::string_view client, role_e role, std::optional<std::uint64_t> generation, bool lifecycle_lock_held=false) {
+      check(cleanup_lock_depth==0,"disconnect must not retain cleanup lock");
+      check(lifecycle_lock_held,"replacement transfers lifecycle lock");
+      std::vector<std::shared_ptr<launch_session_t>> removed;
+      { std::lock_guard lock {pending_launches_mutex};
+        for(auto it=pending_launches.begin();it!=pending_launches.end();) {
+          const auto& p=it->second.session;
+          if(p->client_uuid==client && p->role==role && (!generation || p->role_generation==*generation)) {removed.push_back(p);it=pending_launches.erase(it);} else ++it;
+        }
+      }
+      for(const auto& p:removed) release_pending_runtime_holds(p);
+      std::vector<std::shared_ptr<stream::session_t>> active;
+      { auto lock=_session_state.lock();
+        for(auto it=_session_state.sessions.begin();it!=_session_state.sessions.end();) {
+          if(stream::session::uuid_match(**it,client) && stream::session::remote_role_match(**it,role,generation)) {active.push_back(*it);it=_session_state.sessions.erase(it);} else ++it;
+        }
+      }
+      for(const auto& session:active) {stream::session::stop(*session);stream::session::join(*session,lifecycle_lock_held);}
+      bool result=!removed.empty() || !active.empty(); if(result) ++finalizes; return result;
+    }
+  } server;
+
+  bool disconnect_remote_role_session(std::string_view client, role_e role, std::uint64_t generation, bool lifecycle_lock_held) {
+    const auto disconnected = server.disconnect_remote_role(client, role, generation, lifecycle_lock_held);
+    if (after_disconnect) {
+      after_disconnect();
+    }
+    return disconnected;
+  }
+}  // namespace rtsp_stream
+
+bool nvhttp::has_stream_session_activity(bool expire_pending) {
+  if (expiry_worker && during_activity_check) {
+    during_activity_check();
+  }
+  return draining || rtsp_stream::server.has_pending_launch_or_startup(expire_pending) || !rtsp_stream::server._session_state.sessions.empty();
+}
+
+using namespace nvhttp;
+
+std::shared_ptr<rtsp_stream::launch_session_t> pending(std::string client, std::uint32_t generation, role_e role = role_e::input) {
+  auto result = std::make_shared<rtsp_stream::launch_session_t>();
+  result->id = generation;
+  result->unique_id = std::to_string(generation);
+  result->client_uuid = client;
+  result->rtsp_source_address = client;
+  result->role = role;
+  result->role_generation = generation;
+  return result;
+}
+
+std::shared_ptr<stream::session_t> active(std::string client, std::uint64_t generation, role_e role = role_e::input) {
+  auto session = std::make_shared<stream::session_t>();
+  session->device_uuid = client;
+  session->remote_role = role;
+  session->remote_role_generation = generation;
+  rtsp_stream::server._session_state.sessions.push_back(session);
+  return session;
+}
+
+struct tree_t {
+  int status = 0;
+
+  void put(const char *key, int value) {
+    if (std::string_view(key) == "root.<xmlattr>.status_code") {
+      status = value;
+    }
+  }
+
+  void put(const char *, const char *) {}
+};
+
+std::function<void()> before_admission;
+std::unordered_map<std::string, std::string> launch_overrides;
+
+int launch(std::string client, std::uint32_t generation, control_e synthetic_control = control_e::input, bool may_launch = true) {
+  std::unique_lock lifecycle_lock {lifecycle};
+  std::unique_lock remote_transition_lock {remote_http_control_transition_mutex};
+
+  struct {
+    std::string uuid;
+  } request_client_identity {client};
+
+  remote_session::caller_t caller {.uuid = client, .paired = true, .may_launch = may_launch};
+  remote_session::game_t game;
+  tree_t tree;
+  const auto execute = [&] {
+    /* @DISPATCH@ */
+    /* @REPLACEMENT@ */
+    /* @RUNTIME_IDLE@ */
+    // Use the production idle/override gate; display setup stays outside this fixture.
+    const auto requested_runtime_overrides = launch_overrides;
+#ifdef _WIN32
+    struct client_settings_t {
+      std::string hdr_profile;
+    };
+    const std::optional<client_settings_t> client_settings;
+#endif
+    const auto previous_runtime_overrides = config::runtime_overrides;
+    bool runtime_overrides_applied = false;
+    /* @RUNTIME_APPLY@ */
+    // Use deterministic RTSP admission for the new input, then publish its ownership.
+    if (before_admission) {
+      before_admission();
+    }
+    auto candidate = pending(client, generation);
+    if (!rtsp_stream::server.session_raise(candidate)) {
+      tree.status = 409;
+      return;
+    }
+    remember_remote_owner(client, role_e::input, generation);
+    tree.status = 200;
+  };
+  execute();
+  return tree.status;
+}
+
+void reset() {
+  remote_role_owners.clear();
+  rtsp_stream::server.pending_launches.clear();
+  rtsp_stream::server._session_state.sessions.clear();
+  config_clears = draining = finalizes = 0;
+  config::runtime_overrides.clear();
+  config::sets = config::applies = proc::proc.app_id = 0;
+  before_admission = {};
+  after_disconnect = {};
+  during_activity_check = before_cleanup_lock = {};
+  launch_overrides.clear();
+}
+
+void already_claimed_expiry(bool paused_game) {
+  reset();
+  proc::proc.app_id = paused_game ? 42 : 0;
+  launch_overrides = {{"encoder", "nvenc"}};
+  config::runtime_overrides = launch_overrides;
+  check(launch("a", 35) == 200, "already-claimed expiry setup");
+  std::vector<std::shared_ptr<rtsp_stream::launch_session_t>> expired;
+  rtsp_stream::server.expire_pending_locked(std::chrono::steady_clock::now() + std::chrono::minutes(1), &expired);
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool claimed = false, lock_attempted = false, prepared = false, release = false, finished = false;
+  during_activity_check = [&] {
+    std::unique_lock lock {mutex};
+    claimed = true;
+    cv.notify_all();
+    check(cv.wait_for(lock, std::chrono::seconds(5), [&] {
+      return release;
+    }),
+          "release claimed expiry");
+  };
+  before_cleanup_lock = [&] {
+    std::lock_guard lock {mutex};
+    lock_attempted = true;
+    cv.notify_all();
+  };
+  before_admission = [&] {
+    std::unique_lock lock {mutex};
+    prepared = true;
+    cv.notify_all();
+    check(cv.wait_for(lock, std::chrono::seconds(5), [&] {
+      return finished;
+    }),
+          "finish claimed expiry before admission");
+  };
+  std::thread completion([&] {
+    expiry_worker = true;
+    rtsp_stream::server.notify_expired_pending(expired);
+    std::lock_guard lock {mutex};
+    finished = true;
+    cv.notify_all();
+  });
+  {
+    std::unique_lock lock {mutex};
+    check(cv.wait_for(lock, std::chrono::seconds(5), [&] {
+      return claimed;
+    }),
+          "expiry must claim its owner");
+  }
+  check(!remote_owner_generation("a", role_e::input), "retry must see no owner even while its cleanup remains in flight");
+  int result = 0;
+  std::thread retry([&] {
+    retry_worker = true;
+    result = launch("a", 36);
+  });
+  {
+    std::unique_lock lock {mutex};
+    // The old implementation reaches preparation; the repair waits at its
+    // cleanup barrier. Release expiry in either case, without timing sleeps.
+    check(cv.wait_for(lock, std::chrono::seconds(5), [&] {
+      return lock_attempted || prepared;
+    }),
+          "retry must reach cleanup barrier or preparation");
+    release = true;
+    cv.notify_all();
+  }
+  completion.join();
+  retry.join();
+  check(result == 200 && remote_owner_generation("a", role_e::input) == 36, "already-claimed expiry retry must succeed");
+  check(config::runtime_overrides == launch_overrides, "already-claimed expiry must not clear replacement overrides");
+  check(paused_game ? config_clears == 0 : config_clears == 1, "only an idle completed generation may clear its old overrides");
+  check(lock_attempted, "retry must drain cleanup even after the owner was already removed");
+}
+
+int main() {
+  // A retry replaces a pending plaintext launch rather than failing same-address admission.
+  reset();
+  check(launch("a", 1) == 200, "first launch must succeed");
+  const auto old_pending = rtsp_stream::server.pending_launches.at(1).session;
+  auto hold = std::make_shared<int>(1);
+  old_pending->audio_context_guard = hold;
+  before_admission = [] {
+    notify_remote_input_transport_lost("a", 1);
+    check(config_clears == 0, "retired completion must not clear overrides during replacement preparation");
+  };
+  check(launch("a", 2) == 200, "same-client retry must retire the pending generation");
+  before_admission = {};
+  check(!rtsp_stream::server.pending_launches.contains(1), "old pending launch must be cancelled");
+  check(!rtsp_stream::server.retain_pending_runtime_holds(old_pending), "queued old startup must not regain admission");
+  check(!old_pending->audio_context_guard && hold.use_count() == 1, "pending runtime holds must be released");
+  check(remote_owner_generation("a", role_e::input) == 2, "new generation must own the role");
+  check(remote_role_owners.size() == 1 && finalizes == 1, "retry must not leak ownership or pending cleanup");
+  notify_remote_input_transport_lost("a", 1);
+  check(remote_owner_generation("a", role_e::input) == 2 && config_clears == 0, "stale completion must preserve replacement runtime");
+
+  // RI-1: expiry removes pending input before retry, but delivers its notification
+  // after disconnect returns, while a paused game prevents reinstalling overrides.
+  reset();
+  proc::proc.app_id = 42;
+  const std::unordered_map<std::string, std::string> paused_game_overrides {{"encoder", "nvenc"}};
+  config::runtime_overrides = paused_game_overrides;
+  check(launch("a", 31) == 200, "expiry race setup");
+  auto expiring = rtsp_stream::server.pending_launches.at(31).session;
+  auto expiry_hold = std::make_shared<int>(1);
+  expiring->audio_context_guard = expiry_hold;
+  expiring->display_power_guard = expiry_hold;
+  expiring->exact_target_hold = expiry_hold;
+  std::vector<std::shared_ptr<rtsp_stream::launch_session_t>> delayed_expiry;
+  {
+    std::lock_guard lock {rtsp_stream::server.pending_launches_mutex};
+    rtsp_stream::server.expire_pending_locked(std::chrono::steady_clock::now() + std::chrono::minutes(1), &delayed_expiry);
+  }
+  check(delayed_expiry.size() == 1 && !has_stream_session_activity(), "expiry must detach pending input before retry");
+  check(remote_owner_generation("a", role_e::input) == 31, "expiry notification must still be outstanding");
+  remember_remote_owner("b", role_e::input, 33);
+  remember_remote_owner("c", role_e::monitor, 34);
+  after_disconnect = [&] {
+    check(!has_stream_session_activity(), "no pending or active transport may mask expiry cleanup");
+    rtsp_stream::server.notify_expired_pending(delayed_expiry);
+  };
+  check(launch("a", 32) == 200, "retry after pending expiry must succeed");
+  after_disconnect = {};
+  check(config::sets == 0, "paused game must take the real branch that skips override installation");
+  check(config::runtime_overrides == paused_game_overrides && config_clears == 0 && config::applies == 0, "RI-1: expiry at disconnect return must preserve paused-game overrides");
+  check(!expiring->audio_context_guard && !expiring->display_power_guard && !expiring->exact_target_hold && expiry_hold.use_count() == 1, "ignored expiry ownership must still release its runtime holds");
+  check(!rtsp_stream::server.retain_pending_runtime_holds(expiring), "expired generation must not regain startup admission");
+  check(remote_owner_generation("a", role_e::input) == 32 && remote_owner_generation("b", role_e::input) == 33 && remote_owner_generation("c", role_e::monitor) == 34, "expiry retry must preserve caller, role, and generation isolation");
+  rtsp_stream::server.notify_expired_pending(delayed_expiry);
+  check(remote_owner_generation("a", role_e::input) == 32 && config::runtime_overrides == paused_game_overrides && expiry_hold.use_count() == 1, "repeated stale expiry must preserve the replacement without double-releasing resources");
+
+  already_claimed_expiry(false);
+  already_claimed_expiry(true);
+
+  // A guarded activity query must not recursively notify a second expired
+  // Input owner. Leave it pending for the timer instead of reentering cleanup.
+  reset();
+  check(launch("a", 37) == 200 && launch("b", 38) == 200, "two-owner expiry setup");
+  auto detached = rtsp_stream::server.pending_launches.at(37).session;
+  rtsp_stream::server.pending_launches.erase(37);
+  rtsp_stream::server.pending_launches.at(38).expires_at = std::chrono::steady_clock::now() - std::chrono::seconds(1);
+  rtsp_stream::server.notify_expired_pending({detached});
+  check(!remote_owner_generation("a", role_e::input) && remote_owner_generation("b", role_e::input) == 38 && config_clears == 0, "guarded activity snapshot must not expire a peer recursively");
+  rtsp_stream::server.expire_pending();
+  check(!has_remote_role_owner() && config_clears == 1, "timer must still retire the second expired owner and clean idle overrides");
+
+  // A running or already-stopping transport is stopped/joined only once.
+  reset();
+  remember_remote_owner("a", role_e::input, 3);
+  auto old_active = active("a", 3);
+  auto peer_input = active("b", 4);
+  auto peer_monitor = active("c", 5, role_e::monitor);
+  auto own_game = active("a", 6, role_e::game);
+  auto newer_input = active("a", 7);
+  remember_remote_owner("b", role_e::input, 4);
+  remember_remote_owner("c", role_e::monitor, 5);
+  check(launch("a", 8) == 200, "active input retry must succeed");
+  check(old_active->stops == 1 && old_active->joins == 1, "old input transport must be retired");
+  check(peer_input->stops == 0 && peer_monitor->stops == 0 && own_game->stops == 0 && newer_input->stops == 0, "replacement must match client, role, and generation");
+  check(remote_role_owners.size() == 3, "unrelated owners must survive");
+
+  // A natural reaper may already have removed the old transport while it drains.
+  reset();
+  draining = 1;
+  remember_remote_owner("a", role_e::input, 9);
+  check(launch("a", 10) == 200, "detached draining input must not block reconnect");
+  notify_remote_input_transport_lost("a", 9);
+  draining = 0;
+  check(remote_owner_generation("a", role_e::input) == 10 && config_clears == 0, "late old teardown must not clear the replacement");
+
+  // Dispatch must not weaken permissions, cross-role isolation, or peer ownership.
+  reset();
+  remember_remote_owner("a", role_e::monitor, 11);
+  auto monitor = active("a", 11, role_e::monitor);
+  check(launch("a", 12) == 409 && monitor->stops == 0, "monitor owner cannot replace its role with input");
+  reset();
+  check(launch("a", 13) == 200, "input setup");
+  check(launch("a", 14, control_e::monitor) == 409, "input owner cannot relaunch as monitor");
+  check(launch("a", 15, control_e::input, false) == 409, "input retry must still need launch permission");
+  check(remote_owner_generation("a", role_e::input) == 13, "denials must preserve existing ownership");
+  check(launch("b", 16) == 200, "another paired client may own independent input");
+  check(remote_owner_generation("a", role_e::input) == 13 && rtsp_stream::server.pending_launches.contains(13), "another client cannot replace the first client's input");
+
+  // Explicit cancellation and expiration of the replacement remain generation-scoped.
+  {
+    std::lock_guard lock {lifecycle};
+    check(rtsp_stream::disconnect_remote_role_session("a", role_e::input, 13, true), "cancel replacement");
+    forget_remote_owner("a", role_e::input, 13);
+  }
+  check(!remote_owner_generation("a", role_e::input) && remote_owner_generation("b", role_e::input) == 16, "cancel must not erase peer owner");
+  std::vector<std::shared_ptr<rtsp_stream::launch_session_t>> expired;
+  rtsp_stream::server.expire_pending_locked(std::chrono::steady_clock::now() + std::chrono::minutes(1), &expired);
+  rtsp_stream::server.notify_expired_pending(expired);
+  check(!has_remote_role_owner(), "replacement expiry must release the last input owner");
+
+  // Failure after retirement must not restore stale ownership or leave pending input.
+  reset();
+  check(launch("a", 20) == 200, "failure setup");
+  auto collision = pending("b", 21);
+  check(rtsp_stream::server.session_raise(collision), "collision setup");
+  check(launch("a", 21) == 409, "new admission collision must remain a failure");
+  check(!remote_owner_generation("a", role_e::input) && !rtsp_stream::server.pending_launches.contains(20), "failed replacement must not leave stale ownership");
+  check(rtsp_stream::server.pending_launches.at(21).session->client_uuid == "b", "failed retry must not consume peer pending launch");
+  std::cout << "PASS: pending/active/draining replacement, generation and client isolation, stale startup/completion, permissions, cancellation, delayed expiry and paused-game overrides, failure accounting\n";
+}

@@ -1,4 +1,5 @@
 /** @file src/steam_auto_sync_policy.cpp */
+#include "file_clock.h"
 #include "steam_auto_sync_policy.h"
 
 #include <filesystem>
@@ -37,8 +38,8 @@ namespace {
     }
     const auto timestamp = std::filesystem::last_write_time(path, ec);
     if (!ec) {
-      // libc++ counts file times in __int128, which std::to_string has no overload for.
-      mix_number(value, static_cast<long long>(timestamp.time_since_epoch().count()));
+      mix(value, file_clock::count_string(timestamp.time_since_epoch().count()));
+      mix(value, separator);
     } else {
       mix(value, "unstatable");
     }

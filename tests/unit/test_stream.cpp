@@ -6,7 +6,9 @@
 #include "../tests_common.h"
 #include "src/deferred_stream_start_policy.h"
 #include "src/haptics_gain.h"
+#include "src/send_result_observation.h"
 #include "src/stream_protocol.h"
+#include "src/video_pacing_policy.h"
 #include "src/video_send.h"
 
 namespace {
@@ -355,6 +357,44 @@ TEST(DeferredStreamStartPolicy, ReadyWorkRunsWhileHoldingTheLifecycleGate) {
   EXPECT_FALSE(lifecycle_gate.locked);
 }
 
+TEST(VideoSendBatchTests, OrdinaryBatchQuantumUsesFecExpandedFrameAndBitrateDemand) {
+  constexpr std::size_t payload_bytes = 1376;
+  constexpr std::size_t wire_bytes = 1474;
+  constexpr std::size_t block_size = 1408;
+  constexpr std::size_t prefix_size = 32;
+  constexpr std::size_t datagram_bytes = block_size + prefix_size;
+  constexpr std::size_t configured_max = 64 * 1024;
+
+  const auto small_frame = stream::pacing::packets_per_ms(0, 200000, payload_bytes, wire_bytes, 5, 120, 0);
+  const auto keyframe_packets = stream::pacing::fec_expanded_packets(161, 20, 2);
+  EXPECT_EQ(keyframe_packets, 194u);
+  EXPECT_EQ(stream::pacing::fec_expanded_packets(3, 20, 4), 7u);
+  const auto keyframe_quantum = stream::pacing::packets_per_ms(0, 170000, payload_bytes, wire_bytes, keyframe_packets, 120, 0);
+  EXPECT_EQ(small_frame, 19u);
+  EXPECT_EQ(keyframe_quantum, 24u);
+  EXPECT_GT(keyframe_quantum, small_frame);
+
+  // Negative control: the old fixed 80%-of-1-Gbps quantum ignores stream demand.
+  constexpr auto legacy_fixed_quantum = std::size_t(1000000000ULL * 80 / 100 / 1000 / block_size / 8);
+  EXPECT_EQ(legacy_fixed_quantum, 71u);
+  EXPECT_LT(keyframe_quantum, legacy_fixed_quantum);
+
+  const auto batch_budget = stream::pacing::max_batch_bytes(configured_max, keyframe_quantum, datagram_bytes);
+  EXPECT_EQ(batch_budget, keyframe_quantum * datagram_bytes);
+  EXPECT_LT(batch_budget, configured_max);
+  EXPECT_EQ(stream::video_send_batch_size(block_size, prefix_size, batch_budget), keyframe_quantum);
+
+  // A smaller configured batch remains authoritative.
+  const auto configured_budget = stream::pacing::max_batch_bytes(16 * 1024, keyframe_quantum, datagram_bytes);
+  EXPECT_EQ(configured_budget, 16 * 1024);
+  EXPECT_EQ(stream::video_send_batch_size(block_size, prefix_size, configured_budget), 11u);
+  EXPECT_EQ(stream::pacing::packets_per_ms(0, 800000, payload_bytes, wire_bytes, 5, 120, 0), 73u);
+
+  // Composing the new demand cap with the existing operator ceiling can only reduce a batch.
+  const auto ceiling_bytes = stream::video_pacing_batch_packets(200000, datagram_bytes) * datagram_bytes;
+  EXPECT_LE(std::min(batch_budget, ceiling_bytes), ceiling_bytes);
+}
+
 TEST(VideoSendBatchTests, EncryptedDefaultPacketsStayWithinWindowsBufferingLimit) {
   // packetSize=1392 plus the 16-byte RTP allowance, then a 32-byte GCM prefix.
   // The old calculation selected 46 packets: 66,240 bytes instead of <=65,536.
@@ -532,4 +572,57 @@ TEST(ControlPacketParsing, AllowsTypeOnlyPacketWithoutPayloadUnderflow) {
   ASSERT_TRUE(decoded);
   EXPECT_EQ(decoded->type, 0x1234);
   EXPECT_TRUE(decoded->payload.empty());
+}
+
+TEST(SendResultObservation, ReportsSuccessfulSendReturnAfterSendCompletes) {
+  std::vector<std::string> events;
+
+  const auto result = stream::detail::send_and_observe_result(
+    [&] {
+      events.emplace_back("send");
+      return 0;
+    },
+    [&](const int send_result) {
+      EXPECT_EQ(events, std::vector<std::string> {"send"});
+      events.emplace_back("result=" + std::to_string(send_result));
+    }
+  );
+
+  EXPECT_EQ(result, 0);
+  EXPECT_EQ(events, (std::vector<std::string> {"send", "result=0"}));
+}
+
+TEST(SendResultObservation, ReportsFailedSendReturnAfterSendCompletes) {
+  std::vector<std::string> events;
+
+  const auto result = stream::detail::send_and_observe_result(
+    [&] {
+      events.emplace_back("send");
+      return -1;
+    },
+    [&](const int send_result) {
+      EXPECT_EQ(events, std::vector<std::string> {"send"});
+      events.emplace_back("result=" + std::to_string(send_result));
+    }
+  );
+
+  EXPECT_EQ(result, -1);
+  EXPECT_EQ(events, (std::vector<std::string> {"send", "result=-1"}));
+}
+
+TEST(SendResultObservation, FormatsClientRelativeControllerIndexField) {
+  EXPECT_EQ(
+    stream::detail::format_client_relative_controller_index_field(7),
+    "client-relative controller index=7"
+  );
+}
+
+TEST(SendResultObservation, LogsFirstSuccessAndFailureIndependently) {
+  std::atomic_bool success_logged {false};
+  std::atomic_bool failure_logged {false};
+
+  EXPECT_TRUE(stream::detail::claim_first_send_result_log(0, success_logged, failure_logged));
+  EXPECT_FALSE(stream::detail::claim_first_send_result_log(0, success_logged, failure_logged));
+  EXPECT_TRUE(stream::detail::claim_first_send_result_log(-1, success_logged, failure_logged));
+  EXPECT_FALSE(stream::detail::claim_first_send_result_log(-1, success_logged, failure_logged));
 }

@@ -26,7 +26,7 @@ export interface ReadinessMetadata {
     status?: string;
     status_code?: number;
   };
-  linux?: { session_role?: 'desktop' | 'greeter' | 'unknown' };
+  linux?: { session_role?: 'desktop' | 'greeter' | 'unknown'; machine_host?: boolean };
 }
 
 export function hostReadiness(

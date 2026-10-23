@@ -5,9 +5,11 @@
 #pragma once
 
 #include <boost/property_tree/ptree_fwd.hpp>
-
+#include <cstddef>
 #include <functional>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace statefile::policy {
   enum class read_status_e {
@@ -70,6 +72,39 @@ namespace statefile::policy {
   );
 
   using validate_primary_t = std::function<bool(const boost::property_tree::ptree &, bool allow_bootstrap)>;
+  using primary_diagnostic_t = std::function<std::string(const boost::property_tree::ptree &)>;
+
+  using certificate_identity_t = std::function<std::optional<std::string>(const std::string &)>;
+
+  /** A named record removed because an earlier record has the same certificate. */
+  struct collapsed_pairing_record_t {
+    std::size_t kept_index;
+    std::string kept_uuid;
+    std::size_t dropped_index;
+    std::string dropped_uuid;
+  };
+
+  /** Older writers retained root.devices after importing its certificates into
+   * named_devices. Remove only those legacy aliases from an in-memory snapshot;
+   * the named record retains its UUID, enabled policy and all client settings.
+   *
+   * 1.x appended a new named record whenever a client re-paired and looked up
+   * clients by certificate, stopping at the first match. Later records with the
+   * same certificate were therefore never used for authorization, identity or
+   * settings. Collapse them into that first record, which stays disabled if any
+   * of its duplicates was disabled. Repeated legacy certificates are collapsed
+   * the same way. Optional `collapsed` lists every removed named record.
+   *
+   * Invalid certificates still fail closed. Failure leaves the supplied snapshot
+   * unchanged. Optional diagnostics contain fixed field paths and record
+   * indices, never certificate or credential data.
+   */
+  bool normalize_legacy_pairing_state(
+    boost::property_tree::ptree &tree,
+    const certificate_identity_t &certificate_identity,
+    std::string *failure_reason = nullptr,
+    std::vector<collapsed_pairing_record_t> *collapsed = nullptr
+  );
 
   /** Structural validation shared by primary reads and writes. */
   bool valid_primary_state(const boost::property_tree::ptree &tree, bool allow_bootstrap);
@@ -77,6 +112,8 @@ namespace statefile::policy {
   /** Read/modify/write recovery must retain host identity even with shared paths.
    * An optional JSON validator checks original scalar types before either
    * snapshot is selected; property_tree validation alone cannot retain them.
+   * A readable but rejected primary is never replaced with older authorization.
+   * The optional diagnostic only explains validation; it cannot permit recovery.
    */
   load_result_e load_primary_state_for_update(
     const std::string &path,
@@ -84,7 +121,10 @@ namespace statefile::policy {
     const read_file_t &read_file,
     const write_file_t &write_file,
     const validate_primary_t &validate,
-    const std::function<bool(const std::string &)> &validate_json = {});
+    const std::function<bool(const std::string &)> &validate_json = {},
+    std::string *failure_reason = nullptr,
+    const primary_diagnostic_t &diagnostic = {}
+  );
 
   /** Never let an incomplete metadata/bootstrap write replace an existing identity. */
   bool primary_write_allowed(

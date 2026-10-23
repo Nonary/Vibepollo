@@ -60,5 +60,28 @@
       if (RollbackRegression.RestoreThrows) throw new IOException("mock restore start failure");
       RollbackRegression.Installed = RollbackRegression.RestoredProduct;
       RollbackRegression.InstalledTarget = RollbackRegression.RestoredTarget;
+      if (RollbackRegression.RestoreMakesRegistration) RollbackRegression.NativeRegistrationPresent = true;
       return RollbackRegression.RestoreCode;
+    }
+    private static MsiSourceIdentity ReadMachineMsiSourceIdentity(InstalledProductInfo product) {
+      return null;
+    }
+    private static string RecoverExactMsiSource(InstalledProductInfo product, MsiSourceIdentity identity, string logPath) {
+      return null;
+    }
+    private static List<InstalledProductInfo> GetInstalledProducts(bool includeSunshine) {
+      return GetInstalledProductRegistrations(includeSunshine).Where(product => product.IsWindowsInstaller).ToList();
+    }
+    private static bool IsInstalledProductCode(string productCode) {
+      return RollbackRegression.NativeRegistrationPresent && new[] { RollbackRegression.Installed, RollbackRegression.InstalledTarget }.Where(product => product != null).Any(product =>
+        string.Equals(NormalizeProductCode(product.ProductCode), NormalizeProductCode(productCode), StringComparison.OrdinalIgnoreCase));
+    }
+    private static int QueryMsiProductStateForRollback(string productCode) {
+      if (RollbackRegression.NativeStateThrows) throw new IOException("mock native state unavailable");
+      return RollbackRegression.NativeProductState;
+    }
+    private static List<InstalledProductInfo> GetInstalledProductRegistrations(bool includeSunshine) {
+      if (RollbackRegression.RegistrationReadFailure == 1) throw new IOException("mock registry enumeration failed");
+      if (RollbackRegression.RegistrationReadFailure == 2) throw new UnauthorizedAccessException("mock registry access denied");
+      return new[] { RollbackRegression.Installed, RollbackRegression.InstalledTarget }.Where(product => product != null).ToList();
     }

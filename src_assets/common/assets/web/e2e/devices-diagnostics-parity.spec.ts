@@ -12,6 +12,8 @@ type FixtureOptions = {
     | 'status-false'
     | 'malformed';
   controller?: unknown;
+  catalogSupported?: boolean;
+  catalogRequested?: boolean;
 };
 
 const devices = [
@@ -54,7 +56,7 @@ const devices = [
 
 async function installFixture(page: Page, options: FixtureOptions = {}) {
   const platform = options.platform ?? 'windows';
-  const calls = { vigem: 0 };
+  const calls = { vigem: 0, updates: [] as Record<string, unknown>[] };
 
   await localRoute(page, '**/api/**', async (route) => {
     const request = route.request();
@@ -123,7 +125,23 @@ async function installFixture(page: Page, options: FixtureOptions = {}) {
         body = options.vigem ?? { installed: true, version: '1.21.442.0' };
       }
     } else if (path === '/api/clients/list') {
-      body = { status: true, platform, named_certs: devices };
+      body = {
+        status: true,
+        platform,
+        named_certs: devices.map((device) =>
+          device.uuid === 'beta'
+            ? {
+                ...device,
+                requested_resolution_catalog_supported: options.catalogSupported ?? false,
+                requested_resolution_only: options.catalogRequested ?? false,
+              }
+            : device,
+        ),
+      };
+    } else if (path === '/api/clients/update') {
+      const payload = request.postDataJSON() as Record<string, unknown>;
+      calls.updates.push(payload);
+      options.catalogRequested = Boolean(payload.requested_resolution_only);
     } else if (path === '/api/clients/hdr-profiles') {
       body = { status: true, profiles: [] };
     } else if (path === '/api/display-devices') {
@@ -283,4 +301,62 @@ test('ViGEm diagnostic failure remains silent and controller false strings disab
   await page.goto('/v2/');
   await expect(page.getByText('Virtual Gamepad Driver (ViGEm) not installed')).toHaveCount(0);
   expect(disabled.vigem).toBe(0);
+});
+
+test('catalog opt-in is absent when the opened producer cannot report support', async ({
+  page,
+}) => {
+  await installFixture(page);
+  await page.goto('/v2/devices');
+  await page
+    .locator('.device-row')
+    .filter({ hasText: 'Bedroom' })
+    .getByRole('button', { name: 'Edit device' })
+    .click();
+  await expect(page.locator('#client-beta-name')).toBeVisible();
+  await expect(page.locator('#client-beta-requested-resolution-only')).toHaveCount(0);
+});
+
+test('compatible producer exposes a per-client opt-in and saves it explicitly', async ({
+  page,
+}) => {
+  const calls = await installFixture(page, { catalogSupported: true });
+  await page.goto('/v2/devices');
+  await page
+    .locator('.device-row')
+    .filter({ hasText: 'Bedroom' })
+    .getByRole('button', { name: 'Edit device' })
+    .click();
+  const checkbox = page.locator('#client-beta-requested-resolution-only');
+  await expect(checkbox).not.toBeChecked();
+  await checkbox.check();
+  await page.screenshot({ path: '/tmp/vibe325-catalog-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(checkbox).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(
+    true,
+  );
+  await page.screenshot({ path: '/tmp/vibe325-catalog-mobile.png', fullPage: true });
+  await page.getByRole('button', { name: 'Save device', exact: true }).click();
+  await expect.poll(() => calls.updates.length).toBe(1);
+  expect(calls.updates[0]).toMatchObject({ uuid: 'beta', requested_resolution_only: true });
+});
+
+test('saved opt-in survives unsupported producer state and can be disabled', async ({ page }) => {
+  const calls = await installFixture(page, { catalogRequested: true });
+  await page.goto('/v2/devices');
+  await page
+    .locator('.device-row')
+    .filter({ hasText: 'Bedroom' })
+    .getByRole('button', { name: 'Edit device' })
+    .click();
+  const checkbox = page.locator('#client-beta-requested-resolution-only');
+  await expect(checkbox).toBeChecked();
+  await expect(
+    page.getByText('The opened driver cannot confirm support.', { exact: false }),
+  ).toBeVisible();
+  await checkbox.uncheck();
+  await page.getByRole('button', { name: 'Save device', exact: true }).click();
+  await expect.poll(() => calls.updates.length).toBe(1);
+  expect(calls.updates[0]).toMatchObject({ uuid: 'beta', requested_resolution_only: false });
 });

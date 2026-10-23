@@ -125,9 +125,12 @@ namespace display_helper::v2 {
           completed.durable_recovery_armed = outcome.durable_recovery_armed;
           completed.durable_recovery_attempted = outcome.durable_recovery_attempted;
           completed.staged_state_prepared = outcome.staged_state_prepared;
+          completed.exclusive_pre_apply_topology = outcome.exclusive_pre_apply_topology;
+          completed.exclusive_rollback_only = outcome.exclusive_rollback_only;
           completed.generation = generation;
           enqueue(completed);
-        });
+        }
+      );
       return generation;
     }
 
@@ -274,15 +277,18 @@ namespace display_helper::v2 {
     }
 
     /**
-     * @brief Build the live topology plus physical baseline devices that have
-     *        become active but are not yet members of the active topology.
+     * @brief Observe absent physical baseline devices and build a topology
+     *        including their returns while the virtual target remains active.
      *
      * The persisted snapshot remains authoritative and is never rewritten.
-     * Inactive, excluded, and virtual devices are not admitted.
+     * Inactive devices require an observed disappearance in this session;
+     * observed disabled, excluded, and virtual devices stay passive.
      */
-    std::optional<ActiveTopology> topology_with_returned_active_baseline_devices(
+    std::optional<ActiveTopology> topology_with_returned_baseline_devices(
       const std::string &virtual_device_id,
-      const std::vector<std::string> &exclusions);
+      const std::vector<std::string> &exclusions,
+      std::set<std::string> &observed_absent_devices,
+      std::set<std::string> &observed_disabled_devices);
 
     /// Read-only presence of physical members in the first retained restore
     /// baseline. Connected inactive members count: restore owns their saved
@@ -294,7 +300,7 @@ namespace display_helper::v2 {
 
     /**
      * @brief Legacy capture pipeline: capture, gate on topology validity, filter
-     *        (active virtual displays, exclusions, display_name-less devices),
+     *        virtual displays and exclusions, reject incomplete physical paths,
      *        attach layout rotations, then save with retries.
      */
     bool capture_filtered_and_save(SnapshotTier tier, const std::vector<std::string> &exclusions, const char *reason);
@@ -433,10 +439,15 @@ namespace display_helper::v2 {
     void enter_steady_state();
     void reset_apply_verification_state();
     void reset_transient_disconnect_settlement();
+    void defer_transient_disconnect_settlement_for_staged_reset();
+    void resume_transient_disconnect_settlement_after_staged_reset();
     void prepare_transient_disconnect_settlement();
+    void dispatch_transient_disconnect_final_verification();
     bool dispatch_next_verification_reapply();
     bool dispatch_next_transient_disconnect_verification();
     void dispatch_transient_disconnect_repair();
+    void dispatch_exclusive_topology_rollback();
+    ApplyRequest transient_disconnect_verification_request() const;
     void dispatch_settings_only_repair();
     void dispatch_apply_worker(const ApplyRequest &request, std::chrono::milliseconds delay, bool reset_virtual_display);
     void queue_after_active_mutation(
@@ -483,6 +494,10 @@ namespace display_helper::v2 {
     bool virtual_hdr_fallback_attempted_ = false;
     bool baseline_topology_repair_available_ = false;
     bool baseline_topology_repair_in_flight_ = false;
+    // Same-id physical returns may be inactive after monitor power loss.
+    // Evidence is scoped to the current explicit APPLY, never a later session.
+    std::set<std::string> observed_absent_baseline_devices_;
+    std::set<std::string> observed_disabled_baseline_devices_;
     bool apply_result_sent_ = false;
     bool verification_result_sent_ = false;
     // A result may have been sent for an initial failure. Keep successful
@@ -500,7 +515,16 @@ namespace display_helper::v2 {
     bool transient_disconnect_settlement_requested_ = false;
     bool transient_disconnect_check_pending_ = false;
     bool transient_disconnect_repair_in_flight_ = false;
+    bool transient_disconnect_settlement_deferred_by_staged_reset_ = false;
+    bool transient_disconnect_settlement_deferred_final_check_ = false;
+    bool transient_disconnect_final_check_pending_ = false;
     std::size_t next_transient_disconnect_check_ = 0;
+    // Exclusive rollback may restore a topology older than current_request_.
+    // Keep that exact target with the disconnect settlement until it finishes.
+    std::optional<ActiveTopology> transient_disconnect_topology_;
+    // After an exclusive identity repair is rolled back, settlement verifies
+    // only the restored topology; the replacement configuration is obsolete.
+    bool transient_disconnect_rollback_verification_ = false;
     std::optional<std::chrono::steady_clock::time_point> last_apply_started_;
     ApplyRequest current_request_ {};
     std::optional<ResolvedConfigurationTarget> resolved_target_;
@@ -530,6 +554,9 @@ namespace display_helper::v2 {
     // replacement stale. This prevents both obsolete capture-ready replies
     // and an ownerless InProgress state.
     std::optional<ApplyCompleted> deferred_apply_completion_;
+    // A reactivation has its own IPC reply token but retains the verified
+    // session APPLY and must not finish that transaction a second time.
+    std::optional<ApplyCommand> active_reactivation_;
     bool unconfirmed_cancelled_mutation_ = false;
     bool staged_state_reset_pending_ = false;
     // Recovery normally exits the helper after a confirmed restore. If RESET

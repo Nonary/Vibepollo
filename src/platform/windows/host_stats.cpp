@@ -44,6 +44,7 @@
  * @c -1.f / @c 0 — the FE renders these as "N/A".
  */
 
+#include "src/hardware_metrics_gpu.h"
 #include "src/platform/common.h"
 
 // standard includes
@@ -166,7 +167,10 @@ namespace {
      * @return -1.f on failure.
      */
     float
-      collect(float max_value = -1.f, const std::wstring &instance_contains = {}) {
+      collect(float max_value = -1.f, const std::wstring &instance_contains = {}, float *qualified_value = nullptr, const std::wstring &qualified_instance = {}) {
+      if (qualified_value) {
+        *qualified_value = -1.f;
+      }
       if (!_query) {
         return -1.f;
       }
@@ -187,6 +191,7 @@ namespace {
         return -1.f;
       }
       double total = 0.0;
+      hardware_metrics::qualified_counter_t qualified {qualified_instance};
       for (DWORD i = 0; i < item_count; ++i) {
         if (!instance_contains.empty()) {
           const wchar_t *name = items[i].szName;
@@ -198,10 +203,16 @@ namespace {
             items[i].FmtValue.CStatus == PDH_CSTATUS_NEW_DATA ||
             items[i].FmtValue.CStatus == PDH_CSTATUS_VALID_DATA) {
           total += items[i].FmtValue.doubleValue;
+          if (qualified_value && items[i].szName) {
+            qualified.add(items[i].szName, items[i].FmtValue.doubleValue);
+          }
         }
       }
       if (max_value > 0.f && total > max_value) {
         total = max_value;
+      }
+      if (qualified_value) {
+        *qualified_value = qualified.value(max_value);
       }
       return static_cast<float>(total);
     }
@@ -993,12 +1004,15 @@ namespace {
         s.ram_used_bytes = ms.ullTotalPhys - ms.ullAvailPhys;
       }
 
+      platf::client_gpu_stats_t gpu;
+      gpu.id = _client_gpu_id;
+      gpu.name = _gpu_model_cached;
       // GPU
       if (_have_gpu_3d) {
-        s.gpu_percent = _gpu_3d.collect(100.f);
+        s.gpu_percent = _gpu_3d.collect(100.f, {}, &gpu.usage_percent, _vram_adapter_instance);
       }
       if (_have_gpu_enc) {
-        s.gpu_encoder_percent = _gpu_enc.collect(100.f);
+        s.gpu_encoder_percent = _gpu_enc.collect(100.f, {}, &gpu.encoder_percent, _vram_adapter_instance);
       }
 
       // Windows reports thermal-zone temperatures in Kelvin. There is no
@@ -1038,7 +1052,9 @@ namespace {
       // Fallback B: D3DKMT segment residency — vendor-agnostic and TDR-safe.
       if (s.vram_used_bytes == 0) {
         auto kmt_memory = _kmt.gpu_vram();
-        if (kmt_memory.used > 0) {
+        // A positive capacity comes only from successful dedicated-segment
+        // queries. Zero residency with that capacity is known, not missing.
+        if (kmt_memory.used > 0 || kmt_memory.total > 0) {
           s.vram_used_bytes = _vram_total_cached > 0 && kmt_memory.used > _vram_total_cached
                                 ? _vram_total_cached
                                 : kmt_memory.used;
@@ -1076,7 +1092,17 @@ namespace {
 
       // Temps (best effort): D3DKMT perfdata first, NVML only on systems
       // where perfdata has never worked (pre-WDDM 2.4).
+      // NVML fallbacks are not matched to the DXGI adapter; keep those only in
+      // the legacy admin snapshot, never attach them to this client GPU.
+      if (vram_source && std::string_view(vram_source) != "nvml") {
+        gpu.vram_used_bytes = s.vram_used_bytes;
+        gpu.vram_total_bytes = s.vram_total_bytes;
+      }
       s.gpu_temp_c = _kmt.gpu_temp_c();
+      gpu.temperature_c = s.gpu_temp_c;
+      if (!_vram_adapter_instance.empty()) {
+        s.client_gpus.push_back(std::move(gpu));
+      }
       if (s.gpu_temp_c < 0.f && !_kmt.perfdata_works()) {
         s.gpu_temp_c = nvml_t::instance().gpu_temp_c();
       }
@@ -1094,6 +1120,9 @@ namespace {
           std::string gpu_model;
           query_dxgi(vram_total, adapter_luid, gpu_model);
           if (vram_total > 0) {
+            if (adapter_luid.LowPart != _vram_adapter_luid.LowPart || adapter_luid.HighPart != _vram_adapter_luid.HighPart) {
+              ++_client_gpu_id;
+            }
             _vram_total_cached = vram_total;
             _vram_adapter_luid = adapter_luid;
             _gpu_model_cached = gpu_model;
@@ -1306,6 +1335,7 @@ namespace {
 
     std::string _cpu_model_cached;
     std::string _gpu_model_cached;
+    std::int32_t _client_gpu_id = 1;
     int _cpu_logical_cores = 0;
     std::uint64_t _ram_total_cached = 0;
     std::uint64_t _vram_total_cached = 0;

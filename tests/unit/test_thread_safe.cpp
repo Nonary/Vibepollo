@@ -82,6 +82,71 @@ namespace {
   }
 }  // namespace
 
+TEST(ThreadSafeSharedTests, TryRefDoesNotConstructAnIdleObject) {
+  int constructions = 0;
+  int destructions = 0;
+  auto shared = safe::make_shared<int>(
+    [&](int &value) {
+      ++constructions;
+      value = 42;
+      return 0;
+    },
+    [&](int &) {
+      ++destructions;
+    }
+  );
+
+  {
+    auto idle = shared.try_ref();
+    EXPECT_FALSE(idle);
+  }
+  EXPECT_EQ(constructions, 0);
+  EXPECT_EQ(destructions, 0);
+
+  {
+    auto active = shared.ref();
+    ASSERT_TRUE(active);
+    EXPECT_EQ(*active.get(), 42);
+
+    auto alias = shared.try_ref();
+    ASSERT_TRUE(alias);
+    EXPECT_EQ(constructions, 1);
+    EXPECT_EQ(destructions, 0);
+  }
+
+  EXPECT_EQ(constructions, 1);
+  EXPECT_EQ(destructions, 1);
+  EXPECT_FALSE(shared.try_ref());
+}
+
+TEST(ThreadSafeSharedTests, TryRefKeepsTheObjectAliveAfterTheOriginalReferenceIsReleased) {
+  int destructions = 0;
+  auto shared = safe::make_shared<int>(
+    [](int &value) {
+      value = 42;
+      return 0;
+    },
+    [&](int &) {
+      ++destructions;
+    }
+  );
+
+  auto original = shared.ref();
+  auto alias = shared.try_ref();
+  ASSERT_TRUE(alias);
+  original.release();
+  EXPECT_EQ(destructions, 0);
+  EXPECT_EQ(*alias.get(), 42);
+
+  auto last = shared.try_ref();
+  ASSERT_TRUE(last);
+  alias.release();
+  EXPECT_EQ(destructions, 0);
+  last.release();
+  EXPECT_EQ(destructions, 1);
+  EXPECT_FALSE(shared.try_ref());
+}
+
 TEST(ThreadSafeQueueTests, EmptyCapturePollsDoNotWaitForPayloadConstruction) {
   check_empty_polls_during_publish<safe::queue_t<paused_payload_t>>();
 }
@@ -123,6 +188,50 @@ TEST(ThreadSafeEventTests, UnchangedGenerationDoesNotWaitForPayloadConstruction)
     EXPECT_TRUE(event.view_if_newer(generation));
     EXPECT_FALSE(event.view_if_newer(generation));
   }
+}
+
+TEST(ThreadSafeEventTests, LateOlderSnapshotCannotReplaceNewerPublishedVersion) {
+  using namespace std::chrono_literals;
+  struct snapshot_t {
+    std::uint64_t generation;
+    std::uint64_t sequence;
+  };
+  const auto is_older = [](const snapshot_t &candidate, const snapshot_t &current) {
+    return candidate.generation < current.generation ||
+           (candidate.generation == current.generation && candidate.sequence < current.sequence);
+  };
+
+  safe::event_t<snapshot_t> event;
+  std::promise<void> older_snapshot_ready;
+  auto older_snapshot_ready_future = older_snapshot_ready.get_future();
+  std::promise<void> allow_older_raise;
+  auto allow_older_raise_future = allow_older_raise.get_future().share();
+  std::atomic_bool older_accepted {true};
+  std::thread older_publisher {[&] {
+    const snapshot_t stale {9, 11};
+    older_snapshot_ready.set_value();
+    allow_older_raise_future.wait();
+    older_accepted.store(event.raise_monotonic(stale, is_older), std::memory_order_release);
+  }};
+
+  const auto older_ready = older_snapshot_ready_future.wait_for(2s) == std::future_status::ready;
+  if (older_ready) {
+    EXPECT_TRUE(event.raise_monotonic(snapshot_t {9, 12}, is_older));
+    const auto latest_before = event.view(0ms);
+    EXPECT_TRUE(latest_before);
+    if (latest_before) {
+      EXPECT_EQ(latest_before->sequence, 12);
+    }
+  }
+  allow_older_raise.set_value();
+  older_publisher.join();
+
+  ASSERT_TRUE(older_ready);
+  EXPECT_FALSE(older_accepted.load(std::memory_order_acquire));
+  const auto latest = event.view(0ms);
+  ASSERT_TRUE(latest);
+  EXPECT_EQ(latest->generation, 9);
+  EXPECT_EQ(latest->sequence, 12);
 }
 
 TEST(MailRegistryTests, QueueLookupReplacesExpiredPost) {
@@ -218,6 +327,22 @@ TEST(ThreadSafeQueueTests, NonpositivePollsPreserveQueueStateAndConsumeReadyValu
   EXPECT_EQ(queue.pop(-1ms), 7);
   EXPECT_EQ(queue.pop(0ms), 9);
   EXPECT_FALSE(queue.pop(0ms));
+}
+
+TEST(ThreadSafeQueueTests, DrainConsumesEveryQueuedValueAndClearsReadiness) {
+  using namespace std::chrono_literals;
+  safe::queue_t<int> queue {4};
+  ASSERT_TRUE(queue.try_raise(7));
+  ASSERT_TRUE(queue.try_raise(9));
+
+  const auto values = queue.drain();
+  EXPECT_EQ(values, (std::vector<int> {7, 9}));
+  EXPECT_FALSE(queue.peek());
+  EXPECT_TRUE(queue.running());
+  EXPECT_FALSE(queue.pop(0ms));
+
+  queue.stop();
+  EXPECT_TRUE(queue.drain().empty());
 }
 
 TEST(ThreadSafeQueueTests, PositiveTimeoutWaitsForProducer) {

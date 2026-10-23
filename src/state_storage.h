@@ -145,6 +145,9 @@ namespace statefile {
    */
   void save_display_helper_engine(const std::string &engine);
 
+  /** Persist the resolved golden restore preference for standalone boot recovery. */
+  void save_display_restore_preference(bool always_restore_from_golden);
+
   /** Persist a compositor scale selected for a stable virtual-display owner. */
   void save_virtual_display_scale(const std::string &identity, double scale);
 

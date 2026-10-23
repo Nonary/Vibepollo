@@ -47,14 +47,15 @@ TEST(ManagedAppFocus, DiscoveryFailuresDoNotSpendConfirmedBudget) {
   EXPECT_FALSE(retry.active(start + std::chrono::seconds(14)));
 }
 
-TEST(ManagedAppFocus, FirstSuccessAndDeadlineStopFocus) {
+TEST(ManagedAppFocus, FirstSuccessAndHardDiscoveryLimitStopFocus) {
   using namespace managed_app_focus;
   const auto start = budget::clock::time_point {};
   budget first({3, 15, true}, start);
   first.confirmed();
   EXPECT_FALSE(first.active(start));
   budget timeout({3, 15, false}, start);
-  EXPECT_FALSE(timeout.active(start + std::chrono::seconds(15)));
+  EXPECT_TRUE(timeout.active(start + std::chrono::seconds(25)));
+  EXPECT_FALSE(timeout.active(start + std::chrono::seconds(180)));
   budget disabled({0, 15, false}, start);
   EXPECT_FALSE(disabled.active(start));
 }
@@ -79,4 +80,95 @@ TEST(ManagedAppFocus, LutrisAcceptsGameWorkingDirectoryButRejectsOtherAppsAndBro
   EXPECT_EQ(managed_app_focus::candidates({"lutris", "42", "/games/game"}, snapshot), (std::vector<std::uint64_t> {1}));
   EXPECT_TRUE(managed_app_focus::candidates({"lutris", "42", "/"}, snapshot).empty());
   EXPECT_TRUE(managed_app_focus::candidates({"unknown", "42", "/games/game"}, snapshot).empty());
+}
+
+TEST(ManagedAppFocus, LateFirstWindowGetsConfiguredFocusTime) {
+  using namespace managed_app_focus;
+  using namespace std::chrono_literals;
+  const auto start = budget::clock::time_point {};
+  for (auto late : {16s, 25s}) {
+    budget retry({3, 15, false}, start);
+    EXPECT_TRUE(retry.active(start + late));
+    EXPECT_FALSE(retry.can_focus(start + late));
+    EXPECT_TRUE(retry.observe("7:game-window", start + late));
+    EXPECT_TRUE(retry.can_focus(start + late + 14s));
+    EXPECT_FALSE(retry.can_focus(start + late + 15s));
+    EXPECT_TRUE(retry.active(start + late + 15s));
+  }
+}
+
+TEST(ManagedAppFocus, ReplacementWindowRearmsButRepeatedObservationDoesNot) {
+  using namespace managed_app_focus;
+  using namespace std::chrono_literals;
+  const auto start = budget::clock::time_point {};
+  budget retry({3, 15, false}, start);
+  retry.observe("7:splash", start + 1s);
+  retry.confirmed();
+  EXPECT_FALSE(retry.observe("7:splash", start + 16s));
+  EXPECT_FALSE(retry.can_focus(start + 16s));
+  EXPECT_TRUE(retry.observe("7:game", start + 25s));
+  EXPECT_EQ(retry.deadline(), start + 40s);
+  EXPECT_FALSE(retry.can_focus("7:splash", start + 25s));
+  EXPECT_TRUE(retry.can_focus("7:game", start + 25s));
+  retry.refresh(start + 26s);
+  EXPECT_FALSE(retry.can_focus("7:splash", start + 26s));
+  EXPECT_TRUE(retry.can_focus("7:game", start + 40s));
+  EXPECT_TRUE(retry.observe("8:game", start + 39s));
+  EXPECT_EQ(retry.deadline(), start + 54s);
+  retry.confirmed();
+  EXPECT_TRUE(retry.active(start + 39s));
+  retry.confirmed();
+  EXPECT_FALSE(retry.active(start + 39s));
+  EXPECT_FALSE(retry.observe("9:new", start + 40s));
+}
+
+TEST(ManagedAppFocus, HardCapBoundsNewWindowsAndStatusRefresh) {
+  using namespace managed_app_focus;
+  using namespace std::chrono_literals;
+  const auto start = budget::clock::time_point {};
+  budget retry({100, 15, false}, start);
+  for (int n = 0; n < 180; ++n) {
+    retry.observe(std::to_string(n), start + std::chrono::seconds(n));
+    retry.refresh(start + std::chrono::seconds(n));
+    EXPECT_LE(retry.deadline(), start + 180s);
+  }
+  EXPECT_FALSE(retry.active(start + 180s));
+  EXPECT_FALSE(retry.can_focus(start + 180s));
+  EXPECT_FALSE(retry.observe("late", start + 180s));
+}
+
+TEST(ManagedAppFocus, TimeoutLongerThanDiscoveryFloorIsPreserved) {
+  using namespace managed_app_focus;
+  using namespace std::chrono_literals;
+  const auto start = budget::clock::time_point {};
+  budget retry({3, 240, false}, start);
+  EXPECT_TRUE(retry.active(start + 239s));
+  retry.observe("7:game", start + 25s);
+  EXPECT_EQ(retry.deadline(), start + 240s);
+  EXPECT_TRUE(retry.can_focus(start + 239s));
+  EXPECT_FALSE(retry.active(start + 240s));
+}
+
+TEST(ManagedAppFocus, DisabledPolicyCannotArmWindows) {
+  using namespace managed_app_focus;
+  const auto start = budget::clock::time_point {};
+  for (auto options : {policy {0,15,false}, policy {3,0,false}}) {
+    budget disabled(options, start);
+    EXPECT_FALSE(disabled.active(start));
+    EXPECT_FALSE(disabled.observe("7:game", start));
+    EXPECT_FALSE(disabled.can_focus(start));
+  }
+}
+
+TEST(ManagedAppFocus, EmptyIdentityDoesNotArmAndNewSessionForgetsOldWindows) {
+  using namespace managed_app_focus;
+  using namespace std::chrono_literals;
+  const auto start = budget::clock::time_point {};
+  budget first({3, 15, false}, start);
+  EXPECT_FALSE(first.observe("", start));
+  EXPECT_FALSE(first.can_focus(start));
+  EXPECT_TRUE(first.observe("7:game", start + 25s));
+  budget next({3, 15, false}, start + 26s);
+  EXPECT_TRUE(next.observe("7:game", start + 26s));
+  EXPECT_EQ(next.deadline(), start + 41s);
 }

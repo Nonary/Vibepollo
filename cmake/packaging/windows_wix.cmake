@@ -12,6 +12,18 @@ set(CPACK_WIX_PROGRAM_MENU_FOLDER "Vibepollo")
 # NOTE: Do not change once released, or upgrades will break.
 set(CPACK_WIX_UPGRADE_GUID "{E3FA501A-85F8-4187-85A7-D6E6BDC7EDA1}")
 
+# Validation packages share service/file locations with released builds, so a
+# second UpgradeCode would not make side-by-side installation safe. Permit a
+# clean-machine test install, but reject replacement of any related product.
+# Maintenance of an already installed validation product remains possible.
+set(CPACK_WIX_VALIDATION_CONDITION "")
+if(PROJECT_VERSION_FULL MATCHES "-pr-validation($|[.+])")
+  string(CONCAT CPACK_WIX_VALIDATION_CONDITION
+    "<Condition Message='PR validation packages cannot replace an existing "
+    "Vibepollo installation. Use a clean test machine.'>"
+    "Installed OR NOT WIX_UPGRADE_DETECTED</Condition>")
+endif()
+
 # Generate a fresh sortable ProductCode for every CPack WiX invocation.  The
 # Upgrade GUID above intentionally remains stable so Windows Installer still
 # treats all Vibepollo MSIs as the same product family.
@@ -53,7 +65,7 @@ set(CPACK_WIX_CANDLE_EXTRA_FLAGS
 
 # Daily packages forbid unattended trust changes; production defaults stay zero.
 set(SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY 0)
-if(PROJECT_VERSION_FULL MATCHES "-daily[.]")
+if(PROJECT_VERSION_FULL MATCHES "-(daily|nightly)[.]")
   set(SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY 1)
 endif()
 list(APPEND CPACK_WIX_CANDLE_EXTRA_FLAGS "-dDailyUnsignedDriverPolicy=${SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY}")

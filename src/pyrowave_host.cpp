@@ -29,3 +29,9 @@ namespace pyrowave::host {
 }  // namespace pyrowave::host
 
 #endif
+
+#if !(defined(__linux__) && defined(SUNSHINE_ENABLE_PYROWAVE))
+namespace pyrowave::host {
+  void shutdown() {}
+}  // namespace pyrowave::host
+#endif

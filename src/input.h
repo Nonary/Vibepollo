@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <utility>
@@ -12,6 +13,7 @@
 
 // local includes
 #include "crypto.h"
+#include "input_session_config.h"
 #include "platform/common.h"
 #include "thread_safe.h"
 
@@ -26,6 +28,9 @@ namespace input {
    */
   void reset(std::shared_ptr<input_t> &input);
   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM &permission);
+  // Order Guide neutralization on the input worker after a live permission loss.
+  // Queued Guide presses retain admission permission and the permission generation.
+  void update_guide_button_permissions(const std::shared_ptr<input_t> &input, const crypto::PERM &permission);
 
 #ifdef SUNSHINE_TESTS
   bool validate_packet_for_tests(const std::vector<std::uint8_t> &input_data);
@@ -35,7 +40,7 @@ namespace input {
 
   bool probe_gamepads();
 
-  std::shared_ptr<input_t> alloc(safe::mail_t mail, bool persist_gamepads = false);
+  std::shared_ptr<input_t> alloc(safe::mail_t mail, guide_button_config_t guide_button, bool persist_gamepads = false);
 
   struct touch_port_t: public platf::touch_port_t {
     int env_width;
@@ -51,8 +56,13 @@ namespace input {
     int env_logical_width;
     int env_logical_height;
 
+    std::uint64_t capture_generation = 0;
+    std::uint64_t geometry_sequence = 0;
+    bool geometry_valid = true;
+    platf::input_geometry_target_identity_t geometry_target;
+
     explicit operator bool() const {
-      return width != 0 && height != 0 && env_width != 0 && env_height != 0;
+      return geometry_valid && width != 0 && height != 0 && env_width != 0 && env_height != 0;
     }
   };
 

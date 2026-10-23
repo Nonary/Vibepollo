@@ -4,6 +4,7 @@
  */
 
 #ifdef _WIN32
+#include "src/platform/windows/display_helper_borrow_native.h"
 
   // standard
   #include <algorithm>
@@ -60,6 +61,8 @@
   #endif
 
   #include "src/platform/windows/display_restore_task.h"
+  #include "src/platform/windows/display_restore_policy.h"
+  #include "tools/display_helper_paths.h"
   #include "src/platform/windows/legacy_restore_event_policy.h"
   #include "src/platform/windows/recovery_status.h"
 
@@ -306,6 +309,9 @@ namespace {
     }
 
     bool apply_layout_rotations(const layout_rotation_map_t &layout_rotations) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (layout_rotations.empty()) {
         return true;
       }
@@ -412,6 +418,9 @@ namespace {
 
     // Validate whether a snapshot's topology is currently applicable.
     bool is_topology_valid(const display_device::DisplaySettingsSnapshot &snap) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return false;
       }
@@ -426,6 +435,9 @@ namespace {
       const display_device::SingleDisplayConfiguration &cfg,
       const std::optional<display_device::ActiveTopology> &base_topology
     ) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return false;
       }
@@ -450,6 +462,9 @@ namespace {
 
     // Revert display configuration; returns whether reverted OK.
     bool revert() {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return false;
       }
@@ -461,6 +476,9 @@ namespace {
 
     // Reset persistence file; best-effort noop persistence returns true.
     bool reset_persistence() {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return false;
       }
@@ -468,6 +486,9 @@ namespace {
     }
 
     bool recover_display_stack() {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return false;
       }
@@ -480,6 +501,9 @@ namespace {
     }
 
     bool set_display_origin(const std::string &device_id, const display_device::Point &origin) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return false;
       }
@@ -500,6 +524,9 @@ namespace {
     }
 
     bool can_reposition_device(const std::string &device_id) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (device_id.empty() || !ensure_initialized()) {
         return false;
       }
@@ -522,6 +549,9 @@ namespace {
     }
 
     std::optional<display_device::Resolution> get_display_resolution(const std::string &device_id) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (device_id.empty() || !ensure_initialized()) {
         return std::nullopt;
       }
@@ -547,6 +577,9 @@ namespace {
      * @return True if the mode was successfully applied.
      */
     bool set_device_refresh_rate(const std::string &device_id, unsigned int num, unsigned int den) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (device_id.empty() || !ensure_initialized()) {
         return false;
       }
@@ -570,6 +603,9 @@ namespace {
     }
 
     bool configuration_matches_current_state(const display_device::SingleDisplayConfiguration &cfg) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return false;
       }
@@ -626,6 +662,9 @@ namespace {
 
     // Capture a full snapshot of current settings.
     display_device::DisplaySettingsSnapshot snapshot() const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       display_device::DisplaySettingsSnapshot snap;
       if (!ensure_initialized()) {
         return snap;
@@ -670,6 +709,9 @@ namespace {
 
     // Validate whether a proposed topology is acceptable by the OS using SDC_VALIDATE.
     bool validate_topology_with_os(const display_device::ActiveTopology &topo) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return false;
       }
@@ -709,6 +751,9 @@ namespace {
       const display_device::SingleDisplayConfiguration &cfg,
       const std::optional<display_device::ActiveTopology> &base_topology
     ) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return false;
       }
@@ -745,6 +790,9 @@ namespace {
       const display_device::SingleDisplayConfiguration &cfg,
       const std::optional<display_device::ActiveTopology> &base_topology
     ) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return std::nullopt;
       }
@@ -774,6 +822,9 @@ namespace {
     }
 
     bool is_topology_the_same(const display_device::ActiveTopology &a, const display_device::ActiveTopology &b) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return false;
       }
@@ -787,6 +838,9 @@ namespace {
     // Finish the optional HDR blank before reporting capture readiness. Restore
     // every HDR-enabled output even when cancellation interrupts the SDR hold.
     bool blank_hdr_states(std::chrono::milliseconds delay, const std::function<bool()> &cancelled = [] { return false; }) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized() || cancelled()) return false;
       try {
         std::set<std::string> ids;
@@ -1502,12 +1556,75 @@ namespace {
       }
     }
 
+    // Boot-only caller policy: a stale session snapshot must not narrow an
+    // already healthy physical desktop. Ordinary REVERT and Golden restores
+    // continue to apply their exact saved topology.
+    std::optional<display_device::DisplaySettingsSnapshot> live_desktop_to_preserve(
+      const display_device::DisplaySettingsSnapshot &baseline
+    ) const {
+      auto live = snapshot();
+      const auto primary = normalize_device_id(live.m_primary_device);
+      if (primary.empty() || !is_topology_valid(live)) {
+        return std::nullopt;
+      }
+      const auto normalized_ids = [](const auto &topology) {
+        std::set<std::string> ids;
+        for (const auto &group : topology) {
+          for (const auto &id : group) {
+            ids.insert(normalize_device_id(id));
+          }
+        }
+        return ids;
+      };
+      const auto live_ids = normalized_ids(live.m_topology);
+      const auto baseline_ids = normalized_ids(baseline.m_topology);
+      if (!live_ids.contains(primary) || baseline_ids.contains(primary) ||
+          !std::includes(live_ids.begin(), live_ids.end(), baseline_ids.begin(), baseline_ids.end())) {
+        // A physical dummy plug can be the primary of an interrupted stream
+        // with the real desktop still disabled. That needs exact recovery.
+        return std::nullopt;
+      }
+      const auto exclusions = snapshot_exclusions_copy();
+      if (std::any_of(exclusions.begin(), exclusions.end(), [&](const auto &id) {
+            return normalize_device_id(id) == primary;
+          })) {
+        return std::nullopt;
+      }
+      const auto devices = enumerate_nonempty_devices_known(display_device::DeviceEnumerationDetail::Minimal);
+      if (!devices) {
+        return std::nullopt;
+      }
+      bool physical_primary_active = false;
+      for (const auto &device : *devices) {
+        if (!is_active_display_device(device)) {
+          continue;
+        }
+        if (is_virtual_display_device(device)) {
+          return std::nullopt;
+        }
+        if (!device.m_display_name.empty() &&
+            normalize_device_id(device.m_device_id) == primary &&
+            live.m_modes.contains(live.m_primary_device)) {
+          physical_primary_active = true;
+        }
+      }
+      if (!physical_primary_active) {
+        return std::nullopt;
+      }
+      BOOST_LOG(warning) << "Boot restore: session snapshot omits the active physical primary "
+                         << live.m_primary_device << "; preserving the current physical desktop.";
+      return live;
+    }
+
     // Apply only after the entire saved topology is active. A successful
     // setTopology call can still mean Windows selected a partial topology.
     bool apply_snapshot(
       const display_device::DisplaySettingsSnapshot &snap,
       const layout_rotation_map_t *layout_rotations = nullptr
     ) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return false;
       }
@@ -1525,14 +1642,14 @@ namespace {
           }
           std::this_thread::sleep_for(150ms);
         }
-        if (!display_helper::restore_snapshot_settings(*m_dd, snap)) {
+        if (!display_helper::restore_snapshot_settings(*m_dd, snap, false)) {
           BOOST_LOG(warning) << "Snapshot restore: settings failed; skipping remaining layout saves.";
           return false;
         }
-        if (layout_rotations && !layout_rotations->empty()) {
-          return apply_layout_rotations(*layout_rotations);
+        if (layout_rotations && !layout_rotations->empty() && !apply_layout_rotations(*layout_rotations)) {
+          return false;
         }
-        return true;
+        return display_helper::restore_snapshot_hdr_states(*m_dd, snap);
       } catch (...) {
         return false;
       }
@@ -1732,6 +1849,9 @@ namespace {
     }
 
     std::unordered_map<std::string, std::wstring> active_display_names_by_device_id(const std::set<std::string> &device_ids = {}) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       std::unordered_map<std::string, std::wstring> out;
       const bool filter = !device_ids.empty();
       for (const auto &d : enumerate_devices(display_device::DeviceEnumerationDetail::Minimal)) {
@@ -1853,6 +1973,9 @@ namespace {
      *        needs rotation, so batching overhead is unnecessary.
      */
     bool apply_display_rotation_degrees(const std::wstring &display_name, int degrees) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       auto prepared = prepare_display_rotation(display_name, degrees);
       if (!prepared) {
         return false;
@@ -1889,6 +2012,9 @@ namespace {
 
   public:
     display_device::EnumeratedDeviceList enumerate_devices(display_device::DeviceEnumerationDetail detail) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return {};
       }
@@ -1902,6 +2028,9 @@ namespace {
     std::optional<display_device::EnumeratedDeviceList> enumerate_nonempty_devices_known(
       display_device::DeviceEnumerationDetail detail
     ) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) return std::nullopt;
       try {
         auto devices = m_dd->enumAvailableDevices(detail);
@@ -1916,6 +2045,9 @@ namespace {
 
   private:
     std::optional<std::string> find_primary_in_set(const std::set<std::string> &ids) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return std::nullopt;
       }
@@ -1958,6 +2090,9 @@ namespace {
     }
 
     std::optional<display_device::EnumeratedDevice::Info> get_device_info_minimal(const std::string &device_id) const {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation) return {};
+
       if (!ensure_initialized()) {
         return std::nullopt;
       }
@@ -2547,6 +2682,9 @@ namespace {
     std::atomic<size_t> golden_pending_session_fallbacks {0};
     // When true, prefer golden snapshot over session snapshots during restore (reduces stuck virtual screens)
     std::atomic<bool> always_restore_from_golden {false};
+    // Enabled only by --restore startup, never by an ordinary stream REVERT
+    // (which can also set exit_after_revert). Golden-first remains authoritative.
+    std::atomic<bool> preserve_active_physical_primary {false};
     // When true, prefer golden over previous only when current is unavailable.
     std::atomic<bool> prefer_golden_if_current_missing {true};
     // Set by APPLY. When false, a broken Sunshine IPC connection should not
@@ -3350,31 +3488,34 @@ namespace {
     bool quiet_period(
       std::chrono::milliseconds duration = 750ms,
       std::chrono::milliseconds interval = 150ms,
-      std::stop_token st = {}
+      std::stop_token st = {},
+      const display_device::DisplaySettingsSnapshot *expected = nullptr,
+      const std::function<bool()> &cancelled = [] { return false; }
     ) {
       display_device::DisplaySettingsSnapshot base;
-      if (!read_stable_snapshot(base, 2000ms, 150ms, st)) {
+      if (cancelled() || !read_stable_snapshot(base, 2000ms, 150ms, st) || cancelled() ||
+          (expected && !equal_snapshots_strict(base, *expected))) {
         return false;
       }
       auto t0 = std::chrono::steady_clock::now();
       while (std::chrono::steady_clock::now() - t0 < duration) {
-        if (st.stop_possible() && st.stop_requested()) {
+        if (cancelled() || (st.stop_possible() && st.stop_requested())) {
           return false;
         }
         display_device::DisplaySettingsSnapshot cur;
         if (!read_stable_snapshot(cur, 2000ms, 150ms, st)) {
           return false;
         }
-        if (!(cur == base)) {
+        if (expected ? !equal_snapshots_strict(cur, *expected) : !(cur == base)) {
           // topology changed during quiet period
           return false;
         }
-        if (st.stop_possible() && st.stop_requested()) {
+        if (cancelled() || (st.stop_possible() && st.stop_requested())) {
           return false;
         }
         std::this_thread::sleep_for(interval);
       }
-      return true;
+      return !cancelled();
     }
 
     void signal_restore_event(
@@ -3658,9 +3799,11 @@ namespace {
       const char *label,
       std::stop_token st,
       uint64_t guard_generation,
-      bool &attempted
+      bool &attempted,
+      bool &preserved_live_desktop
     ) {
       attempted = false;
+      preserved_live_desktop = false;
       auto base_loaded = controller.load_display_settings_snapshot_with_metadata(path);
       if (!base_loaded) {
         BOOST_LOG(info) << (label ? label : "session") << " snapshot not available.";
@@ -3668,11 +3811,6 @@ namespace {
       }
       const auto &base = base_loaded->snapshot;
       const auto &base_layouts = base_loaded->layout_rotations;
-      const bool require_layout_match = base_loaded->has_layout_data;
-      if (!require_layout_match && base_loaded->snapshot_version < DisplayController::snapshot_layout_version_latest) {
-        BOOST_LOG(info) << (label ? label : "session") << " snapshot uses legacy schema (version "
-                        << base_loaded->snapshot_version << "): no display layout metadata.";
-      }
       attempted = true;
       if (auto missing = controller.missing_devices_for_topology(base.m_topology); !missing.empty()) {
         std::string joined;
@@ -3688,6 +3826,24 @@ namespace {
       if (!controller.is_topology_valid(base)) {
         BOOST_LOG(info) << (label ? label : "session") << " snapshot rejected due to invalid topology.";
         return false;
+      }
+
+      bool preserve_live = false;
+      std::optional<display_device::DisplaySettingsSnapshot> preserved_session_baseline;
+      if (preserve_active_physical_primary.load(std::memory_order_acquire) &&
+          !always_restore_from_golden.load(std::memory_order_acquire)) {
+        if (auto live = controller.live_desktop_to_preserve(base_loaded->snapshot)) {
+          preserved_session_baseline = base_loaded->snapshot;
+          base_loaded->snapshot = std::move(*live);
+          base_loaded->has_layout_data = false;
+          base_loaded->layout_rotations.clear();
+          preserve_live = true;
+        }
+      }
+      const bool require_layout_match = base_loaded->has_layout_data;
+      if (!require_layout_match && base_loaded->snapshot_version < DisplayController::snapshot_layout_version_latest) {
+        BOOST_LOG(info) << (label ? label : "session") << " snapshot uses legacy schema (version "
+                        << base_loaded->snapshot_version << "): no display layout metadata.";
       }
 
       const auto before_sig = controller.signature(controller.snapshot());
@@ -3709,7 +3865,25 @@ namespace {
           return false;
         }
         const bool layout_ok = !require_layout_match || controller.current_layout_matches(base_layouts);
-        const bool ok = got_stable && equal_snapshots_strict(cur, base) && layout_ok && quiet_period(750ms, 150ms, st);
+        const bool state_ok = got_stable && equal_snapshots_strict(cur, base) && layout_ok;
+        // Preservation must stay equal to the physical candidate throughout
+        // the quiet period, rather than accepting a different stable desktop
+        // that arrives before quiet_period establishes its own baseline.
+        bool ok = state_ok && (preserve_live ?
+                                quiet_period(750ms, 150ms, st, &base, should_cancel) :
+                                quiet_period(750ms, 150ms, st));
+        if (ok && preserve_live) {
+          if (!preserved_session_baseline || should_cancel()) {
+            return false;
+          }
+          // Enumeration/intent can change even when snapshot values do not.
+          // Recheck the original session baseline and physical-only eligibility
+          // immediately before publishing successful preservation.
+          const auto live = controller.live_desktop_to_preserve(*preserved_session_baseline);
+          ok = live && equal_snapshots_strict(*live, base) &&
+               preserve_active_physical_primary.load(std::memory_order_acquire) &&
+               !always_restore_from_golden.load(std::memory_order_acquire) && !should_cancel();
+        }
         if (ok) {
           BOOST_LOG(info) << "Session restore (" << (label ? label : "session")
                           << "): current state already matches baseline; skipping apply.";
@@ -3721,6 +3895,7 @@ namespace {
         return false;
       }
       if (confirm_current_matches_session()) {
+        preserved_live_desktop = preserve_live;
         const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                               std::chrono::steady_clock::now().time_since_epoch()
         )
@@ -3728,7 +3903,9 @@ namespace {
         last_session_restore_success_ms.store(now_ms, std::memory_order_release);
         return true;
       }
-      if (should_cancel()) {
+      // A drifting live desktop must be retried, never replayed as a captured
+      // topology. Only exact session restores may enter the apply stages.
+      if (preserve_live || should_cancel()) {
         return false;
       }
       (void) controller.apply_snapshot(base, require_layout_match ? &base_layouts : nullptr);
@@ -3854,15 +4031,19 @@ namespace {
       bool tried_golden_before_previous = false;
       auto try_session_snapshots = [&]() -> bool {
         bool attempted_current = false;
+        bool preserved_live_desktop = false;
         const bool restored_current = apply_session_snapshot_from_path(
           session_current_path,
           "current",
           st,
           guard_generation,
-          attempted_current
+          attempted_current,
+          preserved_live_desktop
         );
         if (restored_current) {
-          (void) promote_current_snapshot_to_previous("restore success");
+          if (!preserved_live_desktop) {
+            (void) promote_current_snapshot_to_previous("restore success");
+          }
           return true;
         }
 
@@ -3888,10 +4069,11 @@ namespace {
           "previous",
           st,
           guard_generation,
-          attempted_previous
+          attempted_previous,
+          preserved_live_desktop
         );
         if (restored_previous) {
-          if (attempted_current) {
+          if (!preserved_live_desktop && attempted_current) {
             BOOST_LOG(warning) << "Restore: previous snapshot recovered the desktop; retaining the unconfirmed current baseline for a later restore.";
           }
           return true;
@@ -4335,12 +4517,6 @@ namespace {
         }
 
         const bool exit_helper = self->should_exit_after_restore();
-        if (exit_helper && self->running_flag) {
-          BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
-          self->running_flag->store(false, std::memory_order_release);
-        } else if (!exit_helper) {
-          BOOST_LOG(info) << "Restore confirmed (initial attempt); keeping helper alive for newer connection.";
-        }
         self->event_pump.stop();
         self->event_pump_running.store(false, std::memory_order_release);
         self->restore_poll_active.store(false, std::memory_order_release);
@@ -4354,6 +4530,12 @@ namespace {
           last_attempt_ticket,
           guard_generation,
           status_epoch);
+        if (exit_helper && self->running_flag) {
+          BOOST_LOG(info) << "Restore confirmed (initial attempt); exiting helper.";
+          self->running_flag->store(false, std::memory_order_release);
+        } else if (!exit_helper) {
+          BOOST_LOG(info) << "Restore confirmed (initial attempt); keeping helper alive for newer connection.";
+        }
         return;
       }
 
@@ -4490,12 +4672,6 @@ namespace {
           }
 
           const bool exit_helper = self->should_exit_after_restore();
-          if (exit_helper && self->running_flag) {
-            BOOST_LOG(info) << "Restore confirmed; exiting helper.";
-            self->running_flag->store(false, std::memory_order_release);
-          } else if (!exit_helper) {
-            BOOST_LOG(info) << "Restore confirmed while newer connection active; helper remains running.";
-          }
           self->restore_poll_active.store(false, std::memory_order_release);
           self->event_pump.stop();
           self->event_pump_running.store(false, std::memory_order_release);
@@ -4509,6 +4685,12 @@ namespace {
             last_attempt_ticket,
             guard_generation,
             status_epoch);
+          if (exit_helper && self->running_flag) {
+            BOOST_LOG(info) << "Restore confirmed; exiting helper.";
+            self->running_flag->store(false, std::memory_order_release);
+          } else if (!exit_helper) {
+            BOOST_LOG(info) << "Restore confirmed while newer connection active; helper remains running.";
+          }
           return;
         }
 
@@ -5268,7 +5450,7 @@ namespace {
     }
 
     exec_action->put_Path(_bstr_t(exe_path));
-    exec_action->put_Arguments(_bstr_t(L"--restore"));
+    exec_action->put_Arguments(_bstr_t(display_helper_paths::restore_task_arguments().c_str()));
     exec_action->Release();
 
     // Without an interactive user (helper launched as SYSTEM after sign-out or
@@ -5611,6 +5793,7 @@ namespace {
     std::string json(reinterpret_cast<const char *>(payload.data()), payload.size());
     auto apply_deadline = std::chrono::steady_clock::time_point::max();
     bool wa_hdr_toggle = false;
+    bool refresh_settings_baseline = false;
     std::optional<std::string> requested_virtual_layout;
     std::vector<std::pair<std::string, display_device::Point>> monitor_position_overrides;
     std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> refresh_rate_overrides;
@@ -5662,6 +5845,12 @@ namespace {
         if (j.contains("sunshine_snapshot_exclude_devices")) {
           snapshot_exclude_devices = parse_snapshot_exclude_json_node(j["sunshine_snapshot_exclude_devices"]);
           j.erase("sunshine_snapshot_exclude_devices");
+        }
+        if (j.contains("sunshine_refresh_settings_baseline")) {
+          refresh_settings_baseline =
+            j["sunshine_refresh_settings_baseline"].is_boolean() &&
+            j["sunshine_refresh_settings_baseline"].get<bool>();
+          j.erase("sunshine_refresh_settings_baseline");
         }
         if (j.contains("sunshine_topology") && j["sunshine_topology"].is_array()) {
           display_device::ActiveTopology topo;
@@ -5767,6 +5956,12 @@ namespace {
       const bool task_created = create_restore_scheduled_task();
       BOOST_LOG(info) << "Scheduled task creation result: " << (task_created ? "SUCCESS" : "FAILED");
 
+      if (refresh_settings_baseline && sunshine_topology &&
+          cfg.m_device_prep != display_device::SingleDisplayConfiguration::DevicePreparation::EnsureOnlyDisplay &&
+          !state.controller.reset_persistence()) {
+        error_msg = "Helper failed to refresh the enlarged physical settings baseline";
+        return false;
+      }
       if (!state.controller.apply(cfg, sunshine_topology)) {
         error_msg = "Helper failed to apply requested display configuration";
         return false;
@@ -6131,6 +6326,7 @@ namespace {
 }  // namespace
 
 int run_legacy_helper(int argc, char *argv[]) {
+  display_helper::borrow::helper_process().store(true, std::memory_order_release);
   bool restore_mode = false;
   if (argc > 1) {
     for (int i = 1; i < argc; ++i) {
@@ -6163,6 +6359,11 @@ int run_legacy_helper(int argc, char *argv[]) {
     BOOST_LOG(info) << "Display helper started in restore mode (--restore flag)";
     dd_log_bridge().install();
     ServiceState state;
+    state.preserve_active_physical_primary.store(true, std::memory_order_release);
+    state.always_restore_from_golden.store(
+      display_helper::load_boot_restore_prefer_golden(
+        executable_config_search_roots(), search_roots, display_helper_paths::restore_state_file_from_command_line()),
+      std::memory_order_release);
     state.golden_path = active_snapshots.golden;
     state.golden_status_path = active_snapshots.golden_status;
     state.session_current_path = active_snapshots.session_current;

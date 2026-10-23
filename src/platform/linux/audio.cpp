@@ -19,6 +19,7 @@
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "audio_sink_status.h"
 #include "src/thread_safe.h"
 
 namespace platf {
@@ -72,6 +73,15 @@ namespace platf {
 
   namespace {
     constexpr auto session_exec_path = "/usr/libexec/vibeshine/vibepollo-session-exec";
+
+    void warn_silent_capture_sink(const std::string &sink, bool muted, bool zero_volume) {
+      if (muted || zero_volume) {
+        BOOST_LOG(warning) << "Audio capture sink [" << sink << "] is "
+                           << (muted ? "muted" : "at zero volume")
+                           << "; the stream may be silent. Check this output in the desktop audio settings."
+                              " Its mute and volume settings have been preserved.";
+      }
+    }
 
     struct session_command_result_t {
       bool success {false};
@@ -217,6 +227,14 @@ namespace platf {
           BOOST_LOG(error) << "Refusing invalid session audio channel mapping";
           return nullptr;
         }
+        // Capture below uses @DEFAULT_MONITOR@ in the selected session. Read
+        // that session's actual sink without changing the user's audio policy.
+        audio_sink_status::inspect_session_capture(
+          [](const std::vector<std::string> &command, auto deadline) {
+            auto arguments = command;
+            arguments.insert(arguments.begin(), session_exec_path);
+            return audio_sink_status::query_until(arguments, deadline);
+          }, warn_silent_capture_sink);
         std::vector<std::string> owned_argv {
           session_exec_path,
           "audio-capture",
@@ -711,6 +729,7 @@ namespace platf {
           }
 
           monitor_name = sink_info->monitor_source_name;
+          warn_silent_capture_sink(sink_name, sink_info->mute, pa_cvolume_is_muted(&sink_info->volume));
         };
 
         op_t sink_op {pa_context_get_sink_info_by_name(ctx.get(), sink_name.c_str(), cb<pa_sink_info *>, &sink_f)};

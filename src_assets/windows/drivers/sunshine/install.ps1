@@ -30,12 +30,17 @@ $vulkanLayers = @(
 )
 $vulkanImplicitLayersSubKey = 'SOFTWARE\Khronos\Vulkan\ImplicitLayers'
 $userModeDriversSid = 'S-1-5-84-0-0-0-0-0'
+# Sticky for this invocation: an old active driver passing a probe cannot
+# make changes which Windows deferred until reboot effective.
 $script:rebootRequired = $false
 $script:apolloServiceWasRunning = $false
 $script:virtualDisplayBrokerWasRunning = $false
 
 trap {
     $failure = $_
+    if ($script:rebootRequired) {
+        Write-DriverRestartRequired
+    }
     try {
         Start-VirtualDisplayBrokerIfNeeded
     } catch {
@@ -56,30 +61,128 @@ trap {
     throw
 }
 
+function Write-DriverRestartRequired {
+    Write-Warning '[SunshineVirtualDisplay] VIRTUAL_DISPLAY_RESTART_REQUIRED: Windows restart is required to finalize virtual display driver changes; further driver repair is deferred.'
+    Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
+}
+
 # DRIVER_INSTALL_SAFETY_BEGIN
 # Kept inline so pinned producer packages do not need a new runtime file.
 function ConvertTo-DriverComponentVersion {
-    param([string]$Value)
-    if ($Value -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "Unknown driver component version: '$Value'. Driver unchanged." }
+    param([string]$Value, [string]$Source = 'driver metadata')
+    if ($Value -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "Unknown driver component version from ${Source}: '$Value'. Driver unchanged." }
     foreach ($part in $Value.Split('.')) {
-        if ([uint64]$part -gt 65535) { throw "Invalid driver component version: '$Value'. Driver unchanged." }
+        if ([uint64]$part -gt 65535) { throw "Invalid driver component version from ${Source}: '$Value'. Driver unchanged." }
     }
     return [version]$Value
 }
 
 function Get-InfComponentVersion {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param([Parameter(Mandatory = $true)][string]$Path, [string]$Source = 'INF')
     $inVersion = $false
     $versions = @()
     foreach ($line in (Get-Content -LiteralPath $Path -ErrorAction Stop)) {
         $text = ($line -split ';', 2)[0].Trim()
         if ($text -match '^\[(.+)\]$') { $inVersion = $Matches[1] -ieq 'Version'; continue }
         if ($inVersion -and $text -match '^DriverVer\s*=\s*[^,]+,\s*(\S+)\s*$') {
-            $versions += ConvertTo-DriverComponentVersion $Matches[1]
+            $versions += ConvertTo-DriverComponentVersion $Matches[1] -Source $Source
         }
     }
     if ($versions.Count -ne 1) { throw "Missing or ambiguous INF DriverVer: $Path. Driver unchanged." }
     return $versions[0]
+}
+
+function Invoke-DriverInstallSafetyQuery {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptText,
+        [int]$TimeoutSeconds = 15
+    )
+
+    if ($TimeoutSeconds -le 0) { throw 'Driver safety inventory requires a positive timeout. Driver unchanged.' }
+    return [string](Invoke-DriverInstallSafetyCommand -ScriptText $ScriptText -TimeoutSeconds $TimeoutSeconds)
+}
+
+function ConvertFrom-DriverInstallSafetyInventoryResult {
+    param([Parameter(Mandatory = $true)][string]$OutputText)
+
+    $markerPrefix = 'DRIVER_INSTALL_SAFETY_INVENTORY:'
+    $markerLines = @($OutputText -split '\r?\n' | Where-Object {
+        $_.StartsWith($markerPrefix, [StringComparison]::Ordinal)
+    })
+    if ($markerLines.Count -ne 1) { throw 'Driver safety inventory returned a missing or ambiguous result. Driver unchanged.' }
+
+    $encodedJson = $markerLines[0].Substring($markerPrefix.Length)
+    if ($encodedJson -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'Driver safety inventory returned malformed data. Driver unchanged.' }
+
+    try {
+        $json = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encodedJson))
+        $inventory = ConvertFrom-Json -InputObject $json -ErrorAction Stop
+    } catch {
+        throw "Driver safety inventory returned invalid data. Driver unchanged. $($_.Exception.Message)"
+    }
+
+    $packagesProperty = $inventory.PSObject.Properties['Packages']
+    $devicesProperty = $inventory.PSObject.Properties['Devices']
+    if ($null -eq $packagesProperty -or $null -eq $devicesProperty) {
+        throw 'Driver safety inventory returned an incomplete result. Driver unchanged.'
+    }
+
+    return [pscustomobject]@{
+        Packages = @($packagesProperty.Value)
+        Devices  = @($devicesProperty.Value)
+    }
+}
+
+function Get-DriverInstallSafetyInventory {
+    param(
+        [Parameter(Mandatory = $true)][string]$InfName,
+        [Parameter(Mandatory = $true)][string]$HardwareId,
+        [int]$TimeoutSeconds = 15
+    )
+
+    $requestJson = ConvertTo-Json -InputObject ([pscustomobject]@{ InfName = $InfName; HardwareId = $HardwareId }) -Compress
+    $requestBase64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($requestJson))
+    $queryScript = @'
+$ErrorActionPreference = 'Stop'
+$clock = [Diagnostics.Stopwatch]::StartNew()
+function Write-InventoryStage([string]$Stage) {
+    [Console]::Out.WriteLine('DRIVER_INSTALL_SAFETY_STAGE:' + $Stage + ':' + $clock.ElapsedMilliseconds)
+}
+Write-InventoryStage 'started'
+try {
+    $requestJson = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('__REQUEST__'))
+    $request = ConvertFrom-Json -InputObject $requestJson -ErrorAction Stop
+    # These custom display packages cannot be inbox Windows drivers. Including
+    # inbox packages makes this bounded query spend most of its budget on DISM.
+    Write-InventoryStage 'packages-start'
+    $packages = @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
+        [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq [string]$request.InfName
+    } | ForEach-Object {
+        [pscustomobject]@{ OriginalFileName = [string]$_.OriginalFileName; Driver = [string]$_.Driver }
+    })
+    Write-InventoryStage 'packages-done'
+    Write-InventoryStage 'devices-start'
+    $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
+        ([string]$_.DeviceID).StartsWith([string]$request.HardwareId, [StringComparison]::OrdinalIgnoreCase) -or
+        ([string]$_.HardwareID).Equals([string]$request.HardwareId, [StringComparison]::OrdinalIgnoreCase)
+    } | ForEach-Object {
+        [pscustomobject]@{ DeviceID = [string]$_.DeviceID; HardwareID = [string]$_.HardwareID; DriverVersion = [string]$_.DriverVersion }
+    })
+    Write-InventoryStage 'devices-done'
+    $inventory = [pscustomobject]@{ Packages = @($packages); Devices = @($devices) }
+    $json = ConvertTo-Json -InputObject $inventory -Compress -Depth 5
+    $encodedJson = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($json))
+    [Console]::Out.WriteLine('DRIVER_INSTALL_SAFETY_INVENTORY:' + $encodedJson)
+    exit 0
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+'@
+    $queryScript = $queryScript.Replace('__REQUEST__', $requestBase64)
+
+    $output = Invoke-DriverInstallSafetyQuery -ScriptText $queryScript -TimeoutSeconds $TimeoutSeconds
+    return ConvertFrom-DriverInstallSafetyInventoryResult -OutputText $output
 }
 
 function Test-SafeDriverInstall {
@@ -90,21 +193,17 @@ function Test-SafeDriverInstall {
         [string]$WarningMarker = 'VIRTUAL_DISPLAY_DRIVER_WARNING',
         [bool]$LocalTestPackage = $false
     )
-    $target = Get-InfComponentVersion $InfPath
+    $target = Get-InfComponentVersion $InfPath -Source 'bundled INF'
     $infName = [IO.Path]::GetFileName($InfPath)
     # Both queries must succeed. An empty successful query means missing;
     # errors, missing active versions, and unreadable store INFs mean unknown.
-    $packages = @(Get-WindowsDriver -Online -All -ErrorAction Stop | Where-Object {
-        [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq $infName
-    })
-    $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
-        ([string]$_.DeviceID).StartsWith($HardwareId, [StringComparison]::OrdinalIgnoreCase) -or
-        ([string]$_.HardwareID).Equals($HardwareId, [StringComparison]::OrdinalIgnoreCase)
-    })
+    $inventory = Get-DriverInstallSafetyInventory -InfName $infName -HardwareId $HardwareId
+    $packages = @($inventory.Packages)
+    $devices = @($inventory.Devices)
     $installed = @()
     foreach ($device in $devices) {
         # CIM reports the active INF's numeric DriverVersion (not DriverDate).
-        $installed += ConvertTo-DriverComponentVersion ([string]$device.DriverVersion)
+        $installed += ConvertTo-DriverComponentVersion ([string]$device.DriverVersion) -Source 'active device'
     }
     foreach ($package in $packages) {
         $path = [string]$package.OriginalFileName
@@ -114,7 +213,7 @@ function Test-SafeDriverInstall {
             }
             $path = Join-Path (Join-Path $env:windir 'INF') ([string]$package.Driver)
         }
-        $installed += Get-InfComponentVersion $path
+        $installed += Get-InfComponentVersion $path -Source 'retained INF'
     }
     if (@($installed | Where-Object { $_ -ge $target }).Count -gt 0) {
         Write-Host "Driver component $target skipped: an equal or newer active/Driver Store component exists; installed driver retained."
@@ -265,10 +364,14 @@ function Assert-ExpectedDisplayPackage {
         [IO.Path]::GetFileName($DriverPath) -ine $expectedDll -or
         [IO.Path]::GetFileName($CatalogPath) -ine $expectedCat) { throw 'Display package filenames do not match the hardware identity.' }
     $inf = (Get-Content -LiteralPath $InfPath -ErrorAction Stop | ForEach-Object { ($_ -split ';',2)[0] }) -join "`n"
-    if ($inf -notmatch '(?im)^\s*Class\s*=\s*Display\s*$' -or
-        $inf -notmatch '(?im)^\s*ClassGuid\s*=\s*\{4d36e968-e325-11ce-bfc1-08002be10318\}\s*$' -or
-        $inf -notmatch ('(?im)^\s*CatalogFile\s*=\s*' + [regex]::Escape($expectedCat) + '\s*$') -or
-        $inf -notmatch ('(?im)^\s*%[^%]+%\s*=\s*[^,\r\n]+,\s*' + [regex]::Escape($HardwareId) + '\s*$')) {
+    # INF identifiers follow Windows package syntax, independent of user locale.
+    $infMatchOptions = [Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+                       [Text.RegularExpressions.RegexOptions]::Multiline -bor
+                       [Text.RegularExpressions.RegexOptions]::CultureInvariant
+    if (-not [regex]::IsMatch($inf, '^\s*Class\s*=\s*Display\s*$', $infMatchOptions) -or
+        -not [regex]::IsMatch($inf, '^\s*ClassGuid\s*=\s*\{4d36e968-e325-11ce-bfc1-08002be10318\}\s*$', $infMatchOptions) -or
+        -not [regex]::IsMatch($inf, ('^\s*CatalogFile\s*=\s*' + [regex]::Escape($expectedCat) + '\s*$'), $infMatchOptions) -or
+        -not [regex]::IsMatch($inf, ('^\s*%[^%]+%\s*=\s*[^,\r\n]+,\s*' + [regex]::Escape($HardwareId) + '\s*$'), $infMatchOptions)) {
         throw 'Display INF class, catalog or hardware identity mismatch.'
     }
     Initialize-DisplayPackageValidation
@@ -474,10 +577,23 @@ function Invoke-DriverProcessCapture {
         if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
             try {
                 $process.Kill()
+                $process.WaitForExit(5000) | Out-Null
             } catch {
                 $null = $_
             }
-            throw "[SunshineVirtualDisplay] $FilePath timed out after $TimeoutSeconds seconds."
+            # Preserve only bounded, non-identifying inventory stage records.
+            # Never include arbitrary partial provider output in the timeout error.
+            $stages = @()
+            try {
+                if ($stdoutTask.Wait(1000)) {
+                    $stages = @($stdoutTask.Result -split '\r?\n' | Where-Object {
+                        $_ -cmatch '^DRIVER_INSTALL_SAFETY_STAGE:(started|packages-start|packages-done|devices-start|devices-done):[0-9]{1,12}$'
+                    } | Select-Object -Last 5)
+                }
+            } catch { $stages = @() }
+            $failure = [TimeoutException]::new("[SunshineVirtualDisplay] $FilePath timed out after $TimeoutSeconds seconds.")
+            $failure.Data['InventoryStages'] = $stages -join '; '
+            throw $failure
         }
 
         $process.WaitForExit()
@@ -493,6 +609,39 @@ function Invoke-DriverProcessCapture {
         return @($output | ForEach-Object { [string]$_ })
     } finally {
         $process.Dispose()
+    }
+}
+
+function Invoke-DriverInstallSafetyCommand {
+    param(
+        [Parameter(Mandatory = $true)][string]$ScriptText,
+        [Parameter(Mandatory = $true)][int]$TimeoutSeconds
+    )
+
+    $hostProcess = Get-Process -Id $PID -ErrorAction Stop
+    $powerShellPath = [string]$hostProcess.Path
+    if ([string]::IsNullOrWhiteSpace($powerShellPath)) { throw 'Unable to resolve the current PowerShell host. Driver unchanged.' }
+
+    # Keep module-autoload progress records out of the child output consumed by
+    # the inventory decoder. Errors, exit status, and timeout handling remain intact.
+    $childScriptText = "`$ProgressPreference = 'SilentlyContinue'`r`n$ScriptText"
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScriptText))
+    try {
+        $output = Invoke-DriverProcessCapture -FilePath $powerShellPath -ArgumentList @(
+            '-NoLogo', '-NonInteractive', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand
+        ) -AllowedExitCodes @(0) -TimeoutSeconds $TimeoutSeconds
+        return (@($output) -join [Environment]::NewLine)
+    } catch {
+        $detail = [string]$_.Exception.Message
+        if ($detail.Contains("timed out after $TimeoutSeconds seconds")) {
+            $stages = [string]$_.Exception.Data['InventoryStages']
+            if (-not $stages) { $stages = 'No inventory stage reported.' }
+            throw "Driver safety inventory timed out after $TimeoutSeconds seconds; driver unchanged. $stages"
+        }
+        if ($detail -match 'failed with exit code (\d+)') {
+            throw "Driver safety inventory failed with exit code $($Matches[1]); driver unchanged. $detail"
+        }
+        throw "Driver safety inventory failed; driver unchanged. $detail"
     }
 }
 
@@ -872,6 +1021,7 @@ function Stop-SunshineVirtualDisplayDriverHost {
 }
 
 function Restart-SunshineVirtualDisplayRuntime {
+    if ($script:rebootRequired) { return }
     Stop-VirtualDisplayBrokerForDriverInstall
     Stop-SunshineVirtualDisplayDriverHost
     Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 259, 3010)
@@ -879,6 +1029,7 @@ function Restart-SunshineVirtualDisplayRuntime {
 }
 
 function Install-DriverPackage {
+    if ($script:rebootRequired) { return }
     Write-Host '[SunshineVirtualDisplay] Installing driver package.'
     Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/add-driver', $infPath, '/install')
 }
@@ -988,6 +1139,184 @@ function Test-DeviceNodePresent {
     return $false
 }
 
+function Get-RetainedSunshineInventory {
+    param(
+        [ValidateSet('Health', 'Packages')][string]$Kind,
+        [int]$TimeoutSeconds = 15
+    )
+    # Retained-device checks run after the initial safety gate, including after
+    # repair. Keep every CIM/DISM inventory behind the same bounded child edge.
+    $request = [pscustomobject]@{ Kind = $Kind; HardwareId = $hardwareId }
+    $encodedRequest = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes((ConvertTo-Json $request -Compress)))
+    $query = @'
+$ErrorActionPreference = 'Stop'
+try {
+    $request = ConvertFrom-Json ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('__REQUEST__')))
+    $nodes = @(); $signed = @(); $packages = @()
+    if ($request.Kind -eq 'Health') {
+        $nodes = @(Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction Stop | Where-Object {
+            @($_.HardwareID) -icontains $request.HardwareId
+        } | ForEach-Object {
+            [pscustomobject]@{ HardwareID = @($_.HardwareID); DeviceID = $_.DeviceID; Present = $_.Present; ConfigManagerErrorCode = $_.ConfigManagerErrorCode }
+        })
+        $signed = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
+            @($_.HardwareID) -icontains $request.HardwareId -or @($nodes.DeviceID) -icontains ([string]$_.DeviceID)
+        } | ForEach-Object {
+            [pscustomobject]@{ HardwareID = $_.HardwareID; DeviceID = $_.DeviceID; DriverVersion = $_.DriverVersion }
+        })
+    } elseif ($request.Kind -eq 'Packages') {
+        # This custom package cannot be an inbox driver; match the initial gate.
+        $packages = @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
+            [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq 'SunshineVirtualDisplayDriver.inf'
+        } | ForEach-Object {
+            [pscustomobject]@{ OriginalFileName = [string]$_.OriginalFileName; Driver = [string]$_.Driver }
+        })
+    } else { throw 'Unknown retained display inventory request.' }
+    $json = ConvertTo-Json -InputObject ([pscustomobject]@{ Nodes = @($nodes); SignedDrivers = @($signed); Packages = @($packages) }) -Compress -Depth 5
+    [Console]::Out.WriteLine('RETAINED_DISPLAY_INVENTORY:' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($json)))
+    exit 0
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+'@
+    try {
+        $output = Invoke-DriverInstallSafetyQuery -ScriptText $query.Replace('__REQUEST__', $encodedRequest) -TimeoutSeconds $TimeoutSeconds
+    } catch {
+        # The same query also runs after repair. Do not reuse the safety gate's
+        # pre-mutation claim that the driver is unchanged at that point.
+        $detail = $_.Exception.Message -replace '(?i)driver unchanged[.]', 'further driver changes deferred.'
+        throw "Retained display $Kind inventory failed; automatic repair deferred. $detail"
+    }
+    $prefix = 'RETAINED_DISPLAY_INVENTORY:'
+    $markers = @($output -split '\r?\n' | Where-Object { $_.StartsWith($prefix, [StringComparison]::Ordinal) })
+    if ($markers.Count -ne 1) { throw 'Missing or ambiguous retained display inventory; automatic repair deferred.' }
+    try {
+        $encoded = $markers[0].Substring($prefix.Length)
+        if ($encoded -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'Malformed inventory encoding.' }
+        $inventory = ConvertFrom-Json -InputObject ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded))) -ErrorAction Stop
+        foreach ($name in @('Nodes', 'SignedDrivers', 'Packages')) {
+            $property = $inventory.PSObject.Properties[$name]
+            if ($null -eq $property -or $property.Value -isnot [Array]) { throw "Missing or invalid $name inventory." }
+        }
+    } catch {
+        throw "Invalid retained display inventory; automatic repair deferred. $($_.Exception.Message)"
+    }
+    return $inventory
+}
+
+function Get-SunshineDeviceHealth {
+    # A signed/staged package is not evidence that a present device can start.
+    # Use numeric PnP properties, not localized pnputil labels or registry ghosts.
+    $inventory = Get-RetainedSunshineInventory -Kind Health
+    $nodes = @($inventory.Nodes)
+    foreach ($node in $nodes) {
+        if ($null -eq $node.Present -or $null -eq $node.ConfigManagerErrorCode) {
+            throw 'Unknown virtual display device health; retained packages unchanged.'
+        }
+    }
+    $present = @($nodes | Where-Object { $_.Present -eq $true })
+    if ($present.Count -gt 1) { throw 'Multiple present virtual display devices; automatic repair deferred.' }
+    $signed = @($inventory.SignedDrivers)
+    $versions = @($signed | ForEach-Object { ConvertTo-DriverComponentVersion ([string]$_.DriverVersion) })
+    $active = @($signed | Where-Object { @($present.DeviceID) -icontains ([string]$_.DeviceID) })
+    if ($active.Count -gt 1) { throw 'Ambiguous active virtual display driver versions; automatic repair deferred.' }
+    return [pscustomobject]@{
+        Node = if ($present.Count) { $present[0] } else { $null }
+        Version = if ($active.Count) { ConvertTo-DriverComponentVersion ([string]$active[0].DriverVersion) } else { $null }
+        Versions = $versions
+    }
+}
+
+function Get-RetainedSunshinePackage {
+    param([Parameter(Mandatory = $true)][version]$MinimumVersion)
+    $storeRoot = [IO.Path]::GetFullPath((Join-Path $env:windir 'System32/DriverStore/FileRepository')) + [IO.Path]::DirectorySeparatorChar
+    $candidates = @()
+    foreach ($package in @((Get-RetainedSunshineInventory -Kind Packages).Packages)) {
+        $path = [string]$package.OriginalFileName
+        if ([IO.Path]::GetFileName($path) -ine 'SunshineVirtualDisplayDriver.inf') { continue }
+        if (-not [IO.Path]::IsPathRooted($path) -or [string]$package.Driver -notmatch '^oem\d+\.inf$') {
+            throw 'Unknown retained virtual display package identity.'
+        }
+        $path = [IO.Path]::GetFullPath($path)
+        if (-not $path.StartsWith($storeRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Retained virtual display package is outside the Windows Driver Store.'
+        }
+        $version = Get-InfComponentVersion $path
+        $publishedInf = Join-Path (Join-Path $env:windir 'INF') ([string]$package.Driver)
+        if ((Get-InfComponentVersion $publishedInf) -ne $version) { throw 'Retained published INF version mismatch.' }
+        if ($version -ge $MinimumVersion) { $candidates += [pscustomobject]@{ InfPath=$path; Version=$version } }
+    }
+    $selected = $candidates | Sort-Object Version -Descending | Select-Object -First 1
+    if ($null -eq $selected) { throw 'No retained display package can repair the device without a component downgrade.' }
+    $directory = Split-Path -Parent $selected.InfPath
+    $catalog = Join-Path $directory 'SunshineVirtualDisplayDriver.cat'
+    $driver = Join-Path $directory 'SunshineVirtualDisplayDriver.dll'
+    # Verify the selected stored payload, not the bundled (possibly older) DLL.
+    # Existing Windows trust is required; this recovery never provisions trust.
+    $verified = Assert-ExpectedDisplayPackage -InfPath $selected.InfPath -CatalogPath $catalog -HardwareId $hardwareId -CertificatePath $certPath -DriverPath $driver
+    $signature = Get-AuthenticodeSignature -LiteralPath $catalog -ErrorAction Stop
+    if ($signature.Status -ne 'Valid' -or !$signature.SignerCertificate -or
+        $signature.SignerCertificate.Thumbprint -ine $verified.Certificate.Thumbprint) {
+        throw 'Windows does not trust the retained display catalog; device repair deferred.'
+    }
+    return $selected
+}
+
+function Repair-RetainedSunshineDevice {
+    if ($script:rebootRequired) { Write-DriverRestartRequired; return }
+    $target = Get-InfComponentVersion $infPath
+    $health = Get-SunshineDeviceHealth
+    if ($health.Node -and $health.Node.ConfigManagerErrorCode -eq 0 -and $health.Version -and $health.Version -ge $target) {
+        Write-Host '[SunshineVirtualDisplay] Present equal/newer device reports healthy; no device changes required.'
+        return
+    }
+    if ($health.Node -and $health.Node.ConfigManagerErrorCode -eq 22) {
+        throw 'The retained virtual display device is disabled. Enable it explicitly in Device Manager before retrying; automatic repair preserves this choice.'
+    }
+    if ($health.Node -and $health.Node.ConfigManagerErrorCode -eq 14) {
+        $script:rebootRequired = $true
+        Write-DriverRestartRequired
+        return
+    }
+    if ($health.Node -and -not $health.Version) {
+        throw 'Unknown active virtual display component version; retained device unchanged. Automatic repair deferred.'
+    }
+    $minimum = @(@($target) + @($health.Versions)) | Sort-Object -Descending | Select-Object -First 1
+    $package = Get-RetainedSunshinePackage -MinimumVersion $minimum
+    Assert-Administrator
+    $script:pnputil = Resolve-SystemToolPath -ToolName 'pnputil.exe'
+    if (-not $health.Node) { Assert-Artifact -Path $nefConc }
+    try {
+        Stop-ApolloForDriverInstall
+        Stop-VirtualDisplayBrokerForDriverInstall
+        if (-not $health.Node) {
+            Write-Host "[SunshineVirtualDisplay] Recreating missing device using retained component $($package.Version)."
+            Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
+            if ($script:rebootRequired) { Write-DriverRestartRequired; return }
+        }
+        # Never enter bundled-payload reconciliation, remove packages, or force a
+        # driver downgrade. Windows still chooses the applicable signed driver.
+        Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/add-driver', $package.InfPath, '/install') -AllowedExitCodes @(0, 3010)
+        if ($script:rebootRequired) { Write-DriverRestartRequired; return }
+        if ($health.Node) {
+            Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/restart-device', ([string]$health.Node.DeviceID)) -AllowedExitCodes @(0, 3010)
+            if ($script:rebootRequired) { Write-DriverRestartRequired; return }
+        }
+        Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 3010)
+        if ($script:rebootRequired) { Write-DriverRestartRequired; return }
+        $repaired = Get-SunshineDeviceHealth
+        if (-not $repaired.Node -or $repaired.Node.ConfigManagerErrorCode -ne 0 -or
+            -not $repaired.Version -or $repaired.Version -lt $minimum) {
+            throw 'Retained virtual display device is still missing, unhealthy or reports an older component; no packages were removed. Native Windows repair is required.'
+        }
+        Initialize-DriverStateRegistryAccess
+        Write-Host '[SunshineVirtualDisplay] Retained virtual display device reports healthy after repair.'
+    } finally {
+        try { Start-VirtualDisplayBrokerIfNeeded } finally { Start-ApolloServiceIfNeeded }
+    }
+}
+
 function Add-MatchingDriverPublishedName {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][System.Collections.Generic.List[string]]$PublishedNames,
@@ -1036,9 +1365,12 @@ function Get-SunshineDriverPublishedNamesFromInfCache {
 
         # This fallback is intentionally strict: all three package-owned
         # identifiers must match before an OEM INF can be selected for removal.
-        $matchesClass = $content -match '(?im)^\s*ClassGuid\s*=\s*\{4d36e968-e325-11ce-bfc1-08002be10318\}\s*$'
-        $matchesCatalog = $content -match '(?im)^\s*CatalogFile(?:\.[^=]+)?\s*=\s*SunshineVirtualDisplayDriver\.cat\s*$'
-        $matchesHardware = $content -match '(?im)^\s*[^;\r\n]+\s*=\s*[^,\r\n]+,\s*Root\\SunshineVirtualDisplay\s*$'
+        $infMatchOptions = [Text.RegularExpressions.RegexOptions]::IgnoreCase -bor
+                           [Text.RegularExpressions.RegexOptions]::Multiline -bor
+                           [Text.RegularExpressions.RegexOptions]::CultureInvariant
+        $matchesClass = [regex]::IsMatch($content, '^\s*ClassGuid\s*=\s*\{4d36e968-e325-11ce-bfc1-08002be10318\}\s*$', $infMatchOptions)
+        $matchesCatalog = [regex]::IsMatch($content, '^\s*CatalogFile(?:\.[^=]+)?\s*=\s*SunshineVirtualDisplayDriver\.cat\s*$', $infMatchOptions)
+        $matchesHardware = [regex]::IsMatch($content, '^\s*[^;\r\n]+\s*=\s*[^,\r\n]+,\s*Root\\SunshineVirtualDisplay\s*$', $infMatchOptions)
         if ($matchesClass -and $matchesCatalog -and $matchesHardware) {
             $publishedName = $publishedInf.Name.ToLowerInvariant()
             if ($publishedName -match '^oem[0-9]+\.inf$' -and -not $publishedNames.Contains($publishedName)) {
@@ -1225,6 +1557,7 @@ function Test-DriverPackageRefreshNeeded {
 }
 
 function Remove-DriverPackage {
+    if ((-not $Uninstall) -and $script:rebootRequired) { return }
     $publishedNames = @(Get-SunshineDriverPublishedNames)
     if ($publishedNames.Count -eq 0) {
         Write-Host '[SunshineVirtualDisplay] No Sunshine virtual display driver package was found in the driver store.'
@@ -1235,6 +1568,7 @@ function Remove-DriverPackage {
     foreach ($publishedName in $publishedNames) {
         Write-Host "[SunshineVirtualDisplay] Removing driver package $publishedName."
         Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/delete-driver', $publishedName, '/uninstall', '/force')
+        if ((-not $Uninstall) -and $script:rebootRequired) { return }
     }
 
     # PnP package bookkeeping can settle just after pnputil exits. Retry any
@@ -1244,6 +1578,7 @@ function Remove-DriverPackage {
     foreach ($publishedName in $remainingNames) {
         Write-Host "[SunshineVirtualDisplay] Retrying removal of driver package $publishedName."
         Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/delete-driver', $publishedName, '/uninstall', '/force')
+        if ((-not $Uninstall) -and $script:rebootRequired) { return }
     }
 }
 
@@ -1302,26 +1637,32 @@ function Get-SunshineDeviceInstanceId {
 }
 
 function Reset-SunshineVirtualDisplayDeviceNode {
+    if ($script:rebootRequired) { return $false }
     Write-Host '[SunshineVirtualDisplay] Clean-restaging the driver and device node after failed runtime revive.'
 
     try {
         Stop-VirtualDisplayBrokerForDriverInstall
         Remove-DeviceNode
+        if ($script:rebootRequired) { return $false }
         Remove-DriverPackage
+        if ($script:rebootRequired) { return $false }
         Install-DriverPackage
+        if ($script:rebootRequired) { return $false }
         if (-not (Wait-DriverStoreMatchesPackagedPayload -TimeoutSeconds 10)) {
             Write-DriverStorePayloadDiagnostics
             throw '[SunshineVirtualDisplay] DriverStore payload did not match the packaged driver after recovery restaging.'
         }
 
         Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
+        if ($script:rebootRequired) { return $false }
         Install-DriverPackage
+        if ($script:rebootRequired) { return $false }
         Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices') -AllowedExitCodes @(0, 259, 3010)
+        if ($script:rebootRequired) { return $false }
         Initialize-DriverStateRegistryAccess
         Start-VirtualDisplayBrokerIfNeeded
 
         if (Test-TemporaryVirtualDisplay) {
-            $script:rebootRequired = $false
             Write-Host '[SunshineVirtualDisplay] Clean driver and device-node restaging restored the virtual display driver without a restart.'
             return $true
         }
@@ -1339,20 +1680,22 @@ function Reset-SunshineVirtualDisplayDeviceNode {
 }
 
 function Invoke-InstallerHealthCheck {
+    # A successful old driver can answer the probe while a replacement is still
+    # pending reboot. Health observations cannot cancel a native 3010 result.
+    if ($script:rebootRequired) { return }
     if (Test-TemporaryVirtualDisplay) {
-        $script:rebootRequired = $false
         return
     }
 
     $instanceId = Get-SunshineDeviceInstanceId
     if ([string]::IsNullOrWhiteSpace($instanceId)) {
-        Write-Warning "[SunshineVirtualDisplay] Unable to resolve device instance ID for $hardwareId; restart is required."
-        $script:rebootRequired = $true
+        Write-Warning "[SunshineVirtualDisplay] Unable to resolve device instance ID for $hardwareId; attempting clean restaging."
     } else {
         Write-Host "[SunshineVirtualDisplay] Restarting device instance after failed temporary display self-test: $instanceId"
         $restart = Invoke-DriverHealthProcess -FilePath $pnputil -ArgumentList @('/restart-device', $instanceId) -TimeoutSeconds 120
         if ($restart.ExitCode -eq 3010) {
             $script:rebootRequired = $true
+            return
         } elseif ($restart.ExitCode -ne 0) {
             if (-not [string]::IsNullOrWhiteSpace($restart.Output)) {
                 Write-Warning "[SunshineVirtualDisplay] pnputil restart-device failed with exit code $($restart.ExitCode): $($restart.Output)"
@@ -1366,8 +1709,8 @@ function Invoke-InstallerHealthCheck {
         } catch {
             Write-Warning $_.Exception.Message
         }
+        if ($script:rebootRequired) { return }
         if (Test-TemporaryVirtualDisplay) {
-            $script:rebootRequired = $false
             return
         }
 
@@ -1375,6 +1718,7 @@ function Invoke-InstallerHealthCheck {
         $disable = Invoke-DriverHealthProcess -FilePath $pnputil -ArgumentList @('/disable-device', $instanceId, '/force') -TimeoutSeconds 120
         if ($disable.ExitCode -eq 3010) {
             $script:rebootRequired = $true
+            return
         } elseif ($disable.ExitCode -ne 0) {
             if (-not [string]::IsNullOrWhiteSpace($disable.Output)) {
                 Write-Warning "[SunshineVirtualDisplay] pnputil disable-device failed with exit code $($disable.ExitCode): $($disable.Output)"
@@ -1386,6 +1730,7 @@ function Invoke-InstallerHealthCheck {
         $enable = Invoke-DriverHealthProcess -FilePath $pnputil -ArgumentList @('/enable-device', $instanceId) -TimeoutSeconds 120
         if ($enable.ExitCode -eq 3010) {
             $script:rebootRequired = $true
+            return
         } elseif ($enable.ExitCode -ne 0) {
             if (-not [string]::IsNullOrWhiteSpace($enable.Output)) {
                 Write-Warning "[SunshineVirtualDisplay] pnputil enable-device failed with exit code $($enable.ExitCode): $($enable.Output)"
@@ -1399,8 +1744,8 @@ function Invoke-InstallerHealthCheck {
         } catch {
             Write-Warning $_.Exception.Message
         }
+        if ($script:rebootRequired) { return }
         if (Test-TemporaryVirtualDisplay) {
-            $script:rebootRequired = $false
             return
         }
 
@@ -1410,8 +1755,8 @@ function Invoke-InstallerHealthCheck {
         } catch {
             Write-Warning $_.Exception.Message
         }
+        if ($script:rebootRequired) { return }
         if (Test-TemporaryVirtualDisplay) {
-            $script:rebootRequired = $false
             return
         }
     }
@@ -1421,8 +1766,56 @@ function Invoke-InstallerHealthCheck {
     }
 
     $script:rebootRequired = $true
-    Write-Warning '[SunshineVirtualDisplay] VIRTUAL_DISPLAY_RESTART_REQUIRED: Virtual display driver installed, but Windows restart is required before virtual display can function.'
-    Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
+}
+
+function Install-SunshineVirtualDisplayDriver {
+    # Once Windows requests a reboot, only the common completion/service restore
+    # path may run. Do not diagnose an old active payload as a failed replacement.
+    if ($script:rebootRequired) { return }
+    $driverPackageRefreshNeeded = Test-DriverPackageRefreshNeeded
+    $deviceNodePresent = Test-DeviceNodePresent
+    Stop-ApolloForDriverInstall
+    Stop-VirtualDisplayBrokerForDriverInstall
+
+    if ((-not $driverPackageRefreshNeeded) -and $deviceNodePresent) {
+        Initialize-DriverStateRegistryAccess
+        Invoke-InstallerHealthCheck
+        return
+    }
+
+    Install-DriverPackage
+    if ($script:rebootRequired) { return }
+
+    if (-not (Wait-DriverStoreMatchesPackagedPayload)) {
+        Write-Warning '[SunshineVirtualDisplay] Windows retained stale or mixed Sunshine DriverStore payloads; removing Sunshine driver packages before restaging.'
+        Write-DriverStorePayloadDiagnostics
+        Remove-DeviceNode
+        if ($script:rebootRequired) { return }
+        Remove-DriverPackage
+        if ($script:rebootRequired) { return }
+        Install-DriverPackage
+        if ($script:rebootRequired) { return }
+        if (-not (Wait-DriverStoreMatchesPackagedPayload -TimeoutSeconds 10)) {
+            Write-DriverStorePayloadDiagnostics
+            throw '[SunshineVirtualDisplay] DriverStore payload still does not match the packaged driver after clean restaging.'
+        }
+        Write-Host '[SunshineVirtualDisplay] Clean DriverStore restaging replaced the stale driver payload.'
+    }
+
+    if (-not (Test-DeviceNodePresent)) {
+        Write-Host '[SunshineVirtualDisplay] Creating device node.'
+        Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
+        if ($script:rebootRequired) { return }
+        Install-DriverPackage
+        if ($script:rebootRequired) { return }
+    }
+
+    Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices')
+    if ($script:rebootRequired) { return }
+    Restart-SunshineVirtualDisplayRuntime
+    if ($script:rebootRequired) { return }
+    Initialize-DriverStateRegistryAccess
+    Invoke-InstallerHealthCheck
 }
 
 if ($RegisterVulkanLayerOnly -and $UnregisterVulkanLayerOnly) {
@@ -1456,7 +1849,7 @@ if ($UnregisterVulkanLayerOnly) {
 
 if (-not $Uninstall -and -not $ValidateOnly) {
     try {
-        if (-not (Test-SafeDriverInstall -InfPath $infPath -CatalogPath $catPath -HardwareId $hardwareId)) { exit 0 }
+        $retainedComponent = -not (Test-SafeDriverInstall -InfPath $infPath -CatalogPath $catPath -HardwareId $hardwareId)
     } catch {
         # No service or driver mutation has occurred when the guard rejects.
         if ($InstallerBestEffort) {
@@ -1464,6 +1857,15 @@ if (-not $Uninstall -and -not $ValidateOnly) {
             exit 0
         }
         throw
+    }
+    if ($retainedComponent) {
+        try {
+            Repair-RetainedSunshineDevice
+        } catch {
+            if (-not $InstallerBestEffort) { throw }
+            Write-Warning "[SunshineVirtualDisplay] VIRTUAL_DISPLAY_DRIVER_WARNING: Retained-device repair did not complete; virtual display may be unavailable. $($_.Exception.Message)"
+        }
+        exit 0
     }
 }
 
@@ -1501,53 +1903,12 @@ try {
 }
 Register-VulkanLayer
 
-$driverPackageRefreshNeeded = Test-DriverPackageRefreshNeeded
-$deviceNodePresent = Test-DeviceNodePresent
-Stop-ApolloForDriverInstall
-Stop-VirtualDisplayBrokerForDriverInstall
-
-if ((-not $driverPackageRefreshNeeded) -and $deviceNodePresent) {
-    Initialize-DriverStateRegistryAccess
-    Invoke-InstallerHealthCheck
-    Start-VirtualDisplayBrokerIfNeeded
-    Start-ApolloServiceIfNeeded
-    Write-Host '[SunshineVirtualDisplay] Driver install complete.'
-    if ($script:rebootRequired) {
-        Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
-    }
-    exit 0
-}
-
-Install-DriverPackage
-
-if (-not (Wait-DriverStoreMatchesPackagedPayload)) {
-    Write-Warning '[SunshineVirtualDisplay] Windows retained stale or mixed Sunshine DriverStore payloads; removing Sunshine driver packages before restaging.'
-    Write-DriverStorePayloadDiagnostics
-    Remove-DeviceNode
-    Remove-DriverPackage
-    Install-DriverPackage
-    if (-not (Wait-DriverStoreMatchesPackagedPayload -TimeoutSeconds 10)) {
-        Write-DriverStorePayloadDiagnostics
-        throw '[SunshineVirtualDisplay] DriverStore payload still does not match the packaged driver after clean restaging.'
-    }
-    Write-Host '[SunshineVirtualDisplay] Clean DriverStore restaging replaced the stale driver payload.'
-}
-
-if (-not (Test-DeviceNodePresent)) {
-    Write-Host '[SunshineVirtualDisplay] Creating device node.'
-    Invoke-DriverProcess -FilePath $nefConc -ArgumentList @('--create-device-node', '--class-name', 'Display', '--class-guid', $classGuid, '--hardware-id', $hardwareId)
-    Install-DriverPackage
-}
-
-Invoke-DriverProcess -FilePath $pnputil -ArgumentList @('/scan-devices')
-Restart-SunshineVirtualDisplayRuntime
-Initialize-DriverStateRegistryAccess
-Invoke-InstallerHealthCheck
+Install-SunshineVirtualDisplayDriver
 Start-VirtualDisplayBrokerIfNeeded
 Start-ApolloServiceIfNeeded
 
 Write-Host '[SunshineVirtualDisplay] Driver install complete.'
 if ($script:rebootRequired) {
-    Write-Host '[SunshineVirtualDisplay] A reboot is required to finalize driver installation.'
+    Write-DriverRestartRequired
     exit 0
 }

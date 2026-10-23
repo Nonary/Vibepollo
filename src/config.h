@@ -17,6 +17,9 @@
 #include <vector>
 
 // local includes
+#include "config_display_transition.h"
+#include "hardware_metrics_config.h"
+#include "input_session_config.h"
 #include "nvenc/nvenc_config.h"
 
 namespace config {
@@ -228,6 +231,7 @@ namespace config {
       hdr_option_e hdr_option;
       hdr_request_override_e hdr_request_override;
       std::chrono::milliseconds config_revert_delay;  ///< Time to wait until settings are reverted (after stream ends/app exists).
+      bool remove_virtual_display_after_restore;  ///< Remove captured virtual displays after confirmed final restore (Windows only).
       bool config_revert_on_disconnect;  ///< Specify whether to revert display configuration on client disconnect.
       int paused_virtual_display_timeout_secs;  ///< Optional delay before virtual display cleanup while stream is paused (0 keeps alive).
       enum class helper_engine_e : int {
@@ -240,6 +244,8 @@ namespace config {
       helper_engine_e display_helper_engine;  ///< Which display helper engine to run.
       int snapshot_restore_hotkey;  ///< Virtual-key code for restore hotkey (0 disables).
       std::uint32_t snapshot_restore_hotkey_modifiers;  ///< Modifier flags for the restore hotkey.
+      int end_stream_hotkey;  ///< Optional host end-all-streams virtual key (0 disables).
+      std::uint32_t end_stream_hotkey_modifiers;  ///< Modifier flags; at least one required.
       bool use_sunshine_virtual_display_driver;  ///< Use the Vibepollo Display Driver instead of rollback drivers such as SudoVDA.
       bool activate_virtual_display;  ///< Auto-activate Sunshine virtual display when selected as the target output.
       int virtual_display_scale_percent;  ///< Virtual-display scale percent (-1 is automatic; 0 preserves the compositor's choice).
@@ -258,6 +264,7 @@ namespace config {
     bool wgc_pacing_smoothing;  ///< Smooth WGC delivered frame cadence under low-latency (Reflex) source caps by snapping the pacing-group re-anchor back onto the prior grid instead of the jittery arrival phase. Disable for byte-for-byte legacy pacing.
     std::string fallback_mode;
     bool ignore_encoder_probe_failure;
+    bool wgc_direct_encoder_input;  ///< GPU encoders read the WGC helper's shared frame directly instead of a host-side snapshot copy made on the capture device.
   };
 
   struct audio_t {
@@ -281,15 +288,16 @@ namespace config {
 
     int fec_percentage;
     int video_max_batch_size_kb;
+    bool pacing_batch_demand_limit;  ///< Experimental per-call demand-based video batch sizing (default off).
     int pyrowave_critical_fec_percentage;  ///< Parity on the PyroWave shards holding the coarsest wavelet level (at least 2 shards); 0 = none.
 
     // Video encryption settings for LAN and WAN streams
     int lan_encryption_mode;
     int wan_encryption_mode;
 
-    // Cap the RTP send pacer (kbps). 0 = legacy ~80% of 1 Gbps assumption, which
-    // collapses to a no-op on a slower WiFi link. Set to ~1.3x stream bitrate when
-    // streaming over WiFi to spread the per-frame burst across the full frame slot.
+    // Ceiling on video UDP payload pacing (kbps), including FEC, packet headers
+    // and encryption prefixes. Reject nominal demand that cannot fit; never
+    // raise the ceiling. 0 retains legacy/adaptive pacing without admission.
     int pacing_max_bitrate_kbps;
 
     // Limit the packetsize to avoid fragmentation on a low MTU link. 0 = off.
@@ -315,6 +323,9 @@ namespace config {
   struct input_t {
     std::unordered_map<int, int> keybindings;
 
+    // Raw client virtual key (0 disables) and client-relative controller slot.
+    int guide_button_key;
+    int guide_button_controller;
     std::chrono::milliseconds back_button_timeout;
     std::chrono::milliseconds key_repeat_delay;
     std::chrono::duration<double> key_repeat_period;
@@ -513,6 +524,8 @@ namespace config {
     int session_history_ttl_days {0};  ///< Delete ended sessions older than this many days (0 disables age pruning)
     int session_history_db_size_limit_mb {0};  ///< Approximate live DB quota in MiB (0 disables size pruning)
     std::vector<std::string> csrf_allowed_origins;
+    bool hardware_metrics {false};  ///< Allow paired streaming clients to request hardware metrics
+    int hardware_metrics_interval {1000};  ///< Minimum client sample interval, in milliseconds
     bool realtime_stats_enabled {true};  ///< Sample live host stats (CPU/GPU/RAM/VRAM) for the web UI
     int realtime_stats_poll_interval_ms {2000};  ///< Host stats sampler interval in milliseconds
     bool lid_close_ends_streams {true};  ///< macOS: end streams when a MacBook's lid closes, even if the Mac stays awake.
@@ -521,12 +534,17 @@ namespace config {
   extern video_t video;
   extern audio_t audio;
   extern stream_t stream;
+  // One snapshot of the last completed apply; 0 preserves ENet defaults.
+  std::chrono::milliseconds get_control_peer_timeout();
   extern nvhttp_t nvhttp;
   extern input_t input;
   extern frame_limiter_t frame_limiter;
   extern rtss_t rtss;
   extern lossless_scaling_t lossless_scaling;
   extern sunshine_t sunshine;
+
+  // Only the last completed apply_config publishes this lock-free snapshot.
+  hardware_metrics_settings_t get_hardware_metrics_settings();
 
   int parse(int argc, char *argv[]);
   std::unordered_map<std::string, std::string> parse_config(const std::string_view &file_content);
@@ -547,13 +565,25 @@ namespace config {
     const std::unordered_map<std::string, std::string> &requested_overrides
   );
 
+  // Resolve only this session's app/client layers over file + CLI settings.
+  // Never inherit the shared capture owner's process-wide runtime overrides.
+  ::input::guide_button_config_t guide_button_config_for_session(
+    const std::unordered_map<std::string, std::string> &app_overrides = {},
+    const std::unordered_map<std::string, std::string> &client_overrides = {}
+  );
+
   // Hot-reload helpers
-  void apply_config_now();
+  // The optional caller-scoped hook runs after effective settings are installed
+  // and before this apply dispatches REVERT. It cannot veto REVERT and must not
+  // recursively enter the configuration gate.
+  void apply_config_now(const display_transition::before_mutation_f &before_display_mutation = {});
   void mark_deferred_reload();
   void maybe_apply_deferred();
 
   // Gate helpers so session start/resume can hold a shared lock while apply holds a unique lock.
   std::shared_lock<std::shared_mutex> acquire_apply_read_gate();
+  // Catalog refresh shares the same gate and uses nonblocking admission.
+  std::shared_mutex &apply_gate_mutex();
   void record_active_adapter_config();
 
   // Runtime, non-persisted config overrides (e.g. per-application overrides).

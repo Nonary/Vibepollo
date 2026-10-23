@@ -236,11 +236,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ inputs.release_commit }}
-          VHF_ARCHIVE_SHA256: 56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2
-          VHF_DRIVER_VER: 10/04/2026,0.1.0.48
+          VHF_ARCHIVE_SHA256: 59e89ab90c6e360e3e23bb4717b43339c4ec0050aedc52fe05e4f3ef306d62ee
+          VHF_DRIVER_VER: 10/16/2026,0.1.0.53
           VHF_PROTOCOL_VERSION: '2'
-          VHF_SOURCE_REVISION: 9edbce11ad71e9455867c356c8368a6b39fa2242
-          VHF_TAG: v0.1.0-beta.7
+          VHF_SOURCE_REVISION: 7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a
+          VHF_TAG: v0.1.0-beta.9
         run: |
           $ErrorActionPreference = 'Stop'
           $gitlink = (git rev-parse "$($env:RELEASE_COMMIT):third-party/libvirtualgamepad").Trim()
@@ -400,11 +400,11 @@ jobs:
       - name: Revalidate VHF producer package for packaging
         shell: pwsh
         env:
-          VHF_ARCHIVE_SHA256: 56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2
-          VHF_DRIVER_VER: 10/04/2026,0.1.0.48
+          VHF_ARCHIVE_SHA256: 59e89ab90c6e360e3e23bb4717b43339c4ec0050aedc52fe05e4f3ef306d62ee
+          VHF_DRIVER_VER: 10/16/2026,0.1.0.53
           VHF_PROTOCOL_VERSION: '2'
-          VHF_SOURCE_REVISION: 9edbce11ad71e9455867c356c8368a6b39fa2242
-          VHF_TAG: v0.1.0-beta.7
+          VHF_SOURCE_REVISION: 7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a
+          VHF_TAG: v0.1.0-beta.9
         run: |
           $ErrorActionPreference = 'Stop'
           $packageRoot = Join-Path $env:RUNNER_TEMP 'vhf-gamepad-producer-release'
@@ -513,6 +513,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\packaging\windows\test_driver_install_safety.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Mandatory driver safety tests failed.' }
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\packaging\windows\test_driver_interop_environment.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Driver interop environment regression failed.' }
 
       - name: Test production bootstrap migration
         if: inputs.build_tests
@@ -671,16 +673,16 @@ jobs:
           vhf_gamepad_package_arg=(
             -DSUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER=ON
             -DSUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR="$(cygpath -u "${VHF_PACKAGE_ROOT}")"
-            -DSUNSHINE_VHF_GAMEPAD_RELEASE_TAG=v0.1.0-beta.7
-            -DSUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256=56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2
-            -DSUNSHINE_VHF_GAMEPAD_SOURCE_REVISION=9edbce11ad71e9455867c356c8368a6b39fa2242
-            -DSUNSHINE_VHF_GAMEPAD_DRIVER_VER=10/04/2026,0.1.0.48
+            -DSUNSHINE_VHF_GAMEPAD_RELEASE_TAG=v0.1.0-beta.9
+            -DSUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256=59e89ab90c6e360e3e23bb4717b43339c4ec0050aedc52fe05e4f3ef306d62ee
+            -DSUNSHINE_VHF_GAMEPAD_SOURCE_REVISION=7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a
+            -DSUNSHINE_VHF_GAMEPAD_DRIVER_VER=10/16/2026,0.1.0.53
             -DSUNSHINE_VHF_GAMEPAD_PROTOCOL_VERSION=2
           )
           if [[ "${DAILY_UNSIGNED}" == "true" ]]; then
             vhf_gamepad_package_arg+=(-DSUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE=ON)
           fi
-          echo "Using verified VHF producer release v0.1.0-beta.7"
+          echo "Using verified VHF producer release v0.1.0-beta.9"
           truehdr_runtime_arg=()
           if [[ "${REQUIRE_TRUEHDR_RUNTIME}" == "true" ]]; then
             truehdr_runtime_arg=(
@@ -869,6 +871,36 @@ jobs:
             fi
           done
 
+      - name: Package and validate Windows portable ZIP (CI only)
+        if: github.event_name != 'pull_request' && inputs.release_version != '' && !startsWith(inputs.release_version, '0.0.0') && !startsWith(inputs.release_version, 'v0.0.0')
+        shell: msys2 {0}
+        env:
+          PORTABLE_PRODUCT: ${{ inputs.symbol_product_name }}
+        run: |
+          set -euo pipefail
+          # A failed CPack invocation must never upload an older valid ZIP.
+          rm -f -- build/cpack_artifacts/*-portable.zip ci-portable/*.zip
+          cmake --build build --target package_portable --parallel "$CMAKE_BUILD_PARALLEL_LEVEL"
+
+      - name: Validate Windows portable ZIP with host Python
+        if: github.event_name != 'pull_request' && inputs.release_version != '' && !startsWith(inputs.release_version, '0.0.0') && !startsWith(inputs.release_version, 'v0.0.0')
+        shell: pwsh
+        env:
+          PORTABLE_PRODUCT: ${{ inputs.symbol_product_name }}
+        run: |
+          python .github/scripts/validate_windows_portable.py --repository . --build build --product $env:PORTABLE_PRODUCT --version $env:BUILD_VERSION --output ci-portable
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Upload Windows portable ZIP (CI only)
+        if: github.event_name != 'pull_request' && inputs.release_version != '' && !startsWith(inputs.release_version, '0.0.0') && !startsWith(inputs.release_version, 'v0.0.0')
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: ci-portable-${{ matrix.name }}
+          path: ci-portable/*.zip
+          if-no-files-found: error
+          retention-days: ${{ inputs.release_artifact_retention_days }}
+          overwrite: true
+
       # WiX already installed before configure so env:WIX is available
 
       - name: Validate SignPath configuration
@@ -950,10 +982,10 @@ jobs:
             -ValidateOnly `
             -PrebuiltPackageDir $env:VHF_PACKAGE_ROOT `
             -PackageDir $packageDir `
-            -ReleaseTag v0.1.0-beta.7 `
-            -ExpectedReleaseAssetSha256 56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2 `
-            -ExpectedSourceRevision 9edbce11ad71e9455867c356c8368a6b39fa2242 `
-            -ExpectedDriverVer '10/04/2026,0.1.0.48' `
+            -ReleaseTag v0.1.0-beta.9 `
+            -ExpectedReleaseAssetSha256 59e89ab90c6e360e3e23bb4717b43339c4ec0050aedc52fe05e4f3ef306d62ee `
+            -ExpectedSourceRevision 7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a `
+            -ExpectedDriverVer '10/16/2026,0.1.0.53' `
             -ExpectedProtocolVersion 2
           $expected = @(
             'cleanup.ps1',
@@ -972,6 +1004,16 @@ jobs:
           if (($actual -join "`n") -cne ($expected -join "`n")) {
             throw "Unsigned MSI VHF layout is not exact: $($actual -join ', ')"
           }
+
+      - name: Test packaged MSI version and validation safety
+        # Run even when PR builds disable the application suite. This reads the
+        # actual MSI and evaluates its launch condition; it never installs it.
+        shell: pwsh
+        env:
+          MSI_NAME: ${{ steps.package-windows-msi.outputs.msi_name }}
+        run: |
+          python packaging/windows/wix/tests/test_pr_validation_contract.py --msi "unsigned-signpath-msi/$env:MSI_NAME" --version "$env:BUILD_VERSION"
+          if ($LASTEXITCODE -ne 0) { throw 'Packaged MSI version/validation contract failed.' }
 
       - name: Upload unsigned MSI for SignPath
         id: upload-unsigned-msi
@@ -1484,7 +1526,7 @@ jobs:
           run-id: ${{ needs.release_artifacts.outputs.source_run_id }}
 
       - name: Include symbols in build artifact
-        if: inputs.upload_symbols_artifact
+        if: inputs.upload_symbols_artifact && !inputs.daily_unsigned
         shell: pwsh
         env:
           SYMBOL_PACK_NAME: ${{ needs.release_artifacts.outputs.symbol_pack_name }}
@@ -1726,8 +1768,8 @@ jobs:
                   'tools/VibeshineVhfGamepadDeviceSetup.exe'
                 )
                 if ($vhfManifest.schema_version -ne 1 -or
-                    $vhfManifest.source_revision -cne '9edbce11ad71e9455867c356c8368a6b39fa2242' -or
-                    $vhfManifest.driver_ver -cne '10/04/2026,0.1.0.48' -or
+                    $vhfManifest.source_revision -cne '7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a' -or
+                    $vhfManifest.driver_ver -cne '10/16/2026,0.1.0.53' -or
                     [uint16] $vhfManifest.protocol_version -ne 2 -or
                     $vhfManifest.platform -cne 'x64' -or
                     $vhfManifest.signing.channel -cne 'msi-request-signing') {
@@ -1810,9 +1852,9 @@ jobs:
                 $vhfManifestHash = (Get-FileHash -LiteralPath $vhfManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
                 if ($vhfReleaseLock.channel -cne 'production' -or
                     $vhfReleaseLock.repository -cne 'Nonary/libvirtualgamepad' -or
-                    $vhfReleaseLock.release_tag -cne 'v0.1.0-beta.7' -or
-                    $vhfReleaseLock.release_asset_name -cne 'libvirtualgamepad-0.1.0-beta.7-windows-x64.zip' -or
-                    $vhfReleaseLock.release_asset_sha256 -cne '56e57fc70b9c3fdc5dfd0f44f01255275c114711b46521224204a385cde3a6e2' -or
+                    $vhfReleaseLock.release_tag -cne 'v0.1.0-beta.9' -or
+                    $vhfReleaseLock.release_asset_name -cne 'libvirtualgamepad-0.1.0-beta.9-windows-x64.zip' -or
+                    $vhfReleaseLock.release_asset_sha256 -cne '59e89ab90c6e360e3e23bb4717b43339c4ec0050aedc52fe05e4f3ef306d62ee' -or
                     $vhfReleaseLock.source_revision -cne $vhfManifest.source_revision -or
                     $vhfReleaseLock.driver_ver -cne $vhfManifest.driver_ver -or
                     [uint16] $vhfReleaseLock.protocol_version -ne [uint16] $vhfManifest.protocol_version -or
@@ -1884,6 +1926,8 @@ jobs:
           name: release-provenance
           path: artifacts/release-provenance.json
           if-no-files-found: error
+          # Keep published release recovery at 90 days; validation honors its caller.
+          retention-days: ${{ inputs.release_tag != '' && 90 || inputs.release_artifact_retention_days }}
           overwrite: true
 
       - name: Upload Artifacts
@@ -1892,6 +1936,8 @@ jobs:
           name: build-Windows
           path: artifacts/
           if-no-files-found: error
+          # Keep published release recovery at 90 days; validation honors its caller.
+          retention-days: ${{ inputs.release_tag != '' && 90 || inputs.release_artifact_retention_days }}
           overwrite: true
 
       - name: Publish private symbols release

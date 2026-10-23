@@ -1,0 +1,201 @@
+#include "src/host_stream_control.h"
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <condition_variable>
+#include <deque>
+#include <functional>
+#include <future>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
+using namespace std::chrono_literals;
+#define SUNSHINE_ENABLE_WEBRTC
+#define HAS_LIFETIME @HAS_LIFETIME@
+struct Log {template<class T> Log &operator<<(const T &){return *this;}};
+#define BOOST_LOG(x) Log()
+namespace boost {bool iequals(const std::string &a,const std::string &b){return a==b;}}
+namespace util {
+template<class F> struct Guard {F fn;bool enabled=true;void disable(){enabled=false;}~Guard(){if(enabled)fn();}};
+template<class F> auto fail_guard(F f){return Guard<F>{std::move(f)};}
+}
+struct Pause {
+ std::mutex mutex;std::condition_variable cv;bool arrived=false,done=false;
+ void stop(){std::unique_lock lock(mutex);arrived=true;cv.notify_all();cv.wait(lock,[&]{return done;});}
+ void reached(){std::unique_lock lock(mutex);if(!cv.wait_for(lock,1s,[&]{return arrived;}))throw std::runtime_error("pause not reached");}
+ void resume(){std::lock_guard lock(mutex);done=true;cv.notify_all();}
+};
+struct lwrtc_peer_t {bool alive=true;int closes=0;int releases=0;};
+struct lwrtc_factory_t {};
+struct lwrtc_audio_source_t {};
+struct lwrtc_video_source_t {};
+struct lwrtc_encoded_video_source_t {};
+struct lwrtc_audio_track_t {};
+struct lwrtc_video_track_t {};
+struct lwrtc_data_channel_t {};
+struct lwrtc_constraints_t {};
+std::vector<std::unique_ptr<lwrtc_peer_t>> peers;
+std::atomic_int invalid_uses=0,remote_calls=0,answer_calls=0,local_calls=0,candidate_calls=0;
+std::atomic_bool setup_under_map=false;
+std::atomic_int constraints_releases=0,factory_releases=0,audio_source_releases=0;
+std::function<void()> candidate_hook,remote_hook,setup_hook,release_hook,channel_hook,answer_return_hook,local_return_hook;
+bool inline_callbacks=false,cross_thread_callbacks=false,fail_setup=false;int inline_failure_stage=-1;
+struct Completion {int stage;std::function<void()> ok,fail;};
+std::mutex completion_mutex;std::deque<Completion> completions;
+void access(lwrtc_peer_t *p){if(!p || !p->alive)++invalid_uses;}
+void callback(std::function<void()> fn){if(cross_thread_callbacks){std::thread thread(std::move(fn));thread.join();}else fn();}
+void schedule(Completion completion){if(inline_callbacks){callback(completion.stage==inline_failure_stage?completion.fail:completion.ok);return;}std::lock_guard lock(completion_mutex);completions.push_back(std::move(completion));}
+int next_stage(){std::lock_guard lock(completion_mutex);return completions.empty()?-1:completions.front().stage;}
+void complete(bool fail=false){Completion c;{std::lock_guard lock(completion_mutex);if(completions.empty())return;c=std::move(completions.front());completions.pop_front();}callback(fail?std::move(c.fail):std::move(c.ok));}
+void finish(){for(int i=0;i<20 && next_stage()!=-1;++i)complete();}
+void lwrtc_peer_close(lwrtc_peer_t *p){access(p);++p->closes;}
+void lwrtc_peer_release(lwrtc_peer_t *p){if(release_hook)release_hook();access(p);++p->releases;p->alive=false;}
+void lwrtc_factory_release(lwrtc_factory_t *p){++factory_releases;delete p;}
+void lwrtc_audio_source_release(lwrtc_audio_source_t *p){++audio_source_releases;delete p;}
+int lwrtc_audio_source_push(lwrtc_audio_source_t*,const void*,int,int,int,std::size_t){return 1;}
+void lwrtc_video_source_release(lwrtc_video_source_t *p){delete p;}
+void lwrtc_encoded_video_source_release(lwrtc_encoded_video_source_t *p){delete p;}
+void lwrtc_audio_track_release(lwrtc_audio_track_t *p){delete p;}
+void lwrtc_video_track_release(lwrtc_video_track_t *p){delete p;}
+void lwrtc_data_channel_release(lwrtc_data_channel_t *p){delete p;}
+const char *lwrtc_data_channel_label(lwrtc_data_channel_t *){if(channel_hook)channel_hook();return "input";}
+void lwrtc_data_channel_register_observer(lwrtc_data_channel_t *,void(*)(void*,int),void(*)(void*,const char*,int,int),void*){}
+void lwrtc_data_channel_unregister_observer(lwrtc_data_channel_t *){}
+void lwrtc_data_channel_close(lwrtc_data_channel_t *){}
+void lwrtc_encoded_video_source_set_keyframe_callback(lwrtc_encoded_video_source_t *,void(*)(void*),void*){}
+void lwrtc_encoded_video_source_set_rate_callback(lwrtc_encoded_video_source_t *,void(*)(void*,uint32_t,uint32_t),void*){}
+void lwrtc_peer_register_state_callback(lwrtc_peer_t *p,void(*)(void*,int),void*){access(p);}
+void lwrtc_peer_register_data_channel(lwrtc_peer_t *p,void(*)(void*,lwrtc_data_channel_t*),void*){access(p);}
+void lwrtc_peer_add_candidate(lwrtc_peer_t *p,const char*,int,const char*){if(candidate_hook)candidate_hook();access(p);++candidate_calls;}
+void lwrtc_peer_set_remote_description(lwrtc_peer_t *p,const char*,const char*,void(*ok)(void*),void(*err)(void*,const char*),void *user){if(remote_hook)remote_hook();access(p);++remote_calls;schedule({0,[=]{ok(user);},[=]{err(user,"remote failed");}});}
+void lwrtc_peer_create_answer(lwrtc_peer_t *p,void(*ok)(void*,const char*,const char*),void(*err)(void*,const char*),lwrtc_constraints_t*,void *user){access(p);++answer_calls;schedule({1,[=]{ok(user,"answer","answer");},[=]{err(user,"answer failed");}});if(answer_return_hook)answer_return_hook();}
+void lwrtc_peer_set_local_description(lwrtc_peer_t *p,const char*,const char*,void(*ok)(void*),void(*err)(void*,const char*),void *user){access(p);++local_calls;schedule({2,[=]{ok(user);},[=]{err(user,"local failed");}});if(local_return_hook)local_return_hook();}
+void lwrtc_constraints_release(lwrtc_constraints_t *p){++constraints_releases;delete p;}
+namespace nvhttp {std::mutex lifecycle,launch_request_mutex;std::mutex &stream_lifecycle_mutex(){return lifecycle;}}
+namespace stream::session {inline std::atomic_int running_sessions=0,teardown_sessions=0;struct cleanup_reservation_t {~cleanup_reservation_t(){}};bool has_shared_runtime_owner(){return false;}bool finalize_shared_runtime_if_idle(const char*){return true;}}
+namespace rtsp_stream {inline bool owns_runtime=false;void terminate_sessions(bool){}bool has_pending_launch_or_startup(){return owns_runtime;}int session_count_no_cleanup(){return 0;}}
+namespace proc {inline int pauses=0;struct Proc{void terminate(){}void pause(bool){++pauses;}} proc;}
+namespace remote_session {void notify_monitor_shutdown(){}}
+namespace remote_display_topology {struct Topology{bool shutdown_complete(){return true;}} topology;Topology &instance(){return topology;}}
+std::atomic_bool physical=false;
+std::atomic_int recovery_constraints=-1,recovery_closes=-1,recovery_releases=-1,recovery_factories=-1,recovery_sources=-1;
+namespace platf::virtual_display_cleanup {struct Result{bool virtual_displays_removed=true,physical_display_recovered=true;};Result terminate_all(const char*){recovery_constraints=constraints_releases.load();recovery_closes=peers.back()->closes;recovery_releases=peers.back()->releases;recovery_factories=factory_releases.load();recovery_sources=audio_source_releases.load();physical=true;return {};}}
+namespace webrtc_stream {
+constexpr int kDefaultAudioChannels=2;
+struct Av1FmtpParams{std::string profile,level_idx,tier;};
+@CONTEXTS@
+struct State {std::string id="s";std::optional<std::string> codec;std::optional<bool> hdr;std::optional<int> audio_channels;bool has_remote_offer=false,has_local_answer=false;int ice_candidates=0,audio_dropped=0,video_dropped=0;};
+struct RawAudioFrame {std::shared_ptr<std::vector<int16_t>> samples;int sample_rate=48000,channels=2;std::size_t frames=0;};
+struct Queue {std::size_t size()const{return 0;}bool empty()const{return true;}bool drop_oldest(){return false;}bool pop_latest(RawAudioFrame &){return false;}};
+struct Session {
+ State state;int video_config=0;std::shared_ptr<lwrtc_factory_t> factory;
+ std::optional<Av1FmtpParams> av1_fmtp;std::optional<std::string> hevc_fmtp;
+ lwrtc_peer_t *peer=nullptr;
+#if HAS_LIFETIME
+ std::shared_ptr<SessionPeerLifetime> peer_lifetime=std::make_shared<SessionPeerLifetime>();
+#endif
+ std::shared_ptr<SessionIceContext> ice_context;
+ std::shared_ptr<SessionDataChannelContext> data_channel_context;
+ std::shared_ptr<SessionKeyframeContext> keyframe_context;
+ std::shared_ptr<SessionRateContext> rate_context;
+ std::shared_ptr<lwrtc_audio_source_t> audio_source;
+ std::shared_ptr<lwrtc_video_source_t> video_source;
+ std::shared_ptr<lwrtc_encoded_video_source_t> encoded_video_source;
+ lwrtc_audio_track_t *audio_track=nullptr;lwrtc_video_track_t *video_track=nullptr;lwrtc_data_channel_t *input_channel=nullptr;
+ std::string remote_offer_sdp,remote_offer_type,negotiation_error,local_answer_sdp,local_answer_type;
+ Queue raw_audio_frames,video_frames;
+ int video_pacing_state=0;std::optional<int> last_video_push,startup_keyframe_until,startup_keyframe_deadline,last_keyframe_request;bool needs_keyframe=false;
+ struct IceCandidate{std::string mid;int mline_index=-1;std::string candidate;};std::vector<IceCandidate> candidates;
+};
+std::mutex session_mutex;std::map<std::string,Session> sessions;std::condition_variable local_answer_cv;std::atomic_int active_sessions=0,teardown_sessions=0;std::atomic_bool rtsp_sessions_active=false;bool has_active_or_pending_sessions(){return active_sessions!=0;}
+void reset_session_input(std::string_view){}
+namespace host_stats {void webrtc_session_ended(){}}
+namespace session_history {void end_session(std::string){}}
+bool stop_webrtc_capture_if_idle_with_lifecycle_lock(std::unique_lock<std::mutex>&,bool *reserved){if(*reserved){--teardown_sessions;*reserved=false;}return true;}
+std::optional<int> aggregate_webrtc_encoder_bitrate_locked(){return {};}
+void publish_webrtc_encoder_bitrate(int){}
+struct Av1Offer{bool offered=true;std::optional<Av1FmtpParams> fmtp;};Av1Offer parse_av1_offer(const std::string&){return {};}
+struct HevcOffer{bool offered=true;std::vector<std::string> fmtp_candidates;};HevcOffer parse_hevc_offer(const std::string&){return {};}
+bool hevc_offer_supports_main10(const std::string&){return true;}
+void on_peer_state(void*,int){}void on_data_channel(void*,lwrtc_data_channel_t*);
+void on_data_channel_state(void*,int){}void on_data_channel_message(void*,const char*,int,int){}
+void setup_probe(){auto probe=std::async(std::launch::async,[]{if(session_mutex.try_lock())session_mutex.unlock();else setup_under_map=true;});probe.get();if(setup_hook)setup_hook();}
+lwrtc_peer_t *create_peer_connection(Session &session,SessionIceContext*){setup_probe();session.factory=make_lwrtc_ptr<lwrtc_factory_t,lwrtc_factory_release>(new lwrtc_factory_t);peers.push_back(std::make_unique<lwrtc_peer_t>());return peers.back().get();}
+bool attach_media_tracks(Session &session){setup_probe();session.audio_source=make_lwrtc_ptr<lwrtc_audio_source_t,lwrtc_audio_source_release>(new lwrtc_audio_source_t);return !fail_setup;}
+lwrtc_constraints_t *create_constraints(){return new lwrtc_constraints_t;}
+std::string apply_opus_audio_params(const std::string &s,int){return s;}
+bool set_local_answer(std::string_view,const std::string&,const std::string&);
+@DATA_CHANNEL@
+@LOCAL_OK@
+@STORE_ERROR@
+@LOCAL_FAIL@
+@ANSWER_OK@
+@ANSWER_FAIL@
+@REMOTE_OK@
+@REMOTE_FAIL@
+@OFFER@
+@ICE@
+@LOCAL_ANSWER@
+@CLOSE@
+void shutdown_all_sessions(){std::vector<std::string> ids;{std::lock_guard lock(session_mutex);for(auto &[id,s]:sessions){(void)s;ids.push_back(id);}}for(auto &id:ids)close_session(id);}
+}
+namespace nvhttp {
+@TERMINAL@
+}
+int failures=0,checks=0;
+void check(bool value,const std::string &name){++checks;std::cout<<(value?"PASS ":"FAIL ")<<name<<'\n';if(!value)++failures;}
+void reset(){using namespace webrtc_stream;candidate_hook={};remote_hook={};setup_hook={};release_hook={};channel_hook={};answer_return_hook={};local_return_hook={};inline_failure_stage=-1;inline_callbacks=false;cross_thread_callbacks=false;fail_setup=false;finish();shutdown_all_sessions();finish();sessions.clear();physical=false;proc::pauses=0;rtsp_stream::owns_runtime=false;invalid_uses=0;remote_calls=0;answer_calls=0;local_calls=0;candidate_calls=0;setup_under_map=false;constraints_releases=0;factory_releases=0;audio_source_releases=0;recovery_constraints=-1;recovery_closes=-1;recovery_releases=-1;recovery_factories=-1;recovery_sources=-1;Session session;session.keyframe_context=std::make_shared<SessionKeyframeContext>();session.rate_context=std::make_shared<SessionRateContext>();sessions.emplace("s",std::move(session));active_sessions=1;}
+void ready(){using namespace webrtc_stream;set_remote_offer("s","offer","offer");finish();}
+void terminal(){nvhttp::terminate_all_streams_from_host([]{return true;});}
+void wait_closed(){for(int i=0;i<200 && !(host_stream_control::request_ticket()&1);++i)std::this_thread::sleep_for(1ms);}
+void pending_terminal(const std::string &name){auto end=std::async(std::launch::async,terminal);wait_closed();const bool waited=end.wait_for(15ms)==std::future_status::timeout;const bool untouched=!physical;finish();end.get();check(waited && untouched && physical && invalid_uses==0,name);}
+void mixed_callback_tail(int deferred_stage,int failure_stage,bool remove_first,bool cross_thread){
+ using namespace webrtc_stream;reset();set_remote_offer("s","offer","offer");for(int i=0;i<deferred_stage;++i)complete();
+ auto *peer=peers.back().get();Pause returning;inline_callbacks=true;cross_thread_callbacks=cross_thread;inline_failure_stage=failure_stage;
+ if(deferred_stage==0)answer_return_hook=[&]{returning.stop();};else local_return_hook=[&]{returning.stop();};
+ auto callback_work=std::async(std::launch::async,[]{complete();});returning.reached();
+ std::size_t counted;{std::lock_guard lock(host_stream_control::state().mutex);counted=host_stream_control::state().active;}
+ if(remove_first)close_session("s");
+ auto stop=std::async(std::launch::async,terminal);wait_closed();const bool waited=stop.wait_for(40ms)==std::future_status::timeout;const bool untouched=!physical;
+ const auto prefix="mixed deferred="+std::to_string(deferred_stage)+" inline-failure="+std::to_string(failure_stage)+" DELETE="+std::to_string(remove_first)+" cross-thread="+std::to_string(cross_thread);
+ check(counted>0 && waited && untouched,prefix+" retains admission through enclosing native call");
+ Pause releasing;if(remove_first)release_hook=[&]{releasing.stop();};
+ returning.resume();
+ if(remove_first){releasing.reached();const bool release_waited=stop.wait_for(40ms)==std::future_status::timeout;check(release_waited && !physical,prefix+" reservation spans final wrapper release after transferred context");releasing.resume();}
+ callback_work.get();stop.get();answer_return_hook={};local_return_hook={};release_hook={};
+ check(peer->closes==1 && peer->releases==1 && invalid_uses==0,prefix+" releases retired peer exactly once");
+ check(recovery_constraints==1 && recovery_closes==1 && recovery_releases==1 && recovery_factories==1 && recovery_sources==1,prefix+" recovery follows constraints and all owned resource cleanup");
+}
+int main(int argc,char **argv){std::cout.setf(std::ios::unitbuf);using namespace webrtc_stream;const bool full_drain=argc>1 && std::string_view(argv[1])=="--full-drain";
+ reset();ready();check(!setup_under_map,"setup SDK calls can reenter session map");check(sessions.at("s").state.has_local_answer && invalid_uses==0,"fresh complete negotiation control");
+ reset();ready();Pause ice;candidate_hook=[&]{ice.stop();};auto trickle=std::async(std::launch::async,[]{return add_ice_candidate("s","video",0,"ice");});ice.reached();auto end=std::async(std::launch::async,terminal);wait_closed();bool waited=end.wait_for(15ms)==std::future_status::timeout;ice.resume();trickle.get();end.get();check(waited && physical && invalid_uses==0,"actual ICE call drains before terminal release");
+ reset();Pause offer;remote_hook=[&]{offer.stop();};auto start=std::async(std::launch::async,[]{return set_remote_offer("s","offer","offer");});offer.reached();auto stop=std::async(std::launch::async,terminal);wait_closed();waited=stop.wait_for(15ms)==std::future_status::timeout;offer.resume();start.get();finish();stop.get();check(waited && physical && invalid_uses==0,"actual offer plus continuation drain before terminal release");
+ for(int stage=0;stage<3;++stage){reset();set_remote_offer("s","offer","offer");for(int i=0;i<stage;++i)complete();pending_terminal("pending SDP stage "+std::to_string(stage)+" is counted through final completion");}
+ for(int stage=0;stage<3;++stage){reset();set_remote_offer("s","offer","offer");for(int i=0;i<stage;++i)complete();auto *peer=peers.back().get();close_session("s");const bool deferred=peer->releases==0 && peer->closes==1;const int before=answer_calls+local_calls;finish();check(deferred && peer->releases==1 && answer_calls+local_calls==before && invalid_uses==0,"DELETE retires pending stage "+std::to_string(stage)+" without raw-wrapper use/release");}
+ reset();ready();Pause ice_delete;candidate_hook=[&]{ice_delete.stop();};auto ice_work=std::async(std::launch::async,[]{return add_ice_candidate("s","video",0,"ice");});ice_delete.reached();auto *peer=peers.back().get();close_session("s");const bool sdk_deferred=peer->closes==0 && peer->releases==0;ice_delete.resume();ice_work.get();check(sdk_deferred && peer->closes==1 && peer->releases==1 && invalid_uses==0,"DELETE defers SDK Close itself across admitted ICE call");
+ reset();ready();Pause channel;channel_hook=[&]{channel.stop();};auto data_context=sessions.at("s").data_channel_context;auto channel_work=std::async(std::launch::async,[&]{on_data_channel(data_context.get(),new lwrtc_data_channel_t);});channel.reached();auto channel_terminal=std::async(std::launch::async,terminal);wait_closed();const bool channel_waited=channel_terminal.wait_for(15ms)==std::future_status::timeout;channel.resume();channel_work.get();channel_terminal.get();check(channel_waited && physical && invalid_uses==0,"actual data-channel callback drains before terminal recovery");
+ reset();set_remote_offer("s","offer","offer");auto *release_peer=peers.back().get();close_session("s");
+ if(release_peer->releases!=0){finish();check(false,"callback count spans final retired wrapper/resource release");}
+ else {Pause releasing;release_hook=[&]{releasing.stop();};auto callback_work=std::async(std::launch::async,[]{finish();});releasing.reached();auto release_terminal=std::async(std::launch::async,terminal);wait_closed();const bool release_waited=release_terminal.wait_for(15ms)==std::future_status::timeout;const bool no_physical=!physical;releasing.resume();callback_work.get();release_terminal.get();release_hook={};check(release_waited && no_physical && physical && release_peer->releases==1,"callback count spans final retired wrapper/resource release");}
+ reset();set_remote_offer("s","offer","offer");bool attempted=false;const bool bounded=host_stream_control::terminate([]{return true;},[&]{attempted=true;},20ms);check(!bounded && !attempted && !(host_stream_control::request_ticket()&1),"missing callback fails bounded drain and reopens without recovery");finish();terminal();check(physical && invalid_uses==0,"completion after failed drain permits explicit retry");
+ for(int stage=0;stage<3;++stage){reset();set_remote_offer("s","offer","offer");for(int i=0;i<stage;++i)complete();complete(true);terminal();check(physical && host_stream_control::state().active==0 && invalid_uses==0,"failure callback stage "+std::to_string(stage)+" retires counted operation");}
+ reset();inline_callbacks=true;cross_thread_callbacks=true;set_remote_offer("s","offer","offer");check(sessions.at("s").state.has_local_answer && host_stream_control::state().active==0,"cross-thread synchronous SDK completions do not deadlock");terminal();check(physical && invalid_uses==0,"inline callback chain retires before physical recovery");
+ reset();fail_setup=true;const bool failed=!set_remote_offer("s","offer","offer");auto *failed_peer=peers.back().get();fail_setup=false;ready();check(failed && failed_peer->releases==1 && sessions.at("s").state.has_local_answer && invalid_uses==0,"partial setup retirement preserves retry control");
+ reset();set_remote_offer("s","offer","offer");auto short_terminal=std::async(std::launch::async,[]{return host_stream_control::terminate([]{return true;},[]{},40ms);});wait_closed();const auto before_candidates=sessions.at("s").candidates.size();const bool rejected=!add_ice_candidate("s","video",0,"closed")&&!set_remote_offer("s","late","offer");check(rejected && sessions.at("s").candidates.size()==before_candidates,"closed admission rejects new ICE and offers before mutation");short_terminal.get();finish();terminal();
+ reset();Pause setup;setup_hook=[&]{setup.stop();};auto setting_up=std::async(std::launch::async,[]{return set_remote_offer("s","offer","offer");});setup.reached();auto remove=std::async(std::launch::async,[]{return close_session("s");});const bool removed=remove.wait_for(200ms)==std::future_status::ready;if(removed)remove.get();setup.resume();const bool unpublished=!setting_up.get();if(!removed)remove.get();finish();check(removed && unpublished && peers.back()->releases==1 && invalid_uses==0,"DELETE during unpublished setup never waits for SDK or republishes removed owner");
+ for(bool cross_thread:{false,true})for(bool remove_first:{false,true})for(int failure_stage:{-1,1,2})mixed_callback_tail(0,failure_stage,remove_first,cross_thread);
+ for(bool remove_first:{false,true})for(int failure_stage:{-1,2})mixed_callback_tail(1,failure_stage,remove_first,true);
+ reset();fail_setup=true;Pause partial_release;release_hook=[&]{partial_release.stop();};auto failed_setup=std::async(std::launch::async,[]{return set_remote_offer("s","offer","offer");});partial_release.reached();auto partial_terminal=std::async(std::launch::async,terminal);wait_closed();const bool partial_waited=partial_terminal.wait_for(40ms)==std::future_status::timeout;const bool partial_untouched=!physical;partial_release.resume();const bool setup_failed=!failed_setup.get();partial_terminal.get();release_hook={};check(setup_failed && partial_waited && partial_untouched && physical && invalid_uses==0,"partial setup reservation spans final wrapper release before terminal recovery");
+ if(full_drain){reset();set_remote_offer("s","offer","offer");const auto started=std::chrono::steady_clock::now();terminal();const auto elapsed=std::chrono::steady_clock::now()-started;check(!physical && elapsed>=29s && elapsed<35s && !(host_stream_control::request_ticket()&1),"actual terminal missing completion fails default 30-second drain without recovery");finish();terminal();check(physical && invalid_uses==0,"explicit retry recovers after late completion of default drain");}
+ reset();ready();close_session("s");check(proc::pauses==1,"target last WebRTC close preserves app pause");
+ reset();ready();rtsp_stream::owns_runtime=true;close_session("s");check(proc::pauses==0,"target pending RTSP owner prevents app pause");
+ reset();shutdown_all_sessions();finish();check(host_stream_control::state().active==0 && teardown_sessions==0,"all operation and cleanup reservations retire");
+ std::cout<<checks-failures<<"/"<<checks<<" checks passed; "<<failures<<" failed\n";return failures?1:0;
+}

@@ -8,6 +8,7 @@
     <NoWarn>CS0067</NoWarn>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="$(ConnectorSourceRoot)/ConnectorClientAuthentication.cs" Link="ConnectorClientAuthentication.cs" />
     <Compile Include="$(ConnectorSourceRoot)/ConnectorService.cs" Link="ConnectorService.cs" />
     <Compile Include="$(ConnectorSourceRoot)/PipeConnection.cs" Link="PipeConnection.cs" />
     <Compile Include="$(ConnectorSourceRoot)/PlayniteDataMapper.cs" Link="PlayniteDataMapper.cs" />

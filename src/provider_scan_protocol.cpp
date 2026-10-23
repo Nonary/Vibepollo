@@ -2,6 +2,7 @@
  * @file src/provider_scan_protocol.cpp
  * @brief Bounded protocol for unprivileged Linux provider discovery.
  */
+#include "file_clock.h"
 #include "provider_scan_protocol.h"
 
 #include <algorithm>
@@ -151,7 +152,7 @@ namespace platf::provider_scan {
         found = true;
         // libc++ counts file times in __int128, which std::to_string has no overload for.
         const auto value = path.generic_string() + ":" + std::to_string(size) + ":" +
-                           std::to_string(static_cast<long long>(time.time_since_epoch().count()));
+                           file_clock::count_string(time.time_since_epoch().count());
         for (const unsigned char byte : value) hash = (hash ^ byte) * 1099511628211ULL;
       }
       return found ? std::to_string(hash) : std::string {};

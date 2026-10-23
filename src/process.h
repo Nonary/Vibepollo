@@ -4,6 +4,7 @@
  */
 #pragma once
 #include "managed_app_focus.h"
+#include "process_catalog.h"
 
 #ifndef __kernel_entry
   #define __kernel_entry
@@ -43,10 +44,7 @@ namespace VDISPLAY {
 
 #endif
 
-#define VIRTUAL_DISPLAY_UUID "8902CB19-674A-403D-A587-41B092E900BA"
-#define FALLBACK_DESKTOP_UUID "EAAC6159-089A-46A9-9E24-6436885F6610"
-#define REMOTE_INPUT_UUID "8CB5C136-DA67-4F99-B4A1-F9CD35005CF4"
-#define TERMINATE_APP_UUID "E16CBE1B-295D-4632-9A76-EC4180C857D3"
+#include "legacy_generated_app_identities.h"
 
 namespace bp = boost_process_shim;
 #define DEFAULT_APP_IMAGE_PATH SUNSHINE_ASSETS_DIR "/box.png"
@@ -66,10 +64,6 @@ namespace proc {
   void setVDisplayDriverStatus(VDISPLAY::DRIVER_STATUS status, VDISPLAY::DRIVER_SELECTION selection);
   void initVDisplayDriver();
 #endif
-
-  typedef config::prep_cmd_t cmd_t;
-
-  inline constexpr int kLosslessScalingDefaultLaunchDelaySeconds = 8;
 
   struct active_session_guard_t {
     bool has_active_app {false};
@@ -93,109 +87,6 @@ namespace proc {
   };
 #endif
 
-  /**
-   * pre_cmds -- guaranteed to be executed unless any of the commands fail.
-   * detached -- commands detached from Sunshine
-   * cmd -- Runs indefinitely until:
-   *    No session is running and a different set of commands it to be executed
-   *    Command exits
-   * working_dir -- the process working directory. This is required for some games to run properly.
-   * cmd_output --
-   *    empty    -- The output of the commands are appended to the output of sunshine
-   *    "null"   -- The output of the commands are discarded
-   *    filename -- The output of the commands are appended to filename
-   */
-  struct lossless_scaling_profile_overrides_t {
-    std::optional<bool> performance_mode;
-    std::optional<int> flow_scale;
-    std::optional<int> resolution_scale;
-    std::optional<std::string> scaling_type;
-    std::optional<int> sharpening;
-    std::optional<std::string> anime4k_size;
-    std::optional<bool> anime4k_vrs;
-  };
-
-  struct ctx_t {
-    std::vector<cmd_t> prep_cmds;
-    std::vector<cmd_t> state_cmds;
-
-    /**
-     * Some applications, such as Steam, either exit quickly, or keep running indefinitely.
-     *
-     * Apps that launch normal child processes and terminate will be handled by the process
-     * grouping logic (wait_all). However, apps that launch child processes indirectly or
-     * into another process group (such as UWP apps) can only be handled by the auto-detach
-     * heuristic which catches processes that exit 0 very quickly, but we won't have proper
-     * process tracking for those.
-     *
-     * For cases where users just want to kick off a background process and never manage the
-     * lifetime of that process, they can use detached commands for that.
-     */
-    std::vector<std::string> detached;
-
-    std::string idx;
-    std::string uuid;
-    std::string name;
-    std::string cmd;
-    std::string working_dir;
-    std::string output;
-    std::optional<std::string> output_name_override;
-    std::string image_path;
-    std::string id;
-    std::string gamepad;
-    std::string art_version;
-    std::vector<std::string> id_aliases;
-    // Provider metadata used by the Steam-owned process lifecycle boundary.
-    // These remain strings because the catalog/API stores Steam IDs and paths
-    // as JSON strings for compatibility with older app entries.
-    std::string steam_id;
-    std::string steam_install_dir;
-    // Lutris also launches through a short-lived broker. Its game directory
-    // lets the shared process tracker own the real Wine/native process.
-    std::string lutris_id;
-    std::string lutris_directory;
-    // When present, this app should be launched via Playnite instead of direct cmd.
-    std::string playnite_id;
-    // When true, launch Playnite in fullscreen mode via the helper.
-    bool playnite_fullscreen;
-    bool frame_gen_limiter_fix;
-    bool elevated;
-    bool dualsense_haptics {false};
-    bool virtual_screen {false};
-    // Unset inherits the device preference; false allows normal client HDR requests.
-    std::optional<bool> prefer_10bit_sdr;
-    std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
-    std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
-    bool auto_detach;
-    bool wait_all;
-    bool virtual_display;
-    bool virtual_display_primary;
-    bool use_app_identity;
-    bool per_client_app_identity;
-    bool allow_client_commands;
-    bool terminate_on_pause;
-    int scale_factor;
-    std::chrono::seconds exit_timeout;
-    bool gen1_framegen_fix;
-    bool gen2_framegen_fix;
-    bool frame_generation_enabled {false};
-    bool lossless_scaling_enabled {false};
-    bool lossless_scaling_framegen {false};
-    std::string frame_generation_provider {"lossless-scaling"};
-    std::optional<double> lossless_scaling_target_fps;
-    std::optional<int> lossless_scaling_rtss_limit;
-    std::string lossless_scaling_profile {"custom"};
-    lossless_scaling_profile_overrides_t lossless_scaling_recommended;
-    lossless_scaling_profile_overrides_t lossless_scaling_custom;
-    int lossless_scaling_launch_delay_seconds {kLosslessScalingDefaultLaunchDelaySeconds};
-    bool lossless_scaling_legacy_auto_detect {false};
-    std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;
-
-    // Per-application overrides for global config keys (raw config-file value representation).
-    // These are applied at runtime and are not persisted to the global config file.
-    std::unordered_map<std::string, std::string> config_overrides;
-  };
-
   class proc_t {
   public:
     proc_t() = default;
@@ -218,6 +109,8 @@ namespace proc {
     void launch_input_only();
 
     // Callers holding the configuration read gate must defer cleanup writes.
+    // The caller owns stream lifecycle serialization. Startup returns 503 before
+    // mutation when terminal admission is closed; an admitted execute stays counted.
     int execute(const ctx_t &_app, std::shared_ptr<rtsp_stream::launch_session_t> launch_session, bool config_read_gate_held = false);
 
     /**
@@ -238,6 +131,7 @@ namespace proc {
     std::string get_app_image(int app_id);
     std::optional<ctx_t> resolve_app(const std::string &appid, const std::string &appuuid = "") const;
     std::optional<ctx_t> resolve_app(int app_id) const;
+    std::optional<ctx_t> active_app_snapshot() const;
     std::string get_last_run_app_name();
     std::string get_running_app_uuid();
     bp::environment get_env();
@@ -261,7 +155,7 @@ namespace proc {
 
     // Hot-update app list and environment without disrupting a running app
     void update_apps(std::vector<ctx_t> &&apps, bp::environment &&env);
-#ifdef _WIN32
+#if defined(_WIN32) || defined(__linux__)
     bool update_active_app_live_rtx_hdr_overrides(const std::string &app_uuid);
     bool update_active_app_live_rtx_hdr_overrides(
       const std::string &app_uuid,
@@ -274,12 +168,16 @@ namespace proc {
     bp::environment release_env();
 
   private:
+    friend void refresh(const std::string &file_name, bool needs_terminate);
+    catalog::state_view_t catalog_state();
     int launch_app_commands(bool stream_lifecycle_lock_held, bool config_read_gate_held = false);
 
     std::atomic<int> _app_id {0};
     std::string _app_name;
 
     bp::environment _env;
+    // Preserve the active undo environment until teardown finishes.
+    std::optional<bp::environment> _pending_catalog_environment;
     std::shared_ptr<rtsp_stream::launch_session_t> _launch_session;
     std::shared_ptr<config::input_t> _saved_input_config;
     // Entries inserted by a prior stream must not leak into a later launch,
@@ -351,6 +249,8 @@ namespace proc {
   bool check_valid_png(const std::filesystem::path &path);
   std::string validate_app_image_path(std::string app_image_path);
   std::optional<std::string> read_validated_app_image(const std::string &validated_path);
+  std::optional<std::string> read_configured_app_image(const std::string &image_path);
+  std::string configured_app_image_version(const ctx_t &app);
   std::string calculate_app_cover_fingerprint(std::string app_image_path);
   void refresh(const std::string &file_name, bool needs_terminate = true);
   void migrate_apps(nlohmann::json *fileTree_p, nlohmann::json *inputTree_p);

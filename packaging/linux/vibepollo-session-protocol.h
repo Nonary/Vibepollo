@@ -42,7 +42,11 @@ struct vibepollo_session_message {
   uint32_t reserved;
 };
 
+#ifdef __cplusplus
+static_assert(sizeof(struct vibepollo_session_message) == 32,
+#else
 _Static_assert(sizeof(struct vibepollo_session_message) == 32,
+#endif
                "session broker protocol header must remain fixed-size");
 
 #endif

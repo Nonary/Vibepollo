@@ -13,7 +13,11 @@ namespace display_helper_integration::helpers {
 
   // Resolve explicit refresh overrides and OS timing limits before creation,
   // so recovery and APPLY use the same rate the driver advertises.
-  void resolve_virtual_display_refresh(const config::video_t &video_config, rtsp_stream::launch_session_t &session);
+  void resolve_virtual_display_refresh(
+    const config::video_t &video_config,
+    rtsp_stream::launch_session_t &session,
+    bool include_request_detail_log_fields = true
+  );
 
   /**
    * @brief Configures builder instances with session-derived display settings.
@@ -23,7 +27,8 @@ namespace display_helper_integration::helpers {
     SessionDisplayConfigurationHelper(
       const config::video_t &video_config,
       const rtsp_stream::launch_session_t &session,
-      bool virtual_display_intended = false
+      bool virtual_display_intended = false,
+      bool include_request_detail_log_fields = true
     );
 
     /**
@@ -62,6 +67,7 @@ namespace display_helper_integration::helpers {
     const config::video_t &video_config_;
     config::video_t effective_video_config_;
     const rtsp_stream::launch_session_t &session_;
+    bool include_request_detail_log_fields_;
   };
 
   /**
@@ -69,13 +75,18 @@ namespace display_helper_integration::helpers {
    */
   class SessionMonitorPositionHelper {
   public:
-    SessionMonitorPositionHelper(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
+    SessionMonitorPositionHelper(
+      const config::video_t &video_config,
+      const rtsp_stream::launch_session_t &session,
+      bool include_request_detail_log_fields = true
+    );
     void configure(DisplayApplyBuilder &builder) const;
 
   private:
     const config::video_t &video_config_;
     config::video_t effective_video_config_;
     const rtsp_stream::launch_session_t &session_;
+    bool include_request_detail_log_fields_;
   };
 
   /**
@@ -83,6 +94,11 @@ namespace display_helper_integration::helpers {
    */
   [[nodiscard]] rtsp_stream::launch_session_t make_display_request_session_snapshot(const rtsp_stream::launch_session_t &session);
   [[nodiscard]] std::optional<DisplayApplyRequest> build_request_from_session(const config::video_t &video_config, const rtsp_stream::launch_session_t &session);
+  [[nodiscard]] std::optional<DisplayApplyRequest> build_request_from_session(
+    const config::video_t &video_config,
+    const rtsp_stream::launch_session_t &session,
+    bool include_request_detail_log_fields
+  );
   [[nodiscard]] std::optional<DisplayApplyRequest> build_request_from_session(
     const config::video_t &video_config,
     const rtsp_stream::launch_session_t &session,

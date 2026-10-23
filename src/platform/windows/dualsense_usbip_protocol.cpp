@@ -373,6 +373,7 @@ namespace platf::dualsense_usbip {
   void session::fail() {
     failed_ = finished_ = true;
     receive_.clear();
+    receive_incarnation_ = 0;
     pending_.clear();
   }
 
@@ -398,11 +399,27 @@ namespace platf::dualsense_usbip {
     transmit_.insert(transmit_.end(), {0, 0, 0, 1, 1, 4});
   }
 
+  std::uint64_t session::capture_receive_incarnation() const {
+    return callbacks_.capture_speaker_incarnation ? callbacks_.capture_speaker_incarnation() : 0;
+  }
+
+  void session::consume_received(std::size_t count) {
+    receive_.erase(receive_.begin(), receive_.begin() + count);
+    receive_incarnation_ = receive_.empty() ? 0 : feed_incarnation_;
+  }
+
   bool session::feed(std::span<const std::uint8_t> bytes, std::chrono::steady_clock::time_point now) {
+    return feed(bytes, capture_receive_incarnation(), now);
+  }
+
+  bool session::feed(std::span<const std::uint8_t> bytes, std::uint64_t incarnation,
+                     std::chrono::steady_clock::time_point now) {
     if (failed_ || finished_ || bytes.size() > max_buffer - receive_.size()) {
       fail();
       return false;
     }
+    feed_incarnation_ = incarnation;
+    if (receive_.empty()) receive_incarnation_ = incarnation;
     receive_time_ = now;
     receive_.insert(receive_.end(), bytes.begin(), bytes.end());
     while (!failed_ && !finished_ && parse_one()) {
@@ -429,6 +446,7 @@ namespace platf::dualsense_usbip {
         device_record();
         transmit_.insert(transmit_.end(), {1, 1, 0, 0, 1, 2, 0, 0, 1, 2, 0, 0, 3, 0, 0, 0});
         receive_.clear();
+        receive_incarnation_ = 0;
         finished_ = true;
         return false;
       }
@@ -444,6 +462,7 @@ namespace platf::dualsense_usbip {
       if (end == receive_.begin() + 40 || bus != bus_id(slot_)) {
         header(3, 4);  // ST_NODEV
         receive_.clear();
+        receive_incarnation_ = 0;
         finished_ = true;
         return false;
       }
@@ -454,7 +473,7 @@ namespace platf::dualsense_usbip {
       // Its first endpoint URB is authoritative until it forwards an explicit
       // SET_CONFIGURATION/SET_INTERFACE request.
       configuration_ = 1;
-      receive_.erase(receive_.begin(), receive_.begin() + 40);
+      consume_received(40);
       return true;
     }
 
@@ -478,7 +497,7 @@ namespace platf::dualsense_usbip {
       transmit_.resize(transmit_.size() + 12, 0);
       write32(transmit_, removed ? std::uint32_t(canceled) : 0);
       transmit_.resize(transmit_.size() + 24, 0);
-      receive_.erase(receive_.begin(), receive_.begin() + header_size);
+      consume_received(header_size);
       return true;
     }
     if (command != 1 || read32(wire + 8) != ((1u << 16) | (unsigned(slot_) + 1))) {
@@ -521,7 +540,8 @@ namespace platf::dualsense_usbip {
       fail();
       return false;
     }
-    receive_.erase(receive_.begin(), receive_.begin() + message_size);
+    request.speaker_incarnation = receive_incarnation_;
+    consume_received(message_size);
     submit(std::move(request));
     return true;
   }
@@ -638,14 +658,24 @@ namespace platf::dualsense_usbip {
         reply(request, 0, silence);
       } else {
         std::vector<std::uint8_t> haptics;
+        std::vector<std::uint8_t> speaker;
         haptics.reserve(request.length / 2);
+        if (callbacks_.speaker_pcm) {
+          speaker.reserve(request.length / 2);
+        }
         for (const auto &packet : request.packets) {
           for (std::size_t frame = packet.offset; frame < packet.offset + packet.length; frame += 8) {
             haptics.insert(haptics.end(), request.data.begin() + frame + 4, request.data.begin() + frame + 8);
+            if (callbacks_.speaker_pcm) {
+              speaker.insert(speaker.end(), request.data.begin() + frame, request.data.begin() + frame + 4);
+            }
           }
         }
         if (callbacks_.haptics_pcm && !haptics.empty()) {
           callbacks_.haptics_pcm(haptics);
+        }
+        if (callbacks_.speaker_pcm && !speaker.empty()) {
+          callbacks_.speaker_pcm(speaker, request.speaker_incarnation);
         }
         reply(request, 0, {}, request.length);
       }

@@ -106,6 +106,8 @@ namespace remote_display_topology {
     // never recomposes or moves a peer owned by another session.
     std::optional<node_t> saved_stream_placement(const node_t &target, const std::vector<node_t> &active_nodes) const;
     void set_physical_baseline(std::vector<node_t> nodes);
+    // Inventory reads must not replace a baseline while managed displays own it.
+    void refresh_idle_physical_baseline(std::vector<node_t> nodes);
     std::vector<std::string> physical_node_ids() const;
     // Managed ownership is independent of transport lifetime. A retryable or
     // transport-less Remote Monitor remains protected until an explicit owner
@@ -121,6 +123,11 @@ namespace remote_display_topology {
     // only drained normal-game identities that have no retained monitor role.
     std::vector<std::string> idle_normal_game_recovery_client_ids(bool capture_runtime_owned) const;
     bool generic_virtual_display_cleanup_allowed() const;
+    // Physical REVERT may retain a paused normal-game output, but cannot
+    // disturb a Remote Monitor or an output still referenced by capture.
+    // The caller separately excludes active/pending/tearing-down transports
+    // while holding the stream lifecycle gate. This grants no removal rights.
+    bool physical_display_restore_allowed() const;
     void set_plaintext_rtsp_warning_provider(std::function<std::string(const std::string &)> provider);
     monitor_runtime_state_t activate_or_resume(const std::string &client_uuid, const std::string &label, mode_t mode, uint64_t generation);
     monitor_runtime_state_t snapshot(const std::string &client_uuid, uint64_t generation) const;
@@ -153,6 +160,9 @@ namespace remote_display_topology {
     void unpair_client(const std::string &client_uuid);
     /** Drop runtime state, optionally preserving every platform display untouched. */
     void shutdown(bool preserve_owned_displays = false);
+    // Terminal callers must distinguish zero role owners from a failed,
+    // still-pending shutdown topology transaction (including an empty map).
+    bool shutdown_complete() const;
     nlohmann::json snapshot(const std::vector<nlohmann::json> &paired_clients) const;
 
   private:
@@ -204,6 +214,9 @@ namespace remote_display_topology {
     std::unordered_map<std::string, client_state_t> clients_;
     std::unordered_map<std::string, std::uint64_t> observed_monitor_generations_;
     std::unordered_map<std::string, std::uint64_t> released_monitor_generations_;
+    // A removed monitor no longer owns an output, but its failed restore still
+    // needs the saved physical baseline until a later shutdown retry succeeds.
+    bool physical_restore_pending_ = false;
     bool shutdown_pending_ = false;
     std::uint64_t next_normal_game_token_ = 0;
     std::uint64_t next_placement_order_ = 0;

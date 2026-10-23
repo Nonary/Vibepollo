@@ -162,6 +162,7 @@ namespace {
     CHECK(result.size() == 89 && std::equal(result.begin() + 48, result.end(), lvg::ds5_usb::calibration.begin()));
     result = control(peer, 0xa1, 1, 0x0320, 3, 64);
     CHECK(result.size() == 112 && std::equal(result.begin() + 48, result.end(), lvg::ds5_usb::firmware.begin()));
+    CHECK(result.size() >= 94 && (unsigned(result[92]) | (unsigned(result[93]) << 8)) >= 0x0630);
     result = control(peer, 0xa1, 1, 0x0309, 3, 20);
     CHECK(result[48] == 9 && result[55] == 8 && result[56] == 0x25);
     result = control(peer, 0xa1, 1, 0x0385, 3, 3);
@@ -219,11 +220,18 @@ namespace {
 
   void audio_capture_and_pacing() {
     bytes haptics;
+    bytes speaker;
+    std::uint64_t incarnation = 7;
+    std::vector<std::uint64_t> captured;
     unsigned callbacks = 0;
     session peer(0, {.hid_output = {}, .haptics_pcm = [&](auto data) {
                        haptics.insert(haptics.end(), data.begin(), data.end());
                        ++callbacks;
-                     }});
+                     },
+                     .speaker_pcm = [&](auto data, auto tag) {
+                       captured.push_back(tag);
+                       speaker.insert(speaker.end(), data.begin(), data.end());
+                     }, .capture_speaker_incarnation = [&] { return incarnation; }});
     attach(peer);
     // Two 48-frame USB packets with a deliberate offset gap. The speaker
     // channels and transfer-buffer padding must never reach the actuators.
@@ -246,19 +254,26 @@ namespace {
     CHECK(peer.feed(submit(22, false, 1, 800, pcm, {}, {{0, 384}, {416, 384}}), before));
     peer.poll(before);
     CHECK(peer.take_output().empty() && callbacks == 0);
+    incarnation = 9; // Completion must use the tag captured by each queued URB.
     const auto after = before;
     peer.poll(after + std::chrono::milliseconds(2));
     auto result = peer.take_output();
     CHECK(result.size() == 80 && callbacks == 1 && haptics.size() == 384);
+    CHECK(speaker.size() == 384);
     CHECK(get32(result, 24) == 800 && get32(result, 32) == 2);
     CHECK(get32(result, 48) == 0 && get32(result, 52) == 384 && get32(result, 56) == 384);
     CHECK(get32(result, 64) == 416 && get32(result, 72) == 384);
     for (unsigned frame = 0; frame < 96; ++frame) {
+      if (speaker.size() == 384) {
+        CHECK(speaker[frame * 4] == 0x55 && speaker[frame * 4 + 1] == 0x66);
+        CHECK(speaker[frame * 4 + 2] == 0x77 && speaker[frame * 4 + 3] == 0x88);
+      }
       CHECK(haptics[frame * 4] == frame % 48 && haptics[frame * 4 + 1] == 0xff);
       CHECK(haptics[frame * 4 + 2] == 255 - frame % 48 && haptics[frame * 4 + 3] == 0x7f);
     }
     peer.poll(after + std::chrono::milliseconds(4));
-    CHECK(peer.take_output().size() == 80 && callbacks == 2);
+    CHECK(peer.take_output().size() == 80 && callbacks == 2 && speaker.size() == 768);
+    CHECK((captured == std::vector<std::uint64_t> {7, 7}));
     CHECK(peer.feed(submit(23, true, 2, 416, {}, {}, {{0, 196}, {220, 196}}), before));
     peer.poll(before + std::chrono::milliseconds(2));
     result = peer.take_output();
@@ -334,6 +349,10 @@ namespace {
   }
 
   void malformed_and_fragmented() {
+    unsigned audio_callbacks = 0;
+    platf::dualsense_usbip::callbacks audio {};
+    audio.haptics_pcm = [&](auto) { ++audio_callbacks; };
+    audio.speaker_pcm = [&](auto, auto) { ++audio_callbacks; };
     session peer(0);
     attach(peer);
     const auto descriptor = submit(41, true, 0, 18, {}, control_setup(0x80, 6, 0x0100, 0, 18));
@@ -347,7 +366,7 @@ namespace {
     auto oversized = submit(42, true, 4, 0);
     put32(oversized, 24, 0x80000000);
     CHECK(!peer.feed(oversized) && peer.failed());
-    session bad_iso(0);
+    session bad_iso(0, audio);
     attach(bad_iso);
     CHECK(!bad_iso.feed(submit(43, false, 1, 8, bytes(8), {}, {{4, 8}})));
     session bad_packets(0);
@@ -360,21 +379,69 @@ namespace {
     auto foreign = submit(45, true, 4, 64);
     put32(foreign, 8, 0x10002);
     CHECK(!wrong_device.feed(foreign));
-    session overlap(0);
+    session overlap(0, audio);
     attach(overlap);
     CHECK(!overlap.feed(submit(46, false, 1, 16, bytes(16), {}, {{0, 8}, {4, 8}})));
-    session partial_frame(0);
+    session partial_frame(0, audio);
     attach(partial_frame);
     CHECK(partial_frame.feed(submit(47, false, 1, 7, bytes(7), {}, {{0, 7}})));
     CHECK(get32(partial_frame.take_output(), 20) == std::uint32_t(-32));
+    CHECK(audio_callbacks == 0);
     session partial_mic_frame(0);
     attach(partial_mic_frame);
     CHECK(partial_mic_frame.feed(submit(48, true, 2, 191, {}, {}, {{0, 191}})));
     CHECK(get32(partial_mic_frame.take_output(), 20) == std::uint32_t(-32));
   }
+  void ingress_provenance() {
+    // Every split includes boundaries inside command/header/payload/ISO metadata.
+    const auto audio = submit(90, false, 1, 384, bytes(384, 17), {}, {{0, 384}});
+    for (std::size_t split : {std::size_t(1), std::size_t(47), std::size_t(48),
+                              std::size_t(100), audio.size() - 1}) {
+      std::uint64_t incarnation = 7;
+      std::vector<std::uint64_t> tags;
+      unsigned actuators = 0;
+      session peer(0, {.haptics_pcm = [&](auto) { ++actuators; },
+                       .speaker_pcm = [&](auto, auto tag) { tags.push_back(tag); },
+                       .capture_speaker_incarnation = [&] { return incarnation; }});
+      attach(peer);
+      const auto start = std::chrono::steady_clock::now();
+      CHECK(peer.feed(std::span(audio).first(split), start));
+      incarnation = 9;
+      auto remainder = bytes(audio.begin() + split, audio.end());
+      const auto fresh = submit(91, false, 1, 384, bytes(384, 85), {}, {{0, 384}});
+      remainder.insert(remainder.end(), fresh.begin(), fresh.end());
+      CHECK(peer.feed(remainder, start));
+      peer.poll(start + std::chrono::milliseconds(3));
+      CHECK((tags == std::vector<std::uint64_t> {7, 9}));
+      CHECK(actuators == 2 && !peer.failed());
+    }
+    std::uint64_t incarnation = 7;
+    std::vector<std::uint64_t> tags;
+    unsigned controls = 0;
+    session peer(0, {.hid_output = [&](auto) { ++controls; incarnation = 9; },
+                     .speaker_pcm = [&](auto, auto tag) { tags.push_back(tag); },
+                     .capture_speaker_incarnation = [&] { return incarnation; }});
+    attach(peer);
+    auto batch = submit(89, false, 3, 1, bytes {2});
+    const auto another_control = submit(88, false, 3, 1, bytes {2});
+    batch.insert(batch.end(), another_control.begin(), another_control.end());
+    batch.insert(batch.end(), audio.begin(), audio.end());
+    const auto start = std::chrono::steady_clock::now();
+    CHECK(peer.feed(batch, start)); // HID callback rebinds before the next record parses.
+    peer.poll(start + std::chrono::milliseconds(2));
+    CHECK(controls == 2 && tags == std::vector<std::uint64_t> {7});
+    // Explicit transport tag covers complete bytes received before a rebind but
+    // handed to the parser afterward. Scope ends at this user-space receive.
+    const auto received_tag = peer.capture_receive_incarnation();
+    incarnation = 11;
+    CHECK(peer.feed(submit(92, false, 1, 384, bytes(384), {}, {{0, 384}}), received_tag, start));
+    peer.poll(start + std::chrono::milliseconds(4));
+    CHECK((tags == std::vector<std::uint64_t> {7, 9}));
+  }
 }  // namespace
 
 int main() {
+  ingress_provenance();
   handshake();
   descriptors_and_features();
   hid_and_unlink();

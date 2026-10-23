@@ -560,7 +560,8 @@ export class WebRtcClient {
 
     const inputPriority = options.inputPriority ?? 'high';
     this.inputChannel = this.pc.createDataChannel('input', {
-      ordered: false,
+      // Keep tap/button coordinates after older motion without retransmission delays.
+      ordered: true,
       maxRetransmits: 0,
       priority: inputPriority,
     });

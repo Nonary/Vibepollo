@@ -186,3 +186,27 @@ test('Linux explicit non-KMS capture warns without rejecting the selection', () 
   assert.equal(linuxVirtualCaptureWarning('windows', 'wgc'), false);
   assert.equal(linuxVirtualCaptureWarning('macos', 'avfoundation'), false);
 });
+
+test('client hardware metrics are opt-in and use bounded request sampling', async () => {
+  const { settingsDefaults } = await import('../configs/settingsSchema.ts');
+  assert.equal(settingsDefaults.hardware_metrics, false);
+  assert.equal(settingsDefaults.hardware_metrics_interval, 1000);
+  const interval = settingsFields.get('hardware_metrics_interval');
+  assert.equal(interval?.min, 500);
+  assert.equal(interval?.max, 10000);
+  assert.deepEqual(interval?.visibleWhen, { key: 'hardware_metrics', equals: true });
+});
+
+test('Guide key binding defaults off, validates integer ranges and is editable per client', async () => {
+  const { settingsDefaults, clientOverrideableKeys } = await import('../configs/settingsSchema.ts');
+  for (const [key, max] of [['guide_button_key', 255], ['guide_button_controller', 15]] as const) {
+    const field = settingsFields.get(key);
+    assert.equal(settingsDefaults[key], 0);
+    assert.equal(field?.kind, 'number');
+    assert.equal(field?.min, 0);
+    assert.equal(field?.max, max);
+    assert.equal(clientOverrideableKeys.has(key), true);
+    for (const value of [0, 1, max]) assert.equal(settingError(field, value), undefined);
+    for (const value of [-1, max + 1, 0.5, NaN]) assert.ok(settingError(field, value));
+  }
+});

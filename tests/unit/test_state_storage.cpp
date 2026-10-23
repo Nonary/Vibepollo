@@ -4,12 +4,16 @@
  */
 #include "../tests_common.h"
 
+#include <boost/property_tree/json_parser.hpp>
 #include <boost/property_tree/ptree.hpp>
 #include <src/state_storage_policy.h>
 #include <src/paired_state_policy.h>
 
+#include <cstdint>
+#include <iterator>
 #include <map>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -473,6 +477,457 @@ namespace {
       [&store](const std::string &path) { return store.read(path); },
       [&store](const std::string &path, const std::string &contents) { return store.write(path, contents); }, policy::valid_primary_state);
   }
+
+  // Synthetic certificate encodings of the same identity exercise selection
+  // independently of OpenSSL. Production callers canonicalize parsed X.509.
+  std::optional<std::string> certificate_identity(const std::string &certificate) {
+    if (certificate == "certificate" || certificate == "alternate-encoding") {
+      return "same-client";
+    }
+    if (certificate == "legacy-only") {
+      return "other-client";
+    }
+    return std::nullopt;
+  }
+
+  bool valid_migrated_primary(const pt::ptree &tree, bool allow_bootstrap) {
+    auto normalized = tree;
+    return policy::normalize_legacy_pairing_state(normalized, certificate_identity) &&
+           policy::valid_primary_state(normalized, allow_bootstrap);
+  }
+
+  pt::ptree with_legacy_alias(memory_state_store_t &store) {
+    store.files["shared.json"] = paired_snapshot;
+    pt::ptree tree;
+    EXPECT_EQ(load_for_read(store, "shared.json", tree), policy::load_result_e::loaded);
+    pt::ptree legacy, device, certs, cert;
+    cert.put_value("alternate-encoding");
+    certs.push_back({"", cert});
+    device.put("uniqueid", "old-client-id");
+    device.put_child("certs", certs);
+    legacy.push_back({"", device});
+    tree.put_child("root.devices", legacy);
+    tree.get_child("root.named_devices").front().second.put("hdr_profile", "preserved-profile");
+    return tree;
+  }
+}  // namespace
+
+TEST(StateStorageLegacyPairing, NamedRecordKeepsIdentityRevocationAndSettings) {
+  memory_state_store_t store;
+  auto tree = with_legacy_alias(store);
+  const auto named = tree.get_child("root.named_devices");
+  const auto identity = tree.get<std::string>("root.uniqueid");
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, certificate_identity));
+  EXPECT_EQ(tree.get_child("root.named_devices"), named);
+  EXPECT_EQ(tree.get<std::string>("root.uniqueid"), identity);
+  EXPECT_TRUE(tree.get_child("root.devices").front().second.get_child("certs").empty());
+  EXPECT_FALSE(tree.get_child("root.named_devices").front().second.get<bool>("enabled"));
+  EXPECT_EQ(tree.get_child("root.api_tokens").front().second.get<std::string>("hash"), "token");
+}
+
+TEST(StateStorageLegacyPairing, UpgradeSelectsCurrentSnapshotWithoutChangingDurableFiles) {
+  memory_state_store_t store;
+  const auto tree = with_legacy_alias(store);
+  write_atomic(store, "shared.json", tree);
+  // A stale recovery snapshot must not re-enable the named record.
+  auto stale = tree;
+  stale.get_child("root.named_devices").front().second.put("enabled", true);
+  write_atomic(store, "shared.json.bak", stale);
+  const auto original = store.files;
+  pt::ptree selected;
+  ASSERT_EQ(policy::load_primary_state_for_update("shared.json", selected, [&store](const std::string &path) {
+              return store.read(path);
+            },
+                                                  [&store](const std::string &path, const std::string &contents) {
+                                                    return store.write(path, contents);
+                                                  },
+                                                  valid_migrated_primary),
+            policy::load_result_e::loaded);
+  EXPECT_EQ(selected, tree);
+  EXPECT_EQ(store.files, original);
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(selected, certificate_identity));
+  EXPECT_FALSE(selected.get_child("root.named_devices").front().second.get<bool>("enabled"));
+}
+
+TEST(StateStorageLegacyPairing, LegacyOnlyClientsRemainAvailableForImport) {
+  memory_state_store_t store;
+  auto tree = with_legacy_alias(store);
+  pt::ptree cert;
+  cert.put_value("legacy-only");
+  tree.get_child("root.devices").front().second.get_child("certs").push_back({"", cert});
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, certificate_identity));
+  const auto &certs = tree.get_child("root.devices").front().second.get_child("certs");
+  ASSERT_EQ(certs.size(), 1U);
+  EXPECT_EQ(certs.front().second.get_value<std::string>(), "legacy-only");
+  EXPECT_TRUE(policy::valid_primary_state(tree, false));
+}
+
+TEST(StateStorageLegacyPairing, RecoveryRestoresLegacySnapshotWithNamedRevocationIntact) {
+  memory_state_store_t store;
+  const auto tree = with_legacy_alias(store);
+  write_atomic(store, "shared.json.bak", tree);
+  const auto backup = store.files["shared.json.bak"];
+  store.files["shared.json"] = "broken";
+  pt::ptree selected;
+  ASSERT_EQ(policy::load_primary_state_for_update("shared.json", selected, [&store](const std::string &path) {
+              return store.read(path);
+            },
+                                                  [&store](const std::string &path, const std::string &contents) {
+                                                    return store.write(path, contents);
+                                                  },
+                                                  valid_migrated_primary),
+            policy::load_result_e::loaded);
+  EXPECT_EQ(store.files["shared.json"], backup);
+  EXPECT_EQ(store.files["shared.json.bak"], backup);
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(selected, certificate_identity));
+  EXPECT_FALSE(selected.get_child("root.named_devices").front().second.get<bool>("enabled"));
+}
+
+TEST(StateStorageLegacyPairing, EnabledDuplicateDoesNotReEnableTheKeptRecord) {
+  memory_state_store_t store;
+  auto tree = with_legacy_alias(store);
+  const auto first = tree.get_child("root.named_devices").front().second;
+  auto duplicate = first;
+  duplicate.put("uuid", "33333333-3333-3333-3333-333333333333");
+  duplicate.put("cert", "alternate-encoding");
+  duplicate.put("enabled", true);
+  tree.get_child("root.named_devices").push_back({"", duplicate});
+  std::vector<policy::collapsed_pairing_record_t> collapsed;
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, certificate_identity, nullptr, &collapsed));
+  ASSERT_EQ(tree.get_child("root.named_devices").size(), 1U);
+  EXPECT_EQ(tree.get_child("root.named_devices").front().second, first);
+  EXPECT_FALSE(tree.get_child("root.named_devices").front().second.get<bool>("enabled"));
+  EXPECT_TRUE(tree.get_child("root.devices").front().second.get_child("certs").empty());
+  ASSERT_EQ(collapsed.size(), 1U);
+  EXPECT_EQ(collapsed[0].kept_uuid, "22222222-2222-2222-2222-222222222222");
+  EXPECT_EQ(collapsed[0].dropped_uuid, "33333333-3333-3333-3333-333333333333");
+  EXPECT_TRUE(policy::valid_primary_state(tree, false));
+}
+
+// 1.18.x re-imported root.devices on every start and saved the import, so a
+// profile could hold several copies. The first copy is the one 1.x used.
+TEST(StateStorageLegacyPairing, RepeatedImportsCollapseIntoTheFirstRecord) {
+  memory_state_store_t store;
+  auto tree = with_legacy_alias(store);
+  auto &named = tree.get_child("root.named_devices");
+  named.front().second.put("enabled", true);
+  auto later = named.front().second;
+  later.put("name", "");
+  later.put("uuid", "33333333-3333-3333-3333-333333333333");
+  named.push_back({"", later});
+  later.put("uuid", "44444444-4444-4444-4444-444444444444");
+  later.put("enabled", false);
+  named.push_back({"", later});
+  const auto first = named.front().second;
+  std::vector<policy::collapsed_pairing_record_t> collapsed;
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, certificate_identity, nullptr, &collapsed));
+  ASSERT_EQ(tree.get_child("root.named_devices").size(), 1U);
+  const auto &kept = tree.get_child("root.named_devices").front().second;
+  EXPECT_EQ(kept.get<std::string>("uuid"), first.get<std::string>("uuid"));
+  EXPECT_EQ(kept.get<std::string>("name"), "client");
+  EXPECT_EQ(kept.get<std::string>("hdr_profile"), "preserved-profile");
+  EXPECT_FALSE(kept.get<bool>("enabled"));
+  ASSERT_EQ(collapsed.size(), 2U);
+  EXPECT_EQ(collapsed[0].kept_index, 0U);
+  EXPECT_EQ(collapsed[0].dropped_index, 1U);
+  EXPECT_EQ(collapsed[1].kept_index, 0U);
+  EXPECT_EQ(collapsed[1].dropped_index, 2U);
+  EXPECT_EQ(collapsed[1].dropped_uuid, "44444444-4444-4444-4444-444444444444");
+}
+
+TEST(StateStorageLegacyPairing, RepeatedLegacyCertificatesCollapse) {
+  memory_state_store_t store;
+  auto tree = with_legacy_alias(store);
+  pt::ptree cert;
+  cert.put_value("legacy-only");
+  auto &certs = tree.get_child("root.devices").front().second.get_child("certs");
+  certs.push_back({"", cert});
+  certs.push_back({"", cert});
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, certificate_identity));
+  const auto &remaining = tree.get_child("root.devices").front().second.get_child("certs");
+  ASSERT_EQ(remaining.size(), 1U);
+  EXPECT_EQ(remaining.front().second.get_value<std::string>(), "legacy-only");
+}
+
+TEST(StateStorageLegacyPairing, InvalidCertificatesFailWithoutMutation) {
+  for (int scenario = 1; scenario < 5; ++scenario) {
+    memory_state_store_t store;
+    auto tree = with_legacy_alias(store);
+    if (scenario == 1) {
+      tree.get_child("root.devices").front().second.get_child("certs").front().second.put_value("invalid");
+    } else if (scenario == 2) {
+      tree.get_child("root.named_devices").front().second.put("cert", "invalid");
+    } else if (scenario == 3) {
+      auto &certs = tree.get_child("root.devices").front().second.get_child("certs");
+      auto cert = certs.front().second;
+      certs.clear();
+      certs.push_back({"malformed-object-key", cert});
+    } else {
+      pt::ptree cert;
+      cert.put_value("invalid");
+      // The valid alias is removed in the working copy before this failure.
+      tree.get_child("root.devices").front().second.get_child("certs").push_back({"", cert});
+    }
+    const auto original = tree;
+    EXPECT_FALSE(policy::normalize_legacy_pairing_state(tree, certificate_identity));
+    EXPECT_EQ(tree, original);
+  }
+}
+
+namespace {
+  // Independent synthetic data shaped like #298: five distinct UUIDs, four
+  // certificate identities, string booleans/timestamps, one absent last_seen.
+  // These are policy tokens, not PEMs or copies of the reporter's attachments.
+  constexpr auto issue298_snapshot = R"({
+    "username":"owner","password":"current-hash","salt":"current-salt",
+    "root":{"uniqueid":"11111111-1111-1111-1111-111111111111","named_devices":[
+      {"uuid":"22222222-2222-2222-2222-222222222221","name":"one","cert":"synthetic-cert-1","enabled":"true"},
+      {"uuid":"22222222-2222-2222-2222-222222222222","name":"two","cert":"synthetic-cert-2","enabled":"true","last_seen":"1790870400","perm":"1","config_overrides":{"output_name":"synthetic-output-2"}},
+      {"uuid":"22222222-2222-2222-2222-222222222223","name":"three","cert":"synthetic-cert-3","enabled":"true"},
+      {"uuid":"22222222-2222-2222-2222-222222222224","name":"four","cert":"synthetic-cert-2","enabled":"true","perm":"2","config_overrides":{"output_name":"synthetic-output-4"}},
+      {"uuid":"22222222-2222-2222-2222-222222222225","name":"five","cert":"synthetic-cert-4","enabled":"true"}
+    ]}}
+  )";
+
+  std::optional<std::string> issue298_certificate_identity(const std::string &certificate) {
+    for (const auto known : {"synthetic-cert-1", "synthetic-cert-2", "synthetic-cert-3", "synthetic-cert-4", "synthetic-cert-5"}) {
+      if (certificate == known) return certificate;
+    }
+    return std::nullopt;
+  }
+
+  pt::ptree issue298_tree() {
+    memory_state_store_t store;
+    store.files["synthetic.json"] = issue298_snapshot;
+    pt::ptree tree;
+    EXPECT_EQ(load_for_read(store, "synthetic.json", tree), policy::load_result_e::loaded);
+    return tree;
+  }
+
+  bool issue298_valid_snapshot(const pt::ptree &tree, bool allow_bootstrap) {
+    auto normalized = tree;
+    return policy::normalize_legacy_pairing_state(normalized, issue298_certificate_identity) &&
+           policy::valid_primary_state(normalized, allow_bootstrap);
+  }
+
+  std::string issue298_diagnostic(const pt::ptree &tree) {
+    auto normalized = tree;
+    std::string reason;
+    (void) policy::normalize_legacy_pairing_state(normalized, issue298_certificate_identity, &reason);
+    return reason;
+  }
+}  // namespace
+
+TEST(StateStorageIssue298, DuplicateNamedIdentitiesCollapseIntoTheRecord1xUsed) {
+  for (const bool first_enabled : {false, true}) {
+    for (const bool second_enabled : {false, true}) {
+      for (const bool same_settings : {false, true}) {
+        for (const bool reversed : {false, true}) {
+          SCOPED_TRACE(::testing::Message() << first_enabled << second_enabled << same_settings << reversed);
+          auto tree = issue298_tree();
+          auto &named = tree.get_child("root.named_devices");
+          auto &first = std::next(named.begin(), 1)->second;
+          auto &second = std::next(named.begin(), 3)->second;
+          if (same_settings) {
+            const auto uuid = second.get<std::string>("uuid");
+            second = first;
+            second.put("uuid", uuid);
+          }
+          first.put("enabled", first_enabled ? "true" : "false");
+          second.put("enabled", second_enabled ? "true" : "false");
+          if (reversed) first.swap(second);
+          ASSERT_TRUE(policy::valid_primary_state(tree, false));
+          const std::vector<pt::ptree> original {named.begin()->second, std::next(named.begin(), 2)->second, std::next(named.begin(), 4)->second};
+          auto expected = first;
+          if (!first_enabled || !second_enabled) expected.put("enabled", false);
+          const auto kept_uuid = first.get<std::string>("uuid");
+          const auto dropped_uuid = second.get<std::string>("uuid");
+          const auto credentials = tree.get<std::string>("password");
+          std::vector<policy::collapsed_pairing_record_t> collapsed;
+          ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, issue298_certificate_identity, nullptr, &collapsed));
+          const auto &result = tree.get_child("root.named_devices");
+          ASSERT_EQ(result.size(), 4U);
+          EXPECT_EQ(std::next(result.begin(), 1)->second, expected);
+          EXPECT_EQ(result.begin()->second, original[0]);
+          EXPECT_EQ(std::next(result.begin(), 2)->second, original[1]);
+          EXPECT_EQ(std::next(result.begin(), 3)->second, original[2]);
+          EXPECT_EQ(tree.get<std::string>("password"), credentials);
+          ASSERT_EQ(collapsed.size(), 1U);
+          EXPECT_EQ(collapsed[0].kept_index, 1U);
+          EXPECT_EQ(collapsed[0].kept_uuid, kept_uuid);
+          EXPECT_EQ(collapsed[0].dropped_index, 3U);
+          EXPECT_EQ(collapsed[0].dropped_uuid, dropped_uuid);
+          EXPECT_TRUE(policy::valid_primary_state(tree, false));
+        }
+      }
+    }
+  }
+}
+
+TEST(StateStorageIssue298, UniqueIdentityControlRetainsLegacyScalarsAndUnknownSettings) {
+  auto tree = issue298_tree();
+  auto &named = tree.get_child("root.named_devices");
+  // This is a control fixture, not an authorized repair of a real pairing.
+  named.erase(std::next(named.begin(), 3));
+  const auto original = tree;
+  ASSERT_EQ(named.size(), 4U);
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, issue298_certificate_identity));
+  EXPECT_TRUE(policy::valid_primary_state(tree, false));
+  EXPECT_EQ(tree, original);
+  EXPECT_EQ(std::next(tree.get_child("root.named_devices").begin(), 1)->second.get<std::int64_t>("last_seen"), 1790870400);
+}
+
+TEST(StateStorageIssue298, DuplicateSnapshotsLoadWithoutChangingEitherFile) {
+  for (const bool has_backup : {false, true}) {
+    memory_state_store_t store;
+    store.files["shared.json"] = issue298_snapshot;
+    if (has_backup) store.files["shared.json.bak"] = issue298_snapshot;
+    const auto original = store.files;
+    pt::ptree selected;
+    std::string reason;
+    unsigned writes = 0;
+    EXPECT_EQ(policy::load_primary_state_for_update("shared.json", selected,
+                [&store](const std::string &path) { return store.read(path); },
+                [&store, &writes](const std::string &path, const std::string &contents) {
+                  ++writes;
+                  return store.write(path, contents);
+                }, issue298_valid_snapshot, {}, &reason), policy::load_result_e::loaded);
+    // Selection returns the stored snapshot; collapsing happens in memory and
+    // reaches disk only through the next normal state save.
+    EXPECT_EQ(selected, issue298_tree());
+    EXPECT_EQ(writes, 0U);
+    EXPECT_EQ(store.files, original);
+    EXPECT_TRUE(store.quarantined.empty());
+    EXPECT_TRUE(reason.empty());
+  }
+}
+
+// The frozen-master negative control restored stale authorization here.
+TEST(StateStorageIssue298, CurrentPrimaryWithDuplicatesWinsOverOlderAuthorization) {
+  memory_state_store_t store;
+  auto current = issue298_tree();
+  auto stale = current;
+  auto &stale_named = stale.get_child("root.named_devices");
+  stale_named.erase(std::next(stale_named.begin(), 3));
+  stale.put("password", "old-hash");
+  stale.put("salt", "old-salt");
+  ASSERT_TRUE(issue298_valid_snapshot(stale, false));
+  // A newer explicit revocation and credential change must not disappear just
+  // because another record makes the current snapshot ambiguous.
+  current.get_child("root.named_devices").front().second.put("enabled", "false");
+  std::next(current.get_child("root.named_devices").begin(), 1)->second.put("enabled", "false");
+  pt::ptree newly_paired;
+  newly_paired.put("uuid", "22222222-2222-2222-2222-222222222226");
+  newly_paired.put("name", "newly paired");
+  newly_paired.put("cert", "synthetic-cert-5");
+  newly_paired.put("enabled", "true");
+  current.get_child("root.named_devices").push_back({"", newly_paired});
+  write_atomic(store, "shared.json", current);
+  write_atomic(store, "shared.json.bak", stale);
+  const auto original = store.files;
+  const auto read = [&store](const std::string &path) { return store.read(path); };
+  unsigned writes = 0;
+  const auto write = [&store, &writes](const std::string &path, const std::string &contents) {
+    ++writes;
+    return store.write(path, contents);
+  };
+  // Match managed-state credential startup: it does not refresh the backup
+  // until the complete pairing snapshot has been accepted.
+  ASSERT_EQ(policy::recover_credentials("shared.json", read, write, false), policy::load_result_e::loaded);
+  pt::ptree selected;
+  std::string reason;
+  const auto native_json_valid = [](const std::string &contents) {
+    return nvhttp::state_policy::valid_primary_json_with_certificates(contents, issue298_certificate_identity);
+  };
+  EXPECT_EQ(policy::load_primary_state_for_update("shared.json", selected, read, write,
+              issue298_valid_snapshot, native_json_valid, &reason), policy::load_result_e::loaded);
+  EXPECT_EQ(writes, 0U);
+  EXPECT_EQ(store.files, original);
+  EXPECT_TRUE(store.quarantined.empty());
+  EXPECT_EQ(selected.get<std::string>("password"), "current-hash");
+  // Both revocations survive collapsing, and so does the newer pairing.
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(selected, issue298_certificate_identity));
+  const auto &named = selected.get_child("root.named_devices");
+  ASSERT_EQ(named.size(), 5U);
+  EXPECT_FALSE(named.begin()->second.get<bool>("enabled"));
+  EXPECT_FALSE(std::next(named.begin(), 1)->second.get<bool>("enabled"));
+  EXPECT_EQ(std::next(named.begin(), 4)->second.get<std::string>("name"), "newly paired");
+}
+
+TEST(StateStorageIssue298, DiagnosticsNameInvalidRecordIndicesWithoutExposingRecordContents) {
+  constexpr auto conflict = "root.named_devices[3].cert is invalid";
+  auto tree = issue298_tree();
+  std::next(tree.get_child("root.named_devices").begin(), 3)->second.put("cert", "not-a-certificate");
+  const auto invalid_snapshot = [&tree] {
+    std::ostringstream output;
+    pt::write_json(output, tree);
+    return output.str();
+  }();
+  const auto original = tree;
+  std::string reason = "old diagnostic";
+  ASSERT_FALSE(policy::normalize_legacy_pairing_state(tree, issue298_certificate_identity, &reason));
+  EXPECT_EQ(reason, conflict);
+  EXPECT_EQ(tree, original);
+  for (const bool readable_primary : {false, true}) {
+    memory_state_store_t store;
+    store.files["shared.json"] = readable_primary ? invalid_snapshot : "broken";
+    store.files["shared.json.bak"] = invalid_snapshot;
+    const auto files = store.files;
+    pt::ptree selected;
+    unsigned writes = 0;
+    EXPECT_EQ(policy::load_primary_state_for_update("shared.json", selected,
+                [&store](const std::string &path) { return store.read(path); },
+                [&writes](const std::string &, const std::string &) { ++writes; return true; },
+                issue298_valid_snapshot, {}, &reason, issue298_diagnostic), policy::load_result_e::failed);
+    const auto expected = readable_primary ?
+      std::string("primary: ") + conflict + "; refusing recovery snapshot to avoid authorization rollback" :
+      std::string("primary: blank or malformed JSON; recovery: ") + conflict;
+    EXPECT_EQ(reason, expected);
+    EXPECT_TRUE(selected.empty());
+    EXPECT_EQ(writes, 0U);
+    EXPECT_EQ(store.files, files);
+  }
+  tree.get_child("root.named_devices").erase(std::next(tree.get_child("root.named_devices").begin(), 3));
+  ASSERT_TRUE(policy::normalize_legacy_pairing_state(tree, issue298_certificate_identity, &reason));
+  EXPECT_TRUE(reason.empty());
+}
+
+TEST(StateStoragePrimary, ReadableRejectedAuthorizationCannotRestoreOlderCredentials) {
+  memory_state_store_t store;
+  store.files["shared.json.bak"] = paired_snapshot;
+  pt::ptree current;
+  ASSERT_EQ(load_for_read(store, "shared.json.bak", current), policy::load_result_e::loaded);
+  current.put("password", "new-hash");
+  current.get_child("root.named_devices").front().second.put("enabled", "invalid");
+  write_atomic(store, "shared.json", current);
+  const auto original = store.files;
+  ASSERT_EQ(recover_credentials(store, "shared.json", false), policy::load_result_e::loaded);
+  EXPECT_EQ(store.files, original);
+  pt::ptree selected;
+  EXPECT_EQ(load_primary(store, selected), policy::load_result_e::failed);
+  EXPECT_TRUE(selected.empty());
+  EXPECT_EQ(store.files, original);
+}
+
+TEST(StateStoragePrimary, FailureDiagnosticsDistinguishCorruptionAndRecoveryWriteFailure) {
+  memory_state_store_t store;
+  store.files["shared.json"] = "broken";
+  pt::ptree tree;
+  std::string reason;
+  const auto read = [&store](const std::string &path) {
+    return store.read(path);
+  };
+  const auto refuse_write = [](const std::string &, const std::string &) {
+    return false;
+  };
+  EXPECT_EQ(policy::load_primary_state_for_update("shared.json", tree, read, refuse_write, policy::valid_primary_state, {}, &reason), policy::load_result_e::failed);
+  EXPECT_EQ(reason, "primary: blank or malformed JSON; recovery: missing");
+  store.files["shared.json.bak"] = paired_snapshot;
+  EXPECT_EQ(policy::load_primary_state_for_update("shared.json", tree, read, refuse_write, policy::valid_primary_state, {}, &reason), policy::load_result_e::failed);
+  EXPECT_EQ(reason, "could not restore the validated recovery snapshot");
+  EXPECT_TRUE(tree.empty());
+  EXPECT_EQ(store.files["shared.json"], "broken");
+  EXPECT_EQ(store.files["shared.json.bak"], paired_snapshot);
 }
 
 TEST(StateStoragePrimary, SharedMetadataUpdateRecoversIdentityAndAuthorization) {
@@ -748,7 +1203,7 @@ TEST(StateStorageApollo, NullLastSeenSurvivesMetadataSerializationAndBackupRecov
   EXPECT_EQ(store.files["shared.json"], persisted.dump());
 }
 
-TEST(StateStorageApollo, TypedClientDamageRecoversExactBackupBeforeStartup) {
+TEST(StateStorageApollo, TypedClientDamageFailsClosedWithoutRestoringOlderBackup) {
   for (const auto key : {"name", "display_mode", "hdr_profile", "output_name_override", "virtual_display_mode", "virtual_display_layout"}) {
     SCOPED_TRACE(key);
     memory_state_store_t store;
@@ -756,16 +1211,11 @@ TEST(StateStorageApollo, TypedClientDamageRecoversExactBackupBeforeStartup) {
     damaged["root"]["named_devices"][0][key] = 123;
     store.files["shared.json"] = damaged.dump();
     store.files["shared.json.bak"] = apollo_snapshot;
+    const auto original = store.files;
     pt::ptree tree;
-    ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
-    EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
-    EXPECT_EQ(store.files["shared.json.bak"], apollo_snapshot);
-    auto selected = nlohmann::json::parse(store.files["shared.json"]);
-    ASSERT_TRUE(nvhttp::state_policy::normalize_snapshot(selected));
-    EXPECT_EQ(selected["root"]["named_devices"][0].value("name", ""), "Client");
-    EXPECT_TRUE(selected["root"]["named_devices"][0]["perm"].is_number_integer());
-    EXPECT_TRUE(selected["root"]["named_devices"][0]["allow_client_commands"].is_boolean());
-    EXPECT_EQ(selected["root"]["named_devices"][0]["future_field"]["count"], 7);
+    EXPECT_EQ(load_apollo_primary(store, tree), policy::load_result_e::failed);
+    EXPECT_TRUE(tree.empty());
+    EXPECT_EQ(store.files, original);
   }
 }
 
@@ -781,33 +1231,32 @@ TEST(StateStorageApollo, InvalidTypedBackupIsNeverRestored) {
   EXPECT_EQ(store.files["shared.json.bak"], damaged.dump());
 }
 
-TEST(StateStorageApollo, InvalidTypedLayoutRecoversAndValidPrimaryKeepsExactTypes) {
+TEST(StateStorageApollo, InvalidTypedLayoutFailsClosedWithoutRestoringOlderBackup) {
   memory_state_store_t store;
   auto damaged = nlohmann::json::parse(apollo_snapshot);
   damaged["root"]["remote_display_layout"] = nlohmann::json::object();
   EXPECT_FALSE(nvhttp::state_policy::valid_primary_json(damaged.dump()));
   store.files["shared.json"] = damaged.dump();
   store.files["shared.json.bak"] = apollo_snapshot;
+  const auto original = store.files;
   pt::ptree tree;
-  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
-  EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
-  store.files["shared.json.bak"] = "broken";
-  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
-  EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
-  EXPECT_EQ(store.files["shared.json.bak"], "broken");
+  EXPECT_EQ(load_apollo_primary(store, tree), policy::load_result_e::failed);
+  EXPECT_TRUE(tree.empty());
+  EXPECT_EQ(store.files, original);
 }
 
 
-TEST(StateStorageApollo, InvalidNotificationVersionRecoversBeforeTypedStartupRead) {
+TEST(StateStorageApollo, InvalidNotificationVersionFailsClosedWithoutRestoringOlderBackup) {
   memory_state_store_t store;
   auto damaged = nlohmann::json::parse(apollo_snapshot);
   damaged["root"]["last_notified_version"] = 123;
   store.files["shared.json"] = damaged.dump();
   store.files["shared.json.bak"] = apollo_snapshot;
+  const auto original = store.files;
   pt::ptree tree;
-  ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
-  EXPECT_EQ(store.files["shared.json"], apollo_snapshot);
-  EXPECT_NO_THROW(nlohmann::json::parse(store.files["shared.json"])["root"].value("last_notified_version", ""));
+  EXPECT_EQ(load_apollo_primary(store, tree), policy::load_result_e::failed);
+  EXPECT_TRUE(tree.empty());
+  EXPECT_EQ(store.files, original);
 }
 
 TEST(StateStorageApollo, LegacyNumericBooleansRemainUsableByTypedClientAndCommandParser) {
@@ -826,7 +1275,7 @@ TEST(StateStorageApollo, LegacyNumericBooleansRemainUsableByTypedClientAndComman
 }
 
 
-TEST(StateStorageApollo, InvalidLastSeenCannotBypassRecovery) {
+TEST(StateStorageApollo, InvalidLastSeenFailsClosedWithoutRestoringOlderBackup) {
   auto backup = nlohmann::json::parse(apollo_snapshot);
   backup["root"]["named_devices"][0]["last_seen"] = 1759000000;
   for (const auto &invalid : {nlohmann::json(true), nlohmann::json(false), nlohmann::json(1.0), nlohmann::json(1.5),
@@ -843,10 +1292,11 @@ TEST(StateStorageApollo, InvalidLastSeenCannotBypassRecovery) {
     ASSERT_FALSE(nvhttp::state_policy::valid_primary_json(damaged.dump()));
     store.files["shared.json"] = damaged.dump();
     store.files["shared.json.bak"] = backup.dump();
+    const auto original = store.files;
     pt::ptree tree;
-    ASSERT_EQ(load_apollo_primary(store, tree), policy::load_result_e::loaded);
-    EXPECT_EQ(store.files["shared.json"], backup.dump());
-    EXPECT_EQ(store.files["shared.json.bak"], backup.dump());
+    EXPECT_EQ(load_apollo_primary(store, tree), policy::load_result_e::failed);
+    EXPECT_TRUE(tree.empty());
+    EXPECT_EQ(store.files, original);
 
     store.files["shared.json"] = "broken";
     store.files["shared.json.bak"] = damaged.dump();

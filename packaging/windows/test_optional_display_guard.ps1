@@ -25,7 +25,7 @@ try {
                 }
                 $probe = Join-Path $scratch "$driver-$bestEffort-$decision.ps1"
                 $prefix = '$ErrorActionPreference="Stop"; $InstallerBestEffort=' + ('$' + $bestEffort.ToString().ToLowerInvariant()) + '; $Uninstall=$false; $ValidateOnly=$false; $infPath="mock.inf"; $catPath="mock.cat"; $hardwareId="ROOT\MOCK"' + "`n"
-                $source = $prefix + 'function Test-SafeDriverInstall { param($InfPath,$CatalogPath,$HardwareId) ' + $decisionBody + " }`n" + $guard[0].Extent.Text + "`nWrite-Output 'GUARD_ELIGIBLE'; exit 0"
+                $source = $prefix + 'function Test-SafeDriverInstall { param($InfPath,$CatalogPath,$HardwareId) ' + $decisionBody + " }`nfunction Repair-RetainedSunshineDevice { }`n" + $guard[0].Extent.Text + "`nWrite-Output 'GUARD_ELIGIBLE'; exit 0"
                 [IO.File]::WriteAllText($probe, $source)
                 $ErrorActionPreference = 'Continue'
                 try {

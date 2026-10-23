@@ -1,10 +1,26 @@
 #include "../../../tests_common.h"
 
 #include "src/platform/linux/hdr_policy.h"
+#include "src/hdr_stream_policy.h"
 
 #include <array>
 
 namespace hdr = platf::linux_hdr;
+
+TEST(LinuxHdrPolicy, SynthesizedHdrKeepsAnHdrStreamWithAnSdrCapture) {
+  using video::hdr_stream_policy::requires_hdr_source;
+  EXPECT_TRUE(requires_hdr_source(true, false));
+  EXPECT_FALSE(requires_hdr_source(true, true));
+  EXPECT_FALSE(requires_hdr_source(false, false));
+  EXPECT_FALSE(requires_hdr_source(false, true));
+  const auto source = hdr::resolve_output_state(false, true, true);
+  ASSERT_TRUE(source.command.has_value());
+  EXPECT_FALSE(*source.command);
+  // This verified SDR source is the successful result for RTX HDR, not a
+  // failed HDR mode-set requiring a client stream downgrade.
+  EXPECT_FALSE(!*source.command && requires_hdr_source(true, true));
+  EXPECT_TRUE(!*source.command && requires_hdr_source(true, false));
+}
 
 namespace {
   void checksum(std::array<std::uint8_t, 256> &edid, const std::size_t offset) {

@@ -9,6 +9,7 @@
 
 #include <cstdint>
 #include <cctype>
+#include <map>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -228,6 +229,86 @@ namespace statefile::policy {
     return load_result_e::loaded;
   }
 
+  bool normalize_legacy_pairing_state(pt::ptree &tree, const certificate_identity_t &certificate_identity, std::string *failure_reason,
+                                      std::vector<collapsed_pairing_record_t> *collapsed) {
+    if (failure_reason) failure_reason->clear();
+    if (collapsed) collapsed->clear();
+    const auto fail = [&](const std::string &reason) {
+      if (failure_reason) *failure_reason = reason;
+      return false;
+    };
+    if (!certificate_identity) {
+      return fail("certificate validation is unavailable");
+    }
+    // An unreadable value counts as disabled so collapsing can never grant access.
+    const auto disabled = [](const pt::ptree &device) {
+      const auto value = device.get_child_optional("enabled");
+      if (!value) return false;
+      const auto enabled = value->get_value_optional<bool>();
+      return !enabled || !*enabled;
+    };
+    auto normalized = tree;
+    std::vector<collapsed_pairing_record_t> collapsed_records;
+    try {
+      struct survivor_t {
+        pt::ptree *record;
+        std::size_t index;
+      };
+
+      std::map<std::string, survivor_t> named_identities;
+      if (auto devices = normalized.get_child_optional("root.named_devices")) {
+        std::size_t index = 0;
+        for (auto it = devices->begin(); it != devices->end(); ++index) {
+          const auto identity = certificate_identity(it->second.get<std::string>("cert"));
+          if (!identity || identity->empty()) {
+            return fail("root.named_devices[" + std::to_string(index) + "].cert is invalid");
+          }
+          const auto [previous, inserted] = named_identities.emplace(*identity, survivor_t {&it->second, index});
+          if (inserted) {
+            ++it;
+            continue;
+          }
+          // Keep the first record, the only one 1.x ever used for this
+          // certificate. A revocation on any duplicate still applies to it.
+          auto &survivor = *previous->second.record;
+          if (disabled(it->second)) {
+            survivor.put("enabled", false);
+          }
+          collapsed_records.push_back({previous->second.index, survivor.get<std::string>("uuid", ""), index, it->second.get<std::string>("uuid", "")});
+          it = devices->erase(it);
+        }
+      }
+      std::set<std::string> legacy_identities;
+      if (auto devices = normalized.get_child_optional("root.devices")) {
+        for (auto &[key, device] : *devices) {
+          if (auto certs = device.get_child_optional("certs")) {
+            for (auto it = certs->begin(); it != certs->end();) {
+              if (!it->first.empty() || !it->second.empty() || it->second.data().empty() || it->second.data().size() > 65536) {
+                return fail("invalid legacy certificate record");
+              }
+              const auto identity = certificate_identity(it->second.get_value<std::string>());
+              if (!identity || identity->empty()) {
+                return fail("invalid legacy certificate identity");
+              }
+              // A legacy certificate carries no UUID, name, settings or
+              // revocation, so dropping a repeated one loses nothing.
+              if (named_identities.contains(*identity) || !legacy_identities.insert(*identity).second) {
+                it = certs->erase(it);
+              } else {
+                ++it;
+              }
+            }
+          }
+        }
+      }
+    } catch (const std::exception &) {
+      return fail("malformed certificate records");
+    }
+    tree = std::move(normalized);
+    if (collapsed) *collapsed = std::move(collapsed_records);
+    return true;
+  }
+
   bool valid_primary_state(const pt::ptree &tree, bool allow_bootstrap) {
     const auto object = [](const pt::ptree &node) {
       if (!node.data().empty()) return false;
@@ -306,15 +387,55 @@ namespace statefile::policy {
   }
 
   load_result_e load_primary_state_for_update(
-    const std::string &path, pt::ptree &tree, const read_file_t &read_file,
-    const write_file_t &write_file, const validate_primary_t &validate,
-    const std::function<bool(const std::string &)> &validate_json) {
-    tree = {};
-    if (path.empty() || !read_file) return load_result_e::failed;
+    const std::string &path,
+    pt::ptree &tree,
+    const read_file_t &read_file,
+    const write_file_t &write_file,
+    const validate_primary_t &validate,
+    const std::function<bool(const std::string &)> &validate_json,
+    std::string *failure_reason,
+    const primary_diagnostic_t &diagnostic
+  ) {
+    if (failure_reason) {
+      failure_reason->clear();
+    }
+    const auto fail = [&](const std::string &reason) {
+      tree = {};
+      if (failure_reason) {
+        *failure_reason = reason;
+      }
+      return load_result_e::failed;
+    };
+    const auto describe = [&diagnostic](load_result_e status, const pt::ptree &snapshot) -> std::string {
+      switch (status) {
+        case load_result_e::loaded:
+          if (diagnostic) {
+            const auto reason = diagnostic(snapshot);
+            if (!reason.empty()) return reason;
+          }
+          return "invalid pairing snapshot";
+        case load_result_e::missing:
+          return "missing";
+        case load_result_e::corrupt:
+          return "blank or malformed JSON";
+        case load_result_e::failed:
+          return "inspection or read failed";
+      }
+      return "unknown";
+    };
+    if (path.empty() || !read_file) {
+      return fail("primary path or reader is unavailable");
+    }
     const auto primary_file = read_file(path);
-    const auto primary_status = load_json_for_read(path, tree,
-      [&primary_file](const std::string &) { return primary_file; });
-    if (primary_status == load_result_e::failed || !validate || !write_file) return load_result_e::failed;
+    const auto primary_status = load_json_for_read(path, tree, [&primary_file](const std::string &) {
+      return primary_file;
+    });
+    if (primary_status == load_result_e::failed) {
+      return fail("primary inspection or read failed");
+    }
+    if (!validate || !write_file) {
+      return fail("state recovery callbacks are unavailable");
+    }
     const auto backup_file = read_file(path + ".bak");
     pt::ptree backup;
     const auto backup_status = load_json_for_read(path + ".bak", backup,
@@ -327,15 +448,27 @@ namespace statefile::policy {
     if (primary_status == load_result_e::loaded && validate(tree, true) && !validate(tree, false)) {
       // A valid explicit credential/bootstrap decision must not be silently
       // replaced by older credentials just because its host identity is absent.
-      tree = {};
-      return load_result_e::failed;
+      return fail("primary has no host identity and conflicts with the recovery snapshot; refusing credential rollback");
+    }
+    if (primary_status == load_result_e::loaded) {
+      // A readable snapshot can contain newer revocations, credentials or
+      // pairings even when its identities are ambiguous or otherwise invalid.
+      // There is no safe basis for replacing those decisions with an older copy.
+      return fail("primary: " + describe(primary_status, tree) +
+                  "; refusing recovery snapshot to avoid authorization rollback");
     }
     tree = {};
     if (primary_status == load_result_e::missing && backup_status == load_result_e::missing) return load_result_e::missing;
-    if (backup_status != load_result_e::loaded || !backup_json_valid || !validate(backup, false)) return load_result_e::failed;
-    if (!write_file(path, backup_file.contents)) return load_result_e::failed;
+    if (backup_status != load_result_e::loaded || !backup_json_valid || !validate(backup, false)) {
+      return fail(std::string("primary: ") + describe(primary_status, tree) + "; recovery: " + describe(backup_status, backup));
+    }
+    if (!write_file(path, backup_file.contents)) {
+      return fail("could not restore the validated recovery snapshot");
+    }
     const auto restored = read_file(path);
-    if (restored.status != read_status_e::loaded || restored.contents != backup_file.contents) return load_result_e::failed;
+    if (restored.status != read_status_e::loaded || restored.contents != backup_file.contents) {
+      return fail("restored recovery snapshot failed read-back verification");
+    }
     tree = std::move(backup);
     return load_result_e::loaded;
   }

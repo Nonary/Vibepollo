@@ -1,0 +1,272 @@
+#include "src/host_stream_control.h"
+#include "src/display_target_lease.h"
+#include "src/app_audio_termination.h"
+#include "src/remote_display_topology.h"
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cmath>
+#include <condition_variable>
+#include <functional>
+#include <future>
+#include <iostream>
+#include <map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <string_view>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <boost/system/error_code.hpp>
+using namespace std::chrono_literals;
+using namespace std::string_view_literals;
+#define BOOST_LOG(level) std::cerr
+constexpr unsigned SS_ENC_VIDEO=1, SS_ENC_AUDIO=2;
+struct Pause {
+ std::mutex mutex; std::condition_variable cv; bool enabled=false, entered=false, release=false;
+ void reset(bool active) { enabled=active; entered=false; release=false; }
+ void wait() { std::unique_lock lock(mutex); if(!enabled) return; entered=true; cv.notify_all(); cv.wait(lock,[&]{return release;}); }
+ void reached() { std::unique_lock lock(mutex); if(!cv.wait_for(lock,2s,[&]{return entered;})) throw std::runtime_error("pause not reached"); }
+ void resume() { {std::lock_guard lock(mutex); release=true;} cv.notify_all(); }
+} join_pause, expiry_pause, parser_pause, peer_pause;
+std::atomic_bool physical=false, late_ordinary=false, armed=false, terminal_entered=false;
+std::atomic_int running=0, finalizer_calls=0, config_applies=0;
+int failures=0;
+void check(bool ok,const char *name) { std::cout<<(ok?"PASS ":"FAIL ")<<name<<'\n'; if(!ok) ++failures; }
+auto &topology = remote_display_topology::instance();
+namespace nvhttp {
+std::mutex lifecycle, launch_request_mutex;
+std::mutex &stream_lifecycle_mutex() {return lifecycle;}
+void notify_remote_input_transport_lost(const std::string &,std::uint64_t) { expiry_pause.wait(); if(physical) late_ordinary=true; ++config_applies; }
+void mark_client_last_seen(const std::string &) {}
+}
+namespace util {
+long from_view(std::string_view s) { parser_pause.wait(); return std::stol(std::string(s)); }
+template<class F> struct guard {F fn; ~guard(){fn();}};
+template<class F> guard<F> fail_guard(F f){return {f};}
+}
+namespace audio { struct config_t {enum {HOST_AUDIO,HIGH_QUALITY,CUSTOM_SURROUND_PARAMS,CONTINUOUS_AUDIO};}; }
+namespace stream {
+struct monitor_t {
+ int height=0,width=0,framerate=0,encodingFramerate=0,framerateX100=0,bitrate=0,client_requested_bitrate=0,slicesPerFrame=0,numRefFrames=0,encoderCscMode=0,videoFormat=0,dynamicRange=0,chromaSamplingType=0,enableIntraRefresh=0,packetsize=0,pyrowave_min_parity_shards=0;
+ bool input_only=false,vrr_low_latency=false,force_sdr=false,prefer_sdr_10bit=false; std::uint64_t pyrowave_peer_link_bps=0,pyrowave_peer_pace_bps=0; int pyrowave_framing=0;
+};
+struct config_t {
+ struct {bool input_only=false;std::array<bool,4> flags{}; int channels=0,mask=0,packetDuration=0; struct {int channelCount=0,streams=0,coupledStreams=0; std::array<unsigned,8> mapping{};} customStreamParams;} audio;
+ monitor_t monitor;
+ int controlProtocolType=0,packetsize=0,minRequiredFecPackets=0,mlFeatureFlags=0,audioQosType=0,videoQosType=0,encryptionFlagsEnabled=0;
+ int gen1_framegen_fix=0,gen2_framegen_fix=0,frame_generation_enabled=0,lossless_scaling_framegen=0,frame_generation_provider=0,lossless_scaling_target_fps=0,lossless_scaling_rtss_limit=0;
+};
+struct session_t {std::shared_ptr<void> audio_context_guard,display_power_guard;};
+namespace session {
+enum class state_e { STOPPING };
+state_e state(session_t &) {return state_e::STOPPING;}
+void stop(session_t &) {}
+void graceful_stop(session_t &) {}
+constexpr int START_PACING_REJECTED=2;
+inline std::atomic_int running_sessions=0,teardown_sessions=0;
+void mark_client_disconnected(session_t &) {}
+bool uuid_match(session_t &,std::string_view){return false;}
+template<class Role> bool remote_role_match(session_t &,Role,std::optional<std::uint64_t>){return false;}
+struct cleanup_reservation_t {cleanup_reservation_t() {if(host_stream_control::local().terminal) terminal_entered=true;} ~cleanup_reservation_t() {}};
+bool has_shared_runtime_owner() {return running!=0 || topology.managed_client_identity_count()!=0;}
+struct shared_runtime_finalize_context_t {std::optional<std::array<std::uint8_t,16>> virtual_display_guid_bytes;};
+bool finalize_shared_runtime_if_idle(std::string_view, const shared_runtime_finalize_context_t & = {}) {++finalizer_calls; if(has_shared_runtime_owner()) return false; if(armed.exchange(false) && physical) late_ordinary=true; return true;}
+void join(session_t &s,bool=false) {join_pause.wait(); std::lock_guard lock(nvhttp::lifecycle);s.audio_context_guard.reset();s.display_power_guard.reset(); --running; finalize_shared_runtime_if_idle("natural_join");}
+std::shared_ptr<session_t> alloc(const config_t &,auto &launch) {auto s=std::make_shared<session_t>();s->audio_context_guard=std::move(launch.audio_context_guard);s->display_power_guard=launch.display_power_guard;return s;}
+int start(session_t &,const std::string &) {++running;armed=true;return 0;}
+}
+}
+namespace config { struct {int fec_percentage=0,packetsize=0;std::chrono::seconds ping_timeout{5};} stream; struct {bool limit_framerate=false;int max_bitrate=0;} video; constexpr int PACKETSIZE_MIN=100,PACKETSIZE_MAX=2000,PACKETSIZE_SMALL=500,PACKETSIZE_LARGE=1400; constexpr int ENCRYPTION_MODE_MANDATORY=1; void maybe_apply_deferred() {} struct Gate {~Gate(){}}; Gate acquire_apply_read_gate(){return {};}}
+namespace video {int active_hevc_mode=3,active_av1_mode=3,active_pyrowave_mode=2;}
+namespace net {int encryption_mode_for_address(int) {return 0;}}
+namespace platf {std::uint64_t routed_link_bps(int,int){return 0;}}
+namespace pyrowave {
+namespace protocol {constexpr int BITSTREAM_FORMAT=99;constexpr std::string_view ANNOUNCE_FEATURES="pw",ANNOUNCE_ADAPTIVE_FEC="fec";}
+namespace policy {struct framing_e {static constexpr int records=1;};int select_framing(bool,std::optional<std::uint32_t>){return 0;}}
+namespace bandwidth {std::uint64_t pacing_link_bps(std::uint64_t,std::uint64_t){return 0;}}
+}
+namespace remote_session {enum class role_e {game,input,monitor};}
+namespace pending_policy {
+bool disconnect_scope_matches(remote_session::role_e actual,remote_session::role_e expected,bool same,bool all) {return actual==expected && (same||all);}
+struct pending_owner_t {remote_session::role_e role;std::string client_uuid;std::uint64_t generation;};
+auto expired_remote_input_owners(const std::vector<pending_owner_t> &v) {return v;}
+struct rates {int capture_framerate=60,encoding_framerate=60;};std::optional<rates> parse_requested_framerate(std::string_view){return rates{};}
+}
+struct launch_session_t {
+ int guide_button=0;
+ std::shared_ptr<launch_session_t> clone_for_startup() const;
+ bool input_only=false,gcpersist=false;int perm=0;std::vector<int> client_do_cmds,client_undo_cmds;
+ unsigned id=1;std::string unique_id="id";int fps=60000;remote_session::role_e role=remote_session::role_e::input;std::uint64_t role_generation=1;std::string client_uuid="one",surround_params,monitor_profile_uuid;
+ std::optional<display_target::descriptor_t> exact_monitor_target;
+ std::shared_ptr<void> exact_target_hold;
+ std::array<std::uint8_t,16> virtual_display_guid_bytes{};
+ std::shared_ptr<void> audio_context_guard,display_power_guard;
+ std::string remote_capture_output,rtsp_source_address,av_ping_payload,client_name,device_name,normal_vdd_owner_uuid;
+ int gcm_key=0,iv=0,control_connect_data=0,secondary_game_client=0,client_display_mode_override=0,client_display_refresh_millihz=0,prefer_sdr_10bit=0,virtual_display=0,normal_vdd_identity_token=0,framegen_refresh_rate=0,framegen_refresh_millihz=0,framegen_refresh_multiplier=0,framegen_fixed_refresh=0;
+ bool host_audio=false,client_vrr_requested=false,continuous_audio=false,force_sdr=false,enable_hdr=false;
+ int gen1_framegen_fix=0,gen2_framegen_fix=0,frame_generation_enabled=0,lossless_scaling_framegen=0,frame_generation_provider=0,lossless_scaling_target_fps=0,lossless_scaling_rtss_limit=0;
+};
+@SNAPSHOT@
+bool effective_10bit_sdr_requested(const launch_session_t &){return false;}
+void apply_rtx_hdr_stream_policy(stream::monitor_t &){}
+bool activates_vulkan_hdr_layer_for_stream(const stream::monitor_t &){return false;}
+struct OPTION_ITEM {char *option=nullptr,*content=nullptr;OPTION_ITEM *next=nullptr;};
+struct Request {int sequenceNumber=1;char *payload=nullptr;int payloadLength=0;OPTION_ITEM *options=nullptr;};using msg_t=std::shared_ptr<Request>;
+struct Address {operator int() const{return 0;} std::string to_string() const{return "local";}};
+struct Endpoint {Address address() const{return {};}};
+struct Socket {Endpoint local_endpoint(boost::system::error_code &) {return {};} Endpoint remote_endpoint(boost::system::error_code &) {return {};} Endpoint remote_endpoint(){return {};}};
+struct socket_t {Socket sock;};
+void respond(Socket &,launch_session_t &,OPTION_ITEM *,int,const char *,int,std::initializer_list<int>) {}
+struct Pool {std::vector<std::function<void()>> queue;template<class F> void push(F f){queue.emplace_back(std::move(f));} void run(){auto q=std::move(queue);queue.clear();for(auto &f:q)f();}};
+namespace boost::asio {template<class F> void post(Pool &pool,F f){pool.push(std::move(f));}}
+namespace asio = boost::asio;
+namespace proc {struct Process {void terminate(){}void pause(bool){}} proc;}
+struct SessionState {std::set<std::shared_ptr<stream::session_t>> sessions;std::map<stream::session_t*,std::string> client_uuids;std::set<stream::session_t*> vulkan_hdr_layer_sessions;bool vulkan_hdr_layer_pending_stream=false;};
+struct LockedState {std::mutex mutex;SessionState state;auto lock(){return std::unique_lock(mutex);}SessionState *operator->(){return &state;}};
+struct client_disconnect_result_t {bool disconnected=false;std::vector<remote_session::role_e> pending_roles;std::vector<std::uint64_t> pending_generations;};
+struct rtsp_server_t {
+ LockedState _session_state;Pool startup_pool,io_context;host_stream_control::startup_dispatch_t startup_tasks;std::atomic_bool stopping=false;
+ struct launch_session_entry_t {std::shared_ptr<launch_session_t> session;std::chrono::steady_clock::time_point expires_at;bool startup_claimed=false;};
+ std::mutex _launch_sessions_mutex;std::vector<launch_session_entry_t> _launch_sessions;
+ struct Timer {void cancel(){}} raised_timer;
+ void arm_launch_timer_locked(){}
+@CLAIM_STARTUP@
+@RELEASE_CLAIM@
+ int startup_count() const {return startup_tasks.count();}
+@RELEASE_HOLDS@
+@RETAIN_HOLDS@
+@CANCEL_PENDING@
+@SESSION_CLEAR@
+@DISCONNECT_CLIENT@
+@DISCONNECT_ROLE@
+ bool vulkan_hdr_layer_active_locked(){return false;}
+ void set_pending_vulkan_hdr_layer_stream(bool){}
+ bool pending_hdr_active(){return false;}
+ void shutdown_socket(socket_t &){}
+ void insert(std::shared_ptr<stream::session_t> session,const std::string &,bool){_session_state->sessions.insert(std::move(session));}
+ void finish_startup(std::optional<std::array<std::uint8_t,16>>){std::lock_guard lock(nvhttp::lifecycle);stream::session::finalize_shared_runtime_if_idle("startup");}
+@POST@
+@RUN_STARTUP@
+@EXPIRE_LOCKED@
+@NOTIFY_EXPIRED@
+@EXPIRE@
+@CLEAR@
+};
+rtsp_server_t server;
+@ANNOUNCE@
+namespace rtsp_stream {void terminate_sessions(bool p){server.clear(true,p);}bool has_pending_launch_or_startup(){return !server._launch_sessions.empty()||server.startup_count()>0;}int session_count_no_cleanup(){return server._session_state->sessions.size();}}
+// The non-WEBRTC branch of the unchanged real close body still executes map
+// removal, teardown publication, history and capture-finalizer ordering.
+namespace webrtc_stream {
+std::mutex session_mutex;std::atomic_int active_sessions=0,teardown_sessions=0;std::atomic_bool rtsp_sessions_active=false;
+bool has_active_or_pending_sessions(){return active_sessions!=0;}
+std::condition_variable local_answer_cv;
+std::map<std::string,int> sessions;
+void reset_session_input(std::string_view){}
+namespace host_stats {void webrtc_session_ended(){}}
+namespace session_history {void end_session(std::string){peer_pause.wait();}}
+bool stop_webrtc_capture_if_idle_with_lifecycle_lock(std::unique_lock<std::mutex> &,bool *reserved) {if(*reserved){--teardown_sessions;--running;*reserved=false;}return stream::session::finalize_shared_runtime_if_idle("webrtc_close");}
+@CLOSE_WEBRTC@
+void shutdown_all_sessions(){std::vector<std::string> ids;{std::lock_guard lock(session_mutex);for(auto &[id,s]:sessions){(void)s;ids.push_back(id);}}for(auto &id:ids)close_session(id);}
+}
+
+namespace remote_session {void notify_monitor_shutdown(){topology.shutdown();}}
+namespace platf::virtual_display_cleanup {struct Result{bool virtual_displays_removed=true,physical_display_recovered=true;};Result terminate_all(const char *){physical=true;return {};}}
+namespace nvhttp {
+@TERMINAL@
+}
+void reset() {
+ physical=false;terminal_entered=false;late_ordinary=false;armed=true;running=0;finalizer_calls=0;config_applies=0;
+ join_pause.reset(false);expiry_pause.reset(false);parser_pause.reset(false);peer_pause.reset(false);
+ server._session_state->sessions.clear();server._launch_sessions.clear();server.startup_pool.queue.clear();server.io_context.queue.clear();
+ topology.shutdown(true);topology.set_runtime_callbacks({});
+}
+void terminal(){nvhttp::terminate_all_streams_from_host([]{return true;});}
+void wait_terminal_started(){for(int i=0;i<100 && !(host_stream_control::request_ticket()&1);++i) std::this_thread::sleep_for(1ms);}
+void blocked_cleanup(Pause &pause,const char *name,std::function<void()> cleanup) {
+ auto work=std::async(std::launch::async,std::move(cleanup));pause.reached();
+ auto end=std::async(std::launch::async,terminal);wait_terminal_started();
+ const bool waited=end.wait_for(30ms)==std::future_status::timeout;
+ const bool before=physical || terminal_entered;pause.resume();work.get();end.get();
+ check(waited && !before && physical && !late_ordinary,name);
+}
+int main() {
+ launch_session_t metadata;metadata.guide_button=37;metadata.monitor_profile_uuid="exact-monitor-profile";auto copied=metadata.clone_for_startup();check(copied->guide_button==37,"actual startup snapshot preserves Guide metadata");check(copied->monitor_profile_uuid=="exact-monitor-profile","actual startup snapshot preserves Monitor profile metadata");
+ reset();running=1;join_pause.reset(true);server._session_state->sessions.insert(std::make_shared<stream::session_t>());
+ blocked_cleanup(join_pause,"actual natural clear drains removed owner before recovery",[]{server.clear(false);});
+ reset();expiry_pause.reset(true);auto session=std::make_shared<launch_session_t>();server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{session,std::chrono::steady_clock::now()-1s});
+ blocked_cleanup(expiry_pause,"actual expiry extraction/notification finishes before recovery",[]{server.arm_launch_timer();});
+ check(config_applies==1,"expiry notification executes once");
+ reset();server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{session,std::chrono::steady_clock::now()+1s});terminal();
+ check(config_applies==1 && server._launch_sessions.empty(),"actual terminal cancel releases pending Remote Input owner");
+ reset();running=1;peer_pause.reset(true);webrtc_stream::sessions.emplace("old",0);webrtc_stream::active_sessions=1;
+ blocked_cleanup(peer_pause,"actual WebRTC removed close drains history/capture tail",[]{webrtc_stream::close_session("old");});
+ reset();parser_pause.reset(true);server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{session,std::chrono::steady_clock::now()+1s});
+ std::string payload;
+ for(auto key:{"x-nv-audio.surround.numChannels","x-nv-audio.surround.channelMask","x-nv-audio.surround.AudioQuality","x-nv-video[0].packetSize","x-nv-video[0].clientViewportHt","x-nv-video[0].clientViewportWd","x-nv-video[0].maxFPS","x-nv-vqos[0].bw.maximumBitrateKbps","x-nv-video[0].videoEncoderSlicesPerFrame","x-nv-video[0].maxNumReferenceFrames"}) payload+="a="+std::string(key)+":2\n";
+ auto request=std::make_shared<Request>();request->payload=payload.data();request->payloadLength=payload.size();
+ auto announce=std::async(std::launch::async,[&]{return cmd_announce(&server,std::make_shared<socket_t>(),session,std::move(request));});parser_pause.reached();terminal();const int calls=finalizer_calls;parser_pause.resume();check(!announce.get(),"actual target ANNOUNCE claim rejects removed launch after parser cancellation");server.startup_pool.run();server.io_context.run();
+ check(running==0 && finalizer_calls==calls,"actual pre-parser ANNOUNCE ticket prevents late runtime finalizer");
+ parser_pause.reset(false);
+ // Target ANNOUNCE also has an early identity/claim check. Keep a real pending
+ // identity across a bounded failed terminal drain to isolate the ticket fence.
+ reset();parser_pause.reset(true);session=std::make_shared<launch_session_t>();server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{session,std::chrono::steady_clock::now()+1s});
+ std::promise<void> entered,release;auto entered_future=entered.get_future();auto released=release.get_future();
+ auto inflight=std::async(std::launch::async,[&]{host_stream_control::activity_guard_t activity;entered.set_value();released.wait();});entered_future.wait();
+ request=std::make_shared<Request>();request->payload=payload.data();request->payloadLength=payload.size();
+ announce=std::async(std::launch::async,[&]{return cmd_announce(&server,std::make_shared<socket_t>(),session,std::move(request));});parser_pause.reached();
+ check(!host_stream_control::terminate([]{return true;},[]{physical=true;},5ms) && !physical,"bounded drain failure leaves physical recovery unattempted");
+ release.set_value();inflight.get();parser_pause.resume();check(announce.get(),"actual target ANNOUNCE queues old parser only as canceled response after failed drain");
+ server.startup_pool.run();server.io_context.run();check(running==0 && finalizer_calls==0,"actual target pre-parser ticket rejects old pending identity after failed drain");
+ parser_pause.reset(false);
+ // Socket aliases and queued metadata may outlive pending-map removal; neither
+ // may retain resource guards capable of restoring audio/power after recovery.
+ reset();bool late_resource=false;
+ auto pending=std::make_shared<launch_session_t>();
+ pending->audio_context_guard=std::shared_ptr<void>(new int(1),[&](void *p){late_resource=physical;delete static_cast<int*>(p);});
+ std::weak_ptr<void> resource=pending->audio_context_guard;
+ pending->display_power_guard=pending->audio_context_guard;
+ server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
+ auto queued_request=std::make_shared<Request>();queued_request->payload=payload.data();queued_request->payloadLength=payload.size();
+ check(cmd_announce(&server,std::make_shared<socket_t>(),pending,std::move(queued_request)),"actual ANNOUNCE queues metadata with pending resource owner");
+ terminal();check(resource.expired(),"pending socket/queued aliases release runtime holds before recovery");
+ server.startup_pool.run();server.io_context.run();pending.reset();check(!late_resource,"canceled queued/socket destruction has no late resource finalizer");
+ // Control: a legitimate worker transfers its holds to active capture; map
+ // retirement must not release that active owner before the capture join.
+ reset();pending=std::make_shared<launch_session_t>();pending->audio_context_guard=std::make_shared<int>(1);resource=pending->audio_context_guard;
+ server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
+ auto valid_request=std::make_shared<Request>();valid_request->payload=payload.data();valid_request->payloadLength=payload.size();
+ check(cmd_announce(&server,std::make_shared<socket_t>(),pending,std::move(valid_request)),"fresh ANNOUNCE is accepted");server.startup_pool.run();check(running==1 && !resource.expired(),"active capture retains admitted resource handoff");terminal();check(resource.expired(),"terminal joins active resource handoff before recovery");server.io_context.run();
+ // All nonterminal map-removal paths retire the same shared resources while
+ // socket aliases remain alive, so they cannot hide an owner from terminal.
+ for(int removal=0;removal<3;++removal) {
+   reset();pending=std::make_shared<launch_session_t>();pending->audio_context_guard=std::make_shared<int>(1);resource=pending->audio_context_guard;
+   server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
+   if(removal==0)server.session_clear(1);
+   else if(removal==1)server.disconnect_client("one",false);
+   else server.disconnect_remote_role("one",remote_session::role_e::input,1);
+   check(resource.expired(),removal==0?"actual attached-launch removal retires socket resource alias":removal==1?"actual client disconnect retires socket resource alias":"actual role disconnect retires socket resource alias");
+ }
+ // Real topology shutdown failure retains the logical identity. Terminal must
+ // reject final physical recovery instead of treating finalizer(false) as idle.
+ reset();bool fail=false;topology.set_runtime_callbacks({.create_or_reclaim=[](const auto &,const auto &,const auto &){return true;},.apply_composed_topology=[&](const auto &){return !fail;},.exact_target_has_current_mode_and_dxgi=[](const auto &,const auto &){return std::optional<std::string>{"display"};}});
+ topology.activate_remote_monitor("owner","owner",{});fail=true;terminal();
+ check(topology.managed_client_identity_count()==1 && !physical,"actual topology apply failure prevents final physical cleanup");
+ fail=false;terminal();check(topology.managed_client_identity_count()==0 && physical,"topology retry drains owners and permits recovery");
+ // A clean idle topology has no restore work; do not reapply the desktop.
+ reset();bool applied_idle=false;topology.set_runtime_callbacks({.apply_composed_topology=[&](const auto &){applied_idle=true;return false;}});terminal();
+ check(physical && !applied_idle,"clean idle topology permits recovery without reapplying displays");
+ // A removed display can leave restore work even after its identity is gone.
+ reset();fail=false;topology.set_runtime_callbacks({.create_or_reclaim=[](const auto &,const auto &,const auto &){return true;},.apply_composed_topology=[&](const auto &){return !fail;},.exact_target_has_current_mode_and_dxgi=[](const auto &,const auto &){return std::optional<std::string>{"display"};},.terminate_owned_display=[](const auto &){return true;}});
+ topology.activate_or_resume("removed","removed",{},1);fail=true;topology.explicit_release("removed",1,"terminal removal");
+ check(topology.managed_client_identity_count()==0 && !topology.shutdown_complete(),"removed display retains pending physical restore");
+ terminal();check(!physical,"empty-map pending restore failure prevents final physical cleanup");
+ fail=false;terminal();check(physical && topology.shutdown_complete(),"empty-map pending restore succeeds on retry");
+ auto fresh=host_stream_control::start_guard_t(host_stream_control::request_ticket());check(bool(fresh),"fresh starts remain eligible after terminal reopen");
+ return failures?1:0;
+}

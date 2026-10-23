@@ -1,4 +1,5 @@
 #include "lutris_sync_policy.h"
+#include "remote_monitor_profile_policy.h"
 
 #include <algorithm>
 #include <cctype>
@@ -51,7 +52,7 @@ namespace platf::lutris::sync::policy {
       set_or_erase(app, "lutris-directory", game.directory.generic_string());
       set_or_erase(app, "lutris-service", game.service);
       set_or_erase(app, "lutris-service-id", game.service_id);
-      app["cmd"] = "lutris " + launch_uri(game.id);
+      app["cmd"] = launch_command(game.id);
       app["auto-detach"] = true;
       app["wait-all"] = false;
       if (!game.image_path.empty()) app["image-path"] = game.image_path.generic_string();
@@ -108,6 +109,12 @@ namespace platf::lutris::sync::policy {
     std::unordered_set<std::string> seen;
     for (auto iterator = entries.begin(); iterator != entries.end();) {
       auto &app = *iterator;
+      // Explicit Monitor profiles retain their identity and configuration,
+      // even when provider metadata or a legacy provider UUID is present.
+      if (remote_session::marked_monitor_profile(app)) {
+        ++iterator;
+        continue;
+      }
       const auto id = id_of(app);
       if (id.empty() || app.value("lutris-managed", std::string {}) != "auto") {
         ++iterator;

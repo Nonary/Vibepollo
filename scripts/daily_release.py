@@ -11,7 +11,7 @@ import subprocess
 import shutil
 
 
-def identity(commit, day, base, revision=None):
+def identity(commit, day, base):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Expected an exact source commit SHA")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", base):
@@ -21,21 +21,16 @@ def identity(commit, day, base, revision=None):
         raise ValueError("Source version base exceeds MSI limits or is zero")
     if not 2000 <= day.year <= 2099:
         raise ValueError("Daily version year must fit the installer version scheme")
-    if revision is not None and (not isinstance(revision, int) or not 1 <= revision <= 999):
-        raise ValueError("Nightly revision must be in 1..999")
-    suffix = "" if revision is None else f".{revision}"
-    return {
-        "commit": commit,
-        "tag": f"{base}-daily.d{day:%Y%m%d}{suffix}",
-        "version": f"{base}-daily.d{day:%Y%m%d}{suffix}+{commit[:12]}",
-    }
+    tag = f"{base}-nightly.d{day:%Y%m%d}.{commit[:12]}"
+    return {"commit": commit, "tag": tag, "version": tag}
 
 
 def validate_source(repository, branch, confirmation):
     if repository not in {"Nonary/vibeshine", "Nonary/Vibepollo"}:
         raise ValueError("Daily publishing is limited to the designated upstream repositories")
-    if branch not in {"master", "main"}:
-        raise ValueError("Daily source must use the verified master/main primary; legacy vibe/test lanes are retired")
+    allowed = {"master", "main", "canary"}
+    if branch not in allowed:
+        raise ValueError("Daily source must use a confirmed primary or canary branch; legacy vibe/test lanes are retired")
     if confirmation != f"{repository}:{branch}":
         raise ValueError("Set DAILY_RELEASE_SOURCE_BRANCH and explicitly confirm repository:branch in DAILY_RELEASE_SOURCE_CONFIRMED")
     subprocess.run(["git", "check-ref-format", f"refs/heads/{branch}"], check=True)
@@ -43,16 +38,6 @@ def validate_source(repository, branch, confirmation):
 
 def run(*args):
     return subprocess.run(args, check=True, capture_output=True, text=True).stdout.strip()
-
-
-def validate_migration(repository, target_commit, upstream_commit, confirmation):
-    if repository != "Nonary/Vibepollo":
-        return
-    if not re.fullmatch(r"[0-9a-f]{40}", target_commit) or not re.fullmatch(r"[0-9a-f]{40}", upstream_commit):
-        raise ValueError("Migration confirmation requires exact source and target SHAs")
-    expected = f"Nonary/vibeshine:{upstream_commit}:Nonary/Vibepollo:{target_commit}"
-    if confirmation != expected:
-        raise ValueError("Vibepollo daily is blocked until the exact upstream-to-primary migration is reviewed and confirmed")
 
 
 def previous_successful_nightly(repository, releases):
@@ -83,8 +68,8 @@ def resolve():
     repository = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ.get("DAILY_RELEASE_SOURCE_BRANCH", "")
     validate_source(repository, branch, os.environ.get("DAILY_RELEASE_SOURCE_CONFIRMED", ""))
-    if branch != os.environ.get("DAILY_PRIMARY_BRANCH"):
-        raise ValueError("Daily source must equal the verified repository default primary")
+    if branch != os.environ.get("DAILY_PRIMARY_BRANCH") and branch != "canary":
+        raise ValueError("Daily source must equal the verified repository default primary or canary")
     # Fetch only the explicitly confirmed remote branch; ignore local HEAD/tags.
     run("git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}:refs/remotes/origin/daily-source")
     commit = run("git", "rev-parse", "refs/remotes/origin/daily-source^{commit}")
@@ -96,11 +81,7 @@ def resolve():
         # unchanged target into a build or an assertion that migration happened.
         emit_outputs({"commit": commit, "should_build": "false", "skip_reason": f"Source unchanged since {previous['tag']}"})
         return
-    if repository == "Nonary/Vibepollo":
-        upstream = run("git", "ls-remote", "https://github.com/Nonary/vibeshine.git", "refs/heads/master").split()
-        if len(upstream) != 2 or upstream[1] != "refs/heads/master":
-            raise ValueError("Could not resolve the verified Vibeshine primary for migration")
-        validate_migration(repository, commit, upstream[0], os.environ.get("DAILY_RELEASE_MIGRATION_CONFIRMED", ""))
+    # Each repository builds its own changed source, independently of upstream migration.
     # GITHUB_TOKEN has no workflows:write capability. Do not select a target
     # with a different workflow tree and then discover that during publication.
     run("git", "diff", "--exit-code", os.environ["GITHUB_SHA"], commit, "--", ".github/workflows")
@@ -114,18 +95,24 @@ def resolve():
     # Do not change SemVer precedence to place an old nightly above its final stable.
     base = f"{major}.{minor}.{patch + 1}"
     day = dt.datetime.now(dt.timezone.utc).date()
-    prefix = f"daily-{day.isoformat()}"
-    reserved = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{prefix}*", f"refs/tags/*-daily.d{day:%Y%m%d}*")
-    names = [line.split()[-1].removeprefix("refs/tags/") for line in reserved.splitlines()]
-    names += [r["tag_name"] for page in releases for r in page]
-    revisions = []
-    for name in names:
-        legacy = re.fullmatch(re.escape(prefix) + r"(?:\.([1-9][0-9]{0,2}))?", name)
-        semver = re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+-daily\.d" + f"{day:%Y%m%d}" + r"(?:\.([1-9][0-9]{0,2}))?", name)
-        match = legacy or semver
-        if match:
-            revisions.append(int(match[1]) if match[1] else 1)
-    info = identity(commit, day, base, max(revisions, default=0) + 1)
+    # A hex SHA is an identity, not an ordinal. Keep at most one published
+    # new-style nightly per UTC day so installed clients and package managers
+    # never need to guess same-day upgrade order from lexical SHA values.
+    published_today = [r for page in releases for r in page
+                       if r.get("draft") is False and r.get("prerelease") is True and
+                       r.get("published_at") and re.fullmatch(
+                           r"[0-9]+\.[0-9]+\.[0-9]+-nightly\.d" + f"{day:%Y%m%d}" + r"\.[0-9a-f]{12}",
+                           r.get("tag_name", ""))]
+    if published_today:
+        emit_outputs({"commit": commit, "should_build": "false",
+                      "skip_reason": f"Nightly already published today: {published_today[0]['tag_name']}"})
+        return
+    info = identity(commit, day, base)
+    reserved = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{info['tag']}")
+    for line in reserved.splitlines():
+        target, ref = line.split()
+        if ref == f"refs/tags/{info['tag']}" and target != commit:
+            raise ValueError("Immutable nightly tag is reserved at another source commit")
     info["should_build"] = "true"
     emit_outputs(info)
 
@@ -136,11 +123,10 @@ def verify_assets(root, product, commit, tag, version):
     actual = {p.name for p in root.iterdir()}
     if actual != expected or any(not p.is_file() or p.is_symlink() or p.stat().st_size == 0 for p in root.iterdir()):
         raise ValueError(f"Expected exactly the finalized nonempty assets {sorted(expected)}; got {sorted(actual)}")
-    match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)-daily\.d([0-9]{8})(?:\.([1-9][0-9]{0,2}))?", tag)
+    match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d([0-9]{8})\.([0-9a-f]{12})", tag)
     if not match:
-        raise ValueError("New releases require a SemVer nightly tag")
-    info = identity(commit, dt.datetime.strptime(match[2], "%Y%m%d").date(), match[1],
-                    int(match[3]) if match[3] else None)
+        raise ValueError("New releases require a commit-bound nightly tag")
+    info = identity(commit, dt.datetime.strptime(match[2], "%Y%m%d").date(), match[1])
     if info["tag"] != tag or info["version"] != version:
         raise ValueError("Release tag/version/source identity is incoherent")
     provenance = json.loads((root / "release-provenance.json").read_text(encoding="utf-8-sig"))

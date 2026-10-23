@@ -122,3 +122,22 @@ TEST(PlayniteSync_ArtPolicy, ReconvertOnlyWhenCacheDoesNotDescribeSource) {
   EXPECT_TRUE(should_reconvert_playnite_image(true, "cover-a|12|100", "cover-b|12|1"));
   EXPECT_TRUE(should_reconvert_playnite_image(true, "cover-a|12|100", ""));
 }
+
+
+TEST(PlayniteSync_MonitorProfiles, PreservesMarkedRowsAcrossMatchingDedupeAndPurge) {
+  const std::string literal="a1234567-1234-4234-8234-123456789abc";
+  for (const auto uuid : {literal, std::string {}, std::string("not-a-uuid")}) {
+    nlohmann::json profile={{"name","Game"},{"uuid",uuid},{"remote-monitor-profile",true},{"playnite-id","provider"},{"playnite-managed","auto"},{"playnite-source","installed"}};
+    auto ordinary=profile;ordinary.erase("remote-monitor-profile");ordinary["uuid"]="ordinary";
+    auto game=make_game("provider","2024-08-19T12:34:56Z");game.name="Game";
+    for (const bool reverse : {false,true}) for (const bool installed : {false,true}) {
+      game.installed=installed;
+      nlohmann::json root={{"apps",reverse?nlohmann::json::array({ordinary,profile,profile}):nlohmann::json::array({profile,profile,ordinary})}};
+      bool changed=false;std::size_t matched=0;
+      autosync_reconcile(root,{game},0,0,1,false,true,{},{},{},{},{},true,changed,matched,true);
+      EXPECT_EQ(std::count(root["apps"].begin(),root["apps"].end(),profile),2);
+      EXPECT_EQ(match_app_against_indexes(profile,{},{},{},{}),nullptr);
+      auto preserved=profile;mark_app_as_playnite_auto(preserved,kSourceInstalled);EXPECT_EQ(preserved,profile);
+    }
+  }
+}

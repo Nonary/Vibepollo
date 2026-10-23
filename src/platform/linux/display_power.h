@@ -12,6 +12,17 @@ namespace platf::display_power {
   // closes the broker connection and releases the session inhibitor.
   // A null result means that a machine-host request could not become ready.
   std::shared_ptr<void> acquire();
+  /** Retain an existing inhibition without waking or changing any output. */
+  std::shared_ptr<void> retain_existing();
+  /** Versioned generation-bound inhibit-only producer; never wakes an output. */
+  std::shared_ptr<void> acquire_borrow_inhibit();
+  std::shared_ptr<void> acquire_broker_mutation();
+  void broker_mutation_completion_unknown(const std::shared_ptr<void> &hold);
+
+  // Separate from capture leases: blocks only idle dimming/screen-off while a
+  // private topology outlives its stream. It never wakes outputs or inhibits
+  // suspend. A null result means the session hold could not become ready.
+  std::shared_ptr<void> retain_screen();
 
   struct dpms_state_t {
     bool known {false};

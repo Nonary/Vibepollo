@@ -137,7 +137,10 @@ static platf::dxgi::config_data_t g_config = {0, 0, 0, L"", {0, 0}, 10000, 60, 1
 static std::mutex g_config_mutex;
 static std::condition_variable g_config_cv;
 static std::atomic<int32_t> g_activity_admission_fps {120};
+// Even generations expose a complete FPS snapshot; odd generations mean the
+// single pipe-reader writer is publishing a replacement value.
 static std::atomic<uint32_t> g_activity_admission_generation {0};
+static std::atomic<bool> g_cursor_visible {true};
 
 /**
  * @brief Flag indicating whether configuration data has been received from main process.
@@ -320,8 +323,9 @@ public:
   /**
    * @brief Sets GPU scheduling priority for optimal capture performance under high GPU load.
    *
-   * Configures the process GPU scheduling priority to REALTIME. This is critical for maintaining
-   * capture performance when the GPU is under heavy load from games or other applications.
+   * Tries REALTIME, then HIGH if the first request fails (for example, when the
+   * interactive user's token lacks the privilege required for REALTIME).
+   * Priority boosts are optional; capture can continue at the existing priority.
    *
    * @return true if GPU priority was successfully set, false otherwise.
    */
@@ -338,18 +342,20 @@ public:
       return false;
     }
 
-    auto priority = static_cast<LONG>(D3DKMT_SchedulingPriorityClass::REALTIME);
+    for (const auto priority : {D3DKMT_SchedulingPriorityClass::REALTIME, D3DKMT_SchedulingPriorityClass::HIGH}) {
+      const auto priority_name = priority == D3DKMT_SchedulingPriorityClass::REALTIME ? "REALTIME" : "HIGH";
+      const LONG status = d3dkmt_set_process_priority(GetCurrentProcess(), static_cast<LONG>(priority));
+      if (status >= 0) {
+        BOOST_LOG(info) << "GPU scheduling priority set to " << priority_name << " for optimal capture performance";
+        _gpu_priority_set = true;
+        return true;
+      }
 
-    HRESULT hr = d3dkmt_set_process_priority(GetCurrentProcess(), priority);
-    if (FAILED(hr)) {
-      BOOST_LOG(warning) << "Failed to set GPU scheduling priority to REALTIME: " << hr
-                         << " (may require administrator privileges for optimal performance)";
-      return false;
+      BOOST_LOG(warning) << "Failed to set GPU scheduling priority to " << priority_name << ": " << status;
     }
 
-    BOOST_LOG(info) << "GPU scheduling priority set to REALTIME for optimal capture performance";
-    _gpu_priority_set = true;
-    return true;
+    BOOST_LOG(warning) << "GPU scheduling priority boost unavailable; continuing capture at the existing priority";
+    return false;
   }
 
   /**
@@ -375,14 +381,15 @@ public:
    * - MMCSS characteristics setup
    * - WinRT apartment initialization
    *
-   * DPI awareness is best-effort because Windows may have already selected it for the process.
+   * DPI awareness and GPU scheduling priority are best-effort. Windows may have
+   * already selected DPI awareness, and the user's token may deny GPU priority boosts.
    * @return true if all required initialization steps succeeded, false if any required step failed.
    */
   bool initialize_all() {
     bool success = true;
     initialize_dpi_awareness();
     success &= initialize_thread_priority();
-    success &= initialize_gpu_scheduling_priority();
+    initialize_gpu_scheduling_priority();
     success &= initialize_mmcss_characteristics();
     success &= initialize_winrt_apartment();
     return success;
@@ -1078,6 +1085,7 @@ private:
   std::shared_ptr<frame_callback_state_t> _frame_callback_state;
   Direct3D11CaptureFramePool _frame_pool = nullptr;  ///< WinRT frame pool for capture operations
   GraphicsCaptureSession _capture_session = nullptr;  ///< WinRT capture session for monitor/window capture
+  std::optional<bool> _last_cursor_capture_request;  ///< Avoid repeated WinRT calls/logs for unchanged requests.
   winrt::event_token _frame_arrived_token {};  ///< Event token for frame arrival notifications
   std::optional<WgcCaptureDependencies> _deps;  ///< Dependencies for frame processing
 
@@ -1102,9 +1110,11 @@ private:
   std::atomic<uint64_t> _slow_shared_mutex_holds {0};
   std::atomic<uint64_t> _slow_copy_submissions {0};
   std::atomic<uint64_t> _published_frames {0};
+  std::atomic<uint64_t> _direct_published_frames {0};  ///< Frames copied straight into the shared texture.
   std::atomic<uint64_t> _activity_rate_limited_frames {0};
   uint64_t _last_diagnostics_captured_frames = 0;
   uint64_t _last_diagnostics_published_frames = 0;
+  uint64_t _last_diagnostics_direct_published_frames = 0;
   uint64_t _last_diagnostics_empty_drops = 0;
   uint64_t _last_diagnostics_drained_frames = 0;
   uint64_t _last_diagnostics_replaced_frames = 0;
@@ -1115,7 +1125,7 @@ private:
   uint64_t _last_diagnostics_slow_copy = 0;
   uint64_t _last_diagnostics_activity_rate_limited = 0;
   uint32_t _activity_admission_generation = 0;
-  std::chrono::steady_clock::time_point _last_activity_admitted {};
+  platf::dxgi::wgc_policy::source_admission_t _activity_admission;
   std::mutex _delivery_mutex;
   std::condition_variable _delivery_cv;
   std::jthread _delivery_thread;
@@ -1391,12 +1401,13 @@ public:
           QueryPerformanceFrequency(&frequency);
           return static_cast<int64_t>(frequency.QuadPart);
         }();
+        const auto source_time_100ns = frame.SystemRelativeTime().count();
         uint64_t frame_qpc = platf::dxgi::wgc_policy::system_relative_time_to_qpc(
-          frame.SystemRelativeTime().count(),
+          source_time_100ns,
           qpc_frequency
         );
         record_frame_arrival(drained_frames);
-        if (admit_activity_frame()) {
+        if (admit_activity_frame(source_time_100ns)) {
           queue_frame_for_delivery(std::move(frame), surface, frame_qpc);
         }
       } catch (const winrt::hresult_error &ex) {
@@ -1480,6 +1491,7 @@ private:
 
       const auto captured = _captured_frames.load(std::memory_order_relaxed);
       const auto published = _published_frames.load(std::memory_order_relaxed);
+      const auto direct_published = _direct_published_frames.load(std::memory_order_relaxed);
       const auto empty_drops = _frame_pool_empty_drops.load(std::memory_order_relaxed);
       const auto drained = _drained_pool_frames.load(std::memory_order_relaxed);
       const auto replaced = _delivery_replaced_frames.load(std::memory_order_relaxed);
@@ -1492,6 +1504,7 @@ private:
 
       const auto captured_delta = captured - _last_diagnostics_captured_frames;
       const auto published_delta = published - _last_diagnostics_published_frames;
+      const auto direct_published_delta = direct_published - _last_diagnostics_direct_published_frames;
       const auto empty_drop_delta = empty_drops - _last_diagnostics_empty_drops;
       const auto drained_delta = drained - _last_diagnostics_drained_frames;
       const auto replaced_delta = replaced - _last_diagnostics_replaced_frames;
@@ -1504,6 +1517,7 @@ private:
 
       _last_diagnostics_captured_frames = captured;
       _last_diagnostics_published_frames = published;
+      _last_diagnostics_direct_published_frames = direct_published;
       _last_diagnostics_empty_drops = empty_drops;
       _last_diagnostics_drained_frames = drained;
       _last_diagnostics_replaced_frames = replaced;
@@ -1519,6 +1533,7 @@ private:
                       << " approx_extra_pool_latency_ms=" << approximate_extra_pool_latency_ms(_current_buffer_size)
                       << " capture_fps=" << (static_cast<double>(captured_delta) / interval_s)
                       << " publish_fps=" << (static_cast<double>(published_delta) / interval_s)
+                      << " direct_published=" << direct_published_delta
                       << " drained=" << drained_delta
                       << " activity_rate_limited=" << activity_rate_limited_delta
                       << " empty_drops=" << empty_drop_delta
@@ -1532,27 +1547,34 @@ private:
     }
   }
 
-  bool admit_activity_frame() {
-    const auto generation = g_activity_admission_generation.load(std::memory_order_acquire);
+  bool admit_activity_frame(int64_t source_time_100ns) {
+    uint32_t generation;
+    int32_t admission_fps;
+    for (;;) {
+      generation = g_activity_admission_generation.load(std::memory_order_acquire);
+      if ((generation & 1u) != 0) {
+        std::this_thread::yield();
+        continue;
+      }
+      admission_fps = g_activity_admission_fps.load(std::memory_order_relaxed);
+      if (generation == g_activity_admission_generation.load(std::memory_order_acquire)) {
+        break;
+      }
+    }
     if (generation != _activity_admission_generation) {
       _activity_admission_generation = generation;
-      _last_activity_admitted = {};
+      _activity_admission = {};
     }
 
-    const auto admission_fps = g_activity_admission_fps.load(std::memory_order_relaxed);
-    if (admission_fps <= 0) {
-      return true;
-    }
-
-    const auto now = std::chrono::steady_clock::now();
-    const auto minimum_interval = std::chrono::nanoseconds(std::chrono::seconds(1)) / admission_fps;
-    if (_last_activity_admitted.time_since_epoch().count() != 0 &&
-        now - _last_activity_admitted < minimum_interval) {
+    if (!_activity_admission.admit(
+          admission_fps,
+          source_time_100ns,
+          std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        )) {
       _activity_rate_limited_frames.fetch_add(1, std::memory_order_relaxed);
       return false;
     }
 
-    _last_activity_admitted = now;
     return true;
   }
 
@@ -1749,6 +1771,59 @@ private:
   }
 
   /**
+   * @brief Publish a WGC frame straight into the shared texture when nothing is in the way.
+   * @details The scratch handoff exists so this callback never waits on the shared keyed
+   *          mutex. Most frames arrive while the host is not holding that mutex and no older
+   *          frame is queued; those need one GPU copy instead of two (WGC -> scratch -> shared).
+   *          Every GPU submission here competes with the host's conversion for the graphics
+   *          queue, so halving them shortens the host's encode latency tail. Anything busy
+   *          falls back to the scratch path, which keeps publication order and never blocks.
+   * @return true if the frame was published.
+   */
+  bool try_publish_directly(const winrt::com_ptr<ID3D11Texture2D> &frame_tex, uint64_t frame_qpc) {
+    std::unique_lock delivery_lock(_delivery_mutex);
+    const bool frame_delivering = std::any_of(_scratch_textures.begin(), _scratch_textures.end(), [](const auto &scratch) {
+      return scratch.state == scratch_state_e::delivering;
+    });
+    if (!platf::dxgi::wgc_policy::may_publish_directly(
+          _delivery_stop || _shutting_down.load(std::memory_order_acquire),
+          _pending_delivery_frame.has_value(),
+          frame_delivering
+        )) {
+      return false;
+    }
+
+    std::unique_lock context_lock(_d3d_context_mutex, std::try_to_lock);
+    if (!context_lock.owns_lock()) {
+      return false;
+    }
+
+    const auto &keyed_mutex = _deps->resource_manager.get_keyed_mutex();
+    const HRESULT hr = keyed_mutex ? keyed_mutex->AcquireSync(0, 0) : E_FAIL;
+    if (hr != S_OK && hr != WAIT_ABANDONED) {
+      return false;
+    }
+    if (hr == WAIT_ABANDONED) {
+      BOOST_LOG(error) << "Keyed mutex was abandoned; continuing with lock held";
+    }
+
+    _deps->d3d_context->CopyResource(_deps->resource_manager.get_shared_texture().get(), frame_tex.get());
+    _deps->resource_manager.publish_frame_metadata(frame_qpc);
+    const HRESULT release_hr = keyed_mutex->ReleaseSync(0);
+    context_lock.unlock();
+    delivery_lock.unlock();
+    if (FAILED(release_hr)) {
+      BOOST_LOG(warning) << "Failed to release mutex key 0: " << std::format(": 0x{:08X}", release_hr);
+      return true;
+    }
+
+    _deps->resource_manager.signal_frame_ready();
+    _published_frames.fetch_add(1, std::memory_order_relaxed);
+    _direct_published_frames.fetch_add(1, std::memory_order_relaxed);
+    return true;
+  }
+
+  /**
    * @brief Copies the next WGC frame into helper-owned scratch storage and queues it for delivery.
    * @param frame The WGC frame object; it is released before the shared IPC mutex can block.
    * @param surface The captured D3D11 surface.
@@ -1770,6 +1845,10 @@ private:
     winrt::com_ptr<ID3D11Texture2D> frame_tex;
     if (FAILED(ia->GetInterface(__uuidof(ID3D11Texture2D), reinterpret_cast<::IUnknown **>(frame_tex.put_void())))) {
       BOOST_LOG(error) << "Failed to get ID3D11Texture2D from interface";
+      return;
+    }
+
+    if (try_publish_directly(frame_tex, frame_qpc)) {
       return;
     }
 
@@ -1867,17 +1946,46 @@ private:
       return;
     }
 
-    // Take the helper-local D3D context lock before the cross-process keyed
-    // mutex. The callback thread also uses this context for scratch copies; if
-    // GPU load makes that copy slow, waiting here must not block Sunshine from
-    // acquiring the shared WGC texture.
-    const auto context_wait_start = std::chrono::steady_clock::now();
-    std::unique_lock context_lock(_d3d_context_mutex);
-    const auto context_wait = std::chrono::steady_clock::now() - context_wait_start;
+    // Wait for the shared keyed mutex without holding the helper-local D3D
+    // context lock. The callback thread needs that lock for its scratch copy,
+    // and the host can hold the shared texture for a whole conversion when
+    // encoders read it directly, so holding the context through this wait would
+    // stall FrameArrived behind encoder backpressure. Once the keyed mutex is
+    // ours, take the context only if it is free: if the callback is mid-copy,
+    // hand the texture back and wait for the context instead, so the host never
+    // waits on helper work either. Publication order still holds because this
+    // frame stays in the delivering state, which keeps the callback from
+    // publishing a newer frame directly ahead of it.
+    const auto &keyed_mutex = _deps->resource_manager.get_keyed_mutex();
+    const auto acquire_start = std::chrono::steady_clock::now();
+    const auto acquire_deadline = acquire_start + std::chrono::milliseconds(200);
+    std::unique_lock context_lock(_d3d_context_mutex, std::defer_lock);
+    std::chrono::steady_clock::duration context_wait {};
+    HRESULT hr = WAIT_TIMEOUT;
+    for (;;) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= acquire_deadline) {
+        hr = WAIT_TIMEOUT;
+        break;
+      }
+      const auto remaining_ms = std::chrono::ceil<std::chrono::milliseconds>(acquire_deadline - now).count();
+      hr = keyed_mutex->AcquireSync(0, static_cast<DWORD>(remaining_ms));
+      if ((hr != S_OK && hr != WAIT_ABANDONED) || context_lock.try_lock()) {
+        break;
+      }
 
-    const auto mutex_wait_start = std::chrono::steady_clock::now();
-    HRESULT hr = _deps->resource_manager.get_keyed_mutex()->AcquireSync(0, 200);
-    const auto mutex_wait = std::chrono::steady_clock::now() - mutex_wait_start;
+      const HRESULT handback_hr = keyed_mutex->ReleaseSync(0);
+      if (FAILED(handback_hr)) {
+        BOOST_LOG(warning) << "Failed to release mutex key 0: " << std::format(": 0x{:08X}", handback_hr);
+        return;
+      }
+      const auto context_wait_start = std::chrono::steady_clock::now();
+      {
+        std::lock_guard wait_for_callback_copy(_d3d_context_mutex);
+      }
+      context_wait += std::chrono::steady_clock::now() - context_wait_start;
+    }
+    const auto mutex_wait = std::chrono::steady_clock::now() - acquire_start - context_wait;
     if (hr == WAIT_TIMEOUT) {
       const auto slow_mutex_count = _slow_mutex_waits.fetch_add(1, std::memory_order_relaxed) + 1;
       if (slow_mutex_count <= 5 || slow_mutex_count % 120 == 0) {
@@ -2022,6 +2130,9 @@ public:
       return false;
     }
 
+    _last_cursor_capture_request.reset();
+    update_cursor_capture();
+
     auto session3 = _capture_session.try_as<winrt::Windows::Graphics::Capture::IGraphicsCaptureSession3>();
     if (!session3) {
       BOOST_LOG(warning) << "IGraphicsCaptureSession3 not available; skipping IsBorderRequired(false)";
@@ -2045,6 +2156,32 @@ public:
     }
 
     return true;
+  }
+
+  /**
+   * @brief Apply cursor inclusion on the helper owner thread, before startup or during capture.
+   */
+  void update_cursor_capture() {
+    if (!_capture_session) {
+      return;
+    }
+    const bool visible = g_cursor_visible.load(std::memory_order_acquire);
+    if (_last_cursor_capture_request == visible) {
+      return;
+    }
+    _last_cursor_capture_request = visible;
+    try {
+      auto session2 = _capture_session.try_as<winrt::Windows::Graphics::Capture::IGraphicsCaptureSession2>();
+      if (!session2) {
+        BOOST_LOG(warning) << "IGraphicsCaptureSession2 not available; keeping WGC cursor inclusion at its system default";
+        return;
+      }
+      session2.IsCursorCaptureEnabled(visible);
+    } catch (const winrt::hresult_error &ex) {
+      BOOST_LOG(warning) << "IsCursorCaptureEnabled failed (continuing capture): " << ex.code() << " - " << winrt::to_string(ex.message());
+    } catch (...) {
+      BOOST_LOG(warning) << "IsCursorCaptureEnabled threw an unknown exception (continuing capture)";
+    }
   }
 
   /**
@@ -2180,6 +2317,19 @@ std::string get_temp_log_path() {
  *
  */
 void handle_ipc_message(std::span<const uint8_t> message) {
+  if (message.size() == sizeof(platf::dxgi::cursor_visibility_data_t)) {
+    platf::dxgi::cursor_visibility_data_t update {};
+    memcpy(&update, message.data(), sizeof(update));
+    if (update.magic == platf::dxgi::WGC_CURSOR_VISIBILITY_MESSAGE_MAGIC) {
+      if (update.visible > 1) {
+        BOOST_LOG(warning) << "Ignoring invalid WGC cursor visibility update";
+        return;
+      }
+      g_cursor_visible.store(update.visible != 0, std::memory_order_release);
+      return;
+    }
+  }
+
   if (message.size() == sizeof(platf::dxgi::activity_admission_data_t)) {
     platf::dxgi::activity_admission_data_t update {};
     memcpy(&update, message.data(), sizeof(update));
@@ -2188,8 +2338,9 @@ void handle_ipc_message(std::span<const uint8_t> message) {
       return;
     }
 
-    g_activity_admission_fps.store(update.admission_fps, std::memory_order_release);
     g_activity_admission_generation.fetch_add(1, std::memory_order_acq_rel);
+    g_activity_admission_fps.store(update.admission_fps, std::memory_order_relaxed);
+    g_activity_admission_generation.fetch_add(1, std::memory_order_release);
     BOOST_LOG(info) << "WGC activity admission updated to " << update.admission_fps << "fps";
     return;
   }
@@ -2203,8 +2354,10 @@ void handle_ipc_message(std::span<const uint8_t> message) {
 
     memcpy(&g_config, message.data(), sizeof(platf::dxgi::config_data_t));
     g_config_received = true;
-    g_activity_admission_fps.store(g_config.activity_admission_fps, std::memory_order_release);
+    g_cursor_visible.store((g_config.flags & platf::dxgi::WGC_IPC_FLAG_HIDE_CURSOR) == 0, std::memory_order_release);
     g_activity_admission_generation.fetch_add(1, std::memory_order_acq_rel);
+    g_activity_admission_fps.store(g_config.activity_admission_fps, std::memory_order_relaxed);
+    g_activity_admission_generation.fetch_add(1, std::memory_order_release);
     // If log_level in config differs from current, update log filter
     if (INITIAL_LOG_LEVEL != g_config.log_level) {
       // Update log filter to new log level
@@ -2230,6 +2383,35 @@ void handle_ipc_message(std::span<const uint8_t> message) {
 }
 
 /**
+ * @brief Reconstruct WGC control records from arbitrary byte-pipe reads.
+ */
+class WgcControlStream {
+public:
+  // AnonymousPipeFactory supplies a byte stream, not message boundaries. Keep
+  // the existing wire format: one config followed by fixed-size live updates.
+  void receive(std::span<const uint8_t> bytes) {
+    static_assert(sizeof(platf::dxgi::cursor_visibility_data_t) == sizeof(platf::dxgi::activity_admission_data_t));
+    while (!bytes.empty()) {
+      const auto message_size = _configured ? sizeof(platf::dxgi::activity_admission_data_t) : sizeof(platf::dxgi::config_data_t);
+      const auto count = std::min(bytes.size(), message_size - _buffered);
+      std::copy_n(bytes.data(), count, _buffer.data() + _buffered);
+      _buffered += count;
+      bytes = bytes.subspan(count);
+      if (_buffered == message_size) {
+        handle_ipc_message(std::span<const uint8_t>(_buffer.data(), message_size));
+        _configured = true;
+        _buffered = 0;
+      }
+    }
+  }
+
+private:
+  std::array<uint8_t, sizeof(platf::dxgi::config_data_t)> _buffer {};
+  size_t _buffered = 0;
+  bool _configured = false;
+};
+
+/**
  * @brief Helper function to setup the communication pipe with the main process.
  *
  * Configures the AsyncNamedPipe with callback functions for message handling:
@@ -2241,8 +2423,10 @@ void handle_ipc_message(std::span<const uint8_t> message) {
  * @return true if the pipe was successfully configured and started, false otherwise.
  */
 bool setup_pipe_callbacks(AsyncNamedPipe &pipe) {
-  auto on_message = [](std::span<const uint8_t> message) {
-    handle_ipc_message(message);
+  // Each connection owns its accumulator. Retiring the pipe discards an
+  // incomplete tail instead of carrying it into the next helper generation.
+  auto on_message = [stream = WgcControlStream {}](std::span<const uint8_t> message) mutable {
+    stream.receive(message);
   };
 
   auto on_error = [](std::string_view /*err*/) {
@@ -2521,6 +2705,7 @@ int main(int argc, char *argv[]) {
     }
 
     poll_pending_secure_desktop_transition();
+    wgc_capture_manager.update_cursor_capture();
 
     std::this_thread::sleep_for(std::chrono::milliseconds(1));  // Reduced from 5ms for lower IPC jitter
   }

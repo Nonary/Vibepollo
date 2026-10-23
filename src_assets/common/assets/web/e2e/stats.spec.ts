@@ -79,7 +79,10 @@ function makeDetail(summary: ReturnType<typeof makeSummary>) {
   };
 }
 
-async function installStatsFixture(page: Page) {
+async function installStatsFixture(
+  page: Page,
+  options: { hostCpuSamples?: number[]; hostGpuSamples?: number[]; hostEncoderSamples?: number[]; pollIntervalMs?: number } = {},
+) {
   const all = [
     makeSummary('session-2', FIXTURE_NOW - 120, FIXTURE_NOW - 60, 2),
     makeSummary('session-1', FIXTURE_NOW - 240, FIXTURE_NOW - 180, 1),
@@ -123,7 +126,7 @@ async function installStatsFixture(page: Page) {
       body = {
         status: true,
         realtime_stats_enabled: true,
-        realtime_stats_poll_interval_ms: 10_000,
+        realtime_stats_poll_interval_ms: options.pollIntervalMs ?? 10_000,
         realtime_stats_pause_when_hidden: true,
         realtime_stats_show_active_sessions: false,
         realtime_stats_show_host_stats: false,
@@ -139,13 +142,16 @@ async function installStatsFixture(page: Page) {
     } else if (path === '/api/host/stats') {
       const sampleIndex = hostStatsRequestCount++;
       body = {
-        cpu_percent: 10,
+        cpu_percent:
+          options.hostCpuSamples?.[
+            Math.min(sampleIndex, Math.max(0, (options.hostCpuSamples?.length ?? 1) - 1))
+          ] ?? 10,
         cpu_temp_c: 40,
         ram_used_bytes: 1,
         ram_total_bytes: 2,
         ram_percent: sampleIndex === 1 ? null : 42 + sampleIndex * 6,
-        gpu_percent: 20,
-        gpu_encoder_percent: 30,
+        gpu_percent: options.hostGpuSamples?.[Math.min(sampleIndex, options.hostGpuSamples.length - 1)] ?? 20,
+        gpu_encoder_percent: options.hostEncoderSamples?.[Math.min(sampleIndex, options.hostEncoderSamples.length - 1)] ?? 30,
         gpu_temp_c: 45,
         vram_used_bytes: 1,
         vram_total_bytes: 2,
@@ -179,6 +185,28 @@ async function installStatsFixture(page: Page) {
   });
   return { requests };
 }
+
+test('host compute chart renders current readings separately from observed peaks', async ({ page }) => {
+  const fixture = await installStatsFixture(page, {
+    hostCpuSamples: [91, 34],
+    hostGpuSamples: [82, 23],
+    hostEncoderSamples: [73, 12],
+  });
+  await page.goto('/v2/stats');
+
+  const summaries = page.locator('.host-compute-chart__footer span');
+  const cpuSummary = summaries.nth(0);
+  const gpuSummary = summaries.nth(1);
+  const encoderSummary = summaries.nth(2);
+  await expect(cpuSummary).toContainText('CPU · Current 91% · Peak 91%');
+  await expect(gpuSummary).toContainText('GPU · Current 82% · Peak 82%');
+  await expect(encoderSummary).toContainText('ENC · Current 73% · Peak 73%');
+  await page.getByRole('button', { name: 'Refresh' }).click();
+  await expect.poll(() => fixture.requests.filter((request) => request.includes('/api/host/stats')).length).toBe(2);
+  await expect(cpuSummary).toContainText('CPU · Current 34% · Peak 91%');
+  await expect(gpuSummary).toContainText('GPU · Current 23% · Peak 82%');
+  await expect(encoderSummary).toContainText('ENC · Current 12% · Peak 73%');
+});
 
 test('history pagination, grouped details, full export, deletion, and chart zoom remain usable', async ({
   page,

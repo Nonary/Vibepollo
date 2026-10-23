@@ -35,7 +35,7 @@
     },
     "cover": {
         "alt": "{name} cover",
-        "unavailable": "Cover preview unavailable",
+        "unavailable": "Configured cover unavailable",
         "unavailableLabel": "{name} cover unavailable"
       },
       "coverPicker": {
@@ -139,7 +139,7 @@
           "label": "Client icon path"
         },
         "imagePath": {
-          "help": "Enter a local PNG path or find matching cover artwork online.",
+          "help": "Custom Moonlight covers need a readable PNG file no larger than 16 MiB. Moonlight may show its default image when the configured cover is unavailable. Renaming another image format to .png does not convert it. Save the application to refresh its cover preview.",
           "label": "Cover image path",
           "placeholder": "C:/path/to/cover.png"
         },
@@ -453,7 +453,9 @@
           "identity": "Identity and permissions"
         },
         "title": "Edit device",
-        "use_common_value": "Use common setting: {value}"
+        "use_common_value": "Use common setting: {value}",
+        "allow_sleep": "Allow this device to put the PC to sleep",
+        "allow_sleep_description": "Separate permission for compatible clients and Windows hosts with native sleep support. Sleep requires every host application and stream to be closed. Disabled by default."
       },
       "common_settings_title": "Common host settings unavailable",
       "common_settings_unavailable": "The common host settings could not be loaded. Existing client overrides are preserved, but inherited values may be incomplete.",
@@ -541,8 +543,8 @@
         "playniteInstallTitle": "Install the Playnite extension?",
         "playniteRemoveDescription": "Playnite will close to remove the extension. Library synchronization will stop until the extension is installed again.",
         "playniteRemoveTitle": "Remove the Playnite extension?",
-        "playnitePurgeAutosyncDescriptionOne": "There is currently {count} Playnite-managed auto-synced application entry. Confirm to remove auto-synced entries only; manually added apps and other providers are kept.",
-        "playnitePurgeAutosyncDescriptionOther": "There are currently {count} Playnite-managed auto-synced application entries. Confirm to remove auto-synced entries only; manually added apps and other providers are kept.",
+        "playnitePurgeAutosyncDescriptionOne": "There is currently {count} Playnite-managed auto-synced application entry. Confirm to remove auto-synced entries only; manually added apps and other providers are kept. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
+        "playnitePurgeAutosyncDescriptionOther": "There are currently {count} Playnite-managed auto-synced application entries. Confirm to remove auto-synced entries only; manually added apps and other providers are kept. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
         "playnitePurgeAutosyncTitle": "Remove auto-synced Playnite apps?",
         "playniteUpdateTitle": "Update the Playnite extension?",
         "vigemDescription": "The bundled elevated installer will modify the virtual controller driver on this host.",
@@ -833,8 +835,8 @@
       "purgePlaynite": {
         "busy": "Removing Playnite entries",
         "confirm": "Remove Playnite entries",
-        "descriptionOne": "There is currently {count} Playnite-linked application entry. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept.",
-        "descriptionOther": "There are currently {count} Playnite-linked application entries. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept.",
+        "descriptionOne": "There is currently {count} Playnite-linked application entry. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
+        "descriptionOther": "There are currently {count} Playnite-linked application entries. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
         "errorTitle": "Playnite removal failed",
         "failed": "One or more Playnite entries could not be removed.",
         "title": "Remove Playnite entries?"
@@ -1644,14 +1646,14 @@
           "label": "HDR requested by the client"
         },
         "dd_manual_refresh_rate": {
-          "description": "Enter a whole or decimal refresh rate in hertz."
+          "description": "Enter a whole or decimal refresh rate in hertz. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override takes priority over a manual refresh rate."
         },
         "dd_config_revert_delay": {
           "description": "Wait this many milliseconds after the last stream or app ends before restoring the previous display layout.",
           "label": "Display restore delay"
         },
         "dd_manual_resolution": {
-          "description": "Use WIDTHxHEIGHT, for example 2560x1440."
+          "description": "Use WIDTHxHEIGHT, for example 2560x1440. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override and launch resolution scaling take priority over a manual resolution."
         },
         "dd_mode_remapping": {
           "description": "Use a different resolution on the streaming display when the client requests a specific size.",
@@ -1778,6 +1780,10 @@
         "virtual_display_mode": {
           "description": "Choose whether Vibepollo captures a physical monitor or creates a display sized for the client.",
           "label": "Streaming display"
+        },
+        "wgc_direct_encoder_input": {
+          "description": "Encode each Windows capture frame directly instead of copying it first. This lowers encode latency. Turn it off to use the previous copy path.",
+          "label": "Direct Windows capture input"
         },
         "wgc_pacing_smoothing": {
           "description": "Reduce visible pacing changes when Windows Graphics Capture is active.",
@@ -2217,7 +2223,7 @@
         "inactive_title": "Overrides are currently inactive",
         "invalid_saved_description": "The saved value is not in the supported three-list format. It has been preserved unchanged so these controls cannot silently replace it. Correct it in the configuration file before editing substitutions here.",
         "invalid_saved_title": "Saved resolution overrides could not be read",
-        "manual_description": "A fixed resolution or refresh rate takes priority for that part of the display mode. Overrides remain active for each value set to Match the client.",
+        "manual_description": "A fixed resolution or refresh rate takes priority over remapping rules for that value. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override takes priority over manual values. Launch resolution scaling also takes priority over a manual resolution. Rules remain active for each value set to Match the client, unless a client's Display mode override is active; that override bypasses all remapping.",
         "manual_title": "A fixed display mode is active",
         "policy_conflict_description": "The automatic-refresh and fixed-refresh rule lists contain different behavior for the same resolution. Preserve those policy-specific rules in Advanced Display settings, or make them agree before using the simple editor.",
         "policy_conflict_title": "Policy-specific resolution rules need attention",
@@ -2331,7 +2337,8 @@
           "unknown": "Unknown driver"
         },
         "states": {
-          "failed": "Unavailable"
+          "failed": "Unavailable",
+          "uninitialized": "No driver result"
         },
         "messages": {
           "ready": {
@@ -2343,8 +2350,8 @@
             "description": "{driver} did not respond to the latest runtime check. Repair or reinstall the selected driver before using a virtual display."
           },
           "uninitialized": {
-            "title": "Driver has not been initialized",
-            "description": "The host has not initialized a virtual-display driver yet. Start a stream or restart Vibepollo, then check this status again."
+            "title": "No driver result available",
+            "description": "Vibepollo opens the virtual-display connection when needed. No current driver result is available. This status alone does not indicate a failure."
           },
           "version_incompatible": {
             "title": "Driver version mismatch",

@@ -1,7 +1,9 @@
 #include "display_power.h"
+#include "display_borrow_client.h"
 
 #include "display_helper_process.h"
 #include "src/logging.h"
+#include "src/display_target_lease.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -84,13 +86,46 @@ namespace platf::display_power {
     }
   }  // namespace
 
-  std::shared_ptr<void> acquire() {
-    // Standalone/SteamOS does not have a machine session broker.
+  std::shared_ptr<void> acquire_broker_mutation() {
+    if(!std::getenv("VIBEPOLLO_MACHINE_HOST")) {static const auto noop=std::make_shared<int>(0);return noop;}
+    return borrow_protocol::lease_t::connect(true);
+  }
+  void broker_mutation_completion_unknown(const std::shared_ptr<void> &hold) {
+    if(hold && std::getenv("VIBEPOLLO_MACHINE_HOST")) std::static_pointer_cast<borrow_protocol::lease_t>(hold)->completion_unknown();
+  }
+
+  std::shared_ptr<void> acquire_borrow_inhibit() {
+    if(!std::getenv("VIBEPOLLO_MACHINE_HOST")) {static const auto noop=std::make_shared<int>(0);return noop;}
+    static std::mutex mutex;static std::weak_ptr<borrow_protocol::lease_t> current;
+    std::lock_guard lock{mutex};
+    if(auto lease=current.lock()) return lease->alive()?lease:nullptr;
+    auto lease=borrow_protocol::lease_t::connect();current=lease;return lease;
+  }
+
+  std::shared_ptr<void> retain_existing() {
     if (!std::getenv("VIBEPOLLO_MACHINE_HOST")) {
       static const auto noop = std::make_shared<int>(0);
       return noop;
     }
     std::lock_guard lock {lease_mutex};
+    const auto lease = shared_lease.lock();
+    return lease && lease->alive() ? lease : nullptr;
+  }
+
+  std::shared_ptr<void> acquire() {
+    // Serialize admission before taking the display mutation gate. The gate
+    // rejects a second thread rather than waiting, while this lease mutex
+    // already provides the ordering needed for concurrent stream starts.
+    // Taking the gate first would make otherwise compatible concurrent
+    // callers fail while the first caller is starting the shared worker.
+    std::lock_guard lock {lease_mutex};
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return {};
+    // Standalone/SteamOS does not have a machine session broker.
+    if (!std::getenv("VIBEPOLLO_MACHINE_HOST")) {
+      static const auto noop = std::make_shared<int>(0);
+      return noop;
+    }
     if (auto lease = shared_lease.lock()) {
       if (!lease->alive()) {
         auto replacement = start_ready("display-power");
@@ -113,6 +148,15 @@ namespace platf::display_power {
     auto lease = start_ready("display-power");
     shared_lease = lease;
     return lease;
+  }
+
+  std::shared_ptr<void> retain_screen() {
+    if (!std::getenv("VIBEPOLLO_MACHINE_HOST")) {
+      static const auto noop = std::make_shared<int>(0);
+      return noop;
+    }
+    // Never share the capture lease: that one also inhibits suspend.
+    return start_ready("display-retain");
   }
 
   std::optional<std::map<std::string, dpms_state_t>> query_dpms_states(

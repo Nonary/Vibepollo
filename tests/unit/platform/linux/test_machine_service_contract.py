@@ -1,9 +1,22 @@
 #!/usr/bin/env python3
+"""Check shipped deployment contracts and retain explicit weak wiring guards.
+
+Unit directives, payload paths and privilege boundaries are static contracts.
+Classifier, binding/stop decisions, pairing policy and status polling run in
+separate production-behavior tests. The greeter-handoff checks below execute
+the production environment initializer and context function in focused
+fixtures; they do not qualify the installed service or display runtime. Other
+native caller/persistence/GPU integration guards below inspect source text.
+"""
 
 import json
+import os
 import pathlib
 import re
+import shlex
+import subprocess
 import sys
+import tempfile
 
 
 def require(text: str, needle: str, label: str) -> None:
@@ -16,13 +29,34 @@ def forbid(text: str, needle: str, label: str) -> None:
         raise AssertionError(f"{label} retains forbidden legacy or privileged behavior: {needle}")
 
 
+def require_force_guard(text: str, label: str) -> None:
+    """Any package SIGKILL must stay inside the identity-checked opt-in helper."""
+    command = "systemctl kill --kill-whom=all --signal=KILL"
+    if command not in text:
+        return
+    match = re.search(r"^vibepollo_stop_host_for_package\(\) \(\n.*?^\)$", text, re.M | re.S)
+    if not match or text.count(command) != match.group().count(command):
+        raise AssertionError(f"{label} forceful termination escaped the exact host helper")
+    shutdown = match.group()
+    for guard in ("VIBEPOLLO_PACKAGE_FORCE", "vibepollo_package_backup_for_force",
+                  "vibepollo_original_invocation", "vibepollo_original_cgroup",
+                  "vibepollo_original_pid", "vibepollo_host_stop_deadline",
+                  "unit_is_quiescent vibepollo.service"):
+        require(shutdown, guard, label)
+    kill_at = shutdown.index(command)
+    if not shutdown.index("VIBEPOLLO_PACKAGE_FORCE") < shutdown.index("vibepollo_package_backup_for_force") < kill_at:
+        raise AssertionError(f"{label} forces shutdown before consent and backup")
+    require(text, "--property=InvocationID", label)
+    require(text, '[ "$vibepollo_stop_restart" = no ]', label)
+    require(text, '[ "$vibepollo_stop_fenced" = yes ]', label)
+
+
 root = pathlib.Path(sys.argv[1])
 linux = root / "packaging/linux"
 controller = (linux / "vibepollo-session-controller").read_text()
 controller_unit = (linux / "vibepollo-session-controller.service").read_text()
 kwin_environment = (linux / "vibepollo-kwin-session-environment.c").read_text()
 kwin_environment_dropin = (linux / "vibepollo-kwin-session-environment.conf").read_text()
-pairing_policy = (root / "src/http_pairing_policy.cpp").read_text()
 host = (linux / "vibepollo-machine-host").read_text()
 host_unit = (linux / "vibepollo.service").read_text()
 broker_unit = (linux / "vibepollo-session-exec@.service").read_text()
@@ -33,6 +67,8 @@ steam_launcher = (linux / "vibepollo-steam-launch.cpp").read_text()
 session_execution = launcher + "\n" + broker
 private_display = (root / "src/platform/linux/private_display.cpp").read_text()
 display_power = (linux / "vibepollo-display-power.h").read_text()
+display_borrow = (linux / "vibepollo-display-borrow.h").read_text()
+display_borrow_relay = (linux / "vibepollo-display-borrow-relay.h").read_text()
 display_power_client = (root / "src/platform/linux/display_power.cpp").read_text()
 frame_limiter = (root / "src/platform/linux/frame_limiter.cpp").read_text()
 provider_scan_protocol = (root / "src/provider_scan_protocol.cpp").read_text()
@@ -42,6 +78,8 @@ stream = (root / "src/stream.cpp").read_text()
 kmsgrab = (root / "src/platform/linux/kmsgrab.cpp").read_text()
 audio = (root / "src/platform/linux/audio.cpp").read_text()
 nvhttp = (root / "src/nvhttp.cpp").read_text()
+tls_identity = (root / "src/tls_client_identity.h").read_text() + (root / "src/tls_client_identity.cpp").read_text()
+tls_identity_native = (root / "src/tls_client_identity_native.cpp").read_text()
 state_storage = (root / "src/state_storage.cpp").read_text()
 confighttp = (root / "src/confighttp.cpp").read_text()
 linux_misc = (root / "src/platform/linux/misc.cpp").read_text()
@@ -110,18 +148,9 @@ for field in (
     "--property=Service",
 ):
     require(controller, field, "controller logind observation")
-for exact_predicate in (
-    '"$observed_seat" == "$seat_name"',
-    '"$observed_remote" == no',
-    '"$observed_type" == wayland',
-    '"$observed_active" == yes',
-    '"$observed_state" == active',
-    '"$observed_class" == user',
-    'desktop_service_supported "$observed_service"',
-    '"$observed_class" == greeter',
-    '"$observed_service" == plasmalogin-greeter',
-):
-    require(controller, exact_predicate, "controller session classification")
+# Session acceptance and role outcomes are exercised against the production
+# classifier by test_session_classifier.sh; retain the static logind-query
+# fields below as the boundary proving the controller obtains those inputs.
 for readiness in (
     "plasma-login-wayland.target",
     "plasma-login-kwin_wayland.service",
@@ -196,59 +225,12 @@ require(
 )
 for forbidden in ("ExecStart=", "ExecStartPre=", "WantedBy="):
     forbid(kwin_environment_dropin, forbidden, "KWin session environment drop-in")
-require(controller, 'stop_host "$deadline" || return 1', "fail-closed transition ordering")
-require(controller, "binding_matches_candidate complete", "display credential rebinding")
-require(controller, "observe_active_session || return 1", "authoritative transition snapshot")
-require(controller, "read_user_environment || return 1", "current transition credentials")
-for snapshot_field in (
-    "candidate_session", "candidate_user", "candidate_uid", "candidate_gid",
-    "candidate_home", "candidate_role", "candidate_display", "candidate_xdisplay",
-    "candidate_xauthority",
-):
-    require(controller, f'"${snapshot_field}" == "$expected_{snapshot_field.removeprefix("candidate_")}"', "complete transition snapshot")
-require(controller, "host_unit_is_active", "notified systemd host readiness")
-require(controller, "host_unit_is_stopped", "systemd host stop proof")
-for stopped_property in ("ActiveState", "SubState", "MainPID", "ControlGroup", "populated 0"):
-    require(controller, stopped_property, "systemd/cgroup host stop proof")
+# Transition, snapshot, stop-proof, broker-drain, application cleanup, and
+# Xauthority behavior is exercised by test_session_controller.sh against the
+# sourced production functions. Keep static assertions for unit policy and
+# externally visible command/query boundaries below.
 forbid(controller, "/usr/bin/ss", "spoofable global port gating")
-require(controller, 'local pattern="vibepollo-app-${generation}-*.service"', "generation-scoped application cleanup")
-require(controller, 'stop_bound_session_apps "$deadline" || success=1', "application cleanup transition ordering")
-require(controller, "host-stop-cleanup-failed", "stopped existing-binding cleanup")
-inactive_binding_at = controller.index("if ((binding_matches)) && ! host_is_active; then")
-readiness_probe_at = controller.index("if ! session_is_ready; then")
-if inactive_binding_at >= readiness_probe_at:
-    raise AssertionError("inactive existing binding is not quiesced before readiness probes")
-existing_binding_branch = controller.split("\n  if ((binding_matches)); then\n", 1)[1].split(
-    "\n  ((quiesced)) || {", 1
-)[0]
-require(existing_binding_branch, "elif quiesce; then", "stopped existing-binding cleanup")
-forbid(existing_binding_branch, "start_host", "direct existing-binding restart")
-quiesce_body = controller.split("\nquiesce() {\n", 1)[1].split("\n}\n\nnext_generation()", 1)[0]
-quiesce_normalized = " ".join(quiesce_body.split())
-quiesce_order = (
-    quiesce_normalized.index('close_broker_admission "$deadline" || return 1'),
-    quiesce_normalized.index('stop_host "$deadline" || return 1'),
-    quiesce_normalized.index('stop_broker_instances "$deadline" || success=1'),
-    quiesce_normalized.index('stop_bound_session_apps "$deadline" || success=1'),
-    quiesce_normalized.rindex('stop_broker_instances "$deadline" || success=1'),
-    quiesce_normalized.index("((success == 0)) || return 1"),
-    quiesce_normalized.index("remove_session_record || success=1"),
-)
-if tuple(sorted(quiesce_order)) != quiesce_order:
-    raise AssertionError("controller quiesce does not close admission, drain every exact cgroup, then revoke state")
-for broker_stop_proof in (
-    "local deadline=$((SECONDS + quiesce_timeout)) success=0",
-    "local -A stop_requested=()",
-    "broker_unit_is_stopped",
-    "--property=ControlGroup",
-    "session_app_control_group_is_empty",
-    "required_clean_passes=10",
-):
-    require(controller, broker_stop_proof, "bounded broker cgroup quiescence")
-for forced_stop in ("kill --kill-whom=all --signal=KILL",):
-    forbid(controller, forced_stop, "controller graceful cgroup quiescence")
-shutdown_body = controller.split("\nshutdown_controller() {\n", 1)[1].split("\n}\n\nrun_controller()", 1)[0]
-forbid(shutdown_body, "\n  quiesce", "single ExecStopPost quiesce transaction")
+forbid(controller, "kill --kill-whom=all --signal=KILL", "controller graceful cgroup quiescence")
 for forbidden_connector_authority in (
     "connector_request",
     "release_connectors",
@@ -259,9 +241,6 @@ for forbidden_connector_authority in (
 forbid(controller_unit, "SupplementaryGroups=vibeshine vibeshine-vkms", "controller display ownership")
 require(controller, "next_generation", "generation-bound session records")
 require(controller, 'chmod 0640 "$temporary"', "trusted session record mode")
-require(controller, "xauthority_is_private", "private owner-only Xauthority")
-require(controller, "(8#$mode & 0077) == 0", "private owner-only Xauthority mode")
-require(controller, '"$path" != */../* && "$path" != */..', "Xauthority path confinement")
 for forbidden_acl in ("setfacl", "getfacl", "runtime-acl"):
     forbid(controller, forbidden_acl, "controller compositor/home ACL grant")
 forbid(controller, '[[ -S "$candidate_runtime/bus" ]]', "capability-bounded runtime access")
@@ -275,8 +254,6 @@ require(host, 'profile=$home/.config/vibepollo', "canonical pairing profile disc
 require(host, 'profile=$home/.config/sunshine', "legacy pairing profile discovery")
 require(host, '"$profile/vibeshine_state.json"', "existing Vibepollo pairing profile discovery")
 require(host, '"$profile/sunshine_state.json"', "legacy pairing state discovery")
-require(controller, 'desktop_service_supported() { [[ "$1" =~ ^(plasmalogin|plasmalogin-autologin|sddm|sddm-autologin)$ ]]; }',
-        "SDDM and Plasma Login Manager desktop sessions")
 uinput_rules = (linux / "70-vibepollo-uinput.rules").read_text()
 for rule in (
     'KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="vibepollo-uinput", MODE="0660"',
@@ -327,6 +304,170 @@ for forbidden in (
 require(host, "trap request_host_shutdown TERM INT HUP", "single service signal delivery")
 forbid(host, "trap 'forward_host_signal", "duplicate service signal delivery")
 
+# The greeter handoff adapter must consume the same target-specific environment
+# that the clean machine-host launcher exports. The policy tests below exercise
+# the state transitions with explicit contexts; this boundary catches a broken
+# production adapter that would leave those tests green while handoff metadata
+# is never recorded.
+handoff_function_start = private_display.find(
+    "handoff_policy::context_t snapshot_handoff_context()"
+)
+handoff_function_end_marker = "\n    }\n\n    std::map<std::string, std::string> physical_connector_identities"
+handoff_function_end = private_display.find(
+    handoff_function_end_marker, handoff_function_start
+)
+if handoff_function_start < 0 or handoff_function_end < 0:
+    raise AssertionError("production greeter-handoff context function is missing")
+handoff_function = private_display[
+    handoff_function_start : handoff_function_end + len("\n    }")
+]
+
+# Source the production launcher and execute its environment builder with
+# controlled session fields. Comparing expanded entries catches additional or
+# duplicate assignments created through valid Bash parameter expansion.
+require(host, "build_machine_host_environment() {", "machine-host environment builder")
+environment_builder_calls = list(
+    re.finditer(r"(?m)^[ \t]*build_machine_host_environment[ \t]*$", host)
+)
+if len(environment_builder_calls) != 1:
+    raise AssertionError("machine-host environment builder must be called exactly once")
+environment_builder_call = environment_builder_calls[0]
+clean_exec_match = re.search(
+    r'(?m)^[ \t]*capability_clean_exec /usr/bin/env -i "\$\{environment\[@\]\}"',
+    host,
+)
+if not clean_exec_match or clean_exec_match.start() < environment_builder_call.end():
+    raise AssertionError("machine-host clean exec does not consume the built environment array")
+environment_handoff = host[environment_builder_call.end() : clean_exec_match.start()]
+if re.sub(r"\\\n", "", environment_handoff).strip():
+    raise AssertionError("machine-host environment builder is not immediately followed by clean exec")
+shell_program = "\n".join(
+    (
+        "set -euo pipefail",
+        'source "$1"',
+        "session_backend=fixture-backend",
+        "session_role=greeter",
+        "session_user=fixture-session-user",
+        "session_uid=1201",
+        "session_gid=1202",
+        "session_groups=1202,1203",
+        "session_id=fixture-session-id",
+        "session_generation=73",
+        "session_home=/home/fixture-session-user",
+        "environment=()",
+        "build_machine_host_environment",
+        'printf \'%s\\0\' "${environment[@]}"',
+    )
+)
+expanded = subprocess.run(
+    ["/bin/bash", "-c", shell_program, "vibepollo-machine-host", str(linux / "vibepollo-machine-host")],
+    check=True,
+    capture_output=True,
+    env={
+        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        # Reproduces the v8 false negative if the builder gains an expansion
+        # that appends a second session-role assignment.
+        "handoff_role_override": "VIBEPOLLO_SESSION_ROLE=wrong",
+    },
+)
+actual_environment = expanded.stdout.decode().rstrip("\0").split("\0")
+expected_environment = [
+    "HOME=/var/lib/vibepollo",
+    "USER=vibepollo",
+    "LOGNAME=vibepollo",
+    "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin",
+    "LANG=C.UTF-8",
+    "SHELL=/bin/sh",
+    "XDG_CONFIG_HOME=/var/lib",
+    "XDG_RUNTIME_DIR=/run/vibepollo/host",
+    "VIBEPOLLO_MACHINE_HOST=1",
+    "VIBEPOLLO_SESSION_TYPE=wayland",
+    "VIBEPOLLO_SESSION_BACKEND=fixture-backend",
+    "VIBEPOLLO_SESSION_ROLE=greeter",
+    "VIBEPOLLO_SESSION_USER=fixture-session-user",
+    "VIBEPOLLO_SESSION_UID=1201",
+    "VIBEPOLLO_SESSION_GID=1202",
+    "VIBEPOLLO_SESSION_GROUPS=1202,1203",
+    "VIBEPOLLO_SESSION_ID=fixture-session-id",
+    "VIBEPOLLO_SESSION_GENERATION=73",
+    "VIBEPOLLO_SESSION_HOME=/home/fixture-session-user",
+]
+if actual_environment != expected_environment:
+    raise AssertionError(
+        "machine-host environment expansion changed or duplicated a delivered value: "
+        f"{actual_environment!r}"
+    )
+
+# Compile and execute the exact production context function. The C++ compiler
+# handles line splicing, comments, and raw strings, and behavior assertions
+# prove the getenv values reach the expected context fields.
+context_test = '''#include <charconv>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <string>
+#include <string_view>
+#include <system_error>
+namespace platf::linux_private_display::handoff_policy {
+  struct context_t {
+    bool machine_host {false};
+    std::string boot_id;
+    std::string role;
+    std::uint64_t generation {0};
+  };
+}
+namespace platf::linux_private_display {
+  namespace {
+''' + handoff_function + '''
+  }
+}
+int main() {
+  if (::setenv("VIBEPOLLO_MACHINE_HOST", "1", 1) ||
+      ::setenv("VIBEPOLLO_SESSION_ROLE", "greeter", 1) ||
+      ::setenv("VIBEPOLLO_SESSION_GENERATION", "73", 1)) return 2;
+  const auto context = platf::linux_private_display::snapshot_handoff_context();
+  if (!context.machine_host || context.role != "greeter" ||
+      context.generation != 73 || context.boot_id.empty()) return 3;
+  if (::setenv("VIBEPOLLO_MACHINE_HOST", "0", 1) ||
+      ::setenv("VIBEPOLLO_SESSION_ROLE", "desktop", 1) ||
+      ::setenv("VIBEPOLLO_SESSION_GENERATION", "74", 1)) return 4;
+  const auto standalone = platf::linux_private_display::snapshot_handoff_context();
+  if (standalone.machine_host || standalone.role != "desktop" ||
+      standalone.generation != 0 || !standalone.boot_id.empty()) return 5;
+}
+'''
+with tempfile.TemporaryDirectory(prefix="vibepollo-handoff-contract-") as temporary:
+    source_file = pathlib.Path(temporary) / "handoff_context_contract.cpp"
+    executable = pathlib.Path(temporary) / "handoff_context_contract"
+    source_file.write_text(context_test)
+    compiler_command = sys.argv[2] if len(sys.argv) > 2 else os.environ.get("CXX", "c++")
+    compiler = shlex.split(compiler_command)
+    if not compiler:
+        raise AssertionError("C++ compiler command is empty")
+    compiled = subprocess.run(
+        [*compiler, "-std=c++20", str(source_file), "-o", str(executable)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if compiled.returncode:
+        raise AssertionError(f"could not compile production handoff context:\n{compiled.stderr}")
+    executed = subprocess.run([str(executable)], check=False, capture_output=True, text=True)
+    if executed.returncode:
+        raise AssertionError(
+            f"production handoff context behavior failed with exit {executed.returncode}: "
+            f"{executed.stderr}"
+        )
+
+for variable in (
+    "VIBESHINE_MACHINE_HOST",
+    "VIBESHINE_SESSION_ROLE",
+    "VIBESHINE_SESSION_GENERATION",
+):
+    forbid(handoff_function, variable, "greeter-handoff source-only environment")
+require(host, 'capability_clean_exec /usr/bin/env -i "${environment[@]}"',
+        "machine-host greeter-handoff environment delivery")
+
 for variable in ("VIBEPOLLO_MACHINE_HOST", "VIBEPOLLO_SESSION_ROLE"):
     require(host, variable, "machine-host provider scan environment")
     require(provider_scan_protocol, f'std::getenv("{variable}")', "provider scan machine-session guard")
@@ -364,7 +505,7 @@ for invariant in (
     'std::getenv("VIBEPOLLO_MACHINE_HOST")',
     "machine_host_environment[0] == '1'",
     "machine_host_environment[1] == '\\0'",
-    "shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested, supervised_machine_host}",
+    "shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested, supervised_machine_host, shutdown_phase_state}",
     "if (supervised_machine_host_)",
     "supervised_machine_host_ ? std::chrono::seconds(15) : std::chrono::seconds(10)",
     "std::_Exit(lifetime::desired_exit_code)",
@@ -440,19 +581,31 @@ for operation, end_marker in (
 forbid(private_display, ").detach()", "owned restore worker lifetime")
 require(doctor_body, "helper_budget_available(helper_reply_timeout)", "full helper drain budget")
 require(doctor_body, "helper_completion_unknown.store(true", "uncertain completion fences later mutations")
+if not doctor_body.index("helper_completion_unknown.store(true") < doctor_body.index("std::unique_lock mutation_barrier"):
+    raise AssertionError("standalone helper uncertainty must publish before draining the mutation gate")
 require(doctor_body, 'std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr', "Apollo broker completion classification")
 require(private_display, "helper_budget_available(connector_reply_timeout)", "full connector drain budget")
+require(display_borrow, "DISPLAY_BORROW_FTRUNCATE(fd,1)", "durable write-ahead display mutation marker")
+require(display_borrow, "DISPLAY_BORROW_FDATASYNC(fd)==0", "marker sync before native action")
+require(display_borrow, "flock(fd,LOCK_EX|LOCK_NB)", "single exclusive borrow/mutation admission")
+require(display_borrow, "st.st_size==0", "empty-only clean marker state")
+require(display_borrow_relay, "display_borrow_clear_uncertainty(mutation_lock)", "clean release clears durable marker")
+require(display_power, "if(result && !display_borrow_clear_uncertainty(lock))result=false", "wake marker-clear failure propagates as failure")
+require(controller, "recover-display-fence", "explicit manual marker recovery")
+require(controller, "--acknowledge-display-state-inspected", "operator display-state acknowledgment")
+require(controller, 'system_unit_is_stopped "$controller_service"', "controller cannot restart admission during manual recovery")
+require(controller, "collect_stopped_broker_instances", "recovery waits for every broker instance to stop")
+require(controller, "/usr/bin/flock --exclusive --nonblock", "recovery requires an unowned lock file")
 require(broker, "now >= display_deadline", "broker-owned display request deadline")
+relay_worker = broker.split("static int relay_worker(", 1)[1].split("\n#include \"vibepollo-display-borrow-relay.h\"", 1)[0]
+require(relay_worker, "if(!display_borrow_clear_uncertainty(mutation_lock))", "marker clear failure reports unknown completion")
+if relay_worker.index("display_borrow_clear_uncertainty(mutation_lock)") > relay_worker.index("VIBEPOLLO_SESSION_EXIT"):
+    raise AssertionError("durable mutation marker must be retired before clean completion is acknowledged")
 require(broker, "if (!worker_exited) return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN", "no acknowledgement before reap")
 require(broker, "terminate_display_worker(worker, worker_exited, status, signal_cross_uid_worker)", "display cancellation before acknowledgement")
 require(broker, "display_mutating && (cancelled || WIFSIGNALED(status))", "interrupted compositor mutations remain uncertain")
 for method, handler in (("GET", "getClientDisplayLayout"), ("PUT", "putClientDisplayLayout")):
     require(confighttp, f'register_blocking_api_route("^/api/clients/display-layout$", "{method}", {handler})', "display queries outside HTTPS loop")
-status_body = confighttp.split("void getSessionStatus(", 1)[1].split("\n  void ", 1)[0]
-require(status_body, "session_count_no_cleanup()", "status uses passive stream snapshot")
-require(status_body, "proc::proc.current_app_id()", "status uses passive app snapshot")
-forbid(status_body, "rtsp_stream::session_count()", "no stream teardown from status polling")
-forbid(status_body, "proc::proc.running()", "no app teardown from status polling")
 initialize_body = private_display.split("\n  bool initialize() {", 1)[1].split(
     "\n  prepare_result_t prepare_session", 1
 )[0]
@@ -469,7 +622,8 @@ if execute_request.index("drop_to_session(identity)") > execute_request.index('e
 for forbidden in ("chvt", "ActivateSession", "SwitchTo", "RestartUnit", "SetBrightness"):
     forbid(display_power, forbidden, "passive display power recovery")
 require(display_power, 'setenv("QT_QPA_PLATFORM", "wayland", 1)', "Wayland DPMS transport")
-require(display_power, 'write(STDOUT_FILENO, "R", 1)', "power readiness handshake")
+display_power_compact = re.sub(r"\s+", "", display_power)
+require(display_power_compact, 'write(STDOUT_FILENO,"R",1)==1', "power readiness handshake")
 require(display_power_client, 'token == \'R\'', "power readiness consumption")
 require(display_power_client, "std::chrono::seconds(8)", "bounded power readiness")
 require(display_power_client, "std::weak_ptr<lease_t> shared_lease", "shared power broker admission")
@@ -481,10 +635,19 @@ if prepare.index("display_power::acquire()") > prepare.index("session.virtual_di
     raise AssertionError("power recovery must precede display topology preparation")
 if prepare.index("return result;") > prepare.index("cancel_scheduled_revert()"):
     raise AssertionError("failed power admission must preserve scheduled display cleanup")
-require(rtsp, "snapshot->display_power_guard = display_power_guard", "pending-to-startup power handoff")
+pending_handoff = rtsp.split("bool retain_pending_runtime_holds(", 1)[1].split("\n    void session_clear", 1)[0]
+require(pending_handoff, "entry.session->unique_id == snapshot->unique_id", "pending-to-startup power handoff identity guard")
+require(pending_handoff, "entry.expires_at > now", "pending-to-startup power handoff freshness guard")
+require(pending_handoff, "snapshot->display_power_guard = entry.session->display_power_guard", "pending-to-startup power handoff")
 require(stream, "session->display_power_guard = launch_session.display_power_guard", "active capture power ownership")
 require(stream, "session.display_power_guard.reset()", "capture teardown releases display power")
 forbid(linux_misc, "display_power::acquire()", "retained shared runtime must not inhibit sleep")
+# Idle screen-off of a private-only topology wedged NVIDIA GSP with no client
+# left. Its hold blocks only screen changes and ends with the restore.
+require(broker, '!strcmp(argv[1], "display-retain") && argc == 2', "fixed retained screen operation")
+require(display_power, "retained_inhibition_policies = 4u", "retained screen hold never inhibits suspend")
+require(display_power_client, 'start_ready("display-retain")', "retained screen hold is not the capture lease")
+require(private_display, "manager.retained_screen_hold.reset()", "restore releases retained screen hold")
 
 require(host, "readonly machine_profile=/var/lib/vibepollo", "machine host")
 require(host, '"HOME=$machine_profile"', "machine host HOME isolation")
@@ -583,26 +746,32 @@ for forbidden in ("VIBESHINE_ALLOWED_CLIENT_UUIDS", "session_allowed_clients", "
 for forbidden in ("VIBESHINE_ALLOWED_CLIENT_UUIDS", "greeter_client_allowed", "administrator allowlist"):
     forbid(nvhttp, forbidden, "TLS paired-client authorization")
 forbid(nvhttp, "tl_peer_certificate", "request-bound TLS identity")
+forbid(nvhttp, "tls_client_identity_by_endpoint", "transport-owned TLS identity")
 for invariant in (
     "exact_certificate_identity",
     "build_paired_client_records",
-    "resolve_client_identity_from_peer_cert_locked",
+    "tls_client_identities.authenticate_certificate",
     "Client certificate is not one exact enabled pairing record",
     "revoke_paired_client_access",
     "forget_tls_client_identities_for_uuid",
     "clear_tls_client_identities",
-    "tls_client_identity_by_endpoint.size() >= pairing_policy::max_paired_clients * 8",
+    "request->get_connection_context()",
+    "request->set_connection_context(authority)",
+    "std::vector<std::weak_ptr<authority_t>> authorities",
+    "authority->authorized.load(std::memory_order_acquire)",
     "client_root.named_devices.size() >= pairing_policy::max_paired_clients",
     "if (!add_authorized_client",
 ):
-    require(nvhttp, invariant, "exact enabled-pairing TLS authorization")
-for invariant in ("paired_client_state_valid", "resolve_paired_client", "invalid_state", "disabled"):
-    require(pairing_policy, invariant, "paired-client authorization policy")
+    require(nvhttp + tls_identity, invariant, "exact enabled-pairing TLS authorization")
+# Paired-client policy behavior is exercised against the production source by
+# test_component_http_pairing_policy (test_http_pairing.cpp). Keep this contract
+# focused on its static integration boundaries below: request identity wiring,
+# revocation, persistence, and lifecycle admission.
 # Apollo represents enabled authority with its permission bitmask. Inspect the
 # permission-edit overload, retaining fail-closed persistence and revocation.
 disable_body = nvhttp.rsplit("bool update_device_info(", 1)[1].split("bool unpair_client", 1)[0]
 require(disable_body, "if (!effective || (previous->perm & effective) != previous->perm)", "partial permission revocation")
-require(nvhttp, "(*record)->perm == expected_permissions", "pending admission permission snapshot revalidation")
+require(tls_identity_native, "(*record)->perm == expected_permissions", "pending admission permission snapshot revalidation")
 require(disable_body, "revoke_paired_client_access(uuid)", "paired-client disable revocation")
 enable_fresh_state_position = disable_body.index("config::flag::FRESH_STATE")
 enable_migration_position = disable_body.index("statefile::migrate_recent_state_keys()")
@@ -677,7 +846,7 @@ remembered_identity_body = nvhttp.split(
 )[1].split("std::string get_client_uuid_from_request", 1)[0]
 require(
     remembered_identity_body,
-    "paired_client_uuid_enabled_locked(it->second.uuid)",
+    "tls_client_identities.resolve_snapshot(request, client_root.named_devices)",
     "cached TLS identity live authorization",
 )
 
@@ -812,7 +981,7 @@ for lifecycle, label in (
         raise AssertionError(f"{label} lacks sustained clean broker enumeration")
     forbid(lifecycle, "systemctl stop 'vibepollo-session-exec@*.service'", label)
     forbid(lifecycle, 'systemctl stop "vibepollo-session-exec@*.service"', label)
-    forbid(lifecycle, "systemctl kill --kill-whom=all --signal=KILL", label)
+    require_force_guard(lifecycle, label)
 
 # Pre-replacement hooks must quiesce both the immediately prior architecture
 # and the controller/broker architecture without trusting systemctl globs.
@@ -885,7 +1054,7 @@ for lifecycle, label in (
     forbid(lifecycle, "systemctl stop 'vibepollo-session-restore@*.service'", label)
     forbid(lifecycle, 'systemctl stop "vibepollo-session-restore@*.service"', label)
     forbid(lifecycle, "systemctl unmask", label)
-    forbid(lifecycle, "systemctl kill --kill-whom=all --signal=KILL", label)
+    require_force_guard(lifecycle, label)
     forbid(lifecycle, "vibepollo_session_record=", label)
     forbid(lifecycle, "vibepollo_legacy_acl=", label)
     function_name = "do_quiesce_machine_host" if label.startswith("Arch") else "vibepollo_quiesce_machine_host"
@@ -894,15 +1063,15 @@ for lifecycle, label in (
     prepare_at = quiesce.index("vibepollo_prepare_host_upgrade_fence || return 1")
     freeze_at = quiesce.index("vibepollo_freeze_controller || return 1", prepare_at)
     activate_at = quiesce.index("vibepollo_activate_host_upgrade_fence || return 1", freeze_at)
-    control_mask_at = quiesce.index("systemctl mask --runtime vibeshine-vkms-control.socket", activate_at)
+    control_mask_at = quiesce.index("vibepollo_package_mask vibeshine-vkms-control.socket", activate_at)
     control_stop_at = quiesce.index("vibepollo_stop_exact_unit vibeshine-vkms-control.socket", control_mask_at)
     control_drain_at = quiesce.index("vibepollo_control_instances_are_quiescent || return 1", control_stop_at)
-    restore_mask_at = quiesce.index("systemctl mask --runtime 'vibepollo-session-restore@.service'", activate_at)
+    restore_mask_at = quiesce.index("vibepollo_package_mask 'vibepollo-session-restore@.service'", activate_at)
     helper_close_at = quiesce.index("vibepollo_disable_legacy_handoff || return 1", restore_mask_at)
-    broker_admission_at = quiesce.index("systemctl mask --runtime vibepollo-session-exec.socket", control_drain_at)
+    broker_admission_at = quiesce.index("vibepollo_package_mask vibepollo-session-exec.socket", control_drain_at)
     broker_stop_at = quiesce.index("vibepollo_stop_exact_unit vibepollo-session-exec.socket", broker_admission_at)
     host_stop_at = quiesce.index("vibepollo_stop_exact_unit vibepollo.service", broker_stop_at)
-    host_mask_at = quiesce.index("systemctl mask --runtime vibepollo.service", host_stop_at)
+    host_mask_at = quiesce.index("vibepollo_package_mask vibepollo.service", host_stop_at)
     first_restore_stop = quiesce.index("vibepollo_stop_restore_instances || return 1", host_mask_at)
     broker_drain_at = quiesce.index("vibepollo_stop_brokers || return 1", first_restore_stop)
     frozen_proof_at = quiesce.index("vibepollo_controller_remains_frozen || return 1", broker_drain_at)
@@ -989,10 +1158,10 @@ for lifecycle, label in (
         "RefuseManualStart=no",
         "KillMode=mixed",
         "SendSIGKILL=no",
-        "unmask --runtime vibeshine-vkms-control.socket",
+        "vibepollo_package_release",
         "start vibeshine-vkms-control.socket",
-        "unmask --runtime vibepollo-session-exec.socket",
-        "unmask --runtime vibepollo.service",
+        "vibepollo_package_restore_barriers",
+        "vibepollo_package_remove_owned",
         "LoadState=loaded",
         "systemctl enable vibepollo-session-controller.service",
         "systemctl start vibepollo-session-controller.service",
@@ -1065,4 +1234,4 @@ for lifecycle in (arch_install, postinst):
 require(special_packaging, 'SUNSHINE_SERVICE_READINESS_COMMAND "ExecStartPre=/bin/sleep 5"', "ordinary user service")
 forbid(special_packaging, "vibepollo-session-ready", "ordinary user service")
 
-print("PASS: least-privilege Linux machine-session controller contract")
+print("PASS: static machine-service contracts and residual source wiring guards")

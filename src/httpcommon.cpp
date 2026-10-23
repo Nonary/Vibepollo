@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include "display_target_lease.h"
 #include <optional>
 #include <string>
 #include <utility>
@@ -209,7 +210,17 @@ namespace http {
   net::net_e origin_web_ui_allowed;
 
 #ifdef _WIN32
-  std::string shared_virtual_display_guid;
+  namespace { std::mutex shared_guid_mutex; std::string shared_virtual_display_guid; }
+  std::string shared_virtual_display_guid_snapshot() {
+    std::lock_guard lock{shared_guid_mutex};return shared_virtual_display_guid;
+  }
+  bool set_shared_virtual_display_guid(std::string value) {
+    // The provisional core borrower is installed before its native probe. This
+    // same admission gate excludes A-to-B and equal-string ABA owner changes
+    // throughout observation, publication and every retained capture reference.
+    auto mutation=display_target::leases().begin_mutation();if(!mutation)return false;
+    std::lock_guard lock{shared_guid_mutex};shared_virtual_display_guid=std::move(value);return true;
+  }
 #endif
 
   int init() {

@@ -1,0 +1,18 @@
+--- a/src/audio_display_transition.h
++++ b/src/audio_display_transition.h
+@@ -47,11 +47,10 @@
+       // Keep our copy through later metadata destruction/config rollback.
+     }
+ 
+-    void capture_if_empty_and_attach(std::shared_ptr<void> &pending_hold) noexcept {
+-      // Adopt an existing metadata hold before considering another acquisition.
+-      // A failed earlier attempt may be retried here, without vetoing preparation.
+-      attach(pending_hold);
+-      (*this)();
++    void capture_if_empty_and_attach(std::shared_ptr<void> &pending_hold) {
++      if (!pending_hold) {
++        pending_hold = capture_();
++      }
+       attach(pending_hold);
+     }
+ 

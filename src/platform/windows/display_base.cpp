@@ -43,6 +43,11 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE : DWORD {
 #include "src/display_device.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#if defined(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE) && SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE
+#include "src/platform/windows/display_frame_push.h"
+#endif
+#include "src/platform/windows/frame_push_capture_policy.h"
+#include "src/platform/windows/virtual_display.h"
 #include "src/video.h"
 #include "utf_utils.h"
 #include "wgc_capture_policy.h"
@@ -53,6 +58,35 @@ namespace platf {
 
 namespace platf::dxgi {
   namespace {
+    gpu_priority_manager_t &gpu_priority_manager() {
+      // Capture objects can overlap during reinitialization or multiple streams.
+      // The last successful lease restores the process's original class, not an
+      // assumed NORMAL class and not a boost saved by another capture object.
+      static gpu_priority_manager_t manager {
+        []() -> std::optional<int> {
+          using get_priority_t = NTSTATUS(WINAPI *)(HANDLE, display_base_t::D3DKMT_SCHEDULINGPRIORITYCLASS *);
+          const auto module = GetModuleHandleA("GDI32");
+          const auto get = module ? reinterpret_cast<get_priority_t>(GetProcAddress(module, "D3DKMTGetProcessSchedulingPriorityClass")) : nullptr;
+          display_base_t::D3DKMT_SCHEDULINGPRIORITYCLASS priority {};
+          if (!get || FAILED(get(GetCurrentProcess(), &priority))) {
+            BOOST_LOG(warning) << "Unable to query GPU priority for capture-scoped restoration";
+            return std::nullopt;
+          }
+          return static_cast<int>(priority);
+        },
+        [](int priority) {
+          const auto module = GetModuleHandleA("GDI32");
+          const auto set = module ? reinterpret_cast<display_base_t::PD3DKMTSetProcessSchedulingPriorityClass>(GetProcAddress(module, "D3DKMTSetProcessSchedulingPriorityClass")) : nullptr;
+          if (!set || FAILED(set(GetCurrentProcess(), static_cast<display_base_t::D3DKMT_SCHEDULINGPRIORITYCLASS>(priority)))) {
+            BOOST_LOG(warning) << "Unable to change capture-scoped GPU priority to " << priority;
+            return false;
+          }
+          return true;
+        }
+      };
+      return manager;
+    }
+
     constexpr std::uint32_t WINDOWS_23H2_BUILD = 22631;
 
     std::mutex g_adapter_luid_mutex;
@@ -366,6 +400,9 @@ namespace platf::dxgi {
   }
 
   capture_e display_base_t::capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) {
+    auto invalidate_geometry_on_exit = util::fail_guard([this] {
+      if (output_monitor) output_monitor->terminate_input_geometry();
+    });
     auto adjust_client_frame_rate = [&]() -> DXGI_RATIONAL {
       // Use exactly the requested rate if the client sent an X100 value
       if (client_frame_rate_strict.Numerator > 0 && client_frame_rate_strict.Denominator > 0) {
@@ -444,7 +481,10 @@ namespace platf::dxgi {
     sleep_overshoot_logger.reset();
 
     while (true) {
-      if (output_monitor && output_monitor->reinit_requested()) return capture_e::reinit;
+      if (output_monitor && output_monitor->reinit_requested()) {
+        BOOST_LOG(debug) << "Capture restart: source=output-monitor phase=before-snapshot monitor_id=" << output_monitor->diagnostic_id();
+        return capture_e::reinit;
+      }
 
       if (auto diag_now = std::chrono::steady_clock::now(); diag_now - pacing_diag_last_log >= 10s) {
         if (pacing_bust_woke_late || pacing_bust_snapshot_miss || pacing_phase_preserved || pacing_phase_reanchored) {
@@ -580,12 +620,16 @@ namespace platf::dxgi {
       }
 
       if (output_monitor && output_monitor->reinit_requested()) {
+        BOOST_LOG(debug) << "Capture restart: source=output-monitor phase=after-snapshot backend_status=" << static_cast<int>(status)
+                         << " monitor_id=" << output_monitor->diagnostic_id();
         release_snapshot();
         return capture_e::reinit;
       }
 
       switch (status) {
         case platf::capture_e::reinit:
+          BOOST_LOG(debug) << "Capture restart: source=backend phase=snapshot";
+          return status;
         case platf::capture_e::error:
         case platf::capture_e::interrupted:
           return status;
@@ -606,6 +650,9 @@ namespace platf::dxgi {
 
       status = release_snapshot();
       if (status != platf::capture_e::ok) {
+        if (status == platf::capture_e::reinit) {
+          BOOST_LOG(debug) << "Capture restart: source=backend phase=release-snapshot";
+        }
         return status;
       }
     }
@@ -617,12 +664,17 @@ namespace platf::dxgi {
   display_base_t::~display_base_t() = default;
 
   void display_base_t::prepare_for_reinit() {
+    if (output_monitor) output_monitor->terminate_input_geometry();
     release_snapshot();
 
     if (device_ctx) {
       device_ctx->ClearState();
       device_ctx->Flush();
     }
+  }
+
+  std::optional<input_geometry_snapshot_t> display_base_t::input_geometry_snapshot() const {
+    return output_monitor ? output_monitor->input_geometry_snapshot() : std::nullopt;
   }
 
   /**
@@ -720,7 +772,8 @@ namespace platf::dxgi {
     const ::video::config_t &config,
     const std::string &display_name,
     const bool skip_dd_test,
-    const std::optional<LUID> &required_adapter_luid
+    const std::optional<LUID> &required_adapter_luid,
+    const bool preserve_capture_for_input_geometry
   ) {
     static std::once_flag windows_cpp_once_flag;
 
@@ -1018,7 +1071,7 @@ namespace platf::dxgi {
     {
       const DWORD flags = TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY;
       TOKEN_PRIVILEGES tp;
-      HANDLE token;
+      HANDLE token = nullptr;
       LUID val;
 
       if (OpenProcessToken(GetCurrentProcess(), flags, &token) &&
@@ -1032,7 +1085,9 @@ namespace platf::dxgi {
         }
       }
 
-      CloseHandle(token);
+      if (token) {
+        CloseHandle(token);
+      }
 
       HMODULE gdi32 = GetModuleHandleA("GDI32");
       if (gdi32) {
@@ -1089,7 +1144,8 @@ namespace platf::dxgi {
           }
           BOOST_LOG(info) << "Active GPU has HAGS " << (hags_enabled ? "enabled" : "disabled");
           BOOST_LOG(info) << "Using " << (priority == D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH ? "high" : "realtime") << " GPU priority";
-          if (FAILED(d3dkmt_set_process_priority(GetCurrentProcess(), priority))) {
+          gpu_priority_lease = gpu_priority_manager().acquire(static_cast<int>(priority));
+          if (!gpu_priority_lease) {
             BOOST_LOG(warning) << "Failed to adjust GPU priority. Please run application as administrator for optimal performance.";
           }
         } else {
@@ -1153,7 +1209,8 @@ namespace platf::dxgi {
     }
 
     output_monitor = std::make_unique<display_output_monitor_t>(captured_adapter_luid, captured_output_desc,
-      captured_hdr_state_valid, captured_hdr_state, offset_x, offset_y, env_width, env_height);
+      captured_hdr_state_valid, captured_hdr_state, offset_x, offset_y, env_width, env_height,
+      preserve_capture_for_input_geometry);
 
     return 0;
   }
@@ -1545,12 +1602,45 @@ namespace platf {
     const bool user_requested_ddx = capture_mode == "ddx";
     const bool default_to_wgc = dxgi::should_use_wgc_default();
     const bool wgc_requested = capture_mode.starts_with("wgc");
-    const bool prefer_wgc_backend = !user_requested_ddx && (wgc_requested || default_to_wgc);
+    const bool frame_push_requested = frame_push::policy::requested(capture_mode);
+    frame_push::policy::Selection frame_push_selection = frame_push::policy::Selection::NotRequested;
+    if (frame_push_requested) {
+#if defined(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE) && SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE
+      const bool sunshine_virtual_display = VDISPLAY::is_sunshine_virtual_display_output(display_name);
+      const bool driver_capable = sunshine_virtual_display && VDISPLAY::driver_supports_frame_push_capture();
+      frame_push_selection = frame_push::policy::select(
+        true,
+        true,
+        sunshine_virtual_display,
+        driver_capable,
+        false
+      );
+      if (frame_push_selection == frame_push::policy::Selection::HostBackendUnavailable &&
+          hwdevice_type == mem_type_e::dxgi) {
+        auto frame_push_display = std::make_shared<dxgi::display_frame_push_vram_t>();
+        if (frame_push_display->init(config, display_name, required_adapter_luid) == 0) {
+          frame_push_selection = frame_push::policy::select(true, true, true, true, true);
+          BOOST_LOG(info) << "capture=idd-push initialized the live frame-push session.";
+          return frame_push_display;
+        }
+      }
+#else
+      frame_push_selection = frame_push::policy::select(true, false, false, false, false);
+#endif
+      if (frame_push_selection != frame_push::policy::Selection::Ready) {
+        BOOST_LOG(warning) << "capture=idd-push requested; "
+                           << frame_push::policy::fallback_reason(frame_push_selection)
+                           << "; using WGC fallback.";
+      }
+    }
+    const bool frame_push_wgc_fallback = frame_push::policy::use_wgc_fallback(frame_push_selection);
+    const bool prefer_wgc_backend = !user_requested_ddx &&
+                                    (wgc_requested || default_to_wgc || frame_push_wgc_fallback);
 
     if (hwdevice_type == mem_type_e::dxgi) {
       if (prefer_wgc_backend) {
         auto disp = dxgi::display_wgc_ipc_vram_t::create(config, display_name, required_adapter_luid);
-        if (disp || wgc_requested) {
+        if (disp || wgc_requested || frame_push_wgc_fallback) {
           return disp;
         }
       }
@@ -1562,7 +1652,7 @@ namespace platf {
     } else if (hwdevice_type == mem_type_e::system) {
       if (prefer_wgc_backend) {
         auto disp = dxgi::display_wgc_ipc_ram_t::create(config, display_name, required_adapter_luid);
-        if (disp || wgc_requested) {
+        if (disp || wgc_requested || frame_push_wgc_fallback) {
           return disp;
         }
       }

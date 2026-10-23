@@ -13,6 +13,7 @@
 #include <functional>
 #include <future>
 #include <gtest/gtest.h>
+#include <thread>
 #include <moonlight-common-c/src/ControllerHaptics.h>
 #include <mutex>
 #include <vector>
@@ -38,6 +39,10 @@ namespace fake_transport {
     std::vector<std::vector<std::uint8_t>> reports;
     std::function<void()> on_destroy;
     std::function<void()> before_ready;
+
+    void speaker(std::span<const std::uint8_t> data) {
+      handlers.speaker_pcm(data, handlers.capture_speaker_incarnation());
+    }
 
     lvg::driver::ds5_input_report latest_input() {
       std::lock_guard lock {mutex};
@@ -141,7 +146,7 @@ namespace {
   namespace sessions = platf::dualsense_usbip_gamepad;
 
   platf::gamepad_arrival_t arrival(std::uint16_t capabilities = LI_CCAP_HAPTICS_PCM) {
-    return {LI_CTYPE_PS, capabilities, 0};
+    return {LI_CTYPE_PS, capabilities, 0, false, 123};
   }
 
   platf::feedback_queue_t queue(std::uint32_t capacity = 32) {
@@ -650,4 +655,226 @@ TEST_F(DualSenseUsbipGamepadTests, FinalApplicationScopeClearsOldPcmWithoutDisab
   auto messages = drain(feedback);
   ASSERT_EQ(messages.size(), 1);
   EXPECT_EQ(messages[0].data.haptics.samples, fresh);
+}
+
+TEST_F(DualSenseUsbipGamepadTests, SpeakerQueueIsBoundedIndependentAndEpochInvalidated) {
+  platf::usbip_gamepad_t backend;
+  auto feedback = queue();
+  ASSERT_EQ(backend.alloc({0, 7}, arrival(LI_CCAP_HAPTICS_PCM | 0x4000), feedback), 0);
+  auto endpoint = fake_transport::current[0];
+  drain(feedback);
+  endpoint->pcm(samples(11));
+  for (unsigned i = 0; i < 100; ++i) {
+    endpoint->speaker(samples(std::uint8_t(i)));
+  }
+  auto messages = drain(feedback);
+  ASSERT_EQ(messages.size(), 2u);
+  EXPECT_EQ(messages[0].type, platf::gamepad_feedback_e::haptics_pcm);
+  const auto speaker = messages[1];
+  EXPECT_EQ(speaker.type, platf::gamepad_feedback_e::speaker_pcm);
+  EXPECT_EQ(speaker.id, 7);
+  EXPECT_EQ(speaker.data.speaker.sequence, 99u);
+  EXPECT_EQ(speaker.data.speaker.sample_position, 99u * 240u);
+  EXPECT_EQ(speaker.data.speaker.samples, samples(99));
+  ASSERT_TRUE(controller_speaker_pcm::encode(8, 13, speaker.id, speaker.data.speaker, speaker.speaker_epoch));
+  backend.free(0, false);
+  // A block popped before teardown must not be emitted by the sender later.
+  EXPECT_FALSE(controller_speaker_pcm::encode(8, 13, speaker.id, speaker.data.speaker, speaker.speaker_epoch));
+  endpoint->speaker(samples(55));
+  EXPECT_TRUE(drain(feedback).empty());
+  ASSERT_EQ(backend.alloc({0, 7}, arrival(0x4000), feedback), 0);
+  drain(feedback);
+  fake_transport::current[0]->speaker(samples(33));
+  messages = drain(feedback);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_GT(messages[0].data.speaker.generation, speaker.data.speaker.generation);
+  EXPECT_EQ(messages[0].data.speaker.sequence, 0u);
+  EXPECT_EQ(messages[0].data.speaker.sample_position, 0u);
+  EXPECT_EQ(messages[0].data.speaker.flags, 1);
+}
+
+TEST_F(DualSenseUsbipGamepadTests, SpeakerAliasRejectsOtherControllerTypesAndMalformedFrames) {
+  platf::usbip_gamepad_t backend;
+  auto feedback = queue();
+  auto metadata = arrival(0x4000);
+  metadata.type = 4;  // Steam attributes uses the same bit, never speaker PCM.
+  ASSERT_EQ(backend.alloc({0, 1}, metadata, feedback), 0);
+  drain(feedback);
+  fake_transport::current[0]->speaker(samples(1));
+  EXPECT_TRUE(drain(feedback).empty());
+  backend.free(0, false);
+  ASSERT_EQ(backend.alloc({0, 1}, arrival(0x4000), feedback), 0);
+  drain(feedback);
+  auto endpoint = fake_transport::current[0];
+  const auto pcm = samples(7);
+  endpoint->speaker(std::span(pcm).first(480));
+  endpoint->speaker(std::span(pcm).first(3));
+  endpoint->speaker(std::span(pcm).first(480));
+  EXPECT_TRUE(drain(feedback).empty());
+  endpoint->speaker(std::span(pcm).last(480));
+  auto messages = drain(feedback);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages[0].data.speaker.samples, pcm);
+  EXPECT_EQ(messages[0].data.speaker.flags, 1);
+}
+
+TEST_F(DualSenseUsbipGamepadTests, FullQueueNeverEvictsOtherFeedbackForSpeaker) {
+  platf::usbip_gamepad_t backend;
+  auto feedback = queue();
+  ASSERT_EQ(backend.alloc({0, 0}, arrival(0x4000), feedback), 0);
+  drain(feedback);
+  unsigned inserted = 0;
+  while (feedback->try_raise(platf::gamepad_feedback_msg_t::make_rumble(8, 1, 2))) {
+    ++inserted;
+  }
+  ASSERT_GT(inserted, 0u);
+  fake_transport::current[0]->speaker(samples(1));
+  const auto messages = drain(feedback);
+  EXPECT_EQ(messages.size(), inserted);
+  for (const auto &msg : messages) {
+    EXPECT_EQ(msg.type, platf::gamepad_feedback_e::rumble);
+  }
+  fake_transport::current[0]->speaker(samples(2));
+  const auto next = drain(feedback);
+  ASSERT_EQ(next.size(), 1u);
+  EXPECT_EQ(next[0].data.speaker.sample_position, 240u);
+}
+
+TEST_F(DualSenseUsbipGamepadTests, ActuatorTimeoutDoesNotInvalidateFreshSpeaker) {
+  platf::usbip_gamepad_t backend;
+  auto feedback = queue();
+  ASSERT_EQ(backend.alloc({0, 0}, arrival(LI_CCAP_HAPTICS_PCM | 0x4000), feedback), 0);
+  auto endpoint = fake_transport::current[0];
+  drain(feedback);
+  endpoint->pcm(samples(1));
+  drain(feedback);
+  std::this_thread::sleep_for(std::chrono::milliseconds(60));
+  endpoint->speaker(samples(2));
+  endpoint->pcm(samples(3));
+  const auto messages = drain(feedback);
+  ASSERT_EQ(messages.size(), 2u);
+  EXPECT_EQ(messages[0].type, platf::gamepad_feedback_e::speaker_pcm);
+  EXPECT_EQ(messages[1].type, platf::gamepad_feedback_e::haptics_pcm);
+  EXPECT_TRUE(controller_speaker_pcm::encode(8, 13, 0, messages[0].data.speaker, messages[0].speaker_epoch));
+}
+
+TEST_F(DualSenseUsbipGamepadTests, SpeakerRequiresExplicitOwnerAndEchoesItAcrossReuse) {
+  platf::usbip_gamepad_t backend;
+  auto feedback = queue();
+  auto metadata = arrival(0x4000);
+  metadata.speaker_owner = 0;
+  ASSERT_EQ(backend.alloc({0, 0}, metadata, feedback), 0);
+  drain(feedback);
+  fake_transport::current[0]->speaker(samples(1));
+  EXPECT_TRUE(drain(feedback).empty());
+  backend.free(0, false);
+  metadata.speaker_owner = 0x123456789abcdef0ULL;
+  ASSERT_EQ(backend.alloc({0, 0}, metadata, feedback), 0);
+  drain(feedback);
+  fake_transport::current[0]->speaker(samples(2));
+  const auto messages = drain(feedback);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages[0].data.speaker.owner, metadata.speaker_owner);
+}
+
+TEST_F(DualSenseUsbipGamepadTests, PendingAudioUrbCannotAcquireRetainedRebindOwner) {
+  for (int ingress = 0; ingress < 3; ++ingress) {
+    SCOPED_TRACE(ingress);
+    auto scope = sessions::start_session();
+    sessions::set_application_active(true);
+    platf::usbip_gamepad_t backend;
+    auto feedback = queue();
+    auto metadata = arrival(LI_CCAP_HAPTICS_PCM | 0x4000);
+    metadata.persist_after_disconnect = true;
+    metadata.speaker_owner = 123;
+    ASSERT_EQ(backend.alloc({0, 0}, metadata, feedback), 0);
+    auto endpoint = fake_transport::current[0];
+    drain(feedback);
+    // Use the actual USB/IP scheduler and actual backend callbacks together.
+    // Only the operating-system transport is replaced by the fixture.
+    platf::dualsense_usbip::session protocol(0, endpoint->handlers);
+    std::vector<std::uint8_t> import(40, 0);
+    import[0] = 1; import[1] = 0x11; import[2] = 0x80; import[3] = 3;
+    const auto bus = platf::dualsense_usbip::session::bus_id(0);
+    std::copy(bus.begin(), bus.end(), import.begin() + 8);
+    ASSERT_TRUE(protocol.feed(import));
+    ASSERT_TRUE(protocol.imported());
+    protocol.take_output();
+    const auto audio = [](unsigned sequence, std::uint8_t sample) {
+      std::vector<std::uint8_t> wire(48 + 1920 + 5 * 16, 0);
+      const auto put = [&](unsigned offset, std::uint32_t value) {
+        for (unsigned i = 0; i < 4; ++i) wire[offset + i] = std::uint8_t(value >> (24 - i * 8));
+      };
+      put(0, 1); put(4, sequence); put(8, 0x10001); put(16, 1);
+      put(24, 1920); put(28, 0xffffffff); put(32, 5);
+      for (unsigned i = 0; i < 240; ++i) {
+        wire[48 + i * 8] = sample;
+        wire[48 + i * 8 + 4] = 42;
+      }
+      for (unsigned i = 0; i < 5; ++i) {
+        put(48 + 1920 + i * 16, i * 384);
+        put(48 + 1920 + i * 16 + 4, 384);
+      }
+      return wire;
+    };
+    const auto start = std::chrono::steady_clock::now();
+    const auto old_audio = audio(100, 17);
+    const auto received_tag = protocol.capture_receive_incarnation();
+    if (ingress == 0) ASSERT_TRUE(protocol.feed(old_audio, start));
+    if (ingress == 2) ASSERT_TRUE(protocol.feed(std::span(old_audio).first(1), start));
+    protocol.poll(start);
+    ASSERT_TRUE(drain(feedback).empty());
+    backend.free(0, true);
+    ASSERT_EQ(endpoint->destroyed.load(), 0u);
+    metadata.speaker_owner = 456;
+    ASSERT_EQ(backend.alloc({0, 0}, metadata, feedback), 0);
+    ASSERT_EQ(fake_transport::current[0], endpoint);
+    drain(feedback);
+    if (ingress == 1) ASSERT_TRUE(protocol.feed(old_audio, received_tag, start));
+    if (ingress == 2) ASSERT_TRUE(protocol.feed(std::span(old_audio).subspan(1), start));
+    protocol.poll(start + std::chrono::milliseconds(5));
+    auto legacy = drain(feedback);
+    ASSERT_EQ(legacy.size(), 1u);
+    EXPECT_EQ(legacy[0].type, platf::gamepad_feedback_e::haptics_pcm);
+    EXPECT_EQ(legacy[0].data.haptics.samples[0], 42u); // Actuator delivery is independent.
+    ASSERT_TRUE(protocol.feed(audio(101, 85), start + std::chrono::milliseconds(6)));
+    protocol.poll(start + std::chrono::milliseconds(20));
+    auto messages = drain(feedback);
+    ASSERT_EQ(messages.size(), 2u);
+    EXPECT_EQ(messages[0].type, platf::gamepad_feedback_e::haptics_pcm);
+    EXPECT_EQ(messages[1].type, platf::gamepad_feedback_e::speaker_pcm);
+    EXPECT_EQ(messages[1].data.speaker.owner, 456u);
+    EXPECT_EQ(messages[1].data.speaker.samples[0], 85u);
+  }
+}
+
+TEST_F(DualSenseUsbipGamepadTests, SubmissionIncarnationRejectsSameOwnerRebindAndReallocation) {
+  auto scope = sessions::start_session();
+  sessions::set_application_active(true);
+  for (bool retain : {true, false}) {
+    platf::usbip_gamepad_t backend;
+    auto feedback = queue();
+    auto metadata = arrival(0x4000);
+    metadata.persist_after_disconnect = true;
+    metadata.speaker_owner = 123;
+    ASSERT_EQ(backend.alloc({0, 0}, metadata, feedback), 0);
+    auto old = fake_transport::current[0];
+    const auto tag = old->handlers.capture_speaker_incarnation();
+    ASSERT_NE(tag, 0u);
+    backend.free(0, retain);
+    ASSERT_EQ(backend.alloc({0, 0}, metadata, feedback), 0);
+    auto current = fake_transport::current[0];
+    ASSERT_EQ(current == old, retain);
+    if (retain) EXPECT_NE(current->handlers.capture_speaker_incarnation(), tag);
+    drain(feedback);
+    old->handlers.speaker_pcm(samples(17), tag);
+    current->handlers.speaker_pcm(samples(17), 0);
+    EXPECT_TRUE(drain(feedback).empty());
+    current->speaker(samples(85));
+    auto messages = drain(feedback);
+    ASSERT_EQ(messages.size(), 1u);
+    EXPECT_EQ(messages[0].data.speaker.owner, 123u);
+    EXPECT_EQ(messages[0].data.speaker.samples, samples(85));
+    backend.free(0, false);
+  }
 }

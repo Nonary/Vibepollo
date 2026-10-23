@@ -87,11 +87,32 @@ namespace display_helper_integration {
   // Terminal user actions may explicitly override managed display ownership.
   // A saved enabled-to-disabled policy transition may finish old recovery even
   // though future display automation is disabled. Ordinary REVERTs stay gated.
+  // RetainPausedNormalGame is only for an idle paused app with configured
+  // disconnect restoration, under the stream lifecycle gate. It preserves
+  // normal reservations and never grants generic display removal authority.
+  enum class RevertOwnershipPolicy {
+    AllOwnersMustRelease,
+    RetainPausedNormalGame,
+  };
+
+  // RemoveAfterRestore is only selected for a final ended-application restore.
+  // It requires exact helper completion and never grants paused cleanup authority.
+  enum class FinalRestoreDisplayPolicy {
+    Retain,
+    RemoveAfterRestore,
+  };
+
+  // Revoke deferred final-restore removal at launch/resume ingress, including
+  // sessions that reactivate and drain before the completion observer runs.
+  void cancel_final_restore_display_removal();
+
   bool revert(
     bool prefer_golden_if_current_missing = true,
     bool override_managed_ownership = false,
     bool allow_disabled_recovery = false,
-    RecoveryTicket *recovery_ticket = nullptr
+    RecoveryTicket *recovery_ticket = nullptr,
+    RevertOwnershipPolicy ownership_policy = RevertOwnershipPolicy::AllOwnersMustRelease,
+    FinalRestoreDisplayPolicy display_policy = FinalRestoreDisplayPolicy::Retain
   );
 
   std::optional<RecoveryStatusSnapshot> query_recovery_status(
@@ -109,14 +130,18 @@ namespace display_helper_integration {
   void shutdown_orphan_recovery_monitor();
 
   // Attempt to cancel any pending restore/revert requests on a running helper.
-  // Returns true if a DISARM command was sent successfully.
+  // Returns true if a DISARM command was sent successfully. Stream admission
+  // may opt into one bounded reconnect; background recovery stays cache-only.
   bool disarm_pending_restore(
     std::function<bool()> cancellation_predicate = {},
     std::chrono::steady_clock::time_point operation_deadline =
-      std::chrono::steady_clock::time_point::max());
+      std::chrono::steady_clock::time_point::max(),
+    bool reconnect_for_stream_start = false
+  );
 
-  // Returns true while a live helper still owns a requested REVERT. Virtual
-  // target teardown/creation must not overlap that restoration window.
+  // Reports the host's outstanding restore guard. Successful DISARM dispatch
+  // retires that guard without acknowledging helper worker completion. Shutdown
+  // fences mutation; interrupted liveness probes retain a known restore.
   bool restore_in_progress(
     std::function<bool()> cancellation_predicate = {},
     std::chrono::steady_clock::time_point operation_deadline =

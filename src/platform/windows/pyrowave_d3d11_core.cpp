@@ -9,6 +9,10 @@
  */
 #include "pyrowave_d3d11_core.h"
 
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+  #include "pyrowave_d3d12_conversion.h"
+#endif
+
 #include "src/pyrowave_protocol.h"
 
 #include <algorithm>
@@ -16,16 +20,14 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstring>
-#include <limits>
-#include <map>
-#include <span>
-
 #include <d3d11_4.h>
 #include <d3dcompiler.h>
 #include <dxgi1_2.h>
-#include <wrl/client.h>
-
+#include <limits>
+#include <map>
+#include <span>
 #include <vulkan/vulkan_core.h>
+#include <wrl/client.h>
 // vulkan_core.h must precede pyrowave.h.
 #include <pyrowave.h>
 
@@ -45,6 +47,7 @@ namespace pyrowave::d3d11 {
     };
 
     static_assert(sizeof(convert_params_t) % 16 == 0, "Constant buffers are sized in 16-byte units");
+    static_assert(sizeof(convert_params_t) == 32, "D3D12 conversion root constants match params_cbuffer");
 
     // Matches sdr_to_pq_params_cbuffer (b1) in include/convert_sdr_to_pq_base.hlsl.
     struct sdr_to_pq_params_t {
@@ -127,8 +130,7 @@ namespace pyrowave::d3d11 {
       image.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
       VkExternalImageFormatProperties external_properties {VK_STRUCTURE_TYPE_EXTERNAL_IMAGE_FORMAT_PROPERTIES};
       VkImageFormatProperties2 properties {VK_STRUCTURE_TYPE_IMAGE_FORMAT_PROPERTIES_2, &external_properties};
-      if (get_image(gpu, &image, &properties) != VK_SUCCESS ||
-          !(external_properties.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)) {
+      if (get_image(gpu, &image, &properties) != VK_SUCCESS || !(external_properties.externalMemoryProperties.externalMemoryFeatures & VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT)) {
         detail = std::string("the Vulkan driver cannot import D3D11 ") + (ten_bit ? "R16" : "R8") + " plane textures";
         return false;
       }
@@ -160,9 +162,15 @@ namespace pyrowave::d3d11 {
     ComPtr<ID3D11Buffer> sdr_to_pq_params;
     ComPtr<ID3D11Buffer> params;
     ComPtr<ID3D11SamplerState> sampler;
+    ComPtr<ID3D11Texture2D> transform_texture;
+    ComPtr<ID3D11ShaderResourceView> transform_srv;
+    float last_rgb_parameter = 0.0f;
     std::map<transfer_e, ComPtr<ID3D11ComputeShader>> shaders;
     convert_params_t last_params {};
     bool params_valid = false;
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+    std::unique_ptr<d3d12_conversion_t> d3d12_conversion;
+#endif
 
     // Handoff to PyroWave: the planes and a fence signalled once they are written.
     ComPtr<ID3D11Fence> convert_fence;
@@ -388,6 +396,7 @@ namespace pyrowave::d3d11 {
 
       sdr_to_pq_params_t sdr {config.sdr_white_nits, {}};
       cb.ByteWidth = sizeof(sdr);
+      cb.Usage = D3D11_USAGE_DEFAULT;
       init = {&sdr, 0, 0};
       hr = device11->CreateBuffer(&cb, &init, &sdr_to_pq_params);
       if (FAILED(hr)) {
@@ -424,6 +433,9 @@ namespace pyrowave::d3d11 {
 
       std::vector<D3D_SHADER_MACRO> macros;
       switch (transfer) {
+        case transfer_e::truehdr_pq:
+          macros.push_back({"TRUEHDR_PEAK", "1"});
+          break;
         case transfer_e::pq:
           macros.push_back({"PQ", "1"});
           break;
@@ -485,6 +497,69 @@ namespace pyrowave::d3d11 {
       }
     }
 
+    bool snapshot_rgb(ID3D11ShaderResourceView *srv) {
+      ComPtr<ID3D11Resource> resource;
+      srv->GetResource(&resource);
+      ComPtr<ID3D11Texture2D> texture;
+      if (!resource || FAILED(resource.As(&texture))) {
+        return false;
+      }
+      D3D11_TEXTURE2D_DESC desc {}, previous {};
+      texture->GetDesc(&desc);
+      if (transform_texture) {
+        transform_texture->GetDesc(&previous);
+      }
+      if (!transform_texture || previous.Width != desc.Width || previous.Height != desc.Height || previous.Format != desc.Format || previous.MipLevels != desc.MipLevels || previous.ArraySize != desc.ArraySize || previous.SampleDesc.Count != desc.SampleDesc.Count || previous.SampleDesc.Quality != desc.SampleDesc.Quality) {
+        transform_srv.Reset();
+        transform_texture.Reset();
+        desc.Usage = D3D11_USAGE_DEFAULT;
+        desc.CPUAccessFlags = desc.MiscFlags = 0;
+        desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        if (FAILED(device11->CreateTexture2D(&desc, nullptr, &transform_texture)) || FAILED(device11->CreateShaderResourceView(transform_texture.Get(), nullptr, &transform_srv))) {
+          error("private RGB snapshot creation failed");
+          return false;
+        }
+      }
+      context11->CopyResource(transform_texture.Get(), texture.Get());
+      return true;
+    }
+
+    bool process_rgb(const source_t &captured, capture_mutex_guard_t &capture_guard, ID3D11ShaderResourceView *&srv, ID3D11ComputeShader *&shader) {
+      source_t source = captured;
+      if (!snapshot_rgb(source.srv)) {
+        return false;
+      }
+      // The copy is ordered on this device before ReleaseSync. NGX never
+      // holds the producer's keyed mutex, including asynchronous feature init.
+      if (FAILED(capture_guard.release())) {
+        return false;
+      }
+      source.srv = transform_srv.Get();
+      source.mutex = nullptr;
+      try {
+        if (!config.transform_rgb(transform_texture.Get(), source) || !source.srv) {
+          return false;
+        }
+      } catch (const std::exception &e) {
+        error(std::string("RGB processing failed: ") + e.what());
+        return false;
+      }
+      shader = shader_for(source.transfer);
+      if (!shader) {
+        return false;
+      }
+      update_params(&source);
+      const float rgb_parameter = source.transfer == transfer_e::truehdr_pq ? source.luminance_scale :
+                                                                              (source.sdr_white_nits > 0.0f ? source.sdr_white_nits : config.sdr_white_nits);
+      if (rgb_parameter != last_rgb_parameter) {
+        const sdr_to_pq_params_t values {rgb_parameter, {}};
+        context11->UpdateSubresource(sdr_to_pq_params.Get(), 0, nullptr, &values, 0, 0);
+        last_rgb_parameter = rgb_parameter;
+      }
+      srv = source.srv;
+      return true;
+    }
+
     result_e convert(const source_t &source) {
       const bool blank = source.srv == nullptr;
       auto *shader = shader_for(blank ? transfer_e::unorm : source.transfer);
@@ -493,48 +568,147 @@ namespace pyrowave::d3d11 {
       }
       update_params(blank ? nullptr : &source);
 
+      // Pin the exact interface before acquiring, including exception unwind.
+      capture_mutex_guard_t capture_guard(blank ? nullptr : source.mutex);
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+      d3d12_conversion_t::capture_e capture_preparation = d3d12_conversion_t::capture_e::ready;
+      if (d3d12_conversion) {
+        capture_preparation = d3d12_conversion->prepare_capture(source, capture_guard);
+        if (capture_preparation == d3d12_conversion_t::capture_e::busy) {
+          return result_e::skipped;
+        }
+        if (capture_preparation == d3d12_conversion_t::capture_e::failed) {
+          return result_e::failed;
+        }
+      }
+#endif
+
       // Synchronize with the capture side, with a finite timeout so display re-init or
       // device loss cannot wedge the stream.
       if (!blank && source.mutex) {
-        const HRESULT status = source.mutex->AcquireSync(0, static_cast<DWORD>(config.capture_wait.count()));
+        IDXGIKeyedMutex *acquire_mutex = source.mutex;
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+        if (d3d12_conversion) acquire_mutex = d3d12_conversion->capture_mutex();
+#endif
+        if (!acquire_mutex) {
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+          if (d3d12_conversion) d3d12_conversion->cancel_capture();
+#endif
+          return result_e::failed;
+        }
+        const HRESULT status = acquire_mutex->AcquireSync(0, static_cast<DWORD>(config.capture_wait.count()));
         if (status == static_cast<HRESULT>(WAIT_TIMEOUT)) {
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+          if (d3d12_conversion) d3d12_conversion->cancel_capture();
+#endif
           warning("timed out acquiring the capture mutex; skipping the frame");
           return result_e::skipped;
         }
         if (status == static_cast<HRESULT>(WAIT_ABANDONED)) {
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+          // WAIT_ABANDONED does not prove keyed-mutex ownership. Keep the
+          // pre-acquired source pins in the retained sink and poison this
+          // adapter instead of releasing or publishing an inconsistent image.
+          if (d3d12_conversion) d3d12_conversion->abandon_capture();
+#endif
           error("the capture mutex was abandoned; its texture must be recreated");
           return result_e::failed;
         }
         if (status != S_OK) {
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+          if (d3d12_conversion) d3d12_conversion->cancel_capture();
+#endif
           warning("acquiring the capture mutex failed [" + hresult_string(status) + "]; skipping the frame");
           return result_e::skipped;
         }
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+        if (d3d12_conversion) d3d12_conversion->arm_capture();
+        else capture_guard.arm();
+#else
+        capture_guard.arm();
+#endif
       }
 
+      ID3D11ShaderResourceView *rgb_srv = source.srv;
+      if (!blank && config.transform_rgb && !process_rgb(source, capture_guard, rgb_srv, shader)) {
+        return result_e::failed;
+      }
       ID3D11Buffer *cbs[] = {color_matrix.Get(), sdr_to_pq_params.Get(), params.Get()};
-      ID3D11ShaderResourceView *srv = source.srv;
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+      bool d3d12_fallback = false;
+      if (d3d12_conversion && capture_preparation == d3d12_conversion_t::capture_e::ready &&
+          d3d12_conversion->using_conversion()) {
+        d3d12_conversion_t::result_e result = d3d12_conversion_t::result_e::failed;
+        try {
+          result = d3d12_conversion->convert(source, &last_params, convert_value + 1);
+        } catch (...) {
+          // The sink still owns the armed source lease; end the frame without
+          // allowing an exception to turn into an untracked fallback release.
+          return result_e::failed;
+        }
+        if (result == d3d12_conversion_t::result_e::unsupported) {
+          // No D3D12 work was submitted. The sink retains the exact acquisition
+          // and source refs while D3D11 fallback runs.
+          try {
+            warning("the D3D12 conversion prototype cannot handle this source; using D3D11");
+          } catch (...) {
+            if (d3d12_conversion->release_fallback()) d3d12_conversion->disable_conversion();
+            return result_e::failed;
+          }
+          d3d12_fallback = true;
+        } else {
+          if (result == d3d12_conversion_t::result_e::failed) {
+            return result_e::failed;
+          }
+          ++convert_value;
+          return result_e::ok;
+        }
+      }
+#endif
+      ID3D11ShaderResourceView *srv = rgb_srv;
       ID3D11UnorderedAccessView *uavs[] = {plane_uavs[0].Get(), plane_uavs[1].Get(), plane_uavs[2].Get()};
       ID3D11SamplerState *samplers[] = {sampler.Get()};
-      context11->CSSetShader(shader, nullptr, 0);
-      context11->CSSetConstantBuffers(0, 3, cbs);
-      context11->CSSetShaderResources(0, 1, &srv);
-      context11->CSSetSamplers(0, 1, samplers);
-      context11->CSSetUnorderedAccessViews(0, 3, uavs, nullptr);
+      try {
+        context11->CSSetShader(shader, nullptr, 0);
+        context11->CSSetConstantBuffers(0, 3, cbs);
+        context11->CSSetShaderResources(0, 1, &srv);
+        context11->CSSetSamplers(0, 1, samplers);
+        context11->CSSetUnorderedAccessViews(0, 3, uavs, nullptr);
 
-      const UINT work_w = UINT(config.yuv444 ? config.width : (config.width + 1) / 2);
-      const UINT work_h = UINT(config.yuv444 ? config.height : (config.height + 1) / 2);
-      context11->Dispatch((work_w + 7) / 8, (work_h + 7) / 8, 1);
+        const UINT work_w = UINT(config.yuv444 ? config.width : (config.width + 1) / 2);
+        const UINT work_h = UINT(config.yuv444 ? config.height : (config.height + 1) / 2);
+        context11->Dispatch((work_w + 7) / 8, (work_h + 7) / 8, 1);
 
-      ID3D11ShaderResourceView *null_srv = nullptr;
-      ID3D11UnorderedAccessView *null_uavs[3] = {};
-      context11->CSSetShaderResources(0, 1, &null_srv);
-      context11->CSSetUnorderedAccessViews(0, 3, null_uavs, nullptr);
+        ID3D11ShaderResourceView *null_srv = nullptr;
+        ID3D11UnorderedAccessView *null_uavs[3] = {};
+        context11->CSSetShaderResources(0, 1, &null_srv);
+        context11->CSSetUnorderedAccessViews(0, 3, null_uavs, nullptr);
+      } catch (...) {
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+        if (d3d12_conversion) {
+          (void)d3d12_conversion->release_fallback();
+          d3d12_conversion->disable_conversion();
+        } else
+#endif
+        (void)capture_guard.release();
+        return result_e::failed;
+      }
 
       // The frame is in the planes as far as D3D11 ordering goes, so the capture
-      // side can have its texture back.
-      if (!blank && source.mutex) {
-        source.mutex->ReleaseSync(0);
+      // side can have its texture back. A failed opted-in release poisons the
+      // full-LUID sink and ends the session before signal/flush publication.
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+      if (d3d12_conversion) {
+        if (!d3d12_conversion->release_fallback()) return result_e::failed;
+        if (d3d12_fallback) d3d12_conversion->disable_conversion();
+      } else {
+        // The experimental OFF path keeps its preexisting local guard and
+        // release behavior; only the opted-in sink can retain/poison owners.
+        (void)capture_guard.release();
       }
+#else
+      (void)capture_guard.release();
+#endif
 
       const HRESULT hr = context11->Signal(convert_fence.Get(), ++convert_value);
       if (FAILED(hr)) {
@@ -561,17 +735,12 @@ namespace pyrowave::d3d11 {
       impl.error("no capture adapter");
       return nullptr;
     }
-    if (config.width <= 0 || config.height <= 0 ||
-        (!config.yuv444 && ((config.width & 1) || (config.height & 1)))) {
+    if (config.width <= 0 || config.height <= 0 || (!config.yuv444 && ((config.width & 1) || (config.height & 1)))) {
       impl.error("invalid encode size " + std::to_string(config.width) + "x" + std::to_string(config.height));
       return nullptr;
     }
 
-    if (!impl.create_d3d11(adapter) ||
-        !impl.create_pyrowave(adapter) ||
-        !impl.create_planes() ||
-        !impl.create_fence() ||
-        !impl.create_constants()) {
+    if (!impl.create_d3d11(adapter) || !impl.create_pyrowave(adapter) || !impl.create_planes() || !impl.create_fence() || !impl.create_constants()) {
       return nullptr;
     }
 
@@ -580,11 +749,42 @@ namespace pyrowave::d3d11 {
     if (!impl.shader_for(transfer_e::unorm)) {
       return nullptr;
     }
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+    if (config.experimental_d3d12_conversion && !config.transform_rgb) {
+      impl.d3d12_conversion = d3d12_conversion_t::create(
+        adapter,
+        impl.device11.Get(),
+        impl.context11.Get(),
+        {impl.planes11[0].Get(), impl.planes11[1].Get(), impl.planes11[2].Get()},
+        impl.convert_fence.Get(),
+        config,
+        impl.log
+      );
+      if (!impl.d3d12_conversion) {
+        impl.error("experimental D3D12 request could not establish a full-LUID fallback retention sink");
+        return nullptr;
+      }
+      impl.info(impl.d3d12_conversion->using_conversion() ? "experimental D3D12 compute conversion selected (D3D11 snapshot copy)" : "experimental D3D12 conversion unavailable; using retained D3D11 fallback");
+    }
+#else
+    if (config.experimental_d3d12_conversion && !config.transform_rgb) {
+      impl.error("experimental D3D12 request needs the build-gated fallback retention sink");
+      return nullptr;
+    }
+#endif
     return core;
   }
 
   ID3D11Device *core_t::device() const {
     return impl->device11.Get();
+  }
+
+  bool core_t::using_d3d12_conversion() const {
+#ifdef SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12
+    return impl->d3d12_conversion && impl->d3d12_conversion->using_conversion();
+#else
+    return false;
+#endif
   }
 
   result_e core_t::encode(

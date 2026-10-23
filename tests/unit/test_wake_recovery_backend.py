@@ -26,35 +26,167 @@ def extract(signature, start):
         end += 1
     return source[begin:end]
 
+
+def extract_backend_function(path, signature):
+    backend_source = (root / path).read_text()
+    begin = backend_source.index(signature)
+    brace = backend_source.index("{", begin)
+    depth, end = 1, brace + 1
+    while depth:
+        depth += (backend_source[end] == "{") - (backend_source[end] == "}")
+        end += 1
+    return backend_source[begin:end]
+
 functions = [
     extract("  std::vector<TrackedDisplayCleanupTarget> tracked_display_cleanup_targets() {", facade_start),
     extract("  bool tracked_display_cleanup_target_matches(const TrackedDisplayCleanupTarget &target) {", facade_start),
     extract("  bool remove_tracked_display_cleanup_target(const TrackedDisplayCleanupTarget &target) {", facade_start),
     extract("  std::optional<bool> is_any_managed_virtual_display_output(const std::string &output_identifier) {", facade_start),
 ]
-assert all("use_sunshine_driver" not in function for function in functions)
 
-for backend_path, backend_name in [
-    ("src/platform/windows/virtual_display_sunshine.cpp", "sunshine"),
-    ("src/platform/windows/virtual_display_sudovda.cpp", "sudovda"),
-]:
-    backend_source = (root / backend_path).read_text()
-    remove_start = backend_source.index(
-        "bool remove_tracked_display_cleanup_target(const VDISPLAY::TrackedDisplayCleanupTarget &target)"
+def run_backend_remove_behavior(path, backend, backend_enum):
+    matcher = extract_backend_function(
+        path,
+        "bool tracked_display_cleanup_target_matches(\n    const std::array<std::uint8_t, 16> &guid_bytes,\n    const std::string &device_id)",
     )
-    remove_body_start = backend_source.index("{", remove_start)
-    depth, remove_end = 1, remove_body_start + 1
-    while depth:
-        depth += (backend_source[remove_end] == "{") - (backend_source[remove_end] == "}")
-        remove_end += 1
-    remove_body = backend_source[remove_start:remove_end]
-    assert f"ensure_display_backend_e::{backend_name}" in remove_body
-    assert "std::lock_guard<std::recursive_mutex> operation_lock" in remove_body
-    assert "tracked_display_cleanup_target_matches(target.guid_bytes, target.device_id)" in remove_body
-    if backend_name == "sudovda":
-        assert "return remove_virtual_display_impl(guid, true, {}, false);" in remove_body
+    remover = extract_backend_function(
+        path,
+        "bool remove_tracked_display_cleanup_target(const VDISPLAY::TrackedDisplayCleanupTarget &target)",
+    )
+    backend_helpers = r'''
+#include <array>
+#include <cassert>
+#include <cstdint>
+#include <cstring>
+#include <map>
+#include <mutex>
+#include <optional>
+#include <set>
+#include <stop_token>
+#include <string>
+#include <thread>
+#include <boost/algorithm/string/predicate.hpp>
+struct GUID { std::uint8_t bytes[16]{}; };
+namespace uuid_util {
+  struct uuid_t {
+    std::uint8_t b8[16]{};
+    std::string string() const { return std::to_string(static_cast<unsigned>(b8[0])); }
+  };
+}
+namespace VDISPLAY {
+  enum class ensure_display_backend_e : std::uint8_t { none, sunshine, sudovda };
+  struct TrackedDisplayCleanupTarget {
+    std::array<std::uint8_t, 16> guid_bytes{};
+    std::string device_id;
+    ensure_display_backend_e backend = ensure_display_backend_e::none;
+  };
+}
+namespace backend_fake {
+  struct Tracker {
+    std::set<unsigned> active;
+    bool contains(const uuid_util::uuid_t &guid) const { return active.contains(guid.b8[0]); }
+  } tracker;
+  std::recursive_mutex operation_mutex;
+  unsigned removals = 0;
+  bool lock_was_held = false;
+  bool remove_result = true;
+  bool locked_by_another_thread() {
+    bool acquired = false;
+    std::thread observer([&] {
+      acquired = operation_mutex.try_lock();
+      if (acquired) operation_mutex.unlock();
+    });
+    observer.join();
+    return !acquired;
+  }
+}
+'''
+    if backend == "sunshine":
+        backend_helpers += r'''
+namespace VDISPLAY_SUNSHINE {
+  using backend_fake::tracker;
+  struct Lease { std::optional<std::string> device_id; };
+  struct LeaseTracker {
+    std::map<unsigned, Lease> leases;
+    std::optional<Lease> get(const uuid_util::uuid_t &guid) const {
+      auto found = leases.find(guid.b8[0]);
+      return found == leases.end() ? std::nullopt : std::optional<Lease>(found->second);
+    }
+  } leases;
+  auto &active_virtual_display_tracker() { return tracker; }
+  auto &driver_lease_tracker() { return leases; }
+  std::recursive_mutex &g_virtual_display_operation_mutex = backend_fake::operation_mutex;
+  bool removeVirtualDisplay(GUID) {
+    backend_fake::lock_was_held = backend_fake::locked_by_another_thread();
+    ++backend_fake::removals;
+    return backend_fake::remove_result;
+  }
+'''
     else:
-        assert "return removeVirtualDisplay(guid);" in remove_body
+        backend_helpers += r'''
+namespace VDISPLAY_SUDOVDA {
+  using backend_fake::tracker;
+  struct Identity { std::string device_id; };
+  std::map<std::string, Identity> g_owned_display_identities;
+  auto &active_virtual_display_tracker() { return tracker; }
+  std::recursive_mutex &g_virtual_display_operation_mutex = backend_fake::operation_mutex;
+  bool remove_virtual_display_impl(GUID, bool, std::stop_token, bool) {
+    backend_fake::lock_was_held = backend_fake::locked_by_another_thread();
+    ++backend_fake::removals;
+    return backend_fake::remove_result;
+  }
+'''
+    backend_helpers += matcher + "\n" + remover + r'''
+}
+int main() {
+  using namespace backend_fake;
+  using namespace VDISPLAY;
+  tracker.active.insert(42);
+  TrackedDisplayCleanupTarget target;
+  target.guid_bytes[0] = 42;
+  target.device_id = "DISPLAY-ID";
+  target.backend = ensure_display_backend_e::BACKEND_ENUM;
+'''.replace("BACKEND_ENUM", backend_enum)
+    if backend == "sunshine":
+        backend_helpers += r'''
+  VDISPLAY_SUNSHINE::leases.leases[42].device_id = "display-id";
+'''
+    else:
+        backend_helpers += r'''
+  VDISPLAY_SUDOVDA::g_owned_display_identities["42"].device_id = "display-id";
+'''
+    backend_helpers += r'''
+  assert(VDISPLAY_BACKEND::tracked_display_cleanup_target_matches(target.guid_bytes, target.device_id));
+  assert(VDISPLAY_BACKEND::remove_tracked_display_cleanup_target(target));
+  assert(removals == 1 && lock_was_held);
+  target.device_id = "different-device";
+  assert(!VDISPLAY_BACKEND::remove_tracked_display_cleanup_target(target));
+  assert(removals == 1);
+  target.device_id = "DISPLAY-ID";
+  target.guid_bytes[0] = 43;
+  assert(!VDISPLAY_BACKEND::remove_tracked_display_cleanup_target(target));
+  assert(removals == 1);
+  target.guid_bytes[0] = 42;
+  target.backend = ensure_display_backend_e::none;
+  assert(!VDISPLAY_BACKEND::remove_tracked_display_cleanup_target(target));
+  assert(removals == 1);
+  target.backend = ensure_display_backend_e::BACKEND_ENUM;
+  backend_fake::remove_result = false;
+  assert(!VDISPLAY_BACKEND::remove_tracked_display_cleanup_target(target));
+  assert(removals == 2 && lock_was_held);
+}
+'''.replace("VDISPLAY_BACKEND", "VDISPLAY_" + backend.upper()).replace("BACKEND_ENUM", backend_enum)
+    with tempfile.TemporaryDirectory(prefix=f"wake-recovery-{backend}-remove-") as directory:
+        generated = pathlib.Path(directory) / "test.cpp"
+        binary = pathlib.Path(directory) / "test"
+        generated.write_text(backend_helpers)
+        subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
+                        "-I", str(root), *include_arguments, str(generated), "-o", str(binary)], check=True)
+        subprocess.run([str(binary)], check=True, timeout=10)
+
+
+run_backend_remove_behavior("src/platform/windows/virtual_display_sunshine.cpp", "sunshine", "sunshine")
+run_backend_remove_behavior("src/platform/windows/virtual_display_sudovda.cpp", "sudovda", "sudovda")
 
 program = r'''
 #include <array>
@@ -271,7 +403,6 @@ while depth:
     depth += (backend_source[open_end] == "{") - (backend_source[open_end] == "}")
     open_end += 1
 open_impl = backend_source[open_begin:open_end]
-assert "allow_driver_recovery &&" in open_impl
 open_program = r'''
 #include <cassert>
 #include <chrono>

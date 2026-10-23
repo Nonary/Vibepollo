@@ -632,6 +632,7 @@ namespace platf::dualsense_usbip {
           // Bound work per iteration so one socket cannot prevent shutdown
           // or starve the poll that completes scheduled interrupt/iso URBs.
           for (unsigned reads = 0; reads < 8; ++reads) {
+            const auto incarnation = protocol.capture_receive_incarnation();
             const auto received = recv(connection, reinterpret_cast<char *>(incoming.data()), static_cast<int>(incoming.size()), 0);
             if (received == SOCKET_ERROR) {
               if (WSAGetLastError() != WSAEWOULDBLOCK) {
@@ -642,7 +643,7 @@ namespace platf::dualsense_usbip {
             if (!received) {
               return;
             }
-            if (!protocol.feed(std::span(incoming).first(received))) {
+            if (!protocol.feed(std::span(incoming).first(received), incarnation)) {
               break;
             }
           }

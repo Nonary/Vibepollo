@@ -1,3 +1,4 @@
+#include "src/platform/windows/display_helper_borrow_native.h"
 #include "virtual_display.h"
 
 #include "src/config.h"
@@ -255,6 +256,8 @@ namespace VDISPLAY {
     const std::wstring &profile_name,
     const bool system_wide
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return {};
     advanced_color_profile_result_t result;
     const auto &api = advanced_color_api();
     result.api_available = api.available();
@@ -313,6 +316,8 @@ namespace VDISPLAY {
     const std::wstring &profile_name,
     const bool system_wide
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return {};
     advanced_color_profile_result_t result;
     const auto &api = advanced_color_api();
     result.api_available = api.available();
@@ -338,6 +343,8 @@ namespace VDISPLAY {
     const std::wstring &monitor_device_path,
     const std::uint32_t scale_percent
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return {};
     display_scale_result_t result;
     result.requested_percent = scale_percent;
 
@@ -482,6 +489,11 @@ namespace VDISPLAY {
 }
 
 namespace VDISPLAY_SUNSHINE {
+  std::optional<std::shared_ptr<void>> retain_borrow_native_resources();
+  bool supportsRequestedResolutionCatalog();
+  bool hasOwnedVirtualDisplays();
+  bool allowsSharedCatalogCapture();
+  std::optional<bool> virtualDisplayCatalogMatches(const GUID &guid, uint32_t width, uint32_t height, bool requested_only);
   using VDISPLAY::DRIVER_STATUS;
   using VDISPLAY::TrackedDisplayCleanupTarget;
   using VDISPLAY::VirtualDisplayCreationResult;
@@ -517,7 +529,8 @@ namespace VDISPLAY_SUNSHINE {
     std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
     bool replace_existing,
-    bool preserve_peer_displays
+    bool preserve_peer_displays,
+    bool requested_resolution_only
   );
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id);
   void restorePhysicalHdrProfiles();
@@ -546,6 +559,8 @@ namespace VDISPLAY_SUNSHINE {
   );
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
   bool is_virtual_display_output(const std::string &output_identifier);
+  bool driver_supports_frame_push_capture();
+  std::optional<VDISPLAY::FramePushTarget> frame_push_target_for_output(const std::string &output_identifier);
   bool is_virtual_display_selection(const std::string &output_identifier);
   uint64_t client_uuid_to_virtual_display_id(const GUID &client_guid);
   uuid_util::uuid_t virtualDisplayUuidFromStableId(const std::string &stable_id);
@@ -563,6 +578,7 @@ namespace VDISPLAY_SUNSHINE {
 }  // namespace VDISPLAY_SUNSHINE
 
 namespace VDISPLAY_SUDOVDA {
+  std::optional<std::shared_ptr<void>> retain_borrow_native_resources();
   using VDISPLAY::DRIVER_STATUS;
   using VDISPLAY::VirtualDisplayCreationResult;
   using VDISPLAY::VirtualDisplayInfo;
@@ -648,16 +664,30 @@ namespace {
 }  // namespace
 
 namespace VDISPLAY {
+  std::optional<std::shared_ptr<void>> retain_borrow_native_resources() {
+    const auto sunshine = VDISPLAY_SUNSHINE::retain_borrow_native_resources();
+    const auto sudovda = VDISPLAY_SUDOVDA::retain_borrow_native_resources();
+    if (!sunshine || !sudovda) return std::nullopt;
+    return std::static_pointer_cast<void>(std::make_shared<std::vector<std::shared_ptr<void>>>(
+      std::initializer_list<std::shared_ptr<void>> {*sunshine, *sudovda}));
+  }
+
   void closeVDisplayDevice() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return ;
     VDISPLAY_SUNSHINE::closeVDisplayDevice();
     VDISPLAY_SUDOVDA::closeVDisplayDevice();
   }
 
   DRIVER_STATUS openVDisplayDevice() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return DRIVER_STATUS::FAILED;
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::openVDisplayDevice() : VDISPLAY_SUDOVDA::openVDisplayDevice();
   }
 
   bool ensure_driver_is_ready() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::ensure_driver_is_ready() : VDISPLAY_SUDOVDA::ensure_driver_is_ready();
   }
 
@@ -666,6 +696,8 @@ namespace VDISPLAY {
   }
 
   void setWatchdogFeedingEnabled(bool enable) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return ;
     if (use_sunshine_driver()) {
       VDISPLAY_SUNSHINE::setWatchdogFeedingEnabled(enable);
     } else {
@@ -679,6 +711,8 @@ namespace VDISPLAY {
     const std::uint64_t dedicated_video_memory,
     const std::uint64_t shared_system_memory
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     return use_sunshine_driver() ?
              VDISPLAY_SUNSHINE::setRenderAdapterByLuid(
                adapter_luid,
@@ -695,10 +729,14 @@ namespace VDISPLAY {
   }
 
   bool setRenderAdapterByName(const std::wstring &adapterName) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::setRenderAdapterByName(adapterName) : VDISPLAY_SUDOVDA::setRenderAdapterByName(adapterName);
   }
 
   bool setRenderAdapterWithMostDedicatedMemory() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::setRenderAdapterWithMostDedicatedMemory() : VDISPLAY_SUDOVDA::setRenderAdapterWithMostDedicatedMemory();
   }
 
@@ -762,6 +800,8 @@ namespace VDISPLAY {
   }
 
   void ensureVirtualDisplayRegistryDefaults() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return ;
     if (use_sunshine_driver()) {
       VDISPLAY_SUNSHINE::ensureVirtualDisplayRegistryDefaults();
     } else {
@@ -783,15 +823,41 @@ namespace VDISPLAY {
     std::optional<bool> hdr_requested,
     bool allow_pending_enumeration,
     bool replace_existing,
-    bool preserve_peer_displays
+    bool preserve_peer_displays,
+    bool requested_resolution_only
   ) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return {};
     if (use_sunshine_driver()) {
-      return VDISPLAY_SUNSHINE::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays);
+      return VDISPLAY_SUNSHINE::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays, requested_resolution_only);
     }
+    if (requested_resolution_only) return std::nullopt;
     return VDISPLAY_SUDOVDA::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays);
   }
 
+  bool hasOwnedSunshineVirtualDisplays() {
+    return VDISPLAY_SUNSHINE::hasOwnedVirtualDisplays();
+  }
+
+  bool allowsSharedCatalogCapture() {
+    // The current create-backend choice does not identify an existing capture.
+    // Keep inspecting Sunshine until its last owned lease has been released.
+    return (!use_sunshine_driver() && !hasOwnedSunshineVirtualDisplays()) ||
+           VDISPLAY_SUNSHINE::allowsSharedCatalogCapture();
+  }
+
+  bool supportsRequestedResolutionCatalog() {
+    return use_sunshine_driver() && VDISPLAY_SUNSHINE::supportsRequestedResolutionCatalog();
+  }
+
+  std::optional<bool> virtualDisplayCatalogMatches(const GUID &guid, uint32_t width, uint32_t height, bool requested_only) {
+    if (!use_sunshine_driver() && !hasOwnedSunshineVirtualDisplays()) return requested_only ? std::optional<bool> {} : std::optional<bool> {true};
+    return VDISPLAY_SUNSHINE::virtualDisplayCatalogMatches(guid, width, height, requested_only);
+  }
+
   void applyHdrProfileToOutput(const char *s_client_name, const char *s_hdr_profile, const char *s_device_id) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return ;
     if (use_sunshine_driver()) {
       VDISPLAY_SUNSHINE::applyHdrProfileToOutput(s_client_name, s_hdr_profile, s_device_id);
     } else {
@@ -800,15 +866,21 @@ namespace VDISPLAY {
   }
 
   void restorePhysicalHdrProfiles() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return ;
     VDISPLAY_SUNSHINE::restorePhysicalHdrProfiles();
     VDISPLAY_SUDOVDA::restorePhysicalHdrProfiles();
   }
 
   bool removeVirtualDisplay(const GUID &guid) {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::removeVirtualDisplay(guid) : VDISPLAY_SUDOVDA::removeVirtualDisplay(guid);
   }
 
   bool removeAllVirtualDisplays() {
+    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrowed_output_mutation) return false;
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::removeAllVirtualDisplays() : VDISPLAY_SUDOVDA::removeAllVirtualDisplays();
   }
 
@@ -884,6 +956,19 @@ namespace VDISPLAY {
 
   bool is_virtual_display_output(const std::string &output_identifier) {
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::is_virtual_display_output(output_identifier) : VDISPLAY_SUDOVDA::is_virtual_display_output(output_identifier);
+  }
+
+  bool is_sunshine_virtual_display_output(const std::string &output_identifier) {
+    return VDISPLAY_SUNSHINE::is_virtual_display_output(output_identifier);
+  }
+
+  bool driver_supports_frame_push_capture() {
+    return VDISPLAY_SUNSHINE::driver_supports_frame_push_capture();
+  }
+
+  std::optional<FramePushTarget> frame_push_target_for_output(const std::string &output_identifier) {
+    if (!use_sunshine_driver()) return std::nullopt;
+    return VDISPLAY_SUNSHINE::frame_push_target_for_output(output_identifier);
   }
 
   bool is_virtual_display_selection(const std::string &output_identifier) {

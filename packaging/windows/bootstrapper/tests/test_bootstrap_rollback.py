@@ -14,7 +14,7 @@ import tempfile
 
 HERE = pathlib.Path(__file__).resolve().parent
 PRODUCTION_METHODS = (
-    "TryStashInstalledProductPayload",
+    "FindKnownMsiSourceRelease", "CommandTargetsMsiexec", "TrySplitExecutableAndArguments", "IsMsiexecExecutable", "HasRegisteredRollbackProduct", "IsExactRollbackProductRegistered", "TryStashInstalledProductPayload",
     "BuildRollbackPreservationFailure", "TryRestoreStashedVibeshinePayload",
     "ApplyStashedPayloadRecovery", "TryPreUninstallDowngradeSourceVersion",
     "RequiresPreUninstallDowngradeWorkaround", "PayloadSupportsTransactionalReplacement",
@@ -36,12 +36,13 @@ def run(source_path=None):
     methods = [extract(source, r"^    (?:private|public|internal) static [^\r\n]+\b" + name + r"\(.*?^    \}", name)
                for name in PRODUCTION_METHODS]
     types = [extract(source, r"^    internal (?:sealed class|enum) " + name + r"[^\r\n]*\{.*?^    \}", name)
-             for name in ("InstalledProductInfo", "PayloadMsiInfo", "StashedVibeshinePayload", "InstalledProductKind")]
+             for name in ("InstalledProductInfo", "PayloadMsiInfo", "StashedVibeshinePayload", "InstalledProductKind", "MsiSourceIdentity", "MsiSourceRelease")]
+    types.append(extract(source, r"^    private static readonly MsiSourceRelease\[\] RecoverableMsiSources = \{.*?^    \};", "source catalog"))
     result = extract(source, r"^  internal sealed class InstallerResult \{.*?^  \}", "InstallerResult")
     operation = extract(source, r"^  internal enum InstallerOperation \{.*?^  \}", "InstallerOperation")
     boundaries = (HERE / "rollback_boundary_methods.cs.in").read_text(encoding="utf-8")
     names = re.findall(r"^    (?:private|public) static [^\r\n]+\b(\w+)\(", boundaries, re.M)
-    if len(names) != 11 or set(names) & set(PRODUCTION_METHODS):
+    if len(names) != 17 or set(names) & set(PRODUCTION_METHODS):
         raise RuntimeError("External boundary list changed or includes production methods")
     for name in names:
         parameters = r"\(string msiPath\)" if name == "TryGetPayloadMsiInfo" else r"\("

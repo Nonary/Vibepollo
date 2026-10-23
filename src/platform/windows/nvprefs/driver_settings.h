@@ -18,11 +18,11 @@ namespace nvprefs {
 
   class driver_settings_t {
   public:
-    ~driver_settings_t();
+    ~driver_settings_t() noexcept;
 
     bool init();
 
-    void destroy();
+    bool destroy() noexcept;
 
     bool load_settings();
 

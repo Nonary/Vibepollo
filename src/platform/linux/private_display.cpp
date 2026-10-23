@@ -4,6 +4,7 @@
  */
 
 #include "private_display.h"
+#include "session_backend.h"
 #include "private_display_capacity.h"
 #include "display_restore_capture.h"
 
@@ -13,7 +14,9 @@
 #include "hdr_policy.h"
 #include "private_display_cleanup_policy.h"
 #include "private_display_configuration_policy.h"
+#include "private_display_diagnostic_policy.h"
 #include "private_display_emergency_policy.h"
+#include "private_display_handoff_policy.h"
 #include "private_display_recovery_policy.h"
 #include "private_display_mode_client.h"
 #include "private_display_mode_policy.h"
@@ -29,6 +32,7 @@
 #include "src/process.h"
 #include "src/remote_display_topology.h"
 #include "src/rtsp.h"
+#include "src/session_display_policy.h"
 #include "src/state_storage.h"
 #include "src/stream.h"
 #include "src/virtual_display_scale.h"
@@ -37,6 +41,7 @@
 #include <array>
 #include <atomic>
 #include <cctype>
+#include <charconv>
 #include <cmath>
 #include <cstdlib>
 #include <display_device/json.h>
@@ -99,9 +104,15 @@ namespace platf::linux_private_display {
       std::optional<json> snapshot;
       bool snapshot_loaded {false};
       bool snapshot_legacy_record {false};
+      bool snapshot_greeter_handoff {false};
+      std::map<std::string, std::string> snapshot_physical_identities;
       std::map<std::string, std::string> reservations;
       std::map<std::string, double> retained_scales;
       std::set<std::string> newly_connected_reservations;
+      // KDE's idle screen-off reconfigures every GPU. On NVIDIA it wedged GSP
+      // while only a retained private output was lit and no client remained,
+      // so a layout without lit physical screens keeps this until restore.
+      std::shared_ptr<void> retained_screen_hold;
       std::atomic<std::uint64_t> cleanup_generation {0};
       std::atomic<std::uint64_t> reset_generation {0};
       // Destroy/join the worker before its snapshot, generation and mutex.
@@ -126,12 +137,19 @@ namespace platf::linux_private_display {
     }
 
     bool broker_set_connected(const std::string &output_name, const bool connected) {
+      auto target_mutation = display_target::leases().begin_mutation();
+      if (!target_mutation) return false;
+      if (linux_display::hyprland_kms_session()) return false;
       // The control client waits longer than the broker's mutation/stop bound.
       // Reserve that entire interval rather than shortening its safe drain.
       if (!helper_budget_available(connector_reply_timeout)) return false;
+      const auto producer_mutation = display_power::acquire_broker_mutation();
+      if (!producer_mutation) return false;
       static const virtual_display::driver::LinuxControlClient client;
       const auto result = client.set_connector(output_name, connected);
       if (!result.ok()) {
+        target_mutation.completion_unknown();
+        display_power::broker_mutation_completion_unknown(producer_mutation);
         BOOST_LOG(error) << "Linux private display: broker rejected "
                          << (connected ? "connect" : "disconnect") << " for " << output_name
                          << ": " << virtual_display::driver::to_string(result.status)
@@ -153,6 +171,12 @@ namespace platf::linux_private_display {
 
     command_result_t run_doctor(const std::vector<std::string> &arguments, const bool mutating = false) {
       command_result_t result;
+      auto target_mutation = mutating ? display_target::leases().begin_mutation() : display_target::registry_t::mutation_t {};
+      if (mutating && !target_mutation) { result.stderr_text = "Exact target borrowers still hold display leases."; return result; }
+      if (linux_display::hyprland_kms_session()) {
+        result.stderr_text = "KScreen operations are unsupported by the Hyprland KMS backend";
+        return result;
+      }
       if (!helper_budget_available(helper_reply_timeout)) {
         result.stderr_text = "display helper fenced, restore superseded, or insufficient reply budget";
         return result;
@@ -223,8 +247,11 @@ namespace platf::linux_private_display {
       auto deadline = std::chrono::steady_clock::now() + helper_reply_timeout;
       result = helper_process::communicate_until(process, deadline, std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr);
       if (mutating && result.completion_unknown) {
-        std::unique_lock mutation_barrier {topology_mutation_gate};
+        target_mutation.completion_unknown();
         helper_completion_unknown.store(true, std::memory_order_release);
+        // Publish the fail-closed state before waiting for admitted work to
+        // drain. New local helpers reject at their final admission check.
+        std::unique_lock mutation_barrier {topology_mutation_gate};
         BOOST_LOG(error) << "Linux display helper: completion could not be confirmed; refusing further display mutations until host restart.";
       }
       g_object_unref(process);
@@ -331,6 +358,7 @@ namespace platf::linux_private_display {
     }
 
     std::vector<std::string> configured_outputs() {
+      if (linux_display::hyprland_kms_session()) return {};
       if (!config::video.dd.virtual_display_outputs.empty()) {
         return config::video.dd.virtual_display_outputs;
       }
@@ -573,6 +601,32 @@ namespace platf::linux_private_display {
       const auto &rational = std::get<display_device::Rational>(value);
       return rational.m_denominator == 0 ? 0.0 :
                                            static_cast<double>(rational.m_numerator) / rational.m_denominator;
+    }
+
+    std::optional<double> mode_refresh_hz(const json &output, const std::string &mode_id) {
+      if (mode_id.empty()) {
+        return std::nullopt;
+      }
+      const auto modes = output.find("modes");
+      if (modes == output.end() || !modes->is_array()) {
+        return std::nullopt;
+      }
+      for (const auto &mode : *modes) {
+        if (!mode.is_object()) {
+          continue;
+        }
+        const auto id = mode.find("id");
+        if (id == mode.end() || !id->is_string() || id->get_ref<const std::string &>() != mode_id) {
+          continue;
+        }
+        const auto refresh = mode.find("refreshRate");
+        if (refresh == mode.end() || !refresh->is_number()) {
+          return std::nullopt;
+        }
+        const auto value = refresh->get<double>();
+        return std::isfinite(value) && value > 0.0 ? std::optional<double> {value} : std::nullopt;
+      }
+      return std::nullopt;
     }
 
     double output_refresh(const json &output) {
@@ -877,33 +931,137 @@ namespace platf::linux_private_display {
       return std::string {uid ? uid : std::to_string(getuid())} + ":" + (role ? role : "standalone");
     }
 
-    bool persist_snapshot(const json &snapshot, const bool restore_pending = true) {
-      return statefile::save_linux_display_snapshot(json {{"version", 1}, {"owner", snapshot_owner()}, {"restore_pending", restore_pending}, {"topology", snapshot}}.dump());
+    handoff_policy::context_t snapshot_handoff_context() {
+      handoff_policy::context_t context;
+      const auto *machine = std::getenv("VIBEPOLLO_MACHINE_HOST");
+      const auto *role = std::getenv("VIBEPOLLO_SESSION_ROLE");
+      const auto *generation = std::getenv("VIBEPOLLO_SESSION_GENERATION");
+      context.machine_host = machine && std::string_view {machine} == "1";
+      context.role = role ? role : "";
+      if (!context.machine_host || !generation) return context;
+      const std::string_view text {generation};
+      const auto parsed = std::from_chars(text.data(), text.data() + text.size(), context.generation);
+      if (parsed.ec != std::errc {} || parsed.ptr != text.data() + text.size()) context.generation = 0;
+      std::ifstream boot {"/proc/sys/kernel/random/boot_id"};
+      boot >> context.boot_id;
+      return context;
     }
 
-    void load_snapshot_if_needed(state_t &manager) {
+    std::map<std::string, std::string> physical_connector_identities(const json &configuration) {
+      std::map<std::string, std::string> result;
+      for (const auto &output : configuration["outputs"]) {
+        const auto name = output.value("name", std::string {});
+        if (!connected(output) || mode_policy::managed_connector_name(name)) continue;
+        const auto path = connector_sysfs_path(name);
+        if (path.empty()) continue;
+        std::error_code error;
+        const auto resolved = std::filesystem::canonical(path, error);
+        if (error) continue;
+        std::ifstream edid {std::filesystem::path {path} / "edid", std::ios::binary};
+        std::string bytes;
+        char value;
+        constexpr std::string_view hex {"0123456789abcdef"};
+        while (edid.get(value) && bytes.size() <= 8192) {
+          const auto byte = static_cast<unsigned char>(value);
+          bytes.push_back(hex[byte >> 4]);
+          bytes.push_back(hex[byte & 15]);
+        }
+        if (!edid.eof() || bytes.size() < 256 || bytes.size() > 8192) continue;
+        result.emplace(name, resolved.string() + ":" + bytes);
+      }
+      return result;
+    }
+
+    bool persist_snapshot(const json &snapshot, const bool restore_pending = true, const bool greeter_handoff = false,
+                          const std::map<std::string, std::string> *handoff_identities = nullptr) {
+      json record {{"version", 1}, {"owner", snapshot_owner()}, {"restore_pending", restore_pending}, {"topology", snapshot}};
+      const auto context = snapshot_handoff_context();
+      if (context.machine_host && context.generation && !context.boot_id.empty()) {
+        record["machine_handoff"] = {{"boot_id", context.boot_id}, {"generation", context.generation},
+                                     {"role", context.role}, {"physical_identities", handoff_identities ?
+                                       *handoff_identities : physical_connector_identities(snapshot)}};
+      }
+      if (greeter_handoff) record["greeter_handoff"] = true;
+      return statefile::save_linux_display_snapshot(record.dump());
+    }
+
+    bool load_snapshot_if_needed(state_t &manager) {
       if (manager.snapshot_loaded) {
-        return;
+        return true;
       }
       manager.snapshot_loaded = true;
       if (const auto saved = statefile::load_linux_display_snapshot()) {
         bool restore_pending = false;
         auto snapshot = snapshot_policy::decode<json>(*saved, snapshot_owner(), &restore_pending, &manager.snapshot_legacy_record);
         if (!snapshot) {
-          BOOST_LOG(warning) << "Linux private display: ignoring unusable or different-session saved topology.";
+          const auto current = query_configuration();
+          if (current) {
+            snapshot = handoff_policy::adopt(*saved, snapshot_owner(), snapshot_handoff_context(), *current,
+                                             physical_connector_identities(*current));
+          }
+          if (snapshot) {
+            const auto identities = json::parse(*saved).at("machine_handoff").at("physical_identities").get<std::map<std::string, std::string>>();
+            // Rebind durable intent before a new session can acquire outputs.
+            // Carry the identities actually validated above; a fresh EDID read
+            // must not bless a replacement monitor with the greeter's layout.
+            if (!persist_snapshot(*snapshot, true, true, &identities)) {
+              manager.snapshot_loaded = false;
+              BOOST_LOG(error) << "Linux private display: cannot persist the greeter topology handoff; refusing display acquisition.";
+              return false;
+            }
+            manager.snapshot = std::move(snapshot);
+            manager.snapshot_greeter_handoff = true;
+            manager.snapshot_physical_identities = identities;
+            BOOST_LOG(info) << "Linux private display: adopted pending physical topology from the preceding machine greeter.";
+          } else {
+            BOOST_LOG(warning) << "Linux private display: ignoring unusable or different-session saved topology.";
+          }
         } else if (restore_pending) {
+          const auto context = snapshot_handoff_context();
+          if (context.machine_host && context.role == "greeter") {
+            const auto current = query_configuration();
+            const auto refreshed = current ? handoff_policy::refresh_greeter_generation(
+              *saved, snapshot_owner(), context, *current, physical_connector_identities(*current)) : std::nullopt;
+            if (refreshed && !statefile::save_linux_display_snapshot(refreshed->dump())) {
+              manager.snapshot_loaded = false;
+              BOOST_LOG(error) << "Linux private display: cannot persist the rebound greeter generation; refusing display acquisition.";
+              return false;
+            }
+          }
+          const auto record = json::parse(*saved, nullptr, false);
+          const auto handoff = record.find("greeter_handoff");
+          const bool greeter_handoff = handoff != record.end() && handoff->is_boolean() && handoff->get<bool>();
+          std::map<std::string, std::string> identities;
+          if (greeter_handoff) {
+            try {
+              identities = record.at("machine_handoff").at("physical_identities").get<std::map<std::string, std::string>>();
+            } catch (...) {
+              manager.snapshot_loaded = false;
+              BOOST_LOG(error) << "Linux private display: invalid persisted greeter handoff identities; refusing display acquisition.";
+              return false;
+            }
+          }
           manager.snapshot = std::move(snapshot);
+          manager.snapshot_greeter_handoff = greeter_handoff;
+          manager.snapshot_physical_identities = std::move(identities);
         }
       }
+      return true;
     }
 
     bool snapshot_configuration_if_needed(state_t &manager, const json &configuration) {
-      load_snapshot_if_needed(manager);
-      if (!snapshot_policy::capture(manager.snapshot, configuration, private_output_set(), !manager.reservations.empty(), [](const json &snapshot) {
-            return persist_snapshot(snapshot);
+      if (!load_snapshot_if_needed(manager)) return false;
+      bool refreshed = false;
+      if (!handoff_policy::capture(manager.snapshot, configuration, private_output_set(), !manager.reservations.empty(), manager.snapshot_greeter_handoff, [&](const json &snapshot) {
+            refreshed = persist_snapshot(snapshot);
+            return refreshed;
           })) {
         BOOST_LOG(error) << "Linux private display: cannot persist the desktop before changing outputs.";
         return false;
+      }
+      if (refreshed) {
+        manager.snapshot_greeter_handoff = false;
+        manager.snapshot_physical_identities.clear();
       }
       return true;
     }
@@ -1003,6 +1161,8 @@ namespace platf::linux_private_display {
   }  // namespace
 
   bool initialize() {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     if (process_shutdown_preserve_requested()) {
       return false;
     }
@@ -1019,7 +1179,7 @@ namespace platf::linux_private_display {
 
     auto &manager = state();
     std::lock_guard lock {manager.mutex};
-    load_snapshot_if_needed(manager);
+    if (!load_snapshot_if_needed(manager)) return false;
     const auto startup = snapshot_policy::prepare_startup(manager.snapshot, *configuration, private_names, [](const json &snapshot) {
       return persist_snapshot(snapshot, false);
     }, manager.snapshot_legacy_record);
@@ -1133,6 +1293,8 @@ namespace platf::linux_private_display {
     const bool no_active_sessions,
     const bool allow_display_changes
   ) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return {.requested = true, .error = "Exact target borrowers still hold display leases."};
     prepare_result_t result;
 
     if (!session.display_power_guard) {
@@ -1205,7 +1367,7 @@ namespace platf::linux_private_display {
         if (enabled(*output) && capture_available && (!allow_display_changes || shared)) {
           const bool requested_hdr = rtsp_stream::effective_hdr_requested(session);
           const bool current_hdr = output_hdr_capable(output, *output_name) && output->value("hdr", false);
-          if (requested_hdr && !current_hdr) session.force_sdr = true;
+          if (rtsp_stream::hdr_capture_required(session, config::video) && !current_hdr) session.force_sdr = true;
           session.virtual_display_hdr_enabled = requested_hdr && current_hdr;
           session.virtual_display_ready_since = std::chrono::steady_clock::now();
         }
@@ -1224,25 +1386,213 @@ namespace platf::linux_private_display {
   }
 
   bool apply_session(rtsp_stream::launch_session_t &session) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     if (!session.virtual_display || session.virtual_display_device_id.empty()) {
       return true;
     }
+
+    diagnostic_policy::trace_t diagnostic_trace;
+    std::optional<display_device::Resolution> diagnostic_requested_resolution;
+    std::optional<double> diagnostic_requested_refresh_hz;
+    std::optional<display_device::Resolution> diagnostic_selected_mode_size;
+    std::optional<double> diagnostic_selected_mode_refresh_hz;
+    std::optional<double> diagnostic_expected_refresh_hz;
+    std::optional<double> diagnostic_expected_scale;
+    std::optional<bool> diagnostic_expected_hdr;
+    std::string diagnostic_refresh_selection = "unresolved";
+    std::string_view diagnostic_last_readback_stage = "not_observed";
+    std::string diagnostic_mode_id;
+    std::string diagnostic_current_mode_id;
+    std::optional<std::pair<std::uint32_t, std::uint32_t>> diagnostic_current_mode_size;
+    std::optional<double> diagnostic_current_refresh_hz;
+    std::optional<double> diagnostic_current_scale;
+    std::optional<bool> diagnostic_current_hdr;
+
+    const auto observe_readback = [&](const bool query_available, const json *output, const bool during_fallback = false) {
+      diagnostic_current_mode_id.clear();
+      diagnostic_current_mode_size.reset();
+      diagnostic_current_refresh_hz.reset();
+      diagnostic_current_scale.reset();
+      diagnostic_current_hdr.reset();
+
+      diagnostic_policy::readback_facts_t facts;
+      facts.query_available = query_available;
+      facts.requested_mode_known = !diagnostic_mode_id.empty();
+      facts.output_present = output != nullptr;
+      if (output) {
+        const auto connection = output->find("connected");
+        facts.connection_observed = connection != output->end() && connection->is_boolean();
+        if (facts.connection_observed) {
+          facts.output_connected = connection->get<bool>();
+        }
+        const auto enabled_value = output->find("enabled");
+        facts.enabled_observed = enabled_value != output->end() && enabled_value->is_boolean();
+        if (facts.enabled_observed) {
+          facts.output_enabled = enabled_value->get<bool>();
+        }
+        const auto observed_mode_id = diagnostic_policy::current_mode_id(*output);
+        facts.mode_id_observed = observed_mode_id.has_value();
+        if (observed_mode_id) {
+          diagnostic_current_mode_id = *observed_mode_id;
+          diagnostic_current_mode_size = diagnostic_policy::current_mode_size(*output, diagnostic_current_mode_id);
+          diagnostic_current_refresh_hz = mode_refresh_hz(*output, diagnostic_current_mode_id);
+        }
+        const auto scale_value = output->find("scale");
+        if (scale_value != output->end() && scale_value->is_number()) {
+          const auto scale = scale_value->get<double>();
+          if (std::isfinite(scale)) {
+            diagnostic_current_scale = scale;
+          }
+        }
+        const auto hdr_value = output->find("hdr");
+        if (hdr_value != output->end() && hdr_value->is_boolean()) {
+          diagnostic_current_hdr = hdr_value->get<bool>();
+        }
+
+        if (facts.mode_id_observed && !diagnostic_mode_id.empty()) {
+          facts.mode_id_matches = diagnostic_current_mode_id == diagnostic_mode_id;
+        }
+        facts.size_required = diagnostic_requested_resolution.has_value();
+        facts.size_observed = diagnostic_current_mode_size.has_value();
+        if (diagnostic_requested_resolution) {
+          facts.size_matches = facts.size_observed &&
+                               diagnostic_current_mode_size->first == diagnostic_requested_resolution->m_width &&
+                               diagnostic_current_mode_size->second == diagnostic_requested_resolution->m_height;
+        }
+        facts.refresh_required = diagnostic_refresh_selection != "unspecified";
+        facts.refresh_expected = diagnostic_expected_refresh_hz.has_value();
+        facts.refresh_observed = diagnostic_current_refresh_hz.has_value();
+        if (diagnostic_expected_refresh_hz && diagnostic_current_refresh_hz) {
+          facts.refresh_matches = mode_policy::refresh_matches(
+            *diagnostic_current_refresh_hz,
+            *diagnostic_expected_refresh_hz
+          );
+        }
+        facts.scale_required = diagnostic_expected_scale.has_value();
+        facts.scale_observed = diagnostic_current_scale.has_value();
+        if (diagnostic_expected_scale && diagnostic_current_scale) {
+          facts.scale_matches = std::abs(*diagnostic_current_scale - *diagnostic_expected_scale) < 0.01;
+        }
+        facts.hdr_required = diagnostic_expected_hdr.has_value();
+        facts.hdr_observed = diagnostic_current_hdr.has_value();
+        if (diagnostic_expected_hdr && diagnostic_current_hdr) {
+          facts.hdr_matches = *diagnostic_current_hdr == *diagnostic_expected_hdr;
+        }
+      }
+      diagnostic_policy::record_readback(diagnostic_trace, facts, during_fallback);
+      diagnostic_last_readback_stage = during_fallback ? "fallback" : "kscreen_readback";
+    };
+
+    const auto log_mode_diagnostic = [&](const std::string_view outcome) {
+      const auto resolution_override = session.resolution_override ?
+                                         std::to_string(session.resolution_override->width) + "x" +
+                                           std::to_string(session.resolution_override->height) :
+                                         "none";
+      const auto requested_resolution = diagnostic_requested_resolution ?
+                                          std::to_string(diagnostic_requested_resolution->m_width) + "x" +
+                                            std::to_string(diagnostic_requested_resolution->m_height) :
+                                          "unresolved";
+      const auto selected_resolution = diagnostic_selected_mode_size ?
+                                         std::to_string(diagnostic_selected_mode_size->m_width) + "x" +
+                                           std::to_string(diagnostic_selected_mode_size->m_height) :
+                                         "unavailable";
+      const auto requested_refresh_hz = diagnostic_refresh_selection == "prefer_highest" ?
+                                          "highest" : diagnostic_requested_refresh_hz ?
+                                            std::to_string(*diagnostic_requested_refresh_hz) :
+                                            "unspecified";
+      const auto selected_refresh_hz = diagnostic_selected_mode_refresh_hz ?
+                                         std::to_string(*diagnostic_selected_mode_refresh_hz) :
+                                         "unavailable";
+      const auto expected_refresh_hz = diagnostic_expected_refresh_hz ?
+                                         std::to_string(*diagnostic_expected_refresh_hz) :
+                                         "unavailable";
+      const auto current_mode_size = diagnostic_current_mode_size ?
+                                       std::to_string(diagnostic_current_mode_size->first) + "x" +
+                                         std::to_string(diagnostic_current_mode_size->second) :
+                                       "unavailable";
+      const auto current_refresh_hz = diagnostic_current_refresh_hz ?
+                                        std::to_string(*diagnostic_current_refresh_hz) :
+                                        "unavailable";
+      const auto current_scale = diagnostic_current_scale ?
+                                   std::to_string(*diagnostic_current_scale) :
+                                   "unavailable";
+      const auto current_hdr = diagnostic_current_hdr ?
+                                 (*diagnostic_current_hdr ? "true" : "false") :
+                                 "unavailable";
+      const auto expected_scale = diagnostic_expected_scale ?
+                                    std::to_string(*diagnostic_expected_scale) :
+                                    "unspecified";
+      const auto expected_hdr = diagnostic_expected_hdr ?
+                                  (*diagnostic_expected_hdr ? "true" : "false") :
+                                  "unspecified";
+      BOOST_LOG(info) << "Linux private display [" << session.id << "]: mode_diagnostic outcome=" << outcome
+                      << " output=" << session.virtual_display_device_id
+                      << " rtsp_viewport=" << session.width << 'x' << session.height
+                      << " stream_fps=" << session.fps
+                      << " client_display_mode_override=" << (session.client_display_mode_override ? "true" : "false")
+                      << " client_display_refresh_millihz=" << session.client_display_refresh_millihz
+                      << " resolution_override=" << resolution_override
+                      << " requested_kscreen_resolution=" << requested_resolution
+                      << " selected_mode_resolution=" << selected_resolution
+                      << " requested_refresh_hz=" << requested_refresh_hz
+                      << " selected_mode_refresh_hz=" << selected_refresh_hz
+                      << " expected_readback_refresh_hz=" << expected_refresh_hz
+                      << " refresh_selection=" << diagnostic_refresh_selection
+                      << " primary_apply=" << diagnostic_policy::name(diagnostic_trace.primary)
+                      << " isolated_layout_retry=" << diagnostic_policy::name(diagnostic_trace.isolated_layout_retry)
+                      << " hdr_activation=" << diagnostic_policy::name(diagnostic_trace.hdr_activation)
+                      << " pre_fallback_readback=" << diagnostic_policy::name(diagnostic_trace.pre_fallback_readback)
+                      << " final_readback=" << diagnostic_policy::name(diagnostic_trace.readback)
+                      << " fallback_readback=" << diagnostic_policy::name(diagnostic_trace.fallback_readback)
+                      << " fallback=" << diagnostic_policy::name(diagnostic_trace.fallback)
+                      << " requested_mode_id=" << (diagnostic_mode_id.empty() ? "unavailable" : diagnostic_mode_id)
+                      << " last_observed_stage=" << diagnostic_last_readback_stage
+                      << " last_observed_mode_id=" << (diagnostic_current_mode_id.empty() ? "unavailable" : diagnostic_current_mode_id)
+                      << " last_observed_mode_size=" << current_mode_size
+                      << " last_observed_refresh_hz=" << current_refresh_hz
+                      << " last_observed_scale=" << current_scale
+                      << " expected_scale=" << expected_scale
+                      << " last_observed_hdr=" << current_hdr
+                      << " expected_hdr=" << expected_hdr << '.';
+    };
+
+    const auto run_session_configuration = [&](
+                                             const std::vector<std::string> &arguments,
+                                             const std::string_view operation,
+                                             const diagnostic_policy::configuration_e diagnostic_operation
+                                           ) {
+      if (arguments.empty()) {
+        return true;
+      }
+      const bool succeeded = execute_configuration(arguments, operation);
+      diagnostic_policy::record_configuration_result(diagnostic_trace, succeeded, diagnostic_operation);
+      BOOST_LOG(info) << "Linux private display [" << session.id << "]: KScreen operation=" << operation
+                      << " result=" << (succeeded ? "succeeded" : "failed") << '.';
+      return succeeded;
+    };
 
     const auto use_current_output = [&]() {
       // Capture availability is authoritative. A failed KScreen query or
       // preference verification must not veto a still-capturable output.
       // Keep the leased target: another client's display is not a substitute.
+      diagnostic_policy::begin_fallback(diagnostic_trace);
+      diagnostic_trace.fallback = diagnostic_policy::fallback_e::not_used;
       if (!wait_for_capture_publication(session.virtual_display_device_id)) {
+        diagnostic_trace.fallback = diagnostic_policy::fallback_choice(false);
         BOOST_LOG(error) << "Linux private display: no usable current capture output on "
                          << session.virtual_display_device_id << '.';
+        log_mode_diagnostic("no_capture_output");
         return false;
       }
       const auto current = query_configuration();
       const auto *output = current ? find_output(*current, session.virtual_display_device_id) : nullptr;
+      observe_readback(current.has_value(), output, true);
+      diagnostic_trace.fallback = diagnostic_policy::fallback_choice(true);
       if (output) {
         const bool current_hdr = output->value("hdr", false) &&
                                  output_hdr_capable(nullptr, session.virtual_display_device_id);
-        if (rtsp_stream::effective_hdr_requested(session) && !current_hdr) {
+        if (rtsp_stream::hdr_capture_required(session, config::video) && !current_hdr) {
           session.force_sdr = true;
         }
         session.virtual_display_hdr_enabled = current_hdr;
@@ -1256,6 +1606,7 @@ namespace platf::linux_private_display {
       session.virtual_display_needs_resume_apply = true;
       BOOST_LOG(warning) << "Linux private display: continuing capture on " << session.virtual_display_device_id
                          << " with its current settings after display configuration failed.";
+      log_mode_diagnostic("current_settings_fallback");
       return true;
     };
 
@@ -1277,6 +1628,8 @@ namespace platf::linux_private_display {
     {
       std::lock_guard lock {manager.mutex};
       if (!snapshot_configuration_if_needed(manager, *configuration)) {
+        observe_readback(true, target_before);
+        log_mode_diagnostic("snapshot_failed");
         return false;
       }
       for (const auto &[_, output_name] : manager.reservations) {
@@ -1294,9 +1647,9 @@ namespace platf::linux_private_display {
 
     auto effective_video = config::video;
     effective_video.output_name = session.virtual_display_device_id;
-    if (session.dd_config_option_override) {
-      effective_video.dd.configuration_option = *session.dd_config_option_override;
-    }
+    effective_video.dd.configuration_option = proc::display_policy::effective_preparation(
+      config::video.dd.configuration_option, session
+    );
     const auto parsed = display_device::parse_configuration(effective_video, session);
     if (std::holds_alternative<display_device::failed_to_parse_tag_t>(parsed)) {
       BOOST_LOG(error) << "Linux private display: failed to parse the requested display mode.";
@@ -1320,8 +1673,14 @@ namespace platf::linux_private_display {
       refresh = display_device::Rational {static_cast<unsigned int>(std::max(1, session.fps)), 1};
     }
 
-    auto mode_id = best_mode_id(*target_before, resolution, refresh);
+    diagnostic_requested_resolution = resolution;
     const bool prefer_highest = refresh && floating_point(*refresh) >= 9999.0;
+    if (refresh && !prefer_highest) {
+      diagnostic_requested_refresh_hz = floating_point(*refresh);
+    }
+    diagnostic_refresh_selection = prefer_highest ? "prefer_highest" : refresh ? "requested" : "unspecified";
+
+    auto mode_id = best_mode_id(*target_before, resolution, refresh);
     if (mode_policy::should_admit_requested_mode(
           resolution.has_value(),
           refresh.has_value(),
@@ -1337,6 +1696,19 @@ namespace platf::linux_private_display {
       }
       mode_id = best_mode_id(*target_before, resolution, refresh);
     }
+    diagnostic_mode_id = mode_id;
+    if (!mode_id.empty()) {
+      const auto [width, height] = mode_size(*target_before, mode_id);
+      if (width > 0 && height > 0) {
+        diagnostic_selected_mode_size = display_device::Resolution {width, height};
+      }
+      diagnostic_selected_mode_refresh_hz = mode_refresh_hz(*target_before, mode_id);
+    }
+    diagnostic_expected_refresh_hz = diagnostic_policy::expected_refresh_hz(
+      diagnostic_requested_refresh_hz,
+      diagnostic_selected_mode_refresh_hz,
+      prefer_highest
+    );
     if (mode_id.empty() || (resolution && refresh && !prefer_highest &&
                             is_managed_output(session.virtual_display_device_id) &&
                             !mode_matches_refresh(*target_before, mode_id, *refresh))) {
@@ -1373,11 +1745,13 @@ namespace platf::linux_private_display {
       target_before->value("scale", 1.0),
       saved_scale
     );
+    diagnostic_expected_scale = target_scale;
     arguments.push_back(target_prefix + "scale." + std::to_string(target_scale));
 
     int right_edge = 0;
     int bottom_edge = 0;
     int last_priority = 0;
+    bool physical_output_lit = false;
     for (const auto &output : (*configuration)["outputs"]) {
       const auto name = output.value("name", std::string {});
       if (name == session.virtual_display_device_id || !connected(output)) {
@@ -1403,6 +1777,7 @@ namespace platf::linux_private_display {
         continue;
       }
       if (enabled(output)) {
+        physical_output_lit = true;
         const auto pos = output.value("pos", json::object());
         const auto [width, height] = logical_size(output);
         right_edge = std::max(right_edge, pos.value("x", 0) + width);
@@ -1433,13 +1808,13 @@ namespace platf::linux_private_display {
       arguments.push_back(target_prefix + "priority." + std::to_string(primary ? 1 : std::max(1, last_priority + 1)));
     }
 
-    const bool hdr_requested = rtsp_stream::effective_hdr_requested(session);
     const bool hdr_capable = output_hdr_capable(target_before, session.virtual_display_device_id);
     const auto hdr_policy = linux_hdr::resolve_output_state(
       parsed_hdr_state,
       hdr_capable,
       hdr_capable && target_before->value("hdr", false)
     );
+    diagnostic_expected_hdr = hdr_policy.command;
     const bool separate_hdr = linux_hdr::requires_post_modeset_transaction(hdr_policy.command);
     if (hdr_policy.command && !separate_hdr) {
       arguments.push_back(target_prefix + "hdr.disable");
@@ -1457,7 +1832,7 @@ namespace platf::linux_private_display {
                          << " does not advertise HDR10; the verified session will use SDR.";
     }
 
-    if (!execute_configuration(arguments, "apply")) {
+    if (!run_session_configuration(arguments, "apply", diagnostic_policy::configuration_e::primary)) {
       if (!isolated) {
         return use_current_output();
       }
@@ -1469,7 +1844,11 @@ namespace platf::linux_private_display {
         arguments.end()
       );
       arguments.push_back(target_prefix + "position." + std::to_string(right_edge) + ",0");
-      if (!execute_configuration(arguments, "isolated-layout fallback")) {
+      if (!run_session_configuration(
+            arguments,
+            "isolated-layout fallback",
+            diagnostic_policy::configuration_e::isolated_layout_retry
+          )) {
         return use_current_output();
       }
     }
@@ -1481,6 +1860,7 @@ namespace platf::linux_private_display {
     // HDR calibration UI to inherit.
     const auto base_matches = [&](const json &current) {
       const auto *output = find_output(current, session.virtual_display_device_id);
+      observe_readback(true, output);
       return output && connected(*output) && enabled(*output) &&
              output->value("currentModeId", std::string {}) == mode_id &&
              std::abs(output->value("scale", 1.0) - target_scale) < 0.01;
@@ -1497,16 +1877,16 @@ namespace platf::linux_private_display {
                        << session.virtual_display_device_id << '.';
       return use_current_output();
     }
-    if (!execute_configuration(hdr_arguments, "HDR activation")) {
+    if (!run_session_configuration(hdr_arguments, "HDR activation", diagnostic_policy::configuration_e::hdr_activation)) {
       return use_current_output();
     }
 
     bool verified_hdr_enabled = false;
     const bool verified = wait_for_configuration([&](const json &current) {
+      const auto *output = find_output(current, session.virtual_display_device_id);
       if (!base_matches(current)) {
         return false;
       }
-      const auto *output = find_output(current, session.virtual_display_device_id);
       if (hdr_policy.command && output->value("hdr", false) != *hdr_policy.command) {
         return false;
       }
@@ -1520,16 +1900,30 @@ namespace platf::linux_private_display {
       return use_current_output();
     }
 
-    if (hdr_requested && !verified_hdr_enabled) {
+    if (rtsp_stream::hdr_capture_required(session, config::video) && !verified_hdr_enabled) {
       session.force_sdr = true;
     }
+    log_mode_diagnostic("verified");
     session.virtual_display_hdr_enabled = verified_hdr_enabled;
     session.virtual_display_ready_since = std::chrono::steady_clock::now();
     session.virtual_display_recreated_on_demand = false;
     session.virtual_display_needs_resume_apply = false;
+    bool needs_screen_hold = false;
     {
       std::lock_guard lock {manager.mutex};
       manager.newly_connected_reservations.erase(identity);
+      // A lit physical screen keeps normal idle behavior.
+      if (physical_output_lit) manager.retained_screen_hold.reset();
+      needs_screen_hold = !physical_output_lit && !manager.retained_screen_hold;
+    }
+    if (needs_screen_hold) {
+      auto hold = display_power::retain_screen();
+      std::lock_guard lock {manager.mutex};
+      // A restore may have completed while the helper became ready.
+      if (hold && manager.snapshot && !manager.retained_screen_hold) {
+        manager.retained_screen_hold = std::move(hold);
+        BOOST_LOG(info) << "Linux private display: blocking idle screen-off until the physical topology is restored.";
+      }
     }
     BOOST_LOG(info) << "Linux private display: applied private output " << session.virtual_display_device_id
                     << " at " << std::lround(target_scale * 100.0) << "% scale.";
@@ -1547,7 +1941,7 @@ namespace platf::linux_private_display {
     }
     const bool requested_hdr = rtsp_stream::effective_hdr_requested(session);
     const bool current_hdr = output_hdr_capable(output, session.virtual_display_device_id) && output->value("hdr", false);
-    if (requested_hdr && !current_hdr) session.force_sdr = true;
+    if (rtsp_stream::hdr_capture_required(session, config::video) && !current_hdr) session.force_sdr = true;
     session.virtual_display_hdr_enabled = requested_hdr && current_hdr;
     session.virtual_display_ready_since = std::chrono::steady_clock::now();
     return true;
@@ -1569,6 +1963,8 @@ namespace platf::linux_private_display {
     const std::string &client_uuid,
     const remote_display_topology::mode_t &mode
   ) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     (void) mode;
     if (client_uuid.empty()) {
       return false;
@@ -1626,6 +2022,8 @@ namespace platf::linux_private_display {
   bool remote_apply_composed_topology(
     const std::vector<remote_display_topology::node_t> &nodes
   ) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     if (process_shutdown_preserve_requested()) {
       return true;
     }
@@ -1954,7 +2352,40 @@ namespace platf::linux_private_display {
     return std::nullopt;
   }
 
+  std::optional<display_target::observation_t> observe_exact_target(const display_target::descriptor_t &target) {
+    if (target.platform != display_target::platform_e::linux_drm || helper_completion_unknown.load(std::memory_order_acquire)) return std::nullopt;
+    const auto power_hold = display_power::acquire_borrow_inhibit();
+    if (!power_hold) return std::nullopt;
+    const auto configuration = query_configuration();
+    if (!configuration) return std::nullopt;
+    const auto captures = capture_output_names();
+    auto &manager = state();
+    std::lock_guard lock {manager.mutex};
+    std::optional<display_target::observation_t> match;
+    for (const auto &output : (*configuration)["outputs"]) {
+      const auto name = output.value("name", std::string {});
+      if (name.empty() || !connected(output) || !enabled(output)) continue;
+      const auto path = connector_sysfs_path(name);
+      std::error_code error;
+      const auto canonical = path.empty() ? std::filesystem::path {} : std::filesystem::canonical(path, error);
+      if (error || canonical.empty() || canonical.string() != target.exact_id) continue;
+      const bool managed = is_managed_output(name);
+      if ((target.kind == display_target::kind_e::physical && managed) ||
+          (target.kind == display_target::kind_e::shared_virtual &&
+           (!managed || !manager.reservations.contains("shared") || manager.reservations.at("shared") != name))) return std::nullopt;
+      if (std::ranges::find(captures, name) == captures.end() || match) return std::nullopt;
+      const auto size = output.value("size", json::object());
+      const auto refresh = output_refresh(output) * 1000.0;
+      if (!std::isfinite(refresh) || refresh <= 0 || refresh > 1000000) return std::nullopt;
+      match = display_target::observation_t {target,
+        {size.value("width", 0), size.value("height", 0), static_cast<std::uint32_t>(std::llround(refresh)), output.value("hdr", false)}, name, power_hold};
+    }
+    return match;
+  }
+
   bool remote_remove_owned_display(const std::string &client_uuid) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     if (process_shutdown_preserve_requested()) {
       return true;
     }
@@ -2018,6 +2449,8 @@ namespace platf::linux_private_display {
     std::vector<std::string> *failed_managed_retirements = nullptr,
     json *verified_physical_topology_before_retirement = nullptr
   ) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     if (failure_result) *failure_result = restore_transaction::result_e::cancelled;
     if (process_shutdown_preserve_requested()) {
       return false;
@@ -2039,14 +2472,16 @@ namespace platf::linux_private_display {
     if (!current || !restore_allowed()) {
       return false;
     }
-    load_snapshot_if_needed(manager);
+    if (!load_snapshot_if_needed(manager)) return false;
     auto restore_snapshot = manager.snapshot;
     const bool has_enabled_physical_output = std::ranges::any_of((*current)["outputs"], [](const auto &output) {
       return output.value("connected", false) && output.value("enabled", false) &&
              !mode_policy::managed_connector_name(output.value("name", std::string {}));
     });
+    const auto effective_target_policy = manager.snapshot_greeter_handoff ?
+      recovery_policy::target_policy_e::automatic_recovery : target_policy;
     const bool preserve_live_physical_layout = recovery_policy::select_target(
-      target_policy, has_enabled_physical_output) == recovery_policy::target_e::live_physical_layout;
+      effective_target_policy, has_enabled_physical_output) == recovery_policy::target_e::live_physical_layout;
     if (preserve_live_physical_layout) {
       // Automatic recovery must respect physical choices made while an older
       // snapshot was stranded. Keep the durable intent untouched until this
@@ -2056,6 +2491,13 @@ namespace platf::linux_private_display {
         BOOST_LOG(warning) << "Linux private display: automatic recovery has no enabled physical baseline; preserving saved topology.";
         return false;
       }
+    }
+    if (manager.snapshot_greeter_handoff && !preserve_live_physical_layout && restore_snapshot &&
+        !handoff_policy::physical_identities_match(*restore_snapshot, *current,
+                                                  manager.snapshot_physical_identities,
+                                                  physical_connector_identities(*current))) {
+      BOOST_LOG(warning) << "Linux private display: physical monitor identity changed after greeter handoff; preserving saved topology.";
+      return false;
     }
     auto managed = discover_managed_outputs();
     if (allowed_managed_identities) {
@@ -2205,7 +2647,7 @@ namespace platf::linux_private_display {
       }
     } operations {
       allowed_managed_identities,
-      target_policy == recovery_policy::target_policy_e::automatic_recovery,
+      effective_target_policy == recovery_policy::target_policy_e::automatic_recovery,
       require_dpms_on_before_retirement,
       arguments.guard_output,
       failed_managed_retirements,
@@ -2222,8 +2664,11 @@ namespace platf::linux_private_display {
       return false;
     }
     manager.snapshot.reset();
+    manager.snapshot_greeter_handoff = false;
+    manager.snapshot_physical_identities.clear();
     manager.reservations.clear();
     manager.newly_connected_reservations.clear();
+    manager.retained_screen_hold.reset();
     BOOST_LOG(info) << "Linux private display: restored the pre-stream output topology.";
     return true;
   }
@@ -2428,8 +2873,11 @@ namespace platf::linux_private_display {
                 if (!wait_for_capture_publication(guard_name) || !restore_allowed() || recovery_owner_active() ||
                     !statefile::save_linux_display_snapshot(std::nullopt)) return false;
                 manager.snapshot.reset();
+                manager.snapshot_greeter_handoff = false;
+                manager.snapshot_physical_identities.clear();
                 manager.reservations.clear();
                 manager.newly_connected_reservations.clear();
+                manager.retained_screen_hold.reset();
               }
               auto reset_generation = manager.reset_generation.load(std::memory_order_acquire);
               if (reset_generation && reset_generation <= claimed_generation && restore_allowed()) {
@@ -2723,6 +3171,9 @@ namespace platf::linux_private_display {
   }
 
   termination_result_t terminate_all() {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return {};
+    if (linux_display::hyprland_kms_session()) return {};
     auto &manager = state();
     stream::session::cleanup_reservation_t cleanup_reservation;
     const auto generation = manager.cleanup_generation.fetch_add(1, std::memory_order_acq_rel) + 1;
@@ -2821,6 +3272,7 @@ namespace platf::linux_private_display {
   }
 
   bool kernel_pool_available() {
+    if (linux_display::hyprland_kms_session()) return false;
     return !discover_managed_outputs().empty();
   }
 

@@ -1,5 +1,7 @@
 # macos specific dependencies
 
+find_package(ZLIB REQUIRED)
+
 FIND_LIBRARY(APP_KIT_LIBRARY AppKit)
 FIND_LIBRARY(APP_SERVICES_LIBRARY ApplicationServices)
 FIND_LIBRARY(AUDIO_TOOLBOX_LIBRARY AudioToolbox)

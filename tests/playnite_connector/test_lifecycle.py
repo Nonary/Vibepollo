@@ -4,7 +4,11 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
+
+if sys.platform == "linux":
+    subprocess.run([sys.executable, str(Path(__file__).with_name("test_identification.py"))], check=True)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dotnet", default=shutil.which("dotnet"))

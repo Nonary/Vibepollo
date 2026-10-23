@@ -1,4 +1,5 @@
 #include "playnite_sync_policy.h"
+#include "src/remote_monitor_profile_policy.h"
 
 #include <algorithm>
 #include <cctype>
@@ -82,6 +83,7 @@ namespace platf::playnite::sync::policy {
     }
 
     void ensure_playnite_app_uuid(nlohmann::json &app, bool &changed) {
+      if (remote_session::marked_monitor_profile(app)) return;
       try {
         if (!app.contains("playnite-id") || !app["playnite-id"].is_string()) {
           return;
@@ -99,6 +101,7 @@ namespace platf::playnite::sync::policy {
     }
 
     void apply_game_data(const Game &game, nlohmann::json &app) {
+      if (remote_session::marked_monitor_profile(app)) return;
       try {
         if (!game.name.empty()) app["name"] = game.name;
         app["playnite-id"] = game.id;
@@ -126,6 +129,8 @@ namespace platf::playnite::sync::policy {
       nlohmann::json kept = nlohmann::json::array();
       std::unordered_set<std::string> seen;
       for (const auto &app : root["apps"]) {
+        if (remote_session::marked_monitor_profile(app)) { kept.push_back(app); continue; }
+
         try {
           const auto auto_managed = app.value("playnite-managed", std::string {}) == "auto";
           const auto id = app.value("playnite-id", std::string {});
@@ -143,6 +148,8 @@ namespace platf::playnite::sync::policy {
 
     void iterate_existing_apps(nlohmann::json &root, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, GameRef> &by_unique_name, const std::unordered_map<std::string, int> &source_flags, const std::unordered_set<std::string> &uninstalled, std::size_t &matched, std::unordered_set<std::string> &matched_ids, bool &changed, MetadataUpdater metadata_updater) {
       for (auto &app : root["apps"]) {
+        if (remote_session::marked_monitor_profile(app)) continue;
+
         try {
           const auto is_auto = app.value("playnite-managed", std::string {}) == "auto";
           const auto id = app.value("playnite-id", std::string {});
@@ -423,6 +430,8 @@ namespace platf::playnite::sync::policy {
     auto replacements = count_replacements_available(current_auto_ids(root), selected_ids);
     nlohmann::json kept = nlohmann::json::array();
     for (const auto &app : root["apps"]) {
+      if (remote_session::marked_monitor_profile(app)) { kept.push_back(app); continue; }
+
       bool remove = false;
       try {
         const auto auto_managed = app.value("playnite-managed", std::string {}) == "auto";
@@ -502,6 +511,7 @@ namespace platf::playnite::sync::policy {
   }
 
   const Game *match_app_against_indexes(const nlohmann::json &app, const std::unordered_map<std::string, GameRef> &by_id, const std::unordered_map<std::string, GameRef> &by_exe, const std::unordered_map<std::string, GameRef> &by_dir, const std::unordered_map<std::string, GameRef> &by_unique_name) {
+    if (remote_session::marked_monitor_profile(app)) return nullptr;
     try {
       if (const auto id = app.value("playnite-id", std::string {}); !id.empty()) {
         if (const auto found = by_id.find(playnite_id_key(id)); found != by_id.end()) return found->second.g;
@@ -526,6 +536,7 @@ namespace platf::playnite::sync::policy {
   }
 
   void mark_app_as_playnite_auto(nlohmann::json &app, int flags) {
+      if (remote_session::marked_monitor_profile(app)) return;
     try {
       app["playnite-source"] = compose_source_label(flags);
       app["playnite-managed"] = "auto";

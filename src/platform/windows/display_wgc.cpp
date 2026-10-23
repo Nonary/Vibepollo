@@ -24,6 +24,7 @@
 #include "src/platform/windows/misc.h"
 #include "src/platform/windows/present_timing.h"
 #include "src/platform/windows/virtual_display.h"
+#include "src/platform/windows/wgc_capture_policy.h"
 #include "src/utility.h"
 
 // platform includes
@@ -231,13 +232,25 @@ namespace platf::dxgi {
           config,
           display_name,
           true /* skip_dd_test: WGC doesn't use Desktop Duplication */,
-          required_adapter_luid)) {
+          required_adapter_luid,
+          true /* allow the output monitor's geometry-only WGC policy */)) {
       return -1;
     }
 
     capture_format = DXGI_FORMAT_UNKNOWN;  // Start with unknown format (prevents race condition/crash on first frame)
     _present_stamper = std::make_shared<present_timing::capture_stamper_t>(captured_output_desc.DeviceName);
     present_timing::set_active_stamper(_present_stamper);
+    // Latch constant frame rate with the input mode: it decides whether a
+    // timeout re-sends the cached image, which direct mode does not keep.
+    _constant_frame_rate = is_wgc_constant_mode();
+    // The shared capture serves every live consumer, so any PyroWave consumer
+    // (not just the config this display was opened for) keeps the copy path.
+    _direct_encoder_input = wgc_policy::direct_encoder_input_allowed(
+      config::video.wgc_direct_encoder_input,
+      _constant_frame_rate,
+      config.shared_capture_pyrowave || ::video::consumer_is_pyrowave(config)
+    );
+    BOOST_LOG(info) << "WGC encoder input: "sv << (_direct_encoder_input ? "direct from the helper's shared frame"sv : "host snapshot copy"sv);
 
     const bool advanced_color_capture = is_hdr();
 
@@ -266,14 +279,19 @@ namespace platf::dxgi {
 
     // We return capture::reinit for most scenarios because the logic in picking which mode to capture is all handled in the factory function.
     if (_ipc_session->should_swap_to_dxgi()) {
+      BOOST_LOG(debug) << "Capture restart request: source=wgc-vram reason=dxgi-fallback";
       return capture_e::reinit;
     }
 
     // Generally this only becomes true if the helper process has crashed or is otherwise not responding.
     if (_ipc_session->should_reinit()) {
+      BOOST_LOG(debug) << "Capture restart request: source=wgc-vram reason=ipc-reinit-flag";
       return capture_e::reinit;
     }
 
+    if (!_ipc_session->set_cursor_visible(cursor_visible)) {
+      return _ipc_session->stop_requested() ? capture_e::interrupted : capture_e::reinit;
+    }
     _ipc_session->initialize_if_needed();
     if (_ipc_session->stop_requested()) {
       return capture_e::interrupted;
@@ -293,7 +311,7 @@ namespace platf::dxgi {
           note_wgc_desktop_switch();
           return capture_e::reinit;
         }
-        if (is_wgc_constant_mode()) {
+        if (_constant_frame_rate) {
           return forward_cached_wgc_frame(_last_cached_frame, img_out);
         }
       }
@@ -307,6 +325,7 @@ namespace platf::dxgi {
     // before we ever touch the shared IPC mutex.
     D3D11_TEXTURE2D_DESC desc;
     if (!_ipc_session->peek_shared_texture_desc(desc)) {
+      BOOST_LOG(debug) << "Capture restart request: source=wgc-vram reason=missing-texture-descriptor";
       return capture_e::reinit;
     }
 
@@ -329,6 +348,10 @@ namespace platf::dxgi {
       return capture_e::reinit;
     }
 
+    if (_direct_encoder_input) {
+      return snapshot_direct(pull_free_image_cb, img_out);
+    }
+
     // Pull a free image from the pool before touching the shared IPC keyed
     // mutex. The encoder image pool can block under pressure; holding the
     // shared mutex during that wait stalls the WGC helper producer.
@@ -338,6 +361,10 @@ namespace platf::dxgi {
     }
 
     auto d3d_img = std::static_pointer_cast<img_d3d_t>(img);
+    if (d3d_img->capture_texture && d3d_img->capture_texture.get() == _ipc_session->shared_texture().get()) {
+      // Never snapshot into an image that aliases the shared frame itself.
+      d3d_img->capture_texture.reset();
+    }
     if (complete_img(d3d_img.get(), false)) {
       return capture_e::error;
     }
@@ -425,9 +452,88 @@ namespace platf::dxgi {
     return capture_e::ok;
   }
 
+  int display_wgc_ipc_vram_t::alias_shared_frame(img_d3d_t &img) {
+    const auto shared = _ipc_session->shared_texture();
+    const HANDLE shared_handle = _ipc_session->shared_texture_handle();
+    auto frame_record = _ipc_session->frame_record();
+    if (!shared || !shared_handle || !frame_record) {
+      return -1;
+    }
+
+    if (img.capture_texture.get() == shared.get() && img.encoder_texture_handle && !img.dummy) {
+      img.direct_frame_record = std::move(frame_record);
+      img.blank = false;
+      return 0;
+    }
+
+    // Each image owns its handle; the encoder opens it once per image context.
+    HANDLE image_handle = nullptr;
+    if (!DuplicateHandle(GetCurrentProcess(), shared_handle, GetCurrentProcess(), &image_handle, 0, FALSE, DUPLICATE_SAME_ACCESS)) {
+      BOOST_LOG(error) << "Failed to duplicate the WGC shared frame handle: "sv << GetLastError();
+      return -1;
+    }
+
+    img.capture_rt.reset();
+    img.capture_mutex.reset();
+    if (img.encoder_texture_handle) {
+      CloseHandle(img.encoder_texture_handle);
+    }
+    img.encoder_texture_handle = image_handle;
+    shared->AddRef();
+    img.capture_texture.reset(shared.get());
+    img.direct_frame_record = std::move(frame_record);
+    img.dummy = false;
+    img.blank = false;
+    img.format = capture_format;
+    img.pixel_pitch = get_pixel_pitch();
+    img.row_pitch = img.pixel_pitch * img.width;
+    img.data = (std::uint8_t *) img.capture_texture.get();
+    return 0;
+  }
+
+  capture_e display_wgc_ipc_vram_t::snapshot_direct(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out) {
+    std::shared_ptr<platf::img_t> img;
+    if (!pull_free_image_cb(img)) {
+      return capture_e::interrupted;
+    }
+
+    auto d3d_img = std::static_pointer_cast<img_d3d_t>(img);
+    if (alias_shared_frame(*d3d_img)) {
+      return capture_e::error;
+    }
+
+    // No keyed mutex and no GPU work here: the encoder acquires the shared
+    // frame's keyed mutex on its own device, which orders its conversion after
+    // the helper's copy. That removes a full-frame copy on the capture device
+    // and the capture-to-encoder device hand-off from every frame. The helper
+    // may publish again before the encoder locks the texture, so these stamps
+    // describe the claimed frame; the encoder re-reads the frame record under
+    // the keyed mutex and reports the frame it actually converted.
+    uint64_t frame_id = 0;
+    uint64_t frame_qpc = 0;
+    const auto claim_status = _ipc_session->claim_latest_frame(frame_id, frame_qpc);
+    if (claim_status != capture_e::ok) {
+      return claim_status;
+    }
+    d3d_img->direct_frame_id = frame_id;
+
+    const auto host_processing_timestamp = std::chrono::steady_clock::now();
+    const auto host_processing_qpc = qpc_counter();
+    // The composition time; the send path refines it for RTP once the game's
+    // present events have been delivered.
+    img->frame_timestamp = host_processing_timestamp - qpc_time_difference(host_processing_qpc, static_cast<std::int64_t>(frame_qpc));
+    img->host_processing_timestamp = host_processing_timestamp;
+    img->capture_pacing_timestamp = host_processing_timestamp;
+    img_out = img;
+    return capture_e::ok;
+  }
+
   capture_e display_wgc_ipc_vram_t::acquire_next_frame(std::chrono::milliseconds timeout, texture2d_t &src, uint64_t &frame_qpc, bool cursor_visible) {
     if (!_ipc_session) {
       return capture_e::error;
+    }
+    if (!_ipc_session->set_cursor_visible(cursor_visible)) {
+      return _ipc_session->stop_requested() ? capture_e::interrupted : capture_e::reinit;
     }
 
     winrt::com_ptr<ID3D11Texture2D> gpu_tex;
@@ -508,7 +614,8 @@ namespace platf::dxgi {
           config,
           display_name,
           true /* skip_dd_test: WGC doesn't use Desktop Duplication */,
-          required_adapter_luid)) {
+          required_adapter_luid,
+          true /* allow the output monitor's geometry-only WGC policy */)) {
       return -1;
     }
 
@@ -547,14 +654,19 @@ namespace platf::dxgi {
     }
 
     if (_ipc_session->should_swap_to_dxgi()) {
+      BOOST_LOG(debug) << "Capture restart request: source=wgc-ram reason=dxgi-fallback";
       return capture_e::reinit;
     }
 
     // If the helper process crashed or was terminated forcefully by the user, we will re-initialize it.
     if (_ipc_session->should_reinit()) {
+      BOOST_LOG(debug) << "Capture restart request: source=wgc-ram reason=ipc-reinit-flag";
       return capture_e::reinit;
     }
 
+    if (!_ipc_session->set_cursor_visible(cursor_visible)) {
+      return _ipc_session->stop_requested() ? capture_e::interrupted : capture_e::reinit;
+    }
     _ipc_session->initialize_if_needed();
     if (_ipc_session->stop_requested()) {
       return capture_e::interrupted;

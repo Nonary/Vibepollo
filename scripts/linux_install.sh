@@ -22,6 +22,8 @@
 #   --no-repo             Skip the signed pacman repository and use GitHub releases.
 #   --skip-checks         Continue past failed requirement checks (not recommended).
 #   --yes                 Answer yes to pacman prompts.
+#   --force-stop          Explicitly allow bounded forced shutdown during replacement.
+#   --remove              Uninstall using --package FILE as the incoming shutdown policy.
 #   -h, --help            Show this help.
 #
 # Re-running the script is safe; it only installs what is missing.
@@ -54,9 +56,22 @@ skip_checks=0
 pacman_confirm=()
 replacement_confirm=()
 driver_overwrite=()
+package_hook_args=()
 check_failures=0
 warnings=()
 workdir=''
+package_force_stop=0
+package_transaction_pending=0
+package_transaction_returned=0
+package_transaction_pid=''
+package_transaction_start_ticks=''
+package_transaction_command=''
+package_transaction_cancelled=0
+package_transaction_spawn_pending=0
+package_transaction_cancel_signal=''
+package_transaction_run_id=''
+package_database_lock=/var/lib/pacman/db.lck
+remove_requested=0
 
 usage() {
   sed -n '2,/^$/p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -72,15 +87,258 @@ run_from_root() (
   # Old package hooks and configure helpers drop UID without changing cwd.
   # Keep their children out of the invoking user's private home.
   cd / || die 'cannot enter a safe working directory'
-  "$@"
+  if [[ $(type -t -- "$1") = function ]]; then "$@"; else exec "$@"; fi
 )
 
+can_offer_package_force() {
+  [[ -t 0 && -t 1 && ${#pacman_confirm[@]} == 0 ]] && package_force_is_applicable
+}
+
+package_force_is_applicable() (
+  [[ ! -e "$package_database_lock" && ! -L "$package_database_lock" ]] || return 1
+  [[ "$package_transaction_run_id" =~ ^[0-9a-f]{32}$ ]] || return 1
+  local library="$workdir/arch-package-hooks"
+  [[ -f "$library" && ! -L "$library" ]] || return 1
+  export VIBEPOLLO_PACKAGE_RUN_ID="$package_transaction_run_id"
+  source "$library" || return 1
+  declare -F vibepollo_package_force_is_applicable >/dev/null || return 1
+  vibepollo_package_force_is_applicable
+)
+
+new_package_transaction_run_id() {
+  local value
+  builtin read -r value < /proc/sys/kernel/random/uuid || return 1
+  value=${value//-/}
+  [[ "$value" =~ ^[0-9a-f]{32}$ ]] || return 1
+  package_transaction_run_id=$value
+}
+
+package_transaction_exec() {
+  # Called in the background shell owned by the transaction wrapper. Avoid
+  # another subshell between its recorded PID and the package-manager client.
+  cd / || return 1
+  if [[ $(type -t -- "$1") = function ]]; then
+    "$@"
+  else
+    [[ -x /usr/bin/setsid ]] || { warn 'Trusted setsid is required to isolate the package transaction from terminal cancellation.'; return 1; }
+    # Caller disables job control before fork, so setsid execs the native
+    # client in this same PID. Stdin remains inherited for package prompts;
+    # tty Ctrl-C can reach only the installer, never its native scriptlets.
+    exec /usr/bin/setsid -- "$@"
+  fi
+}
+
+
+record_package_transaction_identity() {
+  local process_stat process_tail
+  local -a process_fields=()
+  package_transaction_start_ticks=''
+  [[ "$package_transaction_pid" =~ ^[1-9][0-9]*$ ]] || return 1
+  builtin read -r process_stat 2>/dev/null < "/proc/$package_transaction_pid/stat" || return 1
+  process_tail=${process_stat##*) }
+  [[ "$process_tail" != "$process_stat" ]] || return 1
+  builtin read -r -a process_fields <<< "$process_tail"
+  # stat fields after the final comm delimiter start at state (field 3).
+  [[ ${process_fields[1]:-} == "$BASHPID" &&
+     ${process_fields[19]:-} =~ ^[0-9]+$ ]] || return 1
+  package_transaction_start_ticks=${process_fields[19]}
+}
+
+package_transaction_signal() {
+  package_transaction_cancelled=$2
+  package_transaction_cancel_signal=$1
+  local child_signal=$1
+  if [[ "$package_transaction_command" = pacman ]]; then
+    # Pacman's pre-transaction hook runs before its interruptible commit state;
+    # even INT/HUP may exit the client while that hook is still running. Keep
+    # the exact client alive and wait for all native hooks before recovery.
+    warn 'Cancellation requested; the package transaction and its hooks must finish before recovery. The pending package replacement may complete.'
+    return 0
+  fi
+  [[ -n "$package_transaction_pid" ]] || return 0
+  if [[ -z "$package_transaction_start_ticks" ]]; then
+    if ((package_transaction_spawn_pending == 0)) && [[ -d /proc/$package_transaction_pid ]]; then
+      warn 'Cancellation target identity could not be established; waiting for the package-manager child before recovery.'
+    fi
+    return 0
+  fi
+  # Bash can reap a child between a jobs-table check and numeric kill. A pidfd
+  # binds the signal to the validated original kernel process across PID reuse.
+  # If trusted pidfd support is missing, keep waiting; never fall back to kill.
+  if [[ ! -x /usr/bin/python3 ]] || ! /usr/bin/python3 -I - \
+    "$BASHPID" "$package_transaction_pid" "$package_transaction_start_ticks" "$child_signal" <<'PY'
+import os
+import pathlib
+import select
+import signal
+import sys
+
+parent, target, start = map(int, sys.argv[1:4])
+number = {"TERM": signal.SIGTERM, "INT": signal.SIGINT, "HUP": signal.SIGHUP}[sys.argv[4]]
+if not hasattr(os, "pidfd_open") or not hasattr(signal, "pidfd_send_signal"):
+    sys.exit(1)
+if os.getppid() != parent:
+    sys.exit(1)
+descriptor = None
+try:
+    descriptor = os.pidfd_open(target)
+    if select.select([descriptor], [], [], 0)[0]:
+        sys.exit(0)
+    fields = pathlib.Path(f"/proc/{target}/stat").read_text().rpartition(") ")[2].split()
+    if len(fields) < 20 or int(fields[1]) != parent or int(fields[19]) != start:
+        sys.exit(1)
+    # A process can exit while its proc identity is being read. Poll the pinned
+    # process again before signalling; a reused numeric PID cannot retarget it.
+    if not select.select([descriptor], [], [], 0)[0]:
+        signal.pidfd_send_signal(descriptor, number)
+except ProcessLookupError:
+    pass
+except (OSError, ValueError):
+    sys.exit(1)
+finally:
+    if descriptor is not None:
+        os.close(descriptor)
+PY
+  then
+    warn 'Cancellation could not safely signal the recorded package-manager child; waiting for it to exit before recovery.'
+  fi
+}
+
+wait_package_transaction_child() {
+  local result
+  while :; do
+    if wait -f "$package_transaction_pid"; then result=0; else result=$?; fi
+    # A caught signal interrupts wait before the child exits. Reap the exact
+    # child before the recovery callback can remove its package barriers.
+    if jobs -pr | grep -qx "$package_transaction_pid"; then continue; fi
+    break
+  done
+  package_transaction_pid=''
+  package_transaction_start_ticks=''
+  package_transaction_returned=1
+  if ((package_transaction_cancelled)); then return "$package_transaction_cancelled"; fi
+  return "$result"
+}
+
+run_package_transaction() {
+  local status answer monitor_was_set=0
+  new_package_transaction_run_id || return 1
+  package_transaction_pid=''
+  package_transaction_start_ticks=''
+  package_transaction_command=$1
+  package_transaction_cancelled=0
+  package_transaction_pending=1
+  package_transaction_returned=0
+  if ((package_force_stop)); then
+    warn 'Forced shutdown is enabled: active streams and applications may terminate, and cleanup may be incomplete.'
+  fi
+  package_transaction_spawn_pending=1
+  monitor_was_set=0
+  [[ $- != *m* ]] || monitor_was_set=1
+  set +m
+  VIBEPOLLO_PACKAGE_RUN_ID="$package_transaction_run_id" VIBEPOLLO_PACKAGE_FORCE="$package_force_stop" package_transaction_exec "$@" <&0 &
+  package_transaction_pid=$!
+  ((monitor_was_set == 0)) || set -m
+  record_package_transaction_identity || true
+  package_transaction_spawn_pending=0
+  if ((package_transaction_cancelled)); then
+    package_transaction_signal "$package_transaction_cancel_signal" "$package_transaction_cancelled"
+  fi
+  if wait_package_transaction_child; then
+    package_transaction_returned=1
+    if ((remove_requested)); then recover_failed_package_transaction; fi
+    package_transaction_pending=0
+    return 0
+  else status=$?; fi
+  package_transaction_returned=1
+  if ((package_transaction_cancelled)); then
+    recover_failed_package_transaction
+    return "$status"
+  fi
+  if ! ((package_force_stop == 0)) || ! package_force_is_applicable || ! can_offer_package_force; then
+    recover_failed_package_transaction
+    return "$status"
+  fi
+  warn 'The package operation failed. Forced shutdown will terminate active streams and applications; cleanup may be incomplete.'
+  if ! read -r -p 'Retry this package operation once with forced shutdown? [y/N] ' answer; then
+    recover_failed_package_transaction
+    return "$status"
+  fi
+  case "$answer" in y|Y|yes|YES) ;; *) recover_failed_package_transaction; return "$status" ;; esac
+  package_transaction_returned=0
+  package_transaction_spawn_pending=1
+  monitor_was_set=0
+  [[ $- != *m* ]] || monitor_was_set=1
+  set +m
+  VIBEPOLLO_PACKAGE_RUN_ID="$package_transaction_run_id" VIBEPOLLO_PACKAGE_FORCE=1 package_transaction_exec "$@" <&0 &
+  package_transaction_pid=$!
+  ((monitor_was_set == 0)) || set -m
+  record_package_transaction_identity || true
+  package_transaction_spawn_pending=0
+  if ((package_transaction_cancelled)); then
+    package_transaction_signal "$package_transaction_cancel_signal" "$package_transaction_cancelled"
+  fi
+  if wait_package_transaction_child; then
+    package_transaction_returned=1
+    if ((remove_requested)); then recover_failed_package_transaction; fi
+    package_transaction_pending=0
+    return 0
+  else status=$?; fi
+  package_transaction_returned=1
+  recover_failed_package_transaction
+  return "$status"
+}
+
+recover_failed_package_transaction() {
+  ((package_transaction_pending)) || return 0
+  # A cancellation while the package-manager child is still running cannot
+  # release its barriers. Retry remains safe, and ownership evidence is kept.
+  ((package_transaction_returned)) || return 0
+  package_transaction_pending=0
+  if [[ -e "$package_database_lock" || -L "$package_database_lock" ]]; then
+    warn 'Package database is locked by another operation; its shutdown barriers were preserved.'
+    return 0
+  fi
+  [[ "$package_transaction_run_id" =~ ^[0-9a-f]{32}$ ]] || return 0
+  local library="$workdir/arch-package-hooks"
+  [[ -f "$library" && ! -L "$library" ]] || return 0
+  (
+    export VIBEPOLLO_PACKAGE_RUN_ID="$package_transaction_run_id"
+    source "$library" || exit 1
+    declare -F vibepollo_package_run_is_owned >/dev/null || exit 0
+    vibepollo_package_run_is_owned || exit 0
+    if declare -F vibepollo_package_recover_failed_transaction >/dev/null; then
+      vibepollo_package_recover_failed_transaction
+    fi
+  ) || warn 'Package shutdown recovery could not prove a safe release; retry retains its ownership evidence.'
+}
+
 cleanup() {
+  if [[ -n "$package_transaction_pid" ]]; then
+    wait_package_transaction_child || true
+  fi
+  recover_failed_package_transaction
   if [[ -n "$workdir" && -d "$workdir" ]]; then
     rm -rf -- "$workdir"
   fi
 }
 trap cleanup EXIT
+
+installer_signal() {
+  if [[ -n "$package_transaction_pid" ]]; then
+    package_transaction_signal "$@"
+  elif ((package_transaction_spawn_pending)); then
+    # A signal between fork and $! assignment must not discard the only
+    # ownership record. Deliver it after the exact child PID is recorded.
+    package_transaction_cancelled=$2
+    package_transaction_cancel_signal=$1
+  else
+    exit "$2"
+  fi
+}
+trap 'installer_signal HUP 129' HUP
+trap 'installer_signal INT 130' INT
+trap 'installer_signal TERM 143' TERM
 
 parse_args() {
   while (($# > 0)); do
@@ -99,6 +357,8 @@ parse_args() {
       --no-repo) use_repo=0; shift ;;
       --skip-checks) skip_checks=1; shift ;;
       --yes) pacman_confirm=(--noconfirm); replacement_confirm=(--noconfirm --ask=4); shift ;;
+      --force-stop) package_force_stop=1; shift ;;
+      --remove) remove_requested=1; shift ;;
       -h | --help) usage; exit 0 ;;
       *) die "unknown option: $1 (see --help)" ;;
     esac
@@ -337,20 +597,96 @@ EOF
   fi
 }
 
+prepare_package_hook_dirs() {
+  # Pacman applies the default /etc hook directory only when no --hookdir or
+  # configured HookDir exists. Preserve the effective configuration explicitly;
+  # configured directories still append in Pacman and retain admin precedence.
+  command -v pacman-conf >/dev/null 2>&1 ||
+    die 'pacman-conf is required to preserve administrator transaction hooks'
+  local resolved_hooks hook_dir hook_count=0
+  resolved_hooks=$(pacman-conf HookDir) ||
+    die 'could not read effective pacman hook directories; no transaction started'
+  [[ -n "$resolved_hooks" ]] || die 'effective pacman hook directories are empty'
+  local -a private_guards=("$workdir/hooks/"*.hook)
+  [[ ${#private_guards[@]} == 1 && -f "${private_guards[0]}" && ! -L "${private_guards[0]}" ]] ||
+    die 'private package transaction guard is missing or ambiguous'
+  local guard_name=${private_guards[0]##*/}
+  package_hook_args=()
+  while IFS= read -r hook_dir; do
+    [[ "$hook_dir" == /* && "$hook_dir" != *$'\r'* ]] ||
+      die 'effective pacman hook directory must be absolute and contain no carriage return'
+    # A configured same-name dummy hook can disable AbortOnFail, while the
+    # default directory would be shadowed by our CLI guard. Preserve admin
+    # policy in both cases by refusing the collision before any transaction.
+    [[ ! -e "$hook_dir/$guard_name" && ! -L "$hook_dir/$guard_name" ]] ||
+      die "administrator hook $hook_dir/$guard_name conflicts with the required shutdown guard; no transaction started"
+    hook_count=$((hook_count + 1))
+    ((hook_count <= 256)) || die 'too many effective pacman hook directories'
+    package_hook_args+=(--hookdir "$hook_dir")
+  done <<< "$resolved_hooks"
+  package_hook_args+=(--hookdir "$workdir/hooks")
+}
+
 stage_upgrade_guard() {
   local candidate=$1 library="$workdir/arch-package-hooks" preflight="$workdir/preflight"
   local hook_dir="$workdir/hooks"
+  local outgoing_library=${2:-/usr/share/vibepollo/arch-package-hooks}
+  local hook_name=00-vibepollo-incoming-quiesce.hook
+  local compat_recheck_script=''
+  vibepollo_compat_fuse_scan_recheck=0
+  vibepollo_compat_override_hook=0
   [[ -f "$candidate" ]] || die "package preflight candidate is missing: $candidate"
   command -v bsdtar >/dev/null 2>&1 || die 'bsdtar is required for the safe package preflight'
   mkdir -p -m 700 -- "$hook_dir" || die 'could not stage the package transaction guard'
   bsdtar -xOf "$candidate" .INSTALL > "$library" || die 'candidate has no Arch package hooks'
   chmod 0600 "$library" || die 'could not protect the staged package hooks'
   bash -n "$library" || die 'candidate package hooks have invalid shell syntax'
-  grep -q '^vibepollo_quiesce_or_abort() {' "$library" ||
+  grep -q '^vibepollo_quiesce_or_abort() [({]' "$library" ||
     die 'candidate lacks the required quiescence check'
-  printf '#!/usr/bin/bash\n. %q || exit 1\nvibepollo_quiesce_or_abort\n' "$library" > "$preflight"
+  # Only these named, version/condition-scoped incoming steps may select an
+  # exact outgoing-hook override. Unknown scripts in an archive never execute.
+  local migration_entry migration migration_name installed_identity=''
+  local archive_entries
+  archive_entries=$(bsdtar -tf "$candidate") || die 'could not inspect candidate compatibility scripts'
+  for migration_name in upgrade-2.0-lifecycle.sh upgrade-2.0.1-lifecycle.sh upgrade-2.0.2-fuse-scan.sh; do
+    migration_entry=$(printf '%s\n' "$archive_entries" | grep -Fx \
+      -e "usr/share/vibepollo/installer-migrations/$migration_name" \
+      -e "./usr/share/vibepollo/installer-migrations/$migration_name" || true)
+    [[ -n "$migration_entry" ]] || continue
+    migration="$workdir/$migration_name"
+    [[ "$migration_entry" != *$'\n'* ]] || die 'candidate has duplicate compatibility scripts'
+    bsdtar -xOf "$candidate" "$migration_entry" > "$migration" || die 'could not extract incoming compatibility script'
+    chmod 0600 "$migration" || die 'could not protect incoming compatibility script'
+    bash -n "$migration" || die 'incoming compatibility script has invalid syntax'
+    source "$migration" || die 'could not load incoming compatibility script'
+    if [[ -z "$installed_identity" ]]; then installed_identity=$(pacman -Q vibepollo 2>/dev/null || true); fi
+    case "$migration_name" in
+      upgrade-2.0-lifecycle.sh)
+        vibepollo_upgrade_2_0_lifecycle_compat "$installed_identity" "$outgoing_library" "$library" || die 'outgoing 2.0.0 lifecycle compatibility check failed' ;;
+      upgrade-2.0.1-lifecycle.sh)
+        vibepollo_upgrade_2_0_1_lifecycle_compat "$installed_identity" "$outgoing_library" "$library" || die 'outgoing 2.0.1 lifecycle compatibility check failed' ;;
+      upgrade-2.0.2-fuse-scan.sh)
+        vibepollo_upgrade_2_0_2_fuse_scan_compat "$installed_identity" "$outgoing_library" "$library" || die 'outgoing 2.0.2 FUSE-scan compatibility check failed'
+        if ((vibepollo_compat_fuse_scan_recheck)); then compat_recheck_script=$migration; fi ;;
+    esac
+  done
+  if ((vibepollo_compat_override_hook)); then hook_name=00-vibepollo-quiesce.hook; fi
+  # Re-staging in the same private directory must retire our previous choice,
+  # especially an override whose legacy version/condition no longer matches.
+  rm -f -- "$hook_dir/00-vibepollo-quiesce.hook" "$hook_dir/00-vibepollo-incoming-quiesce.hook" ||
+    die 'could not retire the previous private transaction guard'
+  printf '#!/usr/bin/bash\n' > "$preflight"
+  if [[ -n "$compat_recheck_script" ]]; then
+    # Requalify under ALPM's transaction lock. A different installed version,
+    # edited library or changed path cannot inherit a staging-time override.
+    printf '. %q || exit 1\nvibepollo_compat_override_hook=0\n' "$compat_recheck_script" >> "$preflight"
+    printf 'vibepollo_upgrade_2_0_2_fuse_scan_compat "$(pacman -Q vibepollo)" %q %q >/dev/null || exit 1\n' "$outgoing_library" "$library" >> "$preflight"
+    printf '[[ "$%s" = 1 && "$%s" = 1 ]] || { echo "error: installed FUSE-scan guard changed after staging; no shutdown started." >&2; exit 1; }\n' \
+      vibepollo_compat_override_hook vibepollo_compat_fuse_scan_recheck >> "$preflight"
+  fi
+  printf '. %q || exit 1\nvibepollo_quiesce_or_abort\n' "$library" >> "$preflight"
   chmod 0700 "$preflight" || die 'could not protect the transaction preflight'
-  cat > "$hook_dir/00-vibepollo-quiesce.hook" <<EOF
+  cat > "$hook_dir/$hook_name" <<EOF
 [Trigger]
 Operation = Install
 Operation = Upgrade
@@ -364,7 +700,7 @@ When = PreTransaction
 Exec = $preflight
 AbortOnFail
 EOF
-  chmod 0600 "$hook_dir/00-vibepollo-quiesce.hook" || die 'could not protect the transaction hook'
+  chmod 0600 "$hook_dir/$hook_name" || die 'could not protect the transaction hook'
 }
 
 install_from_repo() {
@@ -393,10 +729,11 @@ install_from_repo() {
   [[ $(pacman -Qp -- "${candidates[0]}") == 'vibepollo '* ]] ||
     die 'cached package identity is not Vibepollo'
   stage_upgrade_guard "${candidates[0]}"
+  prepare_package_hook_dirs
   prepare_driver_replacement
   log 'Installing Vibepollo and its dependencies; no full system upgrade is requested'
-  run_from_root pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" \
-    --cachedir "$workdir/cache" --hookdir "$workdir/hooks" "${repo_target[@]}"
+  run_package_transaction pacman -S "${replacement_confirm[@]}" "${driver_overwrite[@]}" \
+    --cachedir "$workdir/cache" "${package_hook_args[@]}" "${repo_target[@]}"
 }
 
 download_release_package() {
@@ -441,7 +778,7 @@ download_release_package() {
     checksum_actual=$(sha256sum "$local_package" | awk '{print $1}')
     [[ "$checksum_actual" == "$checksum_expected" ]] || die "checksum mismatch for ${asset_name}; refusing to install"
     ok "Package checksum matches SHA256SUMS."
-  elif [[ "$tag" == daily-* || "$tag" == *-daily.d* ]]; then
+  elif [[ "$tag" == daily-* || "$tag" == *-daily.d* || "$tag" == *-nightly.d* ]]; then
     die "nightly checksums unavailable; refusing to install"
   fi
 
@@ -559,11 +896,12 @@ install_from_package() {
   [[ "$identity" == 'vibepollo '* && "$identity" != *$'\n'* ]] || die 'local package is not Vibepollo'
   package_path=$(readlink -f -- "$local_package") || die 'cannot resolve the local package path'
   stage_upgrade_guard "$local_package"
+  prepare_package_hook_dirs
   prepare_driver_replacement
   log "Installing ${local_package##*/} with pacman"
   # Installing a local build must not also upgrade the operating system.
-  run_from_root pacman -U "${replacement_confirm[@]}" "${driver_overwrite[@]}" \
-    --hookdir "$workdir/hooks" -- "$package_path"
+  run_package_transaction pacman -U "${replacement_confirm[@]}" "${driver_overwrite[@]}" \
+    "${package_hook_args[@]}" -- "$package_path"
 }
 
 install_vibepollo() {
@@ -581,6 +919,20 @@ install_vibepollo() {
   fi
   download_release_package
   install_from_package
+}
+
+remove_vibepollo() {
+  [[ -n "$local_package" && -f "$local_package" ]] ||
+    die '--remove requires --package FILE containing the incoming shutdown policy'
+  local identity
+  identity=$(pacman -Qp -- "$local_package") || die 'could not inspect the removal policy package'
+  [[ "$identity" == 'vibepollo '* && "$identity" != *$'\n'* ]] || die 'removal policy package is not Vibepollo'
+  workdir=$(mktemp -d /tmp/vibepollo-removal.XXXXXXXX)
+  stage_upgrade_guard "$local_package"
+  prepare_package_hook_dirs
+  log 'Removing Vibepollo with the incoming shutdown guard; the policy package will not be installed'
+  run_package_transaction pacman -R "${pacman_confirm[@]}" "${package_hook_args[@]}" -- vibepollo || return $?
+  ok 'Vibepollo was removed; existing machine profile data is preserved.'
 }
 
 open_firewall() {
@@ -767,6 +1119,10 @@ main() {
   parse_args "$@"
   require_root
   require_pacman
+  if ((remove_requested)); then
+    remove_vibepollo
+    return
+  fi
   run_checks
   install_kernel_headers
   check_session_restart

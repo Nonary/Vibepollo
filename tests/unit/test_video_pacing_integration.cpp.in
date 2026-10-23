@@ -1,0 +1,373 @@
+// Supplementary native policy replay; runtime controls are linked production.
+#include "stream_protocol.h"
+#include "src/stream_broadcast_runtime.h"
+#include "src/sync.h"
+#include "src/video_pacing_policy.h"
+#include <gtest/gtest.h>
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <chrono>
+#include <cstddef>
+#include <cstdint>
+#include <functional>
+#include <memory>
+#include <map>
+#include <iostream>
+#include <ratio>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+using namespace std::literals;
+using namespace std::chrono_literals;
+using std::size_t;
+namespace pacing = stream::pacing;
+#define BOOST_LOG(level) if (false) std::cerr
+#define UPDATED_SOURCE @UPDATED@
+constexpr int MAX_RTP_HEADER_SIZE = 16, SS_ENC_VIDEO = 4, START_PACING_REJECTED = -2;
+struct video_packet_raw_t { char bytes[32]; };
+struct video_packet_enc_prefix_t { char bytes[32]; };
+struct video_short_frame_header_t { char bytes[8]; };
+namespace pyrowave {
+  namespace protocol { constexpr int BITSTREAM_FORMAT = 3; }
+  namespace policy { @DETAIL_MAX@ }
+}
+namespace config {
+  struct { int pacing_max_bitrate_kbps = 0, fec_percentage = 20,
+               pyrowave_critical_fec_percentage = 20, video_max_batch_size_kb = 64;
+          bool pacing_batch_demand_limit = false; } stream;
+}
+struct config_t {
+  struct { int bitrate = 150000, client_requested_bitrate = 150000, videoFormat = 1,
+               framerate = 120, encodingFramerate = 120000, framerateX100 = 12000;
+           bool input_only = false; } monitor;
+  int packetsize = 1392, encryptionFlagsEnabled = 0, minRequiredFecPackets = 2;
+};
+struct session_t;
+struct control_server_t { sync_util::sync_t<std::vector<session_t *>> _sessions; };
+struct Broadcast { control_server_t control_server; };
+auto broadcast = safe::make_shared<Broadcast>([](Broadcast &) { return 0; }, [](Broadcast &) {});
+decltype(broadcast)::ptr_t broadcast_owner;
+struct session_t {
+  config_t config;
+  std::string device_uuid = "client";
+  safe::mail_t mail = std::make_shared<safe::mail_raw_t>();
+  struct address_t { bool is_v6() const { return false; } };
+  struct peer_t { address_t address() const { return {}; } };
+  struct {
+    safe::mail_raw_t::event_t<int> bitrate_events;
+    std::atomic<int> pacing_bitrate_kbps {0};
+    bool cipher = false;
+    peer_t peer;
+  } video;
+  decltype(broadcast)::ptr_t broadcast_ref;
+  session_t() { video.bitrate_events = mail->event<int>("dynamic_bitrate"); }
+};
+namespace session { void stop(session_t &) {} }
+#if UPDATED_SOURCE
+using stream::video_pacing_reservation_t;
+using stream::video_pacing_reservation;
+using stream::reserve_video_pacing_capacity;
+@RATE_HELPERS@
+#endif
+using stream::video_send_batch_size;
+@HELPERS@
+// Only the native session representation is adapted. Matching, acquisition,
+// callback ordering, metadata writes and publication are the real component.
+stream::broadcast_runtime::controls_t<Broadcast> controls {
+  broadcast,
+  [](Broadcast &ctx, const stream::broadcast_runtime::session_action_t &action) {
+    auto guard = ctx.control_server._sessions.lock();
+    std::vector<stream::broadcast_runtime::session_control_t> views;
+    for (auto *session : *ctx.control_server._sessions) {
+      if (session) {
+        views.push_back({session->device_uuid, session->config.monitor.bitrate,
+          session->config.monitor.client_requested_bitrate, session->video.pacing_bitrate_kbps, {}, session->video.bitrate_events});
+      }
+    }
+    return action(views);
+  },
+  [](Broadcast &ctx, const std::string &client_uuid, int bitrate_kbps) {
+    return pacing_admits_locked(ctx.control_server, nullptr, &client_uuid, bitrate_kbps);
+  }
+};
+int publish_session(session_t &session) {
+@BITRATE_INIT@
+@PUBLISH@
+  return 0;
+}
+std::pair<size_t, size_t> pace(int cap, bool encrypted = false, bool pyro = false, size_t blocksize = 1408,
+                             std::uint64_t packets = 0, bool delay_mode = false, bool demand_limit = false) {
+  config::stream.pacing_max_bitrate_kbps = cap;
+  config::stream.pacing_batch_demand_limit = demand_limit;
+  session_t instance;
+  instance.video.cipher = encrypted;
+  auto *session = &instance;
+  const bool pyrowave_session = pyro;
+  const auto &monitor = session->config.monitor;
+  const auto pacing_bitrate_kbps = pyrowave_session ?
+                                     (monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate) :
+                                     (monitor.bitrate > 0 ? monitor.bitrate : monitor.client_requested_bitrate);
+  session->video.pacing_bitrate_kbps.store(pacing_bitrate_kbps, std::memory_order_relaxed);
+  for (int once = 0; once != 1; ++once) {
+@PACER@
+    if (pyrowave_session) {
+      ratecontrol_packets_in_1ms = 900; // deterministic adaptive-policy boundary
+@CLAMP@
+    }
+    std::size_t pacing_frame_packets = 5;
+    const std::size_t payload_blocksize = blocksize - sizeof(video_packet_raw_t);
+@BATCH_QUANTUM@
+@BATCHES@
+@FRAME_DELAY@
+    return {delay_mode ? size_t(frame_pacing_delay(packets).count()) : ratecontrol_packets_in_1ms, send_batch_size};
+  }
+  return {0, 0};
+}
+std::uint64_t sender_delay(int cap, bool encrypted = false, bool pyro = false, std::uint64_t packets = 1) {
+  return pace(cap, encrypted, pyro, 1408, packets, true).first;
+}
+bool checks_deadline(int pacing_ceiling, size_t ratecontrol_group_packets_sent, size_t ratecontrol_frame_packets_sent, size_t ratecontrol_packets_in_1ms) {
+  return @CONDITION@;
+}
+void reset(int cap) {
+  config::stream = {}; config::stream.pacing_max_bitrate_kbps = cap;
+  if (!broadcast_owner) broadcast_owner = broadcast.ref();
+  auto guard = broadcast_owner->control_server._sessions.lock();
+  broadcast_owner->control_server._sessions->clear();
+}
+void attach(session_t &session) { session.broadcast_ref = broadcast.ref(); }
+
+struct Tree {
+  std::map<std::string, std::string> values;
+  void put(const char *key, const char *value) { values[key] = value; }
+  void put(const char *key, int value) { values[key] = std::to_string(value); }
+};
+void bitrate_response(Tree &tree, int updated) {
+  struct { std::string name = "client"; } client;
+  auto *verified_client = &client;
+@HTTP_HANDLER@
+  tree.put("root.<xmlattr>.status_code", 200);
+}
+namespace stream::session {
+  constexpr int START_PACING_REJECTED = -2;
+  int selected_start_result = 0;
+  int start(int &, const std::string &) { return selected_start_result; }
+}
+std::pair<bool, int> startup_response(int selected) {
+  stream::session::selected_start_result = selected;
+  auto stream_session = std::make_shared<int>(0);
+  std::string remote_address, startup_error;
+  bool startup_failed = true;
+  int startup_status = 500;
+@RTSP_MAPPING@
+  return {startup_failed, startup_status};
+}
+
+TEST(VideoPacingIntegration, RejectsInfeasibleStartBeforePublishing) {
+  reset(165000);
+  session_t candidate; attach(candidate);
+  EXPECT_EQ(publish_session(candidate), START_PACING_REJECTED);
+  EXPECT_TRUE(broadcast_owner->control_server._sessions.raw.empty());
+}
+TEST(VideoPacingIntegration, ReservesAllPublishedStartsInSharedPacer) {
+  reset(400000);
+  session_t one, two, three;
+  for (auto *candidate : {&one, &two, &three}) attach(*candidate);
+  ASSERT_EQ(publish_session(one), 0);
+  ASSERT_EQ(publish_session(two), 0);
+  EXPECT_EQ(publish_session(three), START_PACING_REJECTED);
+  EXPECT_EQ(broadcast_owner->control_server._sessions.raw.size(), 2u);
+}
+TEST(VideoPacingIntegration, RejectsBitrateIncreaseAtomicallyAcrossMatchingSessions) {
+  reset(400000);
+  session_t one, two;
+  for (auto *candidate : {&one, &two}) { attach(*candidate); ASSERT_EQ(publish_session(*candidate), 0); }
+  EXPECT_EQ(controls.set_bitrate_for_sessions("client", 160000), -1);
+  for (auto *candidate : {&one, &two}) {
+    EXPECT_EQ(candidate->config.monitor.bitrate, 150000);
+    EXPECT_EQ(candidate->config.monitor.client_requested_bitrate, 150000);
+    EXPECT_TRUE(!candidate->video.bitrate_events->peek());
+  }
+}
+TEST(VideoPacingIntegration, FeasibleUpdateKeepsOtherClientAndNotFoundSemantics) {
+  reset(400000);
+  session_t one, two; two.device_uuid = "other";
+  for (auto *candidate : {&one, &two}) { attach(*candidate); ASSERT_EQ(publish_session(*candidate), 0); }
+  EXPECT_EQ(controls.set_bitrate_for_sessions("missing", 500000), 0);
+  EXPECT_EQ(controls.set_bitrate_for_sessions("client", 100000), 1);
+  EXPECT_EQ(one.config.monitor.bitrate, 100000);
+  EXPECT_EQ(two.config.monitor.bitrate, 150000);
+  EXPECT_EQ(one.video.bitrate_events->pop(0ms), 100000);
+  EXPECT_FALSE(one.video.bitrate_events->peek());
+  EXPECT_TRUE(!two.video.bitrate_events->peek());
+}
+TEST(VideoPacingIntegration, InputOnlyAndFractionalCadenceAdmission) {
+  reset(1);
+  session_t input; input.config.monitor.input_only = true; attach(input);
+  EXPECT_EQ(publish_session(input), 0);
+  reset(200000);
+  session_t fractional; fractional.config.monitor.framerate = 60;
+  fractional.config.monitor.encodingFramerate = 59940;
+  fractional.config.monitor.framerateX100 = 5994; attach(fractional);
+  EXPECT_EQ(publish_session(fractional), 0);
+}
+TEST(VideoPacingIntegration, ZeroKeepsLegacyAdmissionUpdatesAndPacing) {
+  reset(0);
+  session_t one, two, three;
+  for (auto *candidate : {&one, &two, &three}) { attach(*candidate); EXPECT_EQ(publish_session(*candidate), 0); }
+  EXPECT_EQ(controls.set_bitrate_for_sessions("client", 500000), 3);
+  for (const size_t block : {216u, 516u, 1408u, 1472u, 9016u, 65551u}) {
+    const auto legacy = std::max<size_t>(1, 800000000 / 1000 / block / 8);
+    EXPECT_EQ(pace(0, false, false, block).first, legacy);
+    EXPECT_EQ(pace(0, true, false, block).first, legacy);
+  }
+  EXPECT_EQ(pace(0, false, true).first, 900u);
+  EXPECT_EQ(pace(0).second, 46u);  // Default-off preserves the configured 64 KiB group.
+  EXPECT_EQ(pace(0, true).second, 45u);  // Per-datagram encryption prefixes consume batch space.
+  EXPECT_FALSE(checks_deadline(0, 0, 5, 71));
+}
+TEST(VideoPacingIntegration, PositiveCeilingIsNotRaisedAndIncludesEncryption) {
+  for (const int cap : {100000, 200000, 400000, 2000000}) {
+    for (const bool encrypted : {false, true}) {
+      const auto delay = sender_delay(cap, encrypted, false, 1000);
+      const auto bit_time = 1000ull * (1408 + (encrypted ? 32 : 0)) * 8 * 1'000'000;
+      EXPECT_GE(delay * cap, bit_time);
+    }
+  }
+  EXPECT_LT(sender_delay(2000000, false, false, 1000), sender_delay(0, false, false, 1000));
+  EXPECT_GE(sender_delay(200000, false, true, 1000) * 200000, 1000ull * 1408 * 8 * 1'000'000);
+  EXPECT_EQ(pace(10000000, false, true, 216, 1000, true).first,
+            pace(0, false, true, 216, 1000, true).first);
+}
+TEST(VideoPacingIntegration, ExplicitBatchAndDeadlineRespectThePacingQuantum) {
+  const auto [rate, batch] = pace(200000, false, false, 1408, 0, false, true);
+  EXPECT_LE(batch, 200000u / 8 / 1408);
+  EXPECT_TRUE(checks_deadline(200000, 0, 5, rate));
+  config::stream.video_max_batch_size_kb = 16;
+  EXPECT_EQ(pace(200000, false, false, 1408, 0, false, true).second, 11u);
+}
+TEST(VideoPacingIntegration, DemandQuantumIsExplicitlyOptInAndCappedPerCall) {
+  config::stream.video_max_batch_size_kb = 64;
+  const auto default_batch = pace(0, false, false, 1408, 0, false, false).second;
+  const auto opt_in_batch = pace(0, false, false, 1408, 0, false, true).second;
+  EXPECT_EQ(default_batch, 46u);
+  EXPECT_EQ(opt_in_batch, 14u);
+  EXPECT_LT(opt_in_batch, default_batch);
+  EXPECT_EQ(pace(0, false, true, 1408, 0, false, true).second, pace(0, false, true).second);
+}
+TEST(VideoPacingIntegration, FeasibleSubPacketRatesReachStartupAndFractionalSendDeadlines) {
+  for (const bool encrypted : {false, true}) {
+    reset(8000);
+    session_t low; low.config.monitor.bitrate = low.config.monitor.client_requested_bitrate = 1000;
+    low.config.monitor.framerate = 60; low.config.monitor.encodingFramerate = 60000; low.config.monitor.framerateX100 = 6000;
+    low.config.encryptionFlagsEnabled = encrypted ? SS_ENC_VIDEO : 0;
+    attach(low);
+    EXPECT_EQ(publish_session(low), 0);
+    EXPECT_EQ(pace(8000, encrypted).second, 1u);
+    EXPECT_GT(sender_delay(8000, encrypted), 1'000'000u);
+    EXPECT_EQ(sender_delay(8000, encrypted), encrypted ? 1'440'000u : 1'408'000u);
+    const auto total = sender_delay(8001, encrypted, false, 301);
+    const auto bit_time = 301ull * (encrypted ? 1440 : 1408) * 8 * 1'000'000;
+    EXPECT_GE(total * 8001, bit_time);
+    EXPECT_LT((total - 1) * 8001, bit_time);
+    EXPECT_EQ(sender_delay(8000, encrypted, true), sender_delay(8000, encrypted));
+  }
+}
+TEST(VideoPacingIntegration, FractionalMultiSessionChangesStayAtomicAndReleaseCapacity) {
+  for (const bool encrypted : {false, true}) {
+    reset(8000);
+    session_t one, two, three;
+    for (auto *candidate : {&one, &two, &three}) {
+      candidate->config.monitor.bitrate = candidate->config.monitor.client_requested_bitrate = 1000;
+      candidate->config.monitor.framerate = 60; candidate->config.monitor.encodingFramerate = 60000; candidate->config.monitor.framerateX100 = 6000;
+      candidate->config.encryptionFlagsEnabled = encrypted ? SS_ENC_VIDEO : 0;
+      attach(*candidate);
+    }
+    ASSERT_EQ(publish_session(one), 0);
+    ASSERT_EQ(publish_session(two), 0);
+    EXPECT_EQ(publish_session(three), START_PACING_REJECTED);
+    EXPECT_EQ(controls.set_bitrate_for_sessions("client", 1200), 2);
+    EXPECT_EQ(controls.set_bitrate_for_sessions("client", 2000), -1);
+    for (auto *candidate : {&one, &two}) {
+      EXPECT_EQ(candidate->config.monitor.bitrate, 1200);
+      EXPECT_EQ(candidate->video.bitrate_events->pop(0ms), 1200);
+      EXPECT_FALSE(candidate->video.bitrate_events->peek());
+    }
+    // #510's control owner removes the stopped entry before controlEnd. Once
+    // detached it no longer reserves the shared sender; the other owner stays.
+    auto &sessions = broadcast_owner->control_server._sessions.raw;
+    sessions.erase(std::find(sessions.begin(), sessions.end(), &one));
+    EXPECT_EQ(publish_session(three), 0);
+    EXPECT_EQ(two.config.monitor.bitrate, 1200);
+  }
+}
+TEST(VideoPacingIntegration, AdmissionFailureIsAClientErrorAndPreservesOtherStatuses) {
+  Tree rejected, absent, accepted;
+  bitrate_response(rejected, -1); bitrate_response(absent, 0); bitrate_response(accepted, 1);
+  EXPECT_EQ(rejected.values["root.<xmlattr>.status_code"], "400");
+  EXPECT_EQ(absent.values["root.<xmlattr>.status_code"], "404");
+  EXPECT_EQ(accepted.values["root.<xmlattr>.status_code"], "200");
+  EXPECT_EQ(startup_response(-2), std::make_pair(true, 400));
+  EXPECT_EQ(startup_response(-1), std::make_pair(true, 500));
+  EXPECT_FALSE(startup_response(0).first);
+}
+
+#if UPDATED_SOURCE
+size_t fec_packets(const std::string_view &payload, size_t blocksize, size_t fecpercentage, size_t minparityshards) {
+@FEC_COUNT@
+  return nr_shards;
+}
+size_t frame_packets(size_t image_bytes, int packet_size, int percentage, int minimum) {
+  const size_t blocksize = packet_size + 16;
+  const std::string header(8, '\0'), encoded(image_bytes, '\0');
+  const auto expanded = stream::concat_and_insert(32, packet_size - 16, header, encoded);
+  const std::string_view payload(reinterpret_cast<const char *>(expanded.data()), expanded.size());
+  constexpr size_t DATA_SHARDS_MAX = 255, MAX_FEC_BLOCKS = 4;
+  auto fecPercentage = percentage;
+  size_t fec_blocks_needed = 0;
+  std::array<std::string_view, MAX_FEC_BLOCKS> fec_blocks {};
+  std::array<int, MAX_FEC_BLOCKS> fec_block_percentages {};
+@SPLITTER@
+  size_t count = 0, policy_count = 0;
+  for (size_t i = 0; i != fec_blocks_needed; ++i) {
+    count += fec_packets(fec_blocks[i], blocksize, fec_block_percentages[i], minimum);
+    const auto data_shards = (fec_blocks[i].size() + blocksize - 1) / blocksize;
+    policy_count += stream::pacing::fec_expanded_packets(data_shards, fec_block_percentages[i], minimum);
+  }
+  EXPECT_EQ(policy_count, count);
+  return count;
+}
+TEST(VideoPacingIntegration, DemandBoundCoversActualProductionPacketizationAndFec) {
+  unsigned fixtures = 0;
+  for (const int fec : {0, 1, 10, 20, 80, 255}) {
+    for (const int packet : {200, 1392}) {
+      for (const int minimum : {0, 2, 8}) {
+        for (const int fps : {1, 24, 120}) {
+          for (const size_t image : {1u, 1234u, 156250u}) {
+            const auto actual = frame_packets(image, packet, fec, minimum) * fps;
+            const int bitrate = int((image * fps + 124) / 125);
+            const auto plan = stream::video_pacing_reservation(10000000, {bitrate, fps, size_t(packet - 16), size_t(packet + 16), 8, fec, minimum});
+            EXPECT_GE(plan.packets_per_second, actual) << "fec=" << fec << " packet=" << packet << " min=" << minimum << " fps=" << fps << " image=" << image;
+            ++fixtures;
+          }
+        }
+      }
+    }
+  }
+  EXPECT_EQ(fixtures, 324u);
+}
+TEST(VideoPacingIntegration, DemandBoundCoversUnevenFramesAndPyroAdmission) {
+  const std::vector<size_t> frames {300000, 1, 1234, 8000, 145765};
+  size_t total_bytes = 0, total_packets = 0;
+  for (const auto bytes : frames) { total_bytes += bytes; total_packets += frame_packets(bytes, 1392, 20, 8); }
+  const auto plan = stream::video_pacing_reservation(10000000, {int((total_bytes + 124) / 125), int(frames.size()), 1376, 1440, 8, 20, 8});
+  EXPECT_GE(plan.packets_per_second, total_packets);
+  reset(100000);
+  session_t pyro; pyro.config.monitor.videoFormat = 3; attach(pyro);
+  EXPECT_EQ(publish_session(pyro), START_PACING_REJECTED);
+  reset(400000); attach(pyro);
+  EXPECT_EQ(publish_session(pyro), 0);
+}
+#endif

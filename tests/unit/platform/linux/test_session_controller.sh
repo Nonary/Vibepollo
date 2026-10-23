@@ -5,6 +5,10 @@ set -uo pipefail
 readonly controller_source=$1
 # shellcheck source=/dev/null
 source "$controller_source"
+controller_binding_definition=$(declare -f binding_matches_candidate)
+controller_host_active_definition=$(declare -f host_unit_is_active)
+controller_shutdown_definition=$(declare -f shutdown_controller)
+controller_candidate_still_active_definition=$(declare -f candidate_still_active)
 controller_quiesce_definition=$(declare -f quiesce)
 controller_close_broker_definition=$(declare -f close_broker_admission)
 controller_stop_host_definition=$(declare -f stop_host)
@@ -135,6 +139,140 @@ start_host() {
 
 remove_session_record() { events+=(D); mock_identity=0; mock_complete=0; }
 announce() { :; }
+
+# Exercise the real systemd-active predicate at its command boundary.
+(
+  eval "$controller_host_active_definition"
+  active_status=0
+  active_calls=()
+  system_systemctl_bounded() {
+    active_calls+=("$*")
+    return "$active_status"
+  }
+  host_unit_is_active || fail_test 'active host response was rejected'
+  [[ "${active_calls[*]}" == "5 is-active --quiet $host_service" ]] ||
+    fail_test "host activity queried an unexpected unit or timeout: ${active_calls[*]}"
+  active_status=3
+  if host_unit_is_active; then fail_test 'inactive host response was accepted'; fi
+) || exit $?
+# EXIT/TERM cleanup only records shutdown; ExecStopPost owns the one bounded
+# quiesce transaction. Verify the production function does not start another.
+(
+  eval "$controller_shutdown_definition"
+  shutting_down=0
+  quiesce_calls=0
+  quiesce() { ((quiesce_calls += 1)); }
+  shutdown_controller
+  [[ "$shutting_down" == 1 && "$quiesce_calls" == 0 ]] ||
+    fail_test 'shutdown started a competing quiesce transaction'
+  shutdown_controller
+  [[ "$quiesce_calls" == 0 ]] || fail_test 'repeated shutdown started quiesce'
+) || exit $?
+
+# Exercise the production binding comparisons with a deterministic session
+# record boundary. Identity checks cover user/session authority; the complete
+# check also binds the current display credentials.
+(
+  eval "$controller_binding_definition"
+  candidate_session=2
+  candidate_user=chasep
+  candidate_uid=1000
+  candidate_gid=1000
+  candidate_home=/home/chasep
+  candidate_runtime=/run/user/1000
+  candidate_groups=1000,998
+  candidate_role=desktop
+  candidate_display=wayland-0
+  candidate_xdisplay=:0
+  candidate_xauthority=/run/user/1000/xauth
+  declare -A fixture_record=(
+    [session]=2 [user]=chasep [uid]=1000 [gid]=1000 [home]=/home/chasep
+    [runtime]=/run/user/1000 [groups]=1000,998 [role]=desktop
+    [display]=wayland-0 [xdisplay]=:0 [xauthority]=/run/user/1000/xauth
+  )
+  read_session_record() {
+    local -n destination=$1
+    destination=()
+    local field
+    for field in "${!fixture_record[@]}"; do destination[$field]=${fixture_record[$field]}; done
+  }
+  binding_matches_candidate identity || fail_test 'matching identity record was rejected'
+  binding_matches_candidate complete || fail_test 'matching complete record was rejected'
+
+  for field in session user uid gid home runtime groups role; do
+    original=${fixture_record[$field]}
+    fixture_record[$field]=changed
+    if binding_matches_candidate identity; then
+      fail_test "identity record mismatch in $field was accepted"
+    fi
+    fixture_record[$field]=$original
+  done
+  for field in display xdisplay xauthority; do
+    original=${fixture_record[$field]}
+    fixture_record[$field]=changed
+    binding_matches_candidate identity || fail_test "display change incorrectly invalidated $field identity"
+    if binding_matches_candidate complete; then
+      fail_test "complete record mismatch in $field was accepted"
+    fi
+    fixture_record[$field]=$original
+  done
+) || exit $?
+
+# Run the production revalidation function with deterministic logind and user
+# manager boundaries, changing each candidate field in turn.
+(
+  eval "$controller_candidate_still_active_definition"
+  candidate_session=2 candidate_user=chasep candidate_uid=1000 candidate_gid=1000
+  candidate_home=/home/chasep candidate_runtime=/run/user/1000 candidate_groups=1000,998
+  candidate_role=desktop candidate_display=wayland-0 candidate_xdisplay=:0
+  candidate_xauthority=/run/user/1000/xauth
+  mutation=''
+  boundary_events=()
+  observe_active_session() {
+    boundary_events+=(logind)
+    candidate_session=2 candidate_user=chasep candidate_uid=1000 candidate_gid=1000
+    candidate_home=/home/chasep candidate_runtime=/run/user/1000 candidate_groups=1000,998
+    candidate_role=desktop
+    case "$mutation" in
+      session) candidate_session=3 ;;
+      user) candidate_user=other ;;
+      uid) candidate_uid=1001 ;;
+      gid) candidate_gid=1001 ;;
+      home) candidate_home=/home/other ;;
+      runtime) candidate_runtime=/run/user/1001 ;;
+      groups) candidate_groups=1000 ;;
+      role) candidate_role=greeter ;;
+      logind-failure) return 1 ;;
+    esac
+  }
+  read_user_environment() {
+    boundary_events+=(user-manager)
+    candidate_display=wayland-0 candidate_xdisplay=:0
+    candidate_xauthority=/run/user/1000/xauth
+    case "$mutation" in
+      display) candidate_display=wayland-1 ;;
+      xdisplay) candidate_xdisplay=:1 ;;
+      xauthority) candidate_xauthority=/run/user/1000/other ;;
+      environment-failure) return 1 ;;
+    esac
+  }
+
+  candidate_still_active || fail_test 'unchanged logind/environment snapshot was rejected'
+  [[ "${boundary_events[*]}" == 'logind user-manager' ]] || fail_test 'revalidation skipped a live boundary'
+  for mutation in session user uid gid home runtime groups role display xdisplay xauthority; do
+    boundary_events=()
+    if candidate_still_active; then fail_test "changed $mutation snapshot was accepted"; fi
+    [[ "${boundary_events[*]}" == 'logind user-manager' ]] || fail_test "changed $mutation skipped a boundary"
+  done
+  mutation=logind-failure
+  boundary_events=()
+  if candidate_still_active; then fail_test 'failed logind revalidation was accepted'; fi
+  [[ "${boundary_events[*]}" == logind ]] || fail_test 'user environment was read after logind failure'
+  mutation=environment-failure
+  boundary_events=()
+  if candidate_still_active; then fail_test 'failed user-manager revalidation was accepted'; fi
+  [[ "${boundary_events[*]}" == 'logind user-manager' ]] || fail_test 'user environment failure ordering changed'
+) || exit $?
 
 # Invalid policy always attempts to turn the host off.
 reset_scenario
@@ -469,6 +607,52 @@ fi
 if host_unit_is_stopped $'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=1234\nControlGroup='; then
   fail_test 'nonzero host MainPID was accepted as stopped'
 fi
+if host_unit_is_stopped $'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0'; then
+  fail_test 'host stop proof accepted a missing cgroup property'
+fi
+if host_unit_is_stopped $'LoadState=loaded\nActiveState=inactive\nActiveState=dead\nSubState=dead\nMainPID=0\nControlGroup='; then
+  fail_test 'host stop proof accepted a duplicate property'
+fi
+if host_unit_is_stopped $'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=\nUnexpected=value'; then
+  fail_test 'host stop proof accepted an unknown property'
+fi
+(
+  session_app_control_group_is_empty() { [[ "$1" != /test/populated ]]; }
+  if host_unit_is_stopped $'LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0\nControlGroup=/test/populated'; then
+    fail_test 'host stop proof accepted a populated cgroup'
+  fi
+) || exit $?
+
+
+# Package cleanup can observe a failed unit after its activation file was
+# masked. Failure alone neither proves nor disproves process ownership.
+(
+  session_app_control_group_is_empty() { [[ "$1" != /test/populated ]]; }
+  for load in loaded masked masked-runtime; do
+    for unit in "$host_service" "$broker_socket_service" 'vibepollo-session-exec@fixture.service'; do
+      for state in inactive:dead failed:failed; do
+        properties="LoadState=$load"$'\nActiveState='${state%:*}$'\nSubState='${state#*:}$'\nControlGroup='
+        [[ "$unit" == *.socket ]] || properties+=$'\nMainPID=0'
+        system_unit_is_stopped "$unit" "$properties" || fail_test 'empty masked/failed unit was rejected'
+        if system_unit_is_stopped "$unit" "$properties"$'\nMainPID=321'; then
+          fail_test 'masked/failed unit with live or duplicate MainPID was accepted'
+        fi
+        if system_unit_is_stopped "$unit" "${properties/ControlGroup=/ControlGroup=\/test\/populated}"; then
+          fail_test 'masked/failed populated cgroup was accepted'
+        fi
+      done
+    done
+  done
+  for properties in \
+    $'LoadState=masked\nActiveState=failed\nSubState=failed\nControlGroup=' \
+    $'LoadState=masked\nActiveState=failed\nSubState=failed\nMainPID=0\nMainPID=0\nControlGroup=' \
+    $'LoadState=masked\nActiveState=active\nSubState=running\nMainPID=0\nControlGroup=' \
+    $'LoadState=not-found\nActiveState=failed\nSubState=failed\nMainPID=0\nControlGroup='; do
+    if host_unit_is_stopped "$properties"; then fail_test 'uncertain host state was accepted'; fi
+  done
+  system_systemctl_bounded() { return 1; }
+  if system_unit_is_stopped "$host_service"; then fail_test 'failed manager query proved absence'; fi
+) || fail_test 'masked failed cleanup-state regression'
 
 # Host stop is requested once, then the exact cgroup is polled to completion.
 # The controller never escalates the GPU-owning service to SIGKILL.
@@ -572,6 +756,21 @@ stop_session_generation_apps desktop 1000 1000 /run/user/1000 42 "$((SECONDS + 4
 mock_list_count=$(<"$mock_app_list_counter")
 ((mock_list_count >= 13)) || fail_test 'cleanup returned without ten consecutive clean enumerations'
 
+# Steam direct-launch retries append a numeric attempt to the broker-owned
+# PID. They remain part of the same trusted generation and must be drained.
+mock_reset_app_state
+mock_app_default_output=''
+mock_stopped_units=()
+mock_app_list_outputs=(
+  $'vibepollo-app-42-707-1.service loaded active running retry-one\n'
+  $'vibepollo-app-42-707-2.service loaded activating start retry-two\n'
+  '' '' '' '' '' '' '' '' '' '' '' ''
+)
+stop_session_generation_apps desktop 1000 1000 /run/user/1000 42 "$((SECONDS + 4))" ||
+  fail_test 'generation-scoped Steam retry cleanup failed'
+[[ "${mock_stopped_units[*]}" == 'vibepollo-app-42-707-1.service vibepollo-app-42-707-2.service' ]] ||
+  fail_test "unexpected Steam retry units stopped: ${mock_stopped_units[*]}"
+
 # A failed unit counts as stopped only with MainPID zero and an empty/absent
 # cgroup; a contradictory failed state remains unsafe.
 mock_set_app_state vibepollo-app-42-303.service failed
@@ -587,6 +786,9 @@ fi
 # before any stop request is issued.
 for unsafe_output in \
   $'vibepollo-app-41-303.service loaded active running stale\n' \
+  $'vibepollo-app-41-303-1.service loaded active running stale-retry\n' \
+  $'vibepollo-app-42-303-zero.service loaded active running bad-retry\n' \
+  $'vibepollo-app-42-303-0.service loaded active running zero-retry\n' \
   $'vibepollo-app-42-404.service loaded active running first\nvibepollo-app-42-404.service loaded active running duplicate\n' \
   $'vibepollo-app-42-505.service malformed\n' \
   $'--all loaded active running option\n'; do
@@ -601,18 +803,32 @@ for unsafe_output in \
 done
 
 # A manager that acknowledges stop but keeps the exact unit active cannot make
-# cleanup succeed; the overall deadline still bounds retries.
-mock_reset_app_state
-mock_app_default_output=$'vibepollo-app-42-606.service loaded active running wedged\n'
-mock_app_list_outputs=()
-mock_stopped_units=()
-mock_stop_effective=0
-cleanup_started=$SECONDS
-if stop_session_generation_apps desktop 1000 1000 /run/user/1000 42 "$((SECONDS + 1))"; then
-  fail_test 'cleanup accepted a unit that remained active after stop'
-fi
-((SECONDS - cleanup_started <= 2)) || fail_test 'wedged application cleanup exceeded its total deadline'
-((${#mock_stopped_units[@]} == 1)) || fail_test 'wedged application stop was retried instead of polled'
+# cleanup succeed. Advance a virtual clock at each polling sleep so scheduler
+# delays cannot consume the entire budget before the first stop request. Real
+# command deadlines remain covered by test_session_command_timeout.sh below.
+(
+  mock_reset_app_state
+  mock_app_default_output=$'vibepollo-app-42-606.service loaded active running wedged\n'
+  mock_app_list_outputs=()
+  mock_stopped_units=()
+  mock_stop_effective=0
+  polling_definition=$(declare -f stop_session_generation_apps)
+  [[ "$polling_definition" == *'/usr/bin/sleep 0.1'* ]] || fail_test 'cleanup polling sleep not found'
+  polling_definition=${polling_definition/\/usr\/bin\/sleep 0.1/advance_cleanup_clock}
+  [[ "$polling_definition" != *'/usr/bin/sleep 0.1'* ]] || fail_test 'multiple cleanup polling sleeps found'
+  eval "$polling_definition"
+  # Unsetting SECONDS removes Bash's wall-clock behavior in this subshell only.
+  unset SECONDS
+  SECONDS=0
+  advance_cleanup_clock() { ((SECONDS += 1)); }
+  if stop_session_generation_apps desktop 1000 1000 /run/user/1000 42 3; then
+    fail_test 'cleanup accepted a unit that remained active after stop'
+  fi
+  ((SECONDS == 3)) || fail_test 'wedged application cleanup did not honor its deadline'
+  ((${#mock_stopped_units[@]} == 1)) || fail_test 'wedged application stop was retried instead of polled'
+  mock_list_count=$(<"$mock_app_list_counter")
+  ((mock_list_count == 3)) || fail_test 'wedged application was not polled until the deadline'
+) || fail_test 'wedged application cleanup regression'
 
 for supported in plasmalogin plasmalogin-autologin sddm sddm-autologin; do
   desktop_service_supported "$supported" || fail_test "desktop login service $supported was rejected"

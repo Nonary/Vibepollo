@@ -1,3 +1,5 @@
+#include "src/platform/windows/display_helper_borrow_native.h"
+#include "src/platform/windows/display_helper_v2/enumeration_status.h"
 #include "src/platform/windows/display_helper_v2/win_display_settings.h"
 
 #include "src/logging.h"
@@ -10,9 +12,14 @@
 #include <thread>
 #include <algorithm>
 #include <boost/algorithm/string/predicate.hpp>
+#include <climits>
 #include <cmath>
 #include <cstdint>
+#include <limits>
+#include <map>
 #include <sstream>
+#include <tuple>
+#include <unordered_map>
 #include <vector>
 #include <display_device/windows/persistent_state.h>
 #include <display_device/windows/win_api_recovery.h>
@@ -21,6 +28,43 @@
 
 namespace display_helper::v2 {
   namespace {
+    std::optional<std::u16string> monitor_path_to_utf16(const std::string &monitor_path) {
+      if (monitor_path.empty() || monitor_path.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
+        return std::nullopt;
+      }
+
+      const auto output_size = MultiByteToWideChar(
+        CP_UTF8,
+        MB_ERR_INVALID_CHARS,
+        monitor_path.data(),
+        static_cast<int>(monitor_path.size()),
+        nullptr,
+        0
+      );
+      if (output_size <= 0) {
+        return std::nullopt;
+      }
+
+      std::wstring wide_path(static_cast<std::size_t>(output_size), L'\0');
+      if (MultiByteToWideChar(
+            CP_UTF8,
+            MB_ERR_INVALID_CHARS,
+            monitor_path.data(),
+            static_cast<int>(monitor_path.size()),
+            wide_path.data(),
+            output_size
+          ) != output_size) {
+        return std::nullopt;
+      }
+
+      std::u16string utf16_path;
+      utf16_path.reserve(wide_path.size());
+      for (const auto code_unit : wide_path) {
+        utf16_path.push_back(static_cast<char16_t>(code_unit));
+      }
+      return utf16_path;
+    }
+
     template <typename MapType>
     std::string format_map_keys(const MapType &map) {
       std::ostringstream oss;
@@ -62,6 +106,9 @@ namespace display_helper::v2 {
     }
   }  // namespace
   ApplyStatus WinDisplaySettings::apply(const SingleDisplayConfiguration &config) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return ApplyStatus::HelperUnavailable;
     if (!ensure_initialized()) {
       return ApplyStatus::HelperUnavailable;
     }
@@ -69,7 +116,35 @@ namespace display_helper::v2 {
     std::lock_guard lock(settings_mutex_);
     display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
-      return map_apply_result(settings_manager_->applySettings(config));
+      const auto status = map_apply_result(settings_manager_->applySettings(config));
+      if (status == ApplyStatus::Ok && !config.m_device_id.empty()) {
+        // Keep only state verified from the active desktop after a successful
+        // full transaction. The recovery lane can use this if the request did
+        // not pin a resolution, refresh rate, or HDR state explicitly.
+        try {
+          const auto active = win_api_->queryDisplayConfig(display_device::QueryType::Active);
+          if (active) {
+            for (const auto &path : active->m_paths) {
+              if (!boost::iequals(win_api_->getDeviceId(path), config.m_device_id)) {
+                continue;
+              }
+              if (const auto index = display_device::win_utils::getSourceIndex(path, active->m_modes)) {
+                verified_sources_[config.m_device_id] = active->m_modes.at(*index).sourceMode;
+                verified_refreshes_[config.m_device_id] = path.targetInfo.refreshRate;
+                const auto states = display_device_->getCurrentHdrStates({config.m_device_id});
+                if (const auto hdr = states.find(config.m_device_id); hdr != states.end() && hdr->second) {
+                  verified_hdr_states_[config.m_device_id] = *hdr->second;
+                }
+              }
+              break;
+            }
+          }
+        } catch (...) {
+          // This cache improves an otherwise underspecified live repair; its
+          // failure must not turn a completed APPLY into an error.
+        }
+      }
+      return status;
     } catch (const std::exception &e) {
       BOOST_LOG(error) << "Display helper v2: display settings apply failed: " << e.what();
       return ApplyStatus::Fatal;
@@ -79,7 +154,268 @@ namespace display_helper::v2 {
     }
   }
 
+  ApplyStatus WinDisplaySettings::reactivate_virtual_target(
+    const SingleDisplayConfiguration &config,
+    const std::function<bool()> &cancelled
+  ) {
+    if (!ensure_initialized() || config.m_device_id.empty() || cancelled()) {
+      return ApplyStatus::Retryable;
+    }
+    std::lock_guard lock(settings_mutex_);
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+
+    auto desired_hdr = config.m_hdr_state;
+    if (!desired_hdr) {
+      if (const auto saved = verified_hdr_states_.find(config.m_device_id); saved != verified_hdr_states_.end()) {
+        desired_hdr = saved->second;
+      }
+    }
+
+    const auto query = win_api_->queryDisplayConfig(display_device::QueryType::All);
+    if (!query || cancelled()) {
+      return ApplyStatus::Retryable;
+    }
+    const auto same_luid = [](const LUID &lhs, const LUID &rhs) {
+      return lhs.LowPart == rhs.LowPart && lhs.HighPart == rhs.HighPart;
+    };
+
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths;
+    std::optional<DISPLAYCONFIG_PATH_INFO> candidate;
+    LONG right = 0;
+    for (const auto &path : query->m_paths) {
+      const bool active = (path.flags & DISPLAYCONFIG_PATH_ACTIVE) != 0;
+      if (boost::iequals(win_api_->getDeviceId(path), config.m_device_id)) {
+        // The fullscreen transition may have settled while the repair was
+        // queued; an active target is already healthy.
+        if (active) {
+          return ApplyStatus::Ok;
+        }
+        const bool source_busy = std::any_of(query->m_paths.begin(), query->m_paths.end(), [&](const auto &other) {
+          return (other.flags & DISPLAYCONFIG_PATH_ACTIVE) &&
+                 same_luid(path.sourceInfo.adapterId, other.sourceInfo.adapterId) &&
+                 path.sourceInfo.id == other.sourceInfo.id;
+        });
+        if (path.targetInfo.targetAvailable && !source_busy && !candidate) {
+          candidate = path;
+        }
+      }
+      if (active) {
+        paths.push_back(path);
+        if (const auto index = display_device::win_utils::getSourceIndex(path, query->m_modes)) {
+          const auto &mode = query->m_modes.at(*index).sourceMode;
+          const auto edge = static_cast<std::int64_t>(mode.position.x) + mode.width;
+          right = static_cast<LONG>(std::min<std::int64_t>(LONG_MAX, std::max<std::int64_t>(right, edge)));
+        }
+      }
+    }
+    if (!candidate) {
+      return ApplyStatus::Retryable;
+    }
+
+    auto resolution = config.m_resolution;
+    if (!resolution) {
+      const auto saved = verified_sources_.find(config.m_device_id);
+      if (saved == verified_sources_.end()) {
+        return ApplyStatus::Retryable;
+      }
+      resolution = display_device::Resolution {saved->second.width, saved->second.height};
+    }
+
+    DISPLAYCONFIG_RATIONAL rate {};
+    if (config.m_refresh_rate) {
+      if (const auto rational = std::get_if<display_device::Rational>(&*config.m_refresh_rate)) {
+        rate = {rational->m_numerator, rational->m_denominator};
+      } else {
+        const auto number = floating_to_double(*config.m_refresh_rate);
+        if (!number || !std::isfinite(*number) || *number <= 0 || *number > UINT32_MAX / 1000.0) {
+          return ApplyStatus::InvalidRequest;
+        }
+        rate = {static_cast<UINT32>(std::llround(*number * 1000.0)), 1000};
+      }
+    } else if (const auto saved = verified_refreshes_.find(config.m_device_id); saved != verified_refreshes_.end()) {
+      rate = saved->second;
+    }
+    if (rate.Numerator == 0 || rate.Denominator == 0) {
+      return ApplyStatus::Retryable;
+    }
+
+    auto modes = query->m_modes;
+    auto target = *candidate;
+    target.targetInfo.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+    DISPLAYCONFIG_MODE_INFO source {};
+    source.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE;
+    source.id = target.sourceInfo.id;
+    source.adapterId = target.sourceInfo.adapterId;
+    source.sourceMode.width = resolution->m_width;
+    source.sourceMode.height = resolution->m_height;
+    source.sourceMode.pixelFormat = DISPLAYCONFIG_PIXELFORMAT_32BPP;
+    source.sourceMode.position = {right, 0};
+    if (const auto saved = verified_sources_.find(config.m_device_id); saved != verified_sources_.end()) {
+      source.sourceMode.position = saved->second.position;
+    }
+    if (const auto index = display_device::win_utils::getSourceIndex(target, query->m_modes)) {
+      source.sourceMode.position = query->m_modes.at(*index).sourceMode.position;
+    }
+    const auto overlaps_peer = [&](const POINTL &origin) {
+      return std::any_of(paths.begin(), paths.end(), [&](const auto &path) {
+        const auto index = display_device::win_utils::getSourceIndex(path, query->m_modes);
+        if (!index) {
+          return true;
+        }
+        const auto &peer = query->m_modes.at(*index).sourceMode;
+        return static_cast<std::int64_t>(origin.x) < static_cast<std::int64_t>(peer.position.x) + peer.width &&
+               static_cast<std::int64_t>(origin.x) + source.sourceMode.width > peer.position.x &&
+               static_cast<std::int64_t>(origin.y) < static_cast<std::int64_t>(peer.position.y) + peer.height &&
+               static_cast<std::int64_t>(origin.y) + source.sourceMode.height > peer.position.y;
+      });
+    };
+    // Windows can promote a peer to (0,0) after losing a virtual primary.
+    // Preserve that live peer instead of introducing overlapping sources.
+    if (overlaps_peer(source.sourceMode.position)) {
+      source.sourceMode.position = {right, 0};
+    }
+
+    target.flags |= DISPLAYCONFIG_PATH_ACTIVE;
+    target.targetInfo.refreshRate = rate;
+    const bool virtual_modes = (target.flags & DISPLAYCONFIG_PATH_SUPPORT_VIRTUAL_MODE) != 0;
+    const auto source_index = static_cast<UINT32>(modes.size());
+    modes.push_back(source);
+    if (virtual_modes) {
+      target.sourceInfo.sourceModeInfoIdx = source_index;
+      target.sourceInfo.cloneGroupId = 0xffffu;
+      target.targetInfo.targetModeInfoIdx = DISPLAYCONFIG_PATH_TARGET_MODE_IDX_INVALID;
+      target.targetInfo.desktopModeInfoIdx = DISPLAYCONFIG_PATH_DESKTOP_IMAGE_IDX_INVALID;
+    } else {
+      target.sourceInfo.modeInfoIdx = source_index;
+      target.targetInfo.modeInfoIdx = DISPLAYCONFIG_PATH_MODE_IDX_INVALID;
+    }
+    paths.push_back(target);
+
+    // Start with Windows-selected target timing. If the driver refuses that
+    // timing, retry with the same explicit descriptor used by exact target
+    // activation. In either case only the current peer paths plus this target
+    // are supplied; no topology reset or saved layout is replayed.
+    const auto refresh_millihz = (static_cast<std::uint64_t>(rate.Numerator) * 1000u + rate.Denominator / 2u) /
+                                rate.Denominator;
+    if (resolution->m_width == 0 || resolution->m_height == 0 ||
+        resolution->m_width > static_cast<unsigned int>(LONG_MAX) ||
+        resolution->m_height > static_cast<unsigned int>(LONG_MAX) || refresh_millihz == 0 ||
+        refresh_millihz > UINT32_MAX) {
+      return ApplyStatus::InvalidRequest;
+    }
+    DISPLAYCONFIG_VIDEO_SIGNAL_INFO target_signal {};
+    const auto pixel_count = static_cast<std::uint64_t>(resolution->m_width) * resolution->m_height;
+    const auto pixel_rate = pixel_count > UINT64_MAX / refresh_millihz ?
+                              UINT64_MAX :
+                              (pixel_count * refresh_millihz) / 1000u;
+    target_signal.pixelRate = pixel_rate;
+    target_signal.hSyncFreq.Numerator = static_cast<UINT32>(std::min<std::uint64_t>(
+      UINT32_MAX,
+      refresh_millihz * resolution->m_height
+    ));
+    target_signal.hSyncFreq.Denominator = 1000u;
+    target_signal.vSyncFreq.Numerator = static_cast<UINT32>(refresh_millihz);
+    target_signal.vSyncFreq.Denominator = 1000u;
+    target_signal.activeSize.cx = static_cast<LONG>(resolution->m_width);
+    target_signal.activeSize.cy = static_cast<LONG>(resolution->m_height);
+    target_signal.totalSize = target_signal.activeSize;
+    target_signal.AdditionalSignalInfo.videoStandard = 255;
+    target_signal.AdditionalSignalInfo.vSyncFreqDivider = 1;
+    target_signal.scanLineOrdering = DISPLAYCONFIG_SCANLINE_ORDERING_PROGRESSIVE;
+
+    std::vector<DISPLAYCONFIG_PATH_INFO> applied_paths;
+    std::vector<DISPLAYCONFIG_MODE_INFO> applied_modes;
+    const auto apply_activation = [&](const bool supply_target_mode) {
+      auto attempt_paths = paths;
+      auto attempt_modes = modes;
+      if (supply_target_mode) {
+        const auto target_mode_index = static_cast<UINT32>(attempt_modes.size());
+        DISPLAYCONFIG_MODE_INFO target_mode {};
+        target_mode.infoType = DISPLAYCONFIG_MODE_INFO_TYPE_TARGET;
+        target_mode.id = target.targetInfo.id;
+        target_mode.adapterId = target.targetInfo.adapterId;
+        target_mode.targetMode.targetVideoSignalInfo = target_signal;
+        attempt_modes.push_back(target_mode);
+        auto &attempt_target = attempt_paths.back();
+        if (virtual_modes) {
+          attempt_target.targetInfo.targetModeInfoIdx = target_mode_index;
+        } else {
+          attempt_target.targetInfo.modeInfoIdx = target_mode_index;
+        }
+      }
+      // This narrow reactivation lane must not let Windows retime the peer
+      // paths copied from the active topology. If the exact target timing
+      // cannot be added without changing those supplied modes, fail this
+      // attempt and let the existing recovery path handle it.
+      const UINT32 flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_VIRTUAL_MODE_AWARE;
+      if (win_api_->setDisplayConfig(attempt_paths, attempt_modes, flags | SDC_VALIDATE) != ERROR_SUCCESS || cancelled() ||
+          win_api_->setDisplayConfig(attempt_paths, attempt_modes, flags | SDC_APPLY) != ERROR_SUCCESS || cancelled()) {
+        return false;
+      }
+      applied_paths = std::move(attempt_paths);
+      applied_modes = std::move(attempt_modes);
+      return true;
+    };
+    if (!apply_activation(false) && (cancelled() || !apply_activation(true))) {
+      return ApplyStatus::Retryable;
+    }
+
+    if (desired_hdr) {
+      auto states = display_device_->getCurrentHdrStates({config.m_device_id});
+      auto current = states.find(config.m_device_id);
+      if (current == states.end() || current->second != desired_hdr) {
+        if (cancelled() || !display_device_->setHdrStates({{config.m_device_id, desired_hdr}})) {
+          return ApplyStatus::Retryable;
+        }
+        states = display_device_->getCurrentHdrStates({config.m_device_id});
+        current = states.find(config.m_device_id);
+        if (current == states.end() || current->second != desired_hdr || cancelled()) {
+          return ApplyStatus::VerificationFailed;
+        }
+      }
+    }
+
+    const auto verified = win_api_->queryDisplayConfig(display_device::QueryType::Active);
+    if (!verified || cancelled()) {
+      return ApplyStatus::Retryable;
+    }
+    for (const auto &expected : applied_paths) {
+      const auto found = std::find_if(verified->m_paths.begin(), verified->m_paths.end(), [&](const auto &path) {
+        return same_luid(path.targetInfo.adapterId, expected.targetInfo.adapterId) &&
+               path.targetInfo.id == expected.targetInfo.id && (path.flags & DISPLAYCONFIG_PATH_ACTIVE);
+      });
+      if (found == verified->m_paths.end()) {
+        return ApplyStatus::VerificationFailed;
+      }
+      const auto before_index = display_device::win_utils::getSourceIndex(expected, applied_modes);
+      const auto after_index = display_device::win_utils::getSourceIndex(*found, verified->m_modes);
+      if (!before_index || !after_index) {
+        return ApplyStatus::VerificationFailed;
+      }
+      const auto &before = applied_modes.at(*before_index).sourceMode;
+      const auto &after = verified->m_modes.at(*after_index).sourceMode;
+      const auto expected_rate = display_device::Rational {
+        expected.targetInfo.refreshRate.Numerator,
+        expected.targetInfo.refreshRate.Denominator,
+      };
+      const auto actual_rate = display_device::Rational {
+        found->targetInfo.refreshRate.Numerator,
+        found->targetInfo.refreshRate.Denominator,
+      };
+      if (before.width != after.width || before.height != after.height ||
+          before.position.x != after.position.x || before.position.y != after.position.y ||
+          expected.targetInfo.rotation != found->targetInfo.rotation ||
+          !refresh_rates_match(expected_rate, actual_rate)) {
+        return ApplyStatus::VerificationFailed;
+      }
+    }
+    return ApplyStatus::Ok;
+  }
+
   bool WinDisplaySettings::blank_hdr_states(std::chrono::milliseconds delay, const std::function<bool()> &cancelled) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized() || cancelled()) return false;
     std::lock_guard lock(settings_mutex_);
     const auto topology = display_device_->getCurrentTopology();
@@ -113,6 +449,9 @@ namespace display_helper::v2 {
   }
 
   ApplyStatus WinDisplaySettings::apply_topology(const ActiveTopology &topology) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return ApplyStatus::HelperUnavailable;
     if (!ensure_initialized()) {
       return ApplyStatus::HelperUnavailable;
     }
@@ -133,13 +472,172 @@ namespace display_helper::v2 {
       return {};
     }
 
-    // TopologyTransition owns the retry cadence; keep each poll short and
-    // side-effect free instead of letting a query trigger nested recovery.
+    // Keep legacy callers on the initialized device and preserve its list-shaped fallback.
     display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
       return display_device_->enumAvailableDevices(detail);
     } catch (...) {
       return {};
+    }
+  }
+
+  std::optional<EnumeratedDeviceList> WinDisplaySettings::try_enumerate(
+    display_device::DeviceEnumerationDetail detail) {
+    if (!ensure_initialized()) {
+      return std::nullopt;
+    }
+
+    // TopologyTransition owns the retry cadence; keep each poll short and
+    // side-effect free instead of letting a query trigger nested recovery.
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+    try {
+      // libdisplaydevice can report an empty list after QDC failure, or a partial
+      // list after an available path fails identity mapping. Track both outcomes
+      // so neither can be mistaken for a successful observation of no devices.
+      struct EnumerationApi: display_device::WinApiLayer {
+        using PathKey = std::tuple<LONG, DWORD, UINT32, LONG, DWORD, UINT32>;
+
+        struct PathObservation {
+          std::string monitor_path;
+          std::string device_id;
+          bool monitor_path_observed = false;
+          bool device_id_observed = false;
+          bool display_name_observed = false;
+        };
+
+        mutable bool query_available = false;
+        mutable bool query_has_available_paths = false;
+        mutable bool path_mapping_incomplete = false;
+        mutable std::map<PathKey, PathObservation> path_observations;
+        mutable std::vector<DISPLAYCONFIG_PATH_INFO> available_paths;
+
+        PathKey path_key(const DISPLAYCONFIG_PATH_INFO &path) const {
+          return {
+            path.sourceInfo.adapterId.HighPart,
+            path.sourceInfo.adapterId.LowPart,
+            path.sourceInfo.id,
+            path.targetInfo.adapterId.HighPart,
+            path.targetInfo.adapterId.LowPart,
+            path.targetInfo.id
+          };
+        }
+
+        std::optional<display_device::PathAndModeData> queryDisplayConfig(
+          display_device::QueryType type) const override {
+          auto result = WinApiLayer::queryDisplayConfig(type);
+          query_available = result.has_value();
+          query_has_available_paths = false;
+          path_mapping_incomplete = false;
+          path_observations.clear();
+          available_paths.clear();
+          query_has_available_paths = result && std::any_of(
+            result->m_paths.begin(),
+            result->m_paths.end(),
+            [](const auto &path) { return display_device::win_utils::isAvailable(path); }
+          );
+          if (result) {
+            for (const auto &path : result->m_paths) {
+              if (display_device::win_utils::isAvailable(path)) {
+                const bool inserted = path_observations.try_emplace(path_key(path)).second;
+                path_mapping_incomplete |= !inserted;
+                available_paths.push_back(path);
+              } else if (display_device::win_utils::isActive(path)) {
+                path_mapping_incomplete = true;
+              }
+            }
+          }
+          return result;
+        }
+
+        std::string getMonitorDevicePath(const DISPLAYCONFIG_PATH_INFO &path) const override {
+          auto value = WinApiLayer::getMonitorDevicePath(path);
+          if (display_device::win_utils::isAvailable(path)) {
+            const auto observation = path_observations.find(path_key(path));
+            if (observation == path_observations.end()) {
+              path_mapping_incomplete = true;
+            } else {
+              observation->second.monitor_path_observed = true;
+              observation->second.monitor_path = value;
+              path_mapping_incomplete |= value.empty();
+            }
+          }
+          return value;
+        }
+
+        std::string getDeviceId(const DISPLAYCONFIG_PATH_INFO &path) const override {
+          auto value = WinApiLayer::getDeviceId(path);
+          if (display_device::win_utils::isAvailable(path)) {
+            path_mapping_incomplete |= value.empty();
+            const auto observation = path_observations.find(path_key(path));
+            if (observation == path_observations.end()) {
+              path_mapping_incomplete = true;
+            } else {
+              observation->second.device_id_observed = true;
+              observation->second.device_id = value;
+              if (const auto utf16_path = monitor_path_to_utf16(observation->second.monitor_path)) {
+                path_mapping_incomplete |= enumeration_status::is_path_fallback_device_id(*utf16_path, value);
+              } else {
+                path_mapping_incomplete = true;
+              }
+              // libdisplaydevice resolves the target path again inside getDeviceId.
+              // Reject observations whose path changed during those separate reads.
+              const auto path_after_identity_lookup = WinApiLayer::getMonitorDevicePath(path);
+              path_mapping_incomplete |= path_after_identity_lookup.empty() ||
+                                         path_after_identity_lookup != observation->second.monitor_path;
+            }
+          }
+          return value;
+        }
+
+        std::string getDisplayName(const DISPLAYCONFIG_PATH_INFO &path) const override {
+          auto value = WinApiLayer::getDisplayName(path);
+          if (display_device::win_utils::isAvailable(path)) {
+            const auto observation = path_observations.find(path_key(path));
+            if (observation == path_observations.end()) {
+              path_mapping_incomplete = true;
+            } else {
+              observation->second.display_name_observed = true;
+              path_mapping_incomplete |= value.empty();
+            }
+          }
+          return value;
+        }
+      };
+      auto api = std::make_shared<EnumerationApi>();
+      display_device::WinDisplayDevice enumeration_device(api);
+      const auto devices = enumeration_device.enumAvailableDevices(detail);
+      std::vector<std::string> available_path_ids;
+      for (const auto &path : api->available_paths) {
+        const auto observation = api->path_observations.find(api->path_key(path));
+        if (observation == api->path_observations.end() || !enumeration_status::is_complete_path_mapping(observation->second.monitor_path_observed, observation->second.device_id_observed, observation->second.display_name_observed)) {
+          api->path_mapping_incomplete = true;
+          continue;
+        }
+        available_path_ids.push_back(observation->second.device_id);
+        const auto path_after_enumeration = api->WinApiLayer::getMonitorDevicePath(path);
+        api->path_mapping_incomplete |= path_after_enumeration.empty() ||
+                                        path_after_enumeration != observation->second.monitor_path;
+      }
+      std::vector<std::string> enumerated_device_ids;
+      enumerated_device_ids.reserve(devices.size());
+      for (const auto &device : devices) {
+        enumerated_device_ids.push_back(device.m_device_id);
+      }
+      api->path_mapping_incomplete |= !enumeration_status::all_available_path_ids_were_enumerated(
+        available_path_ids,
+        enumerated_device_ids
+      );
+      if (!enumeration_status::is_complete_observation(
+            api->query_available,
+            api->query_has_available_paths,
+            api->path_mapping_incomplete,
+            devices.empty()
+          )) {
+        return std::nullopt;
+      }
+      return devices;
+    } catch (...) {
+      return std::nullopt;
     }
   }
 
@@ -217,10 +715,16 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::apply_snapshot(const Snapshot &snapshot) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     return apply_snapshot_with_layouts(snapshot, nullptr);
   }
 
   bool WinDisplaySettings::apply_snapshot_settings(const Snapshot &snapshot) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized()) {
       BOOST_LOG(error) << "apply_snapshot_settings: display device not initialized";
       return false;
@@ -228,11 +732,11 @@ namespace display_helper::v2 {
 
     display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
-      // Preserve v1's restore order: topology is staged by TopologyTransition,
-      // then modes and HDR are restored before primary/origin changes. Moving
+      // Topology is staged by TopologyTransition. Restore exact modes before
+      // primary/origin changes, and defer HDR until after rotations. Moving
       // primary first can make Windows reject a saved mode on a waking or
       // duplicate display, leaving recovery half-applied.
-      if (!display_helper::restore_snapshot_settings(*display_device_, snapshot)) {
+      if (!display_helper::restore_snapshot_settings(*display_device_, snapshot, false)) {
         BOOST_LOG(warning) << "apply_snapshot_settings: failed to restore settings; skipping remaining layout saves";
         return false;
       }
@@ -246,7 +750,25 @@ namespace display_helper::v2 {
     }
   }
 
+  bool WinDisplaySettings::apply_snapshot_hdr_states(const Snapshot &snapshot) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
+    if (!ensure_initialized()) {
+      return false;
+    }
+    display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+    try {
+      return display_helper::restore_snapshot_hdr_states(*display_device_, snapshot);
+    } catch (...) {
+      return false;
+    }
+  }
+
   bool WinDisplaySettings::apply_snapshot_with_layouts(const Snapshot &snapshot, const codec::layout_rotation_map_t *layout_rotations) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized()) {
       BOOST_LOG(error) << "apply_snapshot: display device not initialized";
       return false;
@@ -274,6 +796,10 @@ namespace display_helper::v2 {
           BOOST_LOG(warning) << "apply_snapshot: failed to restore display rotations";
           return false;
         }
+      }
+      if (!apply_snapshot_hdr_states(snapshot)) {
+        BOOST_LOG(warning) << "apply_snapshot: failed to restore final HDR states";
+        return false;
       }
       BOOST_LOG(info) << "apply_snapshot: completed";
       return true;
@@ -388,6 +914,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::set_display_origin(const std::string &device_id, const display_device::Point &origin) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized()) {
       return false;
     }
@@ -420,6 +949,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::recover_display_stack() {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized()) {
       return false;
     }
@@ -492,6 +1024,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::reset_staged_apply_state() {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (!ensure_initialized()) {
       return false;
     }
@@ -504,6 +1039,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::set_device_refresh_rate(const std::string &device_id, unsigned int num, unsigned int den) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (device_id.empty() || !ensure_initialized()) {
       return false;
     }
@@ -528,6 +1066,9 @@ namespace display_helper::v2 {
 
   std::set<std::string> WinDisplaySettings::set_device_refresh_rates(
     const std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> &overrides) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return {};
     std::set<std::string> applied;
     if (overrides.empty() || !ensure_initialized()) {
       return applied;
@@ -972,6 +1513,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::apply_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (layout_rotations.empty()) {
       return true;
     }
@@ -1055,6 +1599,9 @@ namespace display_helper::v2 {
   }
 
   bool WinDisplaySettings::reassert_layout_rotations(const codec::layout_rotation_map_t &layout_rotations) {
+    auto borrow_mutation = display_helper::borrow::native_mutation_scope_t::enter(
+      display_helper::borrow::helper_process().load(std::memory_order_acquire));
+    if (!borrow_mutation) return false;
     if (layout_rotations.empty()) {
       return true;
     }

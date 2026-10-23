@@ -16,7 +16,10 @@ export function settingError(field: SettingsField | undefined, value: unknown): 
     const number = Number(value);
     if (
       !Number.isFinite(number) ||
-      (field.key === 'virtual_display_max_clients' && !Number.isInteger(number)) ||
+      (['virtual_display_max_clients', 'guide_button_key', 'guide_button_controller'].includes(
+        field.key,
+      ) &&
+        !Number.isInteger(number)) ||
       (field.min != null && number < field.min) ||
       (field.max != null && number > field.max)
     )

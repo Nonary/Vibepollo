@@ -745,6 +745,15 @@ function clearSnapshotHotkey(): void {
             </div>
 
             <div class="mt-4 space-y-2">
+              <label for="end_stream_hotkey" class="form-label">{{ $t('config.end_stream_hotkey') }}</label>
+              <n-input id="end_stream_hotkey" v-model:value="config.end_stream_hotkey" placeholder="Q" />
+              <p class="text-[11px] opacity-60">{{ $t('config.end_stream_hotkey_desc') }}</p>
+              <label for="end_stream_hotkey_modifiers" class="form-label">{{ $t('config.end_stream_hotkey_modifiers') }}</label>
+              <n-input id="end_stream_hotkey_modifiers" v-model:value="config.end_stream_hotkey_modifiers" />
+              <p class="text-[11px] opacity-60">{{ $t('config.end_stream_hotkey_modifiers_desc') }}</p>
+            </div>
+
+            <div class="mt-4 space-y-2">
               <label for="dd_snapshot_restore_hotkey" class="form-label">
                 {{ $t('config.dd_snapshot_restore_hotkey') }}
               </label>
@@ -1192,6 +1201,12 @@ function clearSnapshotHotkey(): void {
                   <div
                     class="optional-subsection space-y-2 border-l border-dark/10 dark:border-light/10 pl-3"
                   >
+                    <Checkbox
+                      id="dd_remove_virtual_display_after_restore"
+                      v-model="config.dd_remove_virtual_display_after_restore"
+                      locale-prefix="config"
+                      default="false"
+                    />
                     <Checkbox
                       id="dd_config_revert_on_disconnect"
                       v-model="config.dd_config_revert_on_disconnect"

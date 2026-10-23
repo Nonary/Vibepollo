@@ -12,6 +12,7 @@
 // local includes
 #include "config.h"
 #include "confighttp.h"
+#include "entry_credentials.h"
 #include "entry_handler.h"
 #include "entry_metadata.h"
 #include "globals.h"
@@ -35,11 +36,15 @@ void launch_ui(const std::optional<std::string> &path) {
 
 namespace args {
   int creds(const char *name, int argc, char *argv[]) {
-    if (argc < 2 || argv[0] == "help"sv || argv[1] == "help"sv) {
-      help(name);
-    }
-
-    return http::save_user_creds(config::sunshine.credentials_file, argv[0], argv[1]);
+    return creds(
+      name,
+      argc,
+      argv,
+      help,
+      [](const char *username, const char *password) {
+        return http::save_user_creds(config::sunshine.credentials_file, username, password);
+      }
+    );
   }
 
   int help(const char *name) {

@@ -40,13 +40,14 @@ HELPERS = (
     'app-supervisor', 'app-focus', 'display-power', 'display-observer', 'global-limiter.py', 'host',
     'package-preflight',
     'kwin-session-environment', 'machine-host', 'profile-import', 'provider-scan',
-    'session-broker', 'session-controller', 'session-exec', 'steam-launch',
+    'session-broker', 'session-controller', 'session-exec', 'steam-launch', 'touch-map',
 )
 UNITS = (HOST, CONTROLLER, SOCKET, 'vibepollo-session-exec@.service',
          'vibeshine-drm-setup.service', 'vibeshine-vkms.service',
          'vibeshine-vkms-control.socket', 'vibeshine-vkms-control@.service')
 FIXED = {
     'usr/bin/vibepollo', 'usr/bin/vibepollo-mangohud',
+    'usr/libexec/vibeshine/vibepollo-package-preflight',
     'usr/lib/libvibeshine-kwin-gpu.so',
     'usr/lib/modules-load.d/60-sunshine.conf',
     'usr/lib/modules-load.d/70-vibeshine-ds5.conf',
@@ -73,7 +74,8 @@ OPTIONAL = {f'usr/share/icons/hicolor/scalable/status/apollo-{state}.svg'
 FIXED.update(f'usr/lib/systemd/user/{unit}.service.d/{dropin}.conf'
              for unit in ('plasma-kwin_wayland', 'plasma-login-kwin_wayland')
              for dropin in ('vibeshine-kwin-gpu', 'vibepollo-kwin-session-environment'))
-VERSION = re.compile(r'[1-9][0-9]*\.[0-9]+\.[0-9]+(?:-(?:alpha|beta|rc|stable)\.[0-9]+)?')
+VERSION = re.compile(r'[1-9][0-9]*\.[0-9]+\.[0-9]+(?:-(?:alpha|beta|rc|stable)\.[0-9]+)?(?:-dirty-[0-9a-f]{12})?')
+DIRTY_SUFFIX = re.compile(r'-dirty-[0-9a-f]{12}$')
 TRANSACTION_ID = re.compile(r'[0-9]{8}T[0-9]{6}Z-[0-9a-f]{8}')
 CAPABILITIES = {
     'usr/libexec/vibeshine/vibepollo-host': 'cap_sys_admin,cap_sys_nice=p',
@@ -1461,18 +1463,36 @@ def read_cache(build):
     return dict(re.findall(r'^([A-Za-z_][A-Za-z0-9_]*):[^=\r\n]+=([^\r\n]*)$', path.read_text(), re.M))
 
 
-def resolve_version(explicit, cache):
-    version = explicit or os.environ.get('BUILD_VERSION') or cache.get('BUILD_VERSION')
-    if not version:
-        tagged = run('git', '-C', REPO, 'describe', '--tags', '--exact-match', 'HEAD', check=False)
-        version = tagged.stdout.strip().removeprefix('v') if tagged.returncode == 0 else ''
-        if version:
-            dirty = run('git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal', '--ignore-submodules=none')
-            if dirty.stdout.strip():
-                raise DeployError('A modified tagged checkout needs an explicit --version; refusing to label it from the tag alone')
+def resolve_version(explicit, cache, *, skip_build=False):
+    version = explicit or os.environ.get('BUILD_VERSION') or cache.get('BUILD_VERSION') or ''
+    # Reusing artifacts must retain their built-in version, rather than stamp
+    # them with the identity of a checkout that may have changed since building.
+    if not explicit and not skip_build:
+        tags = run('git', '-C', REPO, 'tag', '--merged', 'HEAD', '--list').stdout.splitlines()
+        release_tags = [tag for tag in tags if VERSION.fullmatch(tag.removeprefix('v'))
+                        and not DIRTY_SUFFIX.search(tag)]
+        description = None
+        if release_tags:
+            described = run('git', '-C', REPO, 'describe', '--tags', '--long', '--abbrev=12',
+                            *[arg for tag in release_tags for arg in ('--match', tag)], 'HEAD')
+            description = re.fullmatch(r'(.+)-([0-9]+)-g([0-9a-f]{12})', described.stdout.strip())
+            if not description:
+                raise DeployError('Could not resolve the checkout release tag and commit')
+        version = DIRTY_SUFFIX.sub('', version or '')
+        if not version and description:
+            version = description[1].removeprefix('v')
+        if not VERSION.fullmatch(version):
+            raise DeployError('Supply --version with a nonzero release version (e.g. 1.19.0-beta.5). '
+                              'Defaults are BUILD_VERSION, the existing build cache, then the nearest release tag.')
+        dirty = run('git', '-C', REPO, 'status', '--porcelain', '--untracked-files=normal', '--ignore-submodules=none')
+        if (not description or int(description[2]) > 0 or dirty.stdout.strip()
+                or version != description[1].removeprefix('v')):
+            sha = run('git', '-C', REPO, 'rev-parse', '--short=12', 'HEAD').stdout.strip()
+            version += '-dirty-' + sha
     if not VERSION.fullmatch(version):
         raise DeployError('Supply --version with a nonzero release version (e.g. 1.19.0-beta.5). '
-                          'Defaults are BUILD_VERSION, the existing build cache, then an exact HEAD tag.')
+                          'Defaults are BUILD_VERSION, the existing build cache, then the nearest release tag. '
+                          '--skip-build requires an existing build version.')
     return version
 
 
@@ -1622,7 +1642,7 @@ def build_install(args):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         print(run('git', '-C', REPO, 'status', '--short').stdout, end='')
         cache = read_cache(build)
-        args.version = resolve_version(args.version, cache)
+        args.version = resolve_version(args.version, cache, skip_build=args.skip_build)
         if not args.skip_build:
             command = configure_command(args, build, cache)
             # CMake also reads BUILD_VERSION from its environment. Do not let
@@ -1689,7 +1709,7 @@ def parse_arguments(argv=None):
     action = install.add_mutually_exclusive_group()
     action.add_argument('--part2', action='store_true', help='Resume/validate the latest installation after reboot or a readiness failure')
     action.add_argument('--recover', action='store_true', help='Restore the previous installation from the latest transaction')
-    install.add_argument('--version', help='Explicit version; otherwise BUILD_VERSION, cached version, or exact HEAD tag')
+    install.add_argument('--version', help='Explicit version; otherwise BUILD_VERSION, cached version, or nearest release tag, with a dirty-SHA suffix for local builds')
     install.add_argument('--jobs', type=int, default=min(10, os.cpu_count() or 1), help='Build/test parallelism (default: up to 10 CPUs)')
     install.add_argument('--cc', help='C compiler executable; otherwise CC, build cache, or CMake default')
     install.add_argument('--cxx', help='C++23 compiler executable; otherwise CXX, build cache, or CMake default')

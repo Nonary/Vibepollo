@@ -803,6 +803,10 @@ namespace logging {
       << std::endl
       << "    --help                    | print help"sv << std::endl
       << "    --creds username password | set user credentials for the Web manager"sv << std::endl
+      << "    --pairing-recovery inspect INPUT | inspect copied pairing state without starting the host"sv << std::endl
+      << "    --pairing-recovery prepare INPUT --expect-snapshot TOKEN --keep UUID [...] --output NEW_DIRECTORY"sv << std::endl
+      << "    --auxiliary-recovery inspect INPUT | inspect zero-filled auxiliary snapshots without starting the host"sv << std::endl
+      << "    --auxiliary-recovery prepare-reset INPUT --expect-snapshot TOKEN --accept-token-and-metadata-loss --confirm-separate-auxiliary-state --output NEW_DIRECTORY"sv << std::endl
       << "    --version                 | print the version of Vibepollo"sv << std::endl
       << std::endl
       << "    flags"sv << std::endl

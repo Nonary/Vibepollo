@@ -3,6 +3,8 @@
 #include "tools/playnite_launcher/focus_utils.h"
 
 #include <atomic>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 
 namespace managed_app_focus {
@@ -11,18 +13,41 @@ namespace managed_app_focus {
     public:
       windows_session(target app, policy options):
           worker_([this, app = std::move(app), options] {
-            playnite_launcher::focus::focus_by_install_dir_extended(app.install_dir.wstring(), options.attempts, options.timeout_secs, options.exit_on_first, [this] {
-              return cancelled_.load();
-            });
+            budget remaining(options, budget::clock::now());
+            while (!cancelled_ && remaining.active(budget::clock::now())) {
+              const auto windows = playnite_launcher::focus::discover_game_windows(app.install_dir.wstring());
+              for (auto window : windows) {
+                remaining.observe(playnite_launcher::focus::window_identity(window), budget::clock::now());
+              }
+              for (auto window : windows) {
+                const auto identity = playnite_launcher::focus::window_identity(window);
+                const auto cancel = [&] { return cancelled_ || !remaining.can_focus(identity, budget::clock::now()); };
+                if (cancelled_) {
+                  break;
+                }
+                if (cancel()) {
+                  continue;
+                }
+                if (playnite_launcher::focus::focus_game_window(window, cancel)) {
+                  remaining.confirmed();
+                  break;
+                }
+              }
+              std::unique_lock lock(mutex_);
+              wake_.wait_for(lock, std::chrono::seconds(1), [this] { return cancelled_.load(); });
+            }
           }) {}
 
       ~windows_session() override {
         cancelled_ = true;
+        wake_.notify_all();
         worker_.join();
       }
 
     private:
       std::atomic_bool cancelled_ {false};
+      std::mutex mutex_;
+      std::condition_variable wake_;
       std::thread worker_;
     };
   }  // namespace

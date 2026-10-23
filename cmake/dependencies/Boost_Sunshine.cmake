@@ -10,6 +10,7 @@ set(BOOST_COMPONENTS
         process
         program_options
         process
+        regex
         system
 )
 # system is not used by Sunshine, but by Simple-Web-Server, added here for convenience
@@ -28,6 +29,10 @@ if(BUILD_TESTS)
             log_setup
             property_tree
     )
+    # Linux component tests link Boost.UUID directly.
+    if(NOT WIN32)
+        list(APPEND BOOST_COMPONENTS uuid)
+    endif()
 endif()
 
 # algorithm, preprocessor, scope, and uuid are not used by Sunshine, but by libdisplaydevice, added here for convenience

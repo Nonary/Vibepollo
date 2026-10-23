@@ -71,6 +71,7 @@
   #include "src/platform/linux/process_group.h"
   #include "src/platform/linux/scoped_capability.h"
   #include "src/steam_integration.h"
+  #include "src/lutris_integration.h"
 #endif
 #include "vaapi.h"
 #ifdef SUNSHINE_BUILD_STEAMOS
@@ -426,24 +427,29 @@ namespace platf {
         return bp::child();
       }
       exe_path = v2::filesystem::path("/usr/libexec/vibeshine/vibepollo-session-exec");
+      const auto environment_value = [&env](std::string_view name) {
+        const auto it = std::find_if(env.cbegin(), env.cend(), [name](const auto &entry) {
+          return entry.get_name() == name;
+        });
+        return it == env.cend() ? std::string {} : it->to_string();
+      };
+      const bool wayland_hdr_compatibility =
+        environment_value("SUNSHINE_CLIENT_HDR") == "true" &&
+        environment_value("ENABLE_HDR_WSI") == "1";
       if (const auto semantic_steam = platf::steam::session_launch_arguments(cmd)) {
         // Direct Steam launch is deliberately semantic: the capability-free
         // client sends only validated policy values, and the broker resolves
         // all user-owned metadata after entering the selected desktop UID.
         args = *semantic_steam;
+      } else if (const auto semantic_lutris = platf::lutris::session_launch_arguments(cmd, wayland_hdr_compatibility)) {
+        // Managed Lutris launches carry only a numeric ID. The broker builds
+        // the URI after entering the desktop identity; custom commands keep
+        // the ordinary administrator-authorization requirement below.
+        args = *semantic_lutris;
       } else {
         // The capability-bearing helper resolves the administrator-authorized
         // working directory. The network host supplies only the exact command
         // to match, never a caller-selected filesystem location.
-        const auto environment_value = [&env](std::string_view name) {
-          const auto it = std::find_if(env.cbegin(), env.cend(), [name](const auto &entry) {
-            return entry.get_name() == name;
-          });
-          return it == env.cend() ? std::string {} : it->to_string();
-        };
-        const bool wayland_hdr_compatibility =
-          environment_value("SUNSHINE_CLIENT_HDR") == "true" &&
-          environment_value("ENABLE_HDR_WSI") == "1";
         args = {wayland_hdr_compatibility ? "app-wayland-hdr" : "app", cmd};
         // The broker clears the network host's environment. Send only the
         // supported stream metadata as literal assignments; user/session and
@@ -1680,7 +1686,12 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_PORTAL
     if (linux_private_display_capture::probe_portal(
           config::video.capture.empty(), config::video.capture == "portal",
-          native_compositor_selected, sources[source::KMS]
+          native_compositor_selected,
+#ifdef SUNSHINE_BUILD_DRM
+          sources[source::KMS]
+#else
+          false
+#endif
         ) && verify_portal()) {
       sources[source::PORTAL] = true;
     }

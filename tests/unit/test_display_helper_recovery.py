@@ -60,13 +60,14 @@ settlement_signatures = (
     "bool poll_disconnect_settlement()",
 )
 has_settlement = all(signature in legacy_source for signature in settlement_signatures)
+# APPLY and MISC retain weak caller guards because their full paths depend on the
+# display controller and asynchronous pipe. REVERT is exercised as an actual handler below.
 handle_apply = function(legacy_source, "bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg)")
-assert "state.stop_restore_polling();" in handle_apply, "accepted APPLY must clear any prior settlement or restore request"
+assert "state.stop_restore_polling();" in handle_apply, "APPLY caller must stop restore polling"
 handle_revert = function(legacy_source, "void handle_revert(ServiceState &state, std::atomic<bool> &running, std::span<const uint8_t> payload)")
 if has_settlement:
-    assert "state.clear_disconnect_settlement();" in handle_revert, "explicit REVERT must clear provisional settlement before restoring"
     handle_misc = function(legacy_source, "void handle_misc(")
-    assert "state.handle_stream_owner_ping(payload, worker_epoch);" in handle_misc, "owner PING must carry its worker connection epoch"
+    assert "state.handle_stream_owner_ping(payload, worker_epoch);" in handle_misc, "MISC owner-PING caller must pass its worker epoch"
 settlement_methods = "\n".join(function(legacy_source, signature) for signature in settlement_signatures) if has_settlement else ""
 settlement_wait = function(legacy_source, "int disconnect_settlement_wait_ms() const") if "int disconnect_settlement_wait_ms() const" in legacy_source else ""
 preserve_signature = "bool preserve_pending_disconnect_settlement(uint64_t connection_epoch)"
@@ -76,22 +77,31 @@ clear_settlement = function(legacy_source, "void clear_disconnect_settlement()")
 stop_restore_polling = function(legacy_source, "void stop_restore_polling()")
 ping_send = function(ipc_path.read_text(), "bool send_ping(std::optional<bool> stream_owner_active)")
 config_source = (root / "src/config.cpp").read_text()
-assert "display_helper_integration::revert(true, false, dd_was_enabled && dd_disabled_now);" in config_source, \
+# The caller sits inside native apply_config_now; retain its wiring guard while the
+# disabled-recovery behavior is checked through the production integration function.
+assert "display_helper_integration::revert(true, false, state.allow_disabled_recovery());" in config_source, \
     "configuration disable transition must be the explicit disabled-recovery caller"
 has_disabled_recovery_parameter = "allow_disabled_recovery" in integration[:integration.index("{")]
 has_recovery_ticket_parameter = "RecoveryTicket" in integration[:integration.index("{")]
+has_ownership_policy_parameter = "RevertOwnershipPolicy" in integration[:integration.index("{")]
+has_final_restore_policy_parameter = "FinalRestoreDisplayPolicy" in integration[:integration.index("{")]
 integration_wrapper = "" if has_disabled_recovery_parameter else "\n  bool revert(bool prefer, bool override_owner, bool) { return revert(prefer, override_owner); }\n"
 ticket_declaration = "" if not has_recovery_ticket_parameter else r'''
   struct RecoveryTicket {
     std::uint64_t id = 0;
     std::uint64_t connection_generation = 0;
   };
-  bool revert(bool, bool, bool, RecoveryTicket * = nullptr);
+  enum class RevertOwnershipPolicy { AllOwnersMustRelease, RetainPausedNormalGame };
+  enum class FinalRestoreDisplayPolicy { Retain, RemoveAfterRestore };
+  bool revert(bool, bool, bool, RecoveryTicket * = nullptr OWNERSHIP_DEFAULT FINAL_RESTORE_DEFAULT);
   struct FakeOrphanRecoveryMonitor {
     struct incident_t {
       RecoveryTicket ticket;
       std::vector<VDISPLAY::TrackedDisplayCleanupTarget> targets;
       std::set<std::string> known_physical_output_ids;
+      bool remove_after_restore {false};
+      std::uint64_t cleanup_generation {0};
+      std::uint64_t control_generation {0};
     };
     std::optional<incident_t> published;
     void publish(incident_t incident) { published = std::move(incident); }
@@ -101,6 +111,9 @@ ticket_declaration = "" if not has_recovery_ticket_parameter else r'''
     return monitor;
   }
 '''
+
+ticket_declaration = ticket_declaration.replace("OWNERSHIP_DEFAULT", ", RevertOwnershipPolicy = RevertOwnershipPolicy::AllOwnersMustRelease" if has_ownership_policy_parameter else "")
+ticket_declaration = ticket_declaration.replace("FINAL_RESTORE_DEFAULT", ", FinalRestoreDisplayPolicy = FinalRestoreDisplayPolicy::Retain" if has_final_restore_policy_parameter else "")
 
 program = r'''
 #include <atomic>
@@ -116,8 +129,23 @@ program = r'''
 #include <string>
 #include <thread>
 #include <vector>
+#include "src/platform/windows/display_helper_borrow_gate.h"
 
 using namespace std::chrono_literals;
+namespace display_helper::borrow {
+  inline std::atomic<bool> &helper_process() { static std::atomic<bool> value {false}; return value; }
+  class native_mutation_scope_t {
+  public:
+    static native_mutation_scope_t enter(bool wait) {
+      native_mutation_scope_t result;
+      result.scope_ = wait ? process_gate().wait_enter() : process_gate().try_enter();
+      return result;
+    }
+    explicit operator bool() const { return static_cast<bool>(scope_); }
+  private:
+    gate_t::scope_t scope_;
+  };
+}
 struct NullLog { template<class T> NullLog &operator<<(const T &) { return *this; } };
 #define BOOST_LOG(level) NullLog {}
 constexpr int info = 0, warning = 1, debug = 2;
@@ -125,20 +153,22 @@ constexpr int info = 0, warning = 1, debug = 2;
 namespace integration_fake {
   int ownership_checks = 0, cancels = 0, verification_invalidations = 0;
   int queue_clears = 0, helper_calls = 0, helper_starts = 0, revert_sends = 0, active_clears = 0;
-  bool cleanup_allowed = true, helper_start_result = true, send_result = true;
+  bool cleanup_allowed = true, physical_restore_allowed = true, helper_start_result = true, send_result = true;
   bool helper_force = false, helper_override = false, last_prefer_golden = false;
   bool helper_automation_enabled = true;
   std::mutex execution_mutex;
   std::atomic<bool> restore_expected {false};
   std::atomic<long long> last_revert {0};
   std::atomic<unsigned long long> restore_generation {0};
+  std::atomic<std::uint64_t> cleanup_generation {0}, control_generation {0};
   void reset() {
     ownership_checks = cancels = verification_invalidations = queue_clears = 0;
     helper_calls = helper_starts = revert_sends = active_clears = 0;
-    cleanup_allowed = helper_start_result = send_result = true;
+    cleanup_allowed = physical_restore_allowed = helper_start_result = send_result = true;
     helper_force = helper_override = last_prefer_golden = false;
     helper_automation_enabled = true;
     restore_expected.store(false); last_revert.store(0); restore_generation.store(0);
+    cleanup_generation.store(0); control_generation.store(0);
   }
 }
 namespace config {
@@ -149,6 +179,7 @@ namespace config {
 namespace remote_display_topology {
   struct Topology {
     bool generic_virtual_display_cleanup_allowed() { ++integration_fake::ownership_checks; return integration_fake::cleanup_allowed; }
+    bool physical_display_restore_allowed() { return integration_fake::physical_restore_allowed; }
   };
   Topology &instance() { static Topology topology; return topology; }
 }
@@ -194,12 +225,28 @@ namespace {
   auto &g_restore_expected = integration_fake::restore_expected;
   auto &g_last_revert_us = integration_fake::last_revert;
   auto &g_restore_generation = integration_fake::restore_generation;
+  [[maybe_unused]] auto &g_final_restore_cleanup_generation = integration_fake::cleanup_generation;
+  [[maybe_unused]] auto &g_last_apply_generation = integration_fake::control_generation;
   void clear_active_session() { ++integration_fake::active_clears; }
 }
 namespace display_helper_integration {
 ''' + ticket_declaration + integration + r'''
 ''' + integration_wrapper + r'''
 }
+
+#if HAS_OWNERSHIP_POLICY
+static void test_paused_normal_restore_retains_removal_guard() {
+  using namespace integration_fake;
+  using namespace display_helper_integration;
+  reset(); cleanup_allowed = false;
+  assert(revert(true, false, false, nullptr, RevertOwnershipPolicy::RetainPausedNormalGame));
+  assert(revert_sends == 1 && cancels == 1);
+  assert(!orphan_recovery_monitor().published); // no device-removal observer authority
+  reset(); cleanup_allowed = false; physical_restore_allowed = false;
+  assert(!revert(true, false, false, nullptr, RevertOwnershipPolicy::RetainPausedNormalGame));
+  assert(revert_sends == 0 && cancels == 0); // Remote Monitor/capture remains protected
+}
+#endif
 
 static void test_disabled_configuration_still_cleans_up_existing_mutation() {
   using namespace integration_fake;
@@ -270,6 +317,7 @@ static void test_incident_captures_targets_before_dispatch_and_rejects_failed_or
   assert(monitor.published->targets.size() == 1);
   assert(monitor.published->targets.front().device_id == "pre-existing-orphan");
   assert(monitor.published->targets.front().backend == VDISPLAY::ensure_display_backend_e::sunshine);
+  assert(!monitor.published->remove_after_restore); // ordinary REVERT retains displays
 
   reset(); send_result = false; monitor.published.reset();
   assert(!display_helper_integration::revert(true, false, false, &ticket));
@@ -278,6 +326,31 @@ static void test_incident_captures_targets_before_dispatch_and_rejects_failed_or
   reset(); monitor.published.reset();
   assert(display_helper_integration::revert(true, true, false, &ticket));
   assert(!monitor.published);
+}
+#endif
+
+#if HAS_FINAL_RESTORE_POLICY
+static void test_final_restore_incident_preserves_policy_and_generations() {
+  using namespace integration_fake;
+  using namespace display_helper_integration;
+  struct Case { RevertOwnershipPolicy owner; FinalRestoreDisplayPolicy display; bool removes; };
+  const std::array cases {
+    Case {RevertOwnershipPolicy::AllOwnersMustRelease, FinalRestoreDisplayPolicy::Retain, false},
+    Case {RevertOwnershipPolicy::AllOwnersMustRelease, FinalRestoreDisplayPolicy::RemoveAfterRestore, true},
+    Case {RevertOwnershipPolicy::RetainPausedNormalGame, FinalRestoreDisplayPolicy::Retain, false},
+    Case {RevertOwnershipPolicy::RetainPausedNormalGame, FinalRestoreDisplayPolicy::RemoveAfterRestore, false},
+  };
+  auto &monitor = orphan_recovery_monitor();
+  for (const auto &test : cases) {
+    reset(); monitor.published.reset();
+    VDISPLAY::targets = {{{}, "pre-existing-orphan", VDISPLAY::ensure_display_backend_e::sunshine}};
+    cleanup_generation.store(11); control_generation.store(23);
+    assert(revert(true, false, false, nullptr, test.owner, test.display));
+    assert(monitor.published);
+    assert(monitor.published->remove_after_restore == test.removes);
+    assert(monitor.published->cleanup_generation == 11);
+    assert(monitor.published->control_generation == 23);
+  }
 }
 #endif
 
@@ -291,6 +364,8 @@ struct ServiceState {
   std::atomic<std::uint64_t> restore_origin_epoch {0};
   std::atomic<bool> restore_poll_active {false}, restore_attempted_unconfirmed {false};
   std::atomic<bool> retry_revert_on_topology {true}, prefer_golden_if_current_missing {true};
+  std::atomic<bool> always_restore_from_golden {false};
+  std::atomic<std::uint64_t> restore_cancel_generation {0};
   std::atomic<long long> restore_active_until_ms {0}, last_restore_event_ms {0};
   std::atomic<bool> restore_stage_running {false};
   std::atomic<std::uint64_t> command_worker_epoch {7};
@@ -299,6 +374,13 @@ struct ServiceState {
   std::atomic<bool> disconnect_settlement_pending {false};
   std::atomic<long long> disconnect_settlement_deadline_ms {0};
   std::mutex disconnect_settlement_mutex;
+  std::mutex recovery_status_mutex;
+  struct RecoveryStatus {
+    std::uint64_t ticket = 0, generation = 0, epoch = 0;
+    void begin(std::uint64_t new_ticket, std::uint64_t new_generation, std::uint64_t new_epoch) {
+      ticket = new_ticket; generation = new_generation; epoch = new_epoch;
+    }
+  } recovery_status;
   std::uint64_t disconnect_settlement_origin_epoch = 0;
   std::jthread restore_poll_thread;
   struct EventPump { void stop() {} } event_pump;
@@ -316,10 +398,11 @@ struct ServiceState {
     return fake_now_ms;
   }
   std::string last_disarm_reason;
+  int post_apply_cancels = 0, golden_tracking_resets = 0;
   bool is_connection_epoch_current(std::uint64_t epoch) const { return epoch_current && epoch == current_epoch; }
   std::uint64_t current_connection_epoch() const { return current_epoch; }
   void cancel_delayed_reapply() { ++reapply_cancels; }
-  void cancel_post_apply_tasks() {}
+  void cancel_post_apply_tasks() { ++post_apply_cancels; }
   void request_restore_cancel() {}
   void supersede_recovery_status() {}
   void reset_restore_backoff() {}
@@ -332,7 +415,7 @@ struct ServiceState {
   }
   void schedule_delayed_reapply() { ++delayed_reapplies; }
   void arm_restore_grace(std::chrono::milliseconds grace, const char *) { ++grace_arms; last_grace = grace; }
-  void reset_golden_restore_request_tracking() { ++golden_resets; }
+  void reset_golden_restore_request_tracking() { ++golden_resets; ++golden_tracking_resets; }
   void ensure_restore_polling(RestoreWindow) {
     if (!disconnect_settlement_pending.load()) ++polling_starts;
   }
@@ -349,6 +432,15 @@ namespace {
 }
 ''' + legacy + r'''
 
+struct RevertOptions {
+  bool prefer_golden_if_current_missing = true;
+  std::optional<bool> always_restore_from_golden;
+  std::uint64_t restore_ticket = 0;
+};
+static RevertOptions fake_revert_options;
+RevertOptions parse_revert_payload(std::span<const uint8_t>) { return fake_revert_options; }
+''' + handle_revert + r'''
+
 static long long now_ms() {
   return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
 }
@@ -359,6 +451,31 @@ static void test_legacy_stale_epoch_and_no_mutation_paths() {
   ServiceState empty;
   attempt_revert_after_disconnect(empty, running, 7);
   assert(empty.exit_graces == 1 && empty.grace_arms == 0 && empty.polling_starts == 0);
+}
+
+static void test_revert_handler_clears_settlement_and_arms_restore() {
+  ServiceState state;
+  state.disconnect_settlement_pending.store(true);
+  state.disconnect_settlement_deadline_ms.store(30000);
+  state.disconnect_settlement_origin_epoch = 7;
+  state.current_epoch = 8;
+  state.restore_cancel_generation.store(4);
+  fake_revert_options = {false, true, 55};
+  const std::array<std::uint8_t, 0> payload {};
+  handle_revert(state, running, payload);
+  assert(!state.disconnect_settlement_pending.load());
+  assert(state.disconnect_settlement_deadline_ms.load() == 0);
+  assert(state.direct_revert_bypass_grace.load());
+  assert(state.recovery_status.ticket == 55 && state.recovery_status.generation == 4);
+  assert(state.recovery_status.epoch == 8);
+  assert(!state.retry_apply_on_topology.load());
+  assert(state.reapply_cancels == 1 && state.post_apply_cancels == 1);
+  assert(state.exit_after_revert.load() && state.restore_requested.load());
+  assert(state.always_restore_from_golden.load());
+  assert(!state.prefer_golden_if_current_missing.load());
+  assert(state.restore_origin_epoch.load() == 8);
+  assert(state.grace_arms == 1 && state.last_grace == 5000ms);
+  assert(state.polling_starts == 1 && state.golden_tracking_resets == 1);
 }
 
 static void test_legacy_false_policy_disarms_without_changing_preference() {
@@ -535,6 +652,9 @@ static void test_ping_does_not_clear_an_explicit_restore_request() {
 }
 
 int main() {
+#if HAS_OWNERSHIP_POLICY
+  test_paused_normal_restore_retains_removal_guard();
+#endif
   test_disabled_configuration_still_cleans_up_existing_mutation();
   test_ordinary_disabled_revert_does_not_start_or_send();
   test_foreign_owner_defers_without_touching_recovery();
@@ -542,7 +662,11 @@ int main() {
 #if HAS_RECOVERY_TICKET
   test_incident_captures_targets_before_dispatch_and_rejects_failed_or_override_dispatch();
 #endif
+#if HAS_FINAL_RESTORE_POLICY
+  test_final_restore_incident_preserves_policy_and_generations();
+#endif
   test_legacy_stale_epoch_and_no_mutation_paths();
+  test_revert_handler_clears_settlement_and_arms_restore();
   test_legacy_false_policy_disarms_without_changing_preference();
   test_legacy_explicit_restore_bypasses_policy_and_recent_apply_grace();
   test_recent_apply_uses_bounded_disconnect_settlement();
@@ -562,5 +686,5 @@ with tempfile.TemporaryDirectory(prefix="display-helper-recovery-") as temporary
         retained_source.parent.mkdir(parents=True, exist_ok=True)
         retained_source.write_text(program)
     binary = directory / "test"
-    subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", f"-DHAS_SETTLEMENT={int(has_settlement)}", f"-DHAS_DISABLED_RECOVERY={int(has_disabled_recovery_parameter)}", f"-DHAS_RECOVERY_TICKET={int(has_recovery_ticket_parameter)}", f"-DHAS_PRESERVE={int(has_preserve)}", "-I", str(root), str(source), "-o", str(binary)], check=True)
+    subprocess.run([compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", f"-DHAS_SETTLEMENT={int(has_settlement)}", f"-DHAS_OWNERSHIP_POLICY={int(has_ownership_policy_parameter)}", f"-DHAS_FINAL_RESTORE_POLICY={int(has_final_restore_policy_parameter)}", f"-DHAS_DISABLED_RECOVERY={int(has_disabled_recovery_parameter)}", f"-DHAS_RECOVERY_TICKET={int(has_recovery_ticket_parameter)}", f"-DHAS_PRESERVE={int(has_preserve)}", "-I", str(root), str(source), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True)

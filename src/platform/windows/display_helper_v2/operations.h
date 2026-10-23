@@ -80,6 +80,9 @@ namespace display_helper::v2 {
     /// True once SettingsManager may have retained transaction state. Recovery
     /// or an explicit RESET must discard it before an unrelated later session.
     bool staged_state_prepared = false;
+    /// Original topology retained for Exclusive rollback after apply or gate failure.
+    std::optional<ActiveTopology> exclusive_pre_apply_topology;
+    bool exclusive_rollback_only = false;
   };
 
   struct RecoveryOutcome {
@@ -105,6 +108,9 @@ namespace display_helper::v2 {
     std::atomic<bool> always_restore_from_golden {false};
     std::atomic<bool> prefer_golden_if_current_missing {true};
     std::atomic<bool> restore_on_disconnect {true};
+    /// Boot recovery must not replay a stale session baseline that disables
+    /// the primary of an already restored, entirely physical desktop.
+    std::atomic<bool> preserve_active_physical_primary {false};
 
     /// True after a restore attempt that has not been confirmed yet; DISARM and
     /// SNAPSHOT_CURRENT from later stream-start probes must not cancel or
@@ -215,6 +221,7 @@ namespace display_helper::v2 {
 
   private:
     std::optional<codec::ParsedSnapshot> load_filtered(SnapshotTier tier, const char *label);
+    std::optional<Snapshot> live_desktop_to_preserve(const Snapshot &baseline);
     bool read_stable_snapshot(Snapshot &out, std::chrono::milliseconds deadline, std::chrono::milliseconds interval, const CancellationToken &token);
     bool quiet_period(std::chrono::milliseconds duration, std::chrono::milliseconds interval, const CancellationToken &token);
     bool wait_with_cancel(std::chrono::milliseconds duration, const CancellationToken &token);

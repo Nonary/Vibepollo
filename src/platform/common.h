@@ -25,6 +25,9 @@
 #endif
 
 // local includes
+#include "audio.h"
+#include "src/controller_speaker_pcm.h"
+#include "src/input_geometry_snapshot.h"
 #include "src/boost_process_shim.h"
 #include "src/config.h"
 #include "src/amf/amf_initialization_policy.h"
@@ -107,6 +110,7 @@ namespace platf {
     set_rgb_led,  ///< Set RGB LED
     set_adaptive_triggers,  ///< Set adaptive triggers
     haptics_pcm,  ///< 5 ms of 48 kHz S16LE stereo actuator samples
+    speaker_pcm,  ///< Independent 5 ms controller speaker samples
   };
 
   struct gamepad_feedback_msg_t {
@@ -153,8 +157,14 @@ namespace platf {
 
     gamepad_feedback_e type;
     std::uint16_t id;
+    // Internal provenance for bounded host-side ViGEm send-result diagnostics.
+    bool from_vigem {false};
+    // Invalidated on detach/rebind/reset, including messages already popped.
+    std::weak_ptr<controller_speaker_pcm::producer_epoch> speaker_epoch;
 
     union {
+      controller_speaker_pcm::block speaker;
+
       struct {
         std::uint32_t sequence;
         std::array<std::uint8_t, 960> samples;
@@ -276,6 +286,7 @@ namespace platf {
     int offset_x, offset_y;
     int width, height;
     int logical_width, logical_height;
+    std::string output_name; // Compositor connector for native touch association.
   };
 
   // These values must match Limelight-internal.h's SS_FF_* constants!
@@ -312,6 +323,7 @@ namespace platf {
     std::uint16_t capabilities;
     std::uint32_t supportedButtons;
     bool persist_after_disconnect = false;
+    std::uint64_t speaker_owner = 0;
   };
 
   struct gamepad_touch_t {
@@ -391,19 +403,16 @@ namespace platf {
     virtual ~img_t() = default;
   };
 
-  struct sink_t {
-    // Play on host PC
-    std::string host;
-
-    // On macOS and Windows, it is not possible to create a virtual sink
-    // Therefore, it is optional
-    struct null_t {
-      std::string stereo;
-      std::string surround51;
-      std::string surround71;
-    };
-
-    std::optional<null_t> null;
+  /**
+   * @brief The capture frame a convert() call actually read.
+   * @details A capture image that aliases a texture the capture source keeps rewriting
+   *          (direct WGC encoder input) can hold newer pixels than its own timestamps by
+   *          the time an encoder reads it, or pixels the encoder has already converted.
+   */
+  struct converted_frame_t {
+    bool repeats_previous = false;  ///< Do not encode these pixels: they were already converted from an earlier image, or the frame they belong to could not be identified.
+    std::optional<std::chrono::steady_clock::time_point> frame_timestamp;  ///< Replaces the image's frame timestamp when set.
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;  ///< Replaces the image's host processing timestamp when set.
   };
 
   struct encode_device_t {
@@ -411,8 +420,18 @@ namespace platf {
 
     virtual int convert(platf::img_t &img) = 0;
 
+    converted_frame_t converted_frame;  ///< What the last convert() read; each call resets it.
+
     video::sunshine_colorspace_t colorspace;
     bool rtx_hdr_active = false;
+
+    virtual bool supports_rtx_hdr() const {
+#ifdef _WIN32
+      return true;
+#else
+      return false;
+#endif
+    }
 
     // Authoritative HDR metadata for the stream, resolved once at device creation so the
     // control-channel HDR mode message and the bitstream mastering-display SEI always agree,
@@ -520,16 +539,9 @@ namespace platf {
     amf::amf_encoder *amf = nullptr;
   };
 
-  enum class capture_e : int {
-    ok,  ///< Success
-    reinit,  ///< Need to reinitialize
-    timeout,  ///< Timeout
-    interrupted,  ///< Capture was interrupted
-    error  ///< Error
-  };
-
   class display_t {
   public:
+    std::uint64_t recovery_capture_instance {0};
     /**
      * @brief Callback for when a new image is ready.
      * When display has a new image ready or a timeout occurs, this callback will be called with the image.
@@ -547,6 +559,13 @@ namespace platf {
      * @retval false When capture has been interrupted, img_out contains nullptr
      */
     using pull_free_image_cb_t = std::function<bool(std::shared_ptr<img_t> &img_out)>;
+
+    // Capture backends that can preserve frames while absolute-input geometry
+    // changes publish their latest immutable mapping here. Other backends keep
+    // using the ordinary display fields and their existing reinit behavior.
+    virtual std::optional<input_geometry_snapshot_t> input_geometry_snapshot() const {
+      return std::nullopt;
+    }
 
     display_t() noexcept:
         offset_x {0},
@@ -642,6 +661,17 @@ namespace platf {
     }
 
     /**
+     * @brief Commit a source metadata change after all old encoders are gone.
+     * @details Called only after capture has returned reinit and all old
+     * encoder sessions/references have been released. A backend may then advance
+     * its metadata generation and retain its capture resources. False requests
+     * the usual complete display recreation. Never use this for a mode change.
+     */
+    virtual bool commit_pending_capture_metadata() {
+      return false;
+    }
+
+    /**
      * @brief Ask a sparse capture source for one fresh image.
      * @details Fixed-rate sources may ignore this because another image is
      *          already scheduled.
@@ -691,60 +721,11 @@ namespace platf {
 
     int width, height;
     int logical_width, logical_height;
+    std::string input_output_name;
 
   protected:
     // collect capture timing data (at loglevel debug)
     logging::time_delta_periodic_logger sleep_overshoot_logger = {debug, "Frame capture sleep overshoot"};
-  };
-
-  class mic_t {
-  public:
-    virtual capture_e sample(std::vector<float> &frame_buffer) = 0;
-
-    virtual ~mic_t() = default;
-  };
-
-  class audio_control_t {
-  public:
-    virtual int set_sink(const std::string &sink) = 0;
-
-    // Select a loopback endpoint without changing system routing, when supported.
-    virtual int set_capture_sink([[maybe_unused]] const std::string &sink) {
-      return -1;
-    }
-
-    virtual std::unique_ptr<mic_t> microphone(const std::uint8_t *mapping, int channels, std::uint32_t sample_rate, std::uint32_t frame_size, bool continuous, bool host_audio_enabled) = 0;
-
-    /**
-     * @brief Check if the audio sink is available in the system.
-     * @param sink Sink to be checked.
-     * @returns True if available, false otherwise.
-     */
-    virtual bool is_sink_available(const std::string &sink) = 0;
-
-    virtual std::optional<sink_t> sink_info() = 0;
-
-    /**
-     * @brief Restores the host audio sink after streaming stops.
-     * @note Most platforms restore a single sink. Windows overrides this to
-     *       restore the endpoint captured for each audio role.
-     */
-    virtual int restore_sink(const std::string &sink) {
-      return set_sink(sink);
-    }
-
-    /**
-     * @brief Resets the default audio device away from virtual streaming speakers.
-     * Implementations may continue trying in the background to restore the
-     * preferred device after moving the default away from virtual speakers.
-     * @param preferred_device Device identifier (platform-specific, e.g. on Windows the
-     *        endpoint device_id) of the device that should be restored as default. If
-     *        empty, implementations fall back to letting the OS pick whatever non-virtual
-     *        device is currently present.
-     */
-    virtual void reset_default_device(const std::string &preferred_device = {}) {}
-
-    virtual ~audio_control_t() = default;
   };
 
   void freeInput(void *);

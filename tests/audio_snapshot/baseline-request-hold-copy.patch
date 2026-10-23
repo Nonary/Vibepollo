@@ -1,0 +1,14 @@
+--- a/src/audio_display_transition.h
++++ b/src/audio_display_transition.h
+@@ -39,10 +39,7 @@
+ 
+     void attach(std::shared_ptr<void> &pending_hold) {
+       if (!pending_hold) {
+-        pending_hold = hold_;
+-      }
+-      if (!hold_) {
+-        hold_ = pending_hold;
++        pending_hold = std::move(hold_);
+       }
+       // Keep our copy through later metadata destruction/config rollback.
+     }

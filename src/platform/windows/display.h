@@ -24,6 +24,7 @@
 #include <wrl/client.h>
 
 // local includes
+#include "gpu_priority.h"
 #include "src/platform/common.h"
 #include "src/platform/windows/ipc/pipes.h"
 #include "src/platform/windows/ipc/process_handler.h"
@@ -40,6 +41,7 @@ namespace platf::dxgi {
   }
 
   extern const char *format_str[];
+  struct img_d3d_t;
 
   // Add D3D11_CREATE_DEVICE_DEBUG here to enable the D3D11 debug runtime.
   // You should have a debugger like WinDbg attached to receive debug messages.
@@ -215,16 +217,21 @@ namespace platf::dxgi {
       const ::video::config_t &config,
       const std::string &display_name,
       bool skip_dd_test = false,
-      const std::optional<LUID> &required_adapter_luid = std::nullopt
+      const std::optional<LUID> &required_adapter_luid = std::nullopt,
+      bool preserve_capture_for_input_geometry = false
     );
 
     capture_e capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) override;
     void prepare_for_reinit() override;
+    std::optional<input_geometry_snapshot_t> input_geometry_snapshot() const override;
     // A teardown notification only; derived implementations must not block.
     virtual void request_capture_stop() noexcept {}
 
     std::optional<adapter_id_t> capture_adapter_id() const override;
 
+    // Declared before the D3D resources so the process priority is restored
+    // only after those resources have been released.
+    std::unique_ptr<gpu_priority_manager_t::lease_t> gpu_priority_lease;
     factory1_t factory;
     adapter_t adapter;
     output_t output;
@@ -540,9 +547,24 @@ namespace platf::dxgi {
     capture_e release_snapshot() override;
 
   private:
+    /**
+     * @brief Hand the helper's shared frame to the encoder without a host-side copy.
+     * @details The pool image aliases the shared texture; the encoder device opens it
+     *          and orders its reads with the texture's keyed mutex.
+     */
+    capture_e snapshot_direct(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out);
+
+    /**
+     * @brief Point a pool image at the helper's shared texture.
+     * @return 0 on success, -1 on failure.
+     */
+    int alias_shared_frame(img_d3d_t &img);
+
     std::unique_ptr<class ipc_session_t> _ipc_session;
     ::video::config_t _config;
     std::string _display_name;
+    bool _direct_encoder_input = false;  ///< Latched from config at init so one pool never mixes modes.
+    bool _constant_frame_rate = false;  ///< Latched with `_direct_encoder_input`: a timeout re-sends `_last_cached_frame` (copy path only).
     bool _session_initialized_logged = false;
     bool _frame_locked = false;
     std::shared_ptr<platf::img_t> _last_cached_frame;

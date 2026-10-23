@@ -120,6 +120,9 @@ const activeCategory = ref(
     : settingsCategories[0].id,
 );
 const hostMetadata = ref<MetadataResponse>({});
+const machineHostTrayUnavailable = computed(
+  () => hostMetadata.value.platform === 'linux' && hostMetadata.value.linux?.machine_host === true,
+);
 const values = reactive<Record<string, unknown>>({});
 const original = ref<Record<string, unknown>>({});
 const displayDevices = ref<DisplayDevice[]>([]);
@@ -354,7 +357,9 @@ const filteredGroups = computed(() => {
   return categories.flatMap((settingsCategory) =>
     settingsCategory.groups
       .filter(
-        (group) => matchesPlatform(group, hostPlatform.value) && (query || groupIsVisible(group)),
+        (group) => matchesPlatform(group, hostPlatform.value) &&
+          (group.id !== 'video_rtx_hdr' || hostPlatform.value !== 'linux' || hostMetadata.value.rtx_hdr_supported === true) &&
+          (query || groupIsVisible(group)),
       )
       .map<DisplaySettingsGroup>((group) => ({
         ...group,
@@ -558,6 +563,8 @@ function fieldLabel(field: SettingsField): string {
 }
 
 function fieldDescription(field: SettingsField): string {
+  if (field.key === 'system_tray' && machineHostTrayUnavailable.value)
+    return t('config.system_tray_desc_machine_host');
   if (activeCategory.value === 'everyday' && !isSearching.value) {
     const everydayKey = `ui.settings.everyday_help.${field.key}`;
     if (messageExists(everydayKey)) return t(everydayKey);
@@ -875,7 +882,10 @@ async function refreshDisplayStatus(): Promise<void> {
 }
 
 function fieldDependencyLocked(field: SettingsField): boolean {
-  return field.key === 'frame_limiter_disable_vsync' && dummyPlugVsync.value.locked;
+  return (
+    (field.key === 'frame_limiter_disable_vsync' && dummyPlugVsync.value.locked) ||
+    (field.key === 'system_tray' && machineHostTrayUnavailable.value)
+  );
 }
 
 async function save(): Promise<void> {
@@ -1241,9 +1251,11 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                       :id="`setting-${field.key}`"
                       type="checkbox"
                       :checked="
-                        field.key === 'frame_limiter_disable_vsync'
-                          ? dummyPlugVsync.effectiveVsyncDisabled
-                          : isTrue(values[field.key])
+                        field.key === 'system_tray' && machineHostTrayUnavailable
+                          ? false
+                          : field.key === 'frame_limiter_disable_vsync'
+                            ? dummyPlugVsync.effectiveVsyncDisabled
+                            : isTrue(values[field.key])
                       "
                       :disabled="fieldIsInactive(field) || fieldDependencyLocked(field)"
                       :aria-labelledby="`setting-${field.key}-label`"

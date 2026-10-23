@@ -563,12 +563,12 @@
     "dd_refresh_rate_option_auto": "Use FPS value provided by the client (default)",
     "dd_refresh_rate_option_disabled": "Do not change refresh rate",
     "dd_refresh_rate_option_manual": "Use manually entered refresh rate",
-    "dd_refresh_rate_option_manual_desc": "⚠️ Enforcing a manual refresh rate forces the host to this refresh for all streams, overriding any refresh rules below and the automatic 4× refresh applied to virtual displays.",
+    "dd_refresh_rate_option_manual_desc": "Uses the manual refresh rate instead of refresh remapping rules and automatic virtual-display refresh. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override takes priority over this value.",
     "dd_resolution_option": "Resolution",
     "dd_resolution_option_auto": "Use resolution provided by the client (default)",
     "dd_resolution_option_disabled": "Do not change resolution",
     "dd_resolution_option_manual": "Use manually entered resolution",
-    "dd_resolution_option_manual_desc": "Enter the resolution to be used",
+    "dd_resolution_option_manual_desc": "Uses the manual resolution instead of resolution remapping rules. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override and launch resolution scaling take priority over this value.",
     "dd_wa_hdr_toggle_delay_desc_1": "When using virtual display device for streaming, it might incorrectly display HDR color. Vibepollo can try to mitigate this issue, by turning HDR off and then on again.",
     "dd_wa_hdr_toggle_delay_desc_2": "If the value is set to 0, the workaround is disabled (default). If the value is between 0 and 3000 milliseconds, Vibepollo will turn off HDR, wait for the specified amount of time and then turn HDR on again. The recommended delay time is around 500 milliseconds in most cases.",
     "dd_wa_hdr_toggle_delay_desc_3": "DO NOT use this workaround unless you actually have issues with HDR as it directly impacts stream start time!",
@@ -1029,7 +1029,7 @@
     "dd_validation_mixed_final_required": "For mixed mappings, specify at least one Final field.",
     "dd_validation_resolution": "Invalid format. Use WIDTHxHEIGHT, e.g., {example} (x or ×).",
     "dd_validation_refresh_rate": "Invalid refresh rate. Use a positive number, e.g., 60 or 59.94.",
-    "dd_manual_enforcement_notice": "Overrides below are disabled while manual resolution or refresh rate is enforced. Manual refresh rates are applied forcefully and override game-aware refresh switching on virtual displays."
+    "dd_manual_enforcement_notice": "Manual values take priority over remapping for that value. Values set to Match the client keep their rules unless a client's Display mode override is active; that override bypasses all remapping and takes priority over manual values."
   },
   "index": {
     "description": "Vibepollo is a self-hosted game stream host for Moonlight.",

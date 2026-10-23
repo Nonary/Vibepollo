@@ -5,7 +5,8 @@
 #pragma once
 
 // local includes
-#include "platform/common.h"
+#include "audio_context.h"
+#include "audio_display_transition.h"
 #include "thread_safe.h"
 #include "utility.h"
 
@@ -65,19 +66,8 @@ namespace audio {
     bool input_only;
   };
 
-  struct audio_ctx_t {
-    // We want to change the sink for the first stream only
-    std::unique_ptr<std::atomic_bool> sink_flag;
-
-    std::unique_ptr<platf::audio_control_t> control;
-
-    bool restore_sink;
-    platf::sink_t sink;
-  };
-
   using buffer_t = util::buffer_t<std::uint8_t>;
   using packet_t = std::pair<void *, buffer_t>;
-  using audio_ctx_ref_t = safe::shared_t<audio_ctx_t>::ptr_t;
 
   void capture(safe::mail_t mail, config_t config, void *channel_data);
 
@@ -92,6 +82,9 @@ namespace audio {
    * @examples_end
    */
   audio_ctx_ref_t get_audio_ctx_ref();
+
+  /** @brief Hold pre-display audio state; native routing remains deferred to capture. */
+  std::shared_ptr<void> capture_before_display_change(bool input_only = false);
 
   /** @brief Mark the current app as terminal and restore retained audio state. */
   void app_termination_requested();

@@ -139,7 +139,46 @@ namespace platf::dxgi {
 
       return false;
     }
+
+    std::atomic<std::uint64_t> g_frame_record_generation {0};
   }  // namespace
+
+  std::shared_ptr<wgc_frame_record_t> wgc_frame_record_t::open(HANDLE metadata_mapping) {
+    const auto *metadata = static_cast<const frame_metadata_t *>(MapViewOfFile(
+      metadata_mapping,
+      FILE_MAP_READ,
+      0,
+      0,
+      sizeof(frame_metadata_t)
+    ));
+    if (!metadata) {
+      BOOST_LOG(error) << "Failed to map the WGC frame record for direct encoder input: " << GetLastError();
+      return nullptr;
+    }
+
+    const auto generation = g_frame_record_generation.fetch_add(1, std::memory_order_relaxed) + 1;
+    return std::shared_ptr<wgc_frame_record_t>(new wgc_frame_record_t(metadata, generation));
+  }
+
+  wgc_frame_record_t::wgc_frame_record_t(const frame_metadata_t *metadata, const std::uint64_t generation):
+      _metadata {metadata},
+      _generation {generation} {
+  }
+
+  wgc_frame_record_t::~wgc_frame_record_t() {
+    UnmapViewOfFile(_metadata);
+  }
+
+  bool wgc_frame_record_t::read(std::uint64_t &frame_id, std::uint64_t &frame_qpc) const {
+    frame_metadata_snapshot_t snapshot;
+    if (!read_frame_metadata_snapshot(_metadata, snapshot)) {
+      return false;
+    }
+
+    frame_id = static_cast<std::uint64_t>(snapshot.frame_id);
+    frame_qpc = static_cast<std::uint64_t>(snapshot.frame_qpc);
+    return true;
+  }
 
   void note_wgc_desktop_switch() {
     record_recent_wgc_desktop_switch();
@@ -170,9 +209,13 @@ namespace platf::dxgi {
         }
       }
 
-      if (_pipe) {
-        _pipe->stop();
-        _pipe.reset();
+      {
+        const std::scoped_lock lock(_pipe_mutex);
+        if (_pipe) {
+          BOOST_LOG(debug) << "WGC IPC teardown: host stopping control pipe";
+          _pipe->stop();
+          _pipe.reset();
+        }
       }
 
       if (_frame_metadata) {
@@ -181,6 +224,8 @@ namespace platf::dxgi {
       }
 
       _shared_texture = nullptr;
+      _shared_texture_handle.close();
+      _frame_record.reset();
       _keyed_mutex = nullptr;
       _frame_ready_event.close();
       _frame_metadata_mapping.close();
@@ -246,10 +291,14 @@ namespace platf::dxgi {
 
     // Reset success flag before attempting
     _initialized = false;
+    _sent_cursor_visible.reset();
 
-    if (_pipe) {
-      _pipe->stop();
-      _pipe.reset();
+    {
+      const std::scoped_lock lock(_pipe_mutex);
+      if (_pipe) {
+        _pipe->stop();
+        _pipe.reset();
+      }
     }
     if (_frame_metadata) {
       UnmapViewOfFile(_frame_metadata);
@@ -258,6 +307,8 @@ namespace platf::dxgi {
     _frame_ready_event.close();
     _frame_metadata_mapping.close();
     _shared_texture = nullptr;
+    _shared_texture_handle.close();
+    _frame_record.reset();
     _keyed_mutex = nullptr;
     _last_frame_id = 0;
     _frame_qpc = 0;
@@ -354,6 +405,9 @@ namespace platf::dxgi {
     config_data.min_update_interval_100ns = wgc_min_update_interval_100ns(_config);
     config_data.target_fps = wgc_target_fps(_config);
     config_data.flags = wgc_ipc_flags(_config);
+    if (!_cursor_visible) {
+      config_data.flags |= WGC_IPC_FLAG_HIDE_CURSOR;
+    }
     config_data.initial_frame_buffer_size = wgc_initial_frame_buffer_size();
     config_data.max_frame_buffer_size = wgc_max_frame_buffer_size(_config);
     config_data.activity_admission_fps = _activity_admission_fps.load(std::memory_order_relaxed);
@@ -482,15 +536,20 @@ namespace platf::dxgi {
     }
 
     auto cleanup_on_failure = util::fail_guard([this]() {
-      if (_pipe) {
-        _pipe->stop();
-        _pipe.reset();
+      {
+        const std::scoped_lock lock(_pipe_mutex);
+        if (_pipe) {
+          _pipe->stop();
+          _pipe.reset();
+        }
       }
       if (_frame_metadata) {
         UnmapViewOfFile(_frame_metadata);
         _frame_metadata = nullptr;
       }
       _shared_texture = nullptr;
+      _shared_texture_handle.close();
+      _frame_record.reset();
       _keyed_mutex = nullptr;
       _frame_ready_event.close();
       _frame_metadata_mapping.close();
@@ -499,18 +558,56 @@ namespace platf::dxgi {
       }
     });
 
-    _pipe = std::make_unique<AsyncNamedPipe>(std::move(control_pipe));
-
-    if (!_pipe->start(on_message, on_error, on_broken_pipe)) {
-      BOOST_LOG(error) << "Failed to start AsyncNamedPipe for helper communication";
-      return;
+    {
+      const std::scoped_lock lock(_pipe_mutex);
+      _pipe = std::make_unique<AsyncNamedPipe>(std::move(control_pipe));
+      if (!_pipe->start(on_message, on_error, on_broken_pipe)) {
+        BOOST_LOG(error) << "Failed to start AsyncNamedPipe for helper communication";
+        return;
+      }
     }
 
     cleanup_on_failure.disable();
-    _initialized = true;
-    if (_activity_admission_fps.load(std::memory_order_relaxed) != config_data.activity_admission_fps) {
-      (void) set_activity_admission_fps(_activity_admission_fps.load(std::memory_order_relaxed));
+    _sent_cursor_visible = (config_data.flags & WGC_IPC_FLAG_HIDE_CURSOR) == 0;
+    {
+      const std::scoped_lock lock(_pipe_mutex);
+      _initialized = true;
+      const auto desired_fps = _activity_admission_fps.load(std::memory_order_relaxed);
+      if (desired_fps != config_data.activity_admission_fps) {
+        const activity_admission_data_t update {
+          .magic = WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC,
+          .admission_fps = desired_fps,
+        };
+        if (!_pipe || !_pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&update), sizeof(update)))) {
+          _force_reinit = true;
+        }
+      }
     }
+  }
+
+  bool ipc_session_t::set_cursor_visible(const bool visible) {
+    _cursor_visible = visible;
+    if (stop_requested()) {
+      return false;
+    }
+    if (!_initialized) {
+      return true;  // initialize_if_needed() includes the latest state in config.
+    }
+    if (_sent_cursor_visible == visible) {
+      return true;
+    }
+
+    const cursor_visibility_data_t update {
+      .magic = WGC_CURSOR_VISIBILITY_MESSAGE_MAGIC,
+      .visible = visible ? 1u : 0u,
+    };
+    const std::scoped_lock lock(_pipe_mutex);
+    if (!_pipe || !_pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&update), sizeof(update)))) {
+      _force_reinit = true;
+      return false;
+    }
+    _sent_cursor_visible = visible;
+    return true;
   }
 
   bool ipc_session_t::set_activity_admission_fps(const int fps) {
@@ -518,18 +615,23 @@ namespace platf::dxgi {
       return false;
     }
     _activity_admission_fps.store(fps, std::memory_order_relaxed);
-    if (!_pipe || !_initialized) {
-      return true;
-    }
-    if (!_pipe->is_connected()) {
+    if (stop_requested()) {
       return false;
+    }
+
+    const std::scoped_lock lock(_pipe_mutex);
+    if (!_initialized) {
+      return true;
     }
 
     const activity_admission_data_t update {
       .magic = WGC_ACTIVITY_ADMISSION_MESSAGE_MAGIC,
       .admission_fps = fps,
     };
-    _pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&update), sizeof(update)));
+    if (!_pipe || !_pipe->send(std::span<const uint8_t>(reinterpret_cast<const uint8_t *>(&update), sizeof(update)))) {
+      _force_reinit = true;
+      return false;
+    }
     return true;
   }
 
@@ -655,6 +757,8 @@ namespace platf::dxgi {
   capture_e ipc_session_t::lock_frame(winrt::com_ptr<ID3D11Texture2D> &gpu_tex_out, uint64_t &frame_qpc_out) {
     // Additional validation: ensure required resources are available
     if (!_shared_texture || !_keyed_mutex) {
+      BOOST_LOG(debug) << "Capture restart request: source=wgc-ipc reason=missing-frame-resources texture="
+                       << static_cast<bool>(_shared_texture) << " mutex=" << static_cast<bool>(_keyed_mutex);
       _force_reinit = true;
       _initialized = false;
       return capture_e::reinit;
@@ -730,6 +834,32 @@ namespace platf::dxgi {
     gpu_tex_out = _shared_texture;
     frame_qpc_out = _frame_qpc;
 
+    return capture_e::ok;
+  }
+
+  capture_e ipc_session_t::claim_latest_frame(uint64_t &frame_id_out, uint64_t &frame_qpc_out) {
+    if (!_shared_texture || !_frame_metadata) {
+      _force_reinit = true;
+      _initialized = false;
+      return capture_e::reinit;
+    }
+
+    // The helper publishes metadata with a sequence lock, so a consistent
+    // snapshot can be read without the keyed mutex.
+    frame_metadata_snapshot_t snapshot;
+    if (!read_frame_metadata_snapshot(_frame_metadata, snapshot) || snapshot.frame_id <= _last_frame_id) {
+      return capture_e::timeout;
+    }
+
+    _last_frame_id = snapshot.frame_id;
+    _frame_qpc = static_cast<uint64_t>(snapshot.frame_qpc);
+    // Any pending wakeup refers to a frame at or before the one just claimed.
+    while (WaitForSingleObject(_frame_ready_event.get(), 0) == WAIT_OBJECT_0) {
+    }
+    _frames_acquired.fetch_add(1, std::memory_order_relaxed);
+
+    frame_id_out = static_cast<uint64_t>(_last_frame_id);
+    frame_qpc_out = _frame_qpc;
     return capture_e::ok;
   }
 
@@ -833,6 +963,11 @@ namespace platf::dxgi {
       UnmapViewOfFile(metadata);
     });
 
+    auto frame_record = wgc_frame_record_t::open(duplicated_metadata_handle.get());
+    if (!frame_record) {
+      return false;
+    }
+
     _shared_texture = texture;
     _width = handle_data.width;
     _height = handle_data.height;
@@ -842,12 +977,15 @@ namespace platf::dxgi {
     if (!_keyed_mutex) {
       BOOST_LOG(error) << "Failed to get keyed mutex interface from shared texture";
       _shared_texture = nullptr;
+      _shared_texture_handle.close();
       return false;
     }
 
     _frame_ready_event = std::move(duplicated_event_handle);
     _frame_metadata_mapping = std::move(duplicated_metadata_handle);
+    _shared_texture_handle = std::move(duplicated_texture_handle);
     _frame_metadata = metadata;
+    _frame_record = std::move(frame_record);
     frame_metadata_snapshot_t snapshot;
     _last_frame_id = read_frame_metadata_snapshot(_frame_metadata, snapshot) ? snapshot.frame_id : 0;
     metadata_guard.disable();

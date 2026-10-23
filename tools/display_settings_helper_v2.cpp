@@ -34,6 +34,8 @@
   #include <windows.h>
 
   #include "src/logging.h"
+  #include "src/platform/windows/display_helper_borrow_control.h"
+  #include "src/platform/windows/display_helper_borrow_native.h"
   #include "src/platform/windows/display_helper_v2/async_dispatcher.h"
   #include "src/platform/windows/display_helper_v2/file_text_storage.h"
   #include "src/platform/windows/display_helper_v2/golden_health.h"
@@ -50,6 +52,7 @@
   #include "src/platform/windows/display_helper_v2/win_virtual_display_driver.h"
   #include "src/platform/windows/ipc/pipes.h"
   #include "tools/display_helper_paths.h"
+  #include "src/platform/windows/display_restore_policy.h"
 
   #include <display_device/json.h>
   #include <display_device/logging.h>
@@ -70,6 +73,8 @@ namespace {
     RefreshRateResult = 11,
     RecoveryStatus = 15,
     RecoveryStatusResult = 16,
+    BorrowAcquire = display_helper::borrow::acquire_message,
+    BorrowRelease = display_helper::borrow::release_message,
     SnapshotResult = 12,
     Ping = 0xFE,
     Stop = 0xFF,
@@ -366,10 +371,20 @@ namespace {
             j["sunshine_omit_final_initial_hdr_reapply"].get<bool>();
           j.erase("sunshine_omit_final_initial_hdr_reapply");
         }
+        if (j.contains("sunshine_reactivate_of")) {
+          out_request.reactivation_of = j.at("sunshine_reactivate_of").get<std::uint64_t>();
+          j.erase("sunshine_reactivate_of");
+        }
         if (j.contains("sunshine_apply_budget_ms")) {
           const auto ms = j["sunshine_apply_budget_ms"].get<std::int64_t>();
           out_request.deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::clamp<std::int64_t>(ms, 0, 15000));
           j.erase("sunshine_apply_budget_ms");
+        }
+        if (j.contains("sunshine_refresh_settings_baseline")) {
+          out_request.refresh_settings_baseline =
+            j["sunshine_refresh_settings_baseline"].is_boolean() &&
+            j["sunshine_refresh_settings_baseline"].get<bool>();
+          j.erase("sunshine_refresh_settings_baseline");
         }
         if (j.contains("wa_hdr_toggle")) {
           out_request.hdr_blank = j["wa_hdr_toggle"].get<bool>();
@@ -610,6 +625,7 @@ namespace {
 }  // namespace
 
 int run_v2_helper(int argc, char *argv[]) {
+  display_helper::borrow::helper_process().store(true, std::memory_order_release);
   bool restore_mode = false;
   std::optional<int> log_level_override;
   constexpr const char *kLogLevelPrefix = "--log-level=";
@@ -672,8 +688,14 @@ int run_v2_helper(int argc, char *argv[]) {
   display_helper::v2::AtomicFileTextStorage golden_status_storage;
   display_helper::v2::GoldenHealth golden_health(golden_status_storage, active_snapshots.golden_status.string());
   display_helper::v2::RestoreState restore_state;
+  restore_state.preserve_active_physical_primary.store(restore_mode);
   display_helper::v2::ApplyPolicy apply_policy(clock);
   display_helper::v2::WinVirtualDisplayDriver virtual_display;
+  display_helper::borrow::control_t borrow_control(
+    display_helper::borrow::process_gate(), display_helper::borrow::current_context(),
+    display_helper::borrow::controller_alive,
+    [&virtual_display] { return virtual_display.control_handle_for_borrow(); });
+  display_helper::borrow::mailbox_t borrow_mailbox(borrow_control);
   display_helper::v2::WinPlatformWorkarounds workarounds;
   display_helper::v2::WinScheduledTaskManager task_manager;
   display_helper::v2::HeartbeatMonitor heartbeat(clock);
@@ -843,6 +865,7 @@ int run_v2_helper(int argc, char *argv[]) {
   });
 
   auto service_timers = [&]() {
+    if (borrow_mailbox.inhibited()) return;
     if (heartbeat.check_timeout()) {
       const auto origin_epoch = connection_epoch.load(std::memory_order_acquire);
       if (origin_epoch != 0) {
@@ -868,6 +891,16 @@ int run_v2_helper(int argc, char *argv[]) {
   };
 
   auto process_queue = [&]() {
+    const bool borrow_command = borrow_mailbox.service([&response_pipe](std::uint8_t type,
+        const display_helper::borrow::result_t &result, std::uint64_t epoch) {
+      response_pipe.send_for_epoch(epoch, static_cast<MsgType>(type), display_helper::borrow::encode_result(result));
+    });
+    if (borrow_mailbox.inhibited()) {
+      // The complete ordinary mailbox and FSM timer state stay parked. No
+      // completion/queued restore is mistaken for cancellation or success.
+      if (!borrow_command) std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      return;
+    }
     if (auto message = queue.wait_for(std::chrono::milliseconds(100))) {
       // A delayed disconnect-verification completion may race a replacement
       // APPLY/REVERT/DISARM or refresh command arriving from the pipe. Give a
@@ -909,6 +942,9 @@ int run_v2_helper(int argc, char *argv[]) {
     BOOST_LOG(info) << "Display helper v2 running in restore mode.";
     display_helper::v2::RevertCommand revert {cancellation.current_generation()};
     revert.immediate = true;
+    revert.always_restore_from_golden = display_helper::load_boot_restore_prefer_golden(
+      display_helper_paths::executable_config_search_roots(), search_roots,
+      display_helper_paths::restore_state_file_from_command_line());
     queue.push(revert);
     while (running.load(std::memory_order_acquire)) {
       process_queue();
@@ -986,6 +1022,10 @@ int run_v2_helper(int argc, char *argv[]) {
       }
 
       switch (type) {
+        case MsgType::BorrowAcquire:
+        case MsgType::BorrowRelease:
+          (void) borrow_mailbox.post(static_cast<std::uint8_t>(type), payload, epoch, async_pipe.peer_process_id());
+          break;
         case MsgType::Apply: {
           display_helper::v2::ApplyRequest request;
           std::string parse_failure;
@@ -1114,6 +1154,10 @@ int run_v2_helper(int argc, char *argv[]) {
           }
           break;
         case MsgType::Stop:
+          if (borrow_mailbox.inhibited()) {
+            queue.push(display_helper::v2::StopCommand {cancellation.current_generation(), epoch});
+            break;
+          }
           BOOST_LOG(info) << "Display helper: received STOP command, exiting gracefully.";
           cancellation.cancel();
           running.store(false, std::memory_order_release);
@@ -1199,7 +1243,7 @@ int run_v2_helper(int argc, char *argv[]) {
           revert.connection_epoch = 0;
           revert.from_disconnect = true;
           restore_origin_epoch.store(epoch, std::memory_order_release);
-          state_machine.handle_message(revert);
+          queue.push(revert);
         }
         break;
       }

@@ -26,8 +26,10 @@ capabilities on the public executable or its client helper.
 
 `vibepollo-session-controller.service` is the only login-session authority. It
 observes logind and accepts only the active, local, seat0 KDE Wayland desktop
-or greeter session. It never activates a session, mutates PAM, writes a user's
-environment, or keeps a stream alive across a login transition. A transition
+or greeter session by default. The explicit `hyprland-kms` desktop policy is
+limited to the UWSM-managed native Wayland/physical KMS subset documented in
+[hyprland.md](hyprland.md); greeters retain KWin. It never activates a session,
+mutates PAM, writes a user's environment, or keeps a stream alive across a login transition. A transition
 stops the machine host and its generation-bound applications before binding a
 fresh session. Disconnect and reconnect is intentional.
 

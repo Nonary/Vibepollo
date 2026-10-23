@@ -2,6 +2,7 @@
 """Native installer tests: no system services or real installation paths touched."""
 
 import importlib.util
+import contextlib
 import io
 import json
 import os
@@ -20,6 +21,25 @@ SPEC = importlib.util.spec_from_file_location('local_deploy', ROOT / 'scripts/li
 deploy = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(deploy)
 VERSION = '1.19.0-beta.5'
+
+
+@contextlib.contextmanager
+def version_checkout(tag='v1.20.0'):
+    with tempfile.TemporaryDirectory() as temporary:
+        root = Path(temporary)
+        def git(*args):
+            return subprocess.check_output(['git', '-C', str(root), *args], text=True).strip()
+        git('init', '-q')
+        git('config', 'user.name', 'Installer Test')
+        git('config', 'user.email', 'installer@example.invalid')
+        git('config', 'commit.gpgsign', 'false')
+        (root / 'source').write_text('original\n')
+        git('add', 'source')
+        git('commit', '-qm', 'Initial')
+        if tag:
+            git('tag', tag)
+        with mock.patch.object(deploy, 'REPO', root), mock.patch.dict(os.environ, {}, clear=True):
+            yield root, git
 
 
 def package(extra=(), omit=()):
@@ -61,6 +81,14 @@ class InstallerShellTests(unittest.TestCase):
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_current_native_companion_and_package_preflight_paths(self):
+        for path in ('usr/bin/vibepollo-mangohud',
+                     'usr/libexec/vibeshine/vibepollo-package-preflight',
+                     'usr/share/libalpm/hooks/00-vibepollo-quiesce.hook'):
+            with self.subTest(path=path):
+                self.assertTrue(deploy.allowed(path))
+                self.assertFalse(deploy.allowed(path + '.unexpected'))
+
     def test_local_package_must_include_driver_helper_and_build_sources(self):
         self.assertNotIn('usr/libexec/vibeshine/vibepollo-drm-install', deploy.FIXED)
         self.assertNotIn('usr/libexec/vibeshine/vibepollo-ds5-install', deploy.FIXED)
@@ -78,9 +106,11 @@ class ArchiveTests(unittest.TestCase):
                     deploy.inspect_archive(archive, VERSION)
 
     def test_release_version_allowlist(self):
-        for version in ('1.19.0', '1.19.0-stable.1', '1.19.0-alpha.2', VERSION, '1.19.0-rc.1'):
+        for version in ('1.19.0', '1.19.0-stable.1', '1.19.0-alpha.2', VERSION, '1.19.0-rc.1',
+                        '1.19.0-dirty-012345abcdef', '1.19.0-beta.5-dirty-012345abcdef'):
             self.assertIsNotNone(deploy.VERSION.fullmatch(version))
-        for version in ('0.0.0', '../1.19.0', '1.19.0;id', '1.19.0-unknown.1'):
+        for version in ('0.0.0', '../1.19.0', '1.19.0;id', '1.19.0-unknown.1',
+                        '1.19.0-dirty-xyz', '1.19.0-dirty_012345abcdef'):
             self.assertIsNone(deploy.VERSION.fullmatch(version))
 
     def test_complete_native_payload(self):
@@ -88,6 +118,7 @@ class ArchiveTests(unittest.TestCase):
             members = deploy.inspect_archive(archive, VERSION)
         self.assertIn('usr/libexec/vibeshine/vibepollo-display-power', members)
         self.assertIn('usr/libexec/vibeshine/vibepollo-display-observer', members)
+        self.assertIn('usr/libexec/vibeshine/vibepollo-touch-map', members)
 
     def test_missing_recovery_helper_fails_preflight(self):
         with package(omit=['usr/libexec/vibeshine/vibepollo-display-power']) as archive:
@@ -104,6 +135,11 @@ class ArchiveTests(unittest.TestCase):
         with package([tarfile.TarInfo(name) for name in deploy.OPTIONAL]) as archive:
             self.assertTrue(deploy.OPTIONAL <= deploy.inspect_archive(archive, VERSION).keys())
         self.assertFalse(deploy.allowed('usr/share/icons/hicolor/scalable/apps/unrelated.svg'))
+
+    def test_missing_touch_mapping_helper_fails_preflight(self):
+        with package(omit=['usr/libexec/vibeshine/vibepollo-touch-map']) as archive:
+            with self.assertRaises(deploy.DeployError):
+                deploy.inspect_archive(archive, VERSION)
 
     def test_paths_special_files_links_duplicates_and_symlink_parents(self):
         entries = []
@@ -129,6 +165,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(deploy.install_mode('usr/libexec/vibeshine/vibepollo-host', 0o7777), 0o750)
         self.assertEqual(deploy.install_mode('usr/libexec/vibeshine/vibepollo-session-broker', 0o7777), 0o700)
         self.assertEqual(deploy.install_mode('usr/libexec/vibeshine/vibepollo-display-observer', 0o4777), 0o755)
+        self.assertEqual(deploy.install_mode('usr/libexec/vibeshine/vibepollo-touch-map', 0o4777), 0o755)
         self.assertEqual(deploy.install_mode('usr/lib/libvibeshine-kwin-gpu.so'), 0o4755)
 
 
@@ -183,22 +220,65 @@ class SharedBuildTests(unittest.TestCase):
                 'BUILD_VERSION': VERSION, 'CMAKE_CXX_COMPILER': '/usr/bin/g++-15'})
 
     def test_version_precedence_and_exact_clean_tag(self):
-        with mock.patch.dict(os.environ, {'BUILD_VERSION': '1.20.0'}, clear=True):
-            self.assertEqual(deploy.resolve_version(VERSION, {'BUILD_VERSION': '1.18.0'}), VERSION)
-            self.assertEqual(deploy.resolve_version(None, {'BUILD_VERSION': '1.18.0'}), '1.20.0')
-        with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(deploy.resolve_version(None, {'BUILD_VERSION': VERSION}), VERSION)
-            with mock.patch.object(deploy, 'run', side_effect=[
-                    mock.Mock(returncode=0, stdout='v1.20.0\n'), mock.Mock(stdout='')]) as run:
-                self.assertEqual(deploy.resolve_version(None, {}), '1.20.0')
-            self.assertIn('--exact-match', run.call_args_list[0].args)
-            with mock.patch.object(deploy, 'run', side_effect=[
-                    mock.Mock(returncode=0, stdout='v1.20.0\n'), mock.Mock(stdout=' M modified')]):
-                with self.assertRaisesRegex(deploy.DeployError, 'modified tagged checkout'):
-                    deploy.resolve_version(None, {})
-            with mock.patch.object(deploy, 'run', return_value=mock.Mock(returncode=1, stdout='')):
-                with self.assertRaises(deploy.DeployError):
-                    deploy.resolve_version(None, {})
+        with version_checkout() as (_, git):
+            self.assertEqual(deploy.resolve_version(None, {}), '1.20.0')
+            self.assertEqual(deploy.resolve_version(None, {'BUILD_VERSION': '1.20.0'}), '1.20.0')
+            sha = git('rev-parse', '--short=12', 'HEAD')
+            with mock.patch.dict(os.environ, {'BUILD_VERSION': '1.20.0'}):
+                self.assertEqual(deploy.resolve_version(VERSION, {'BUILD_VERSION': '1.18.0'}), VERSION)
+                self.assertEqual(deploy.resolve_version(None, {'BUILD_VERSION': '1.18.0'}), '1.20.0')
+            self.assertEqual(deploy.resolve_version(None, {'BUILD_VERSION': VERSION}), VERSION + '-dirty-' + sha)
+
+    def test_commits_ahead_of_release_are_automatically_marked(self):
+        with version_checkout('1.20.0-beta.1') as (_, git):
+            git('commit', '--allow-empty', '-qm', 'Ahead of release')
+            # Ignore a closer non-release tag.
+            git('tag', 'developer-snapshot')
+            expected = '1.20.0-beta.1-dirty-' + git('rev-parse', '--short=12', 'HEAD')
+            self.assertEqual(deploy.resolve_version(None, {}), expected)
+            self.assertEqual(deploy.resolve_version(None, {'BUILD_VERSION': '1.20.0-beta.1'}), expected)
+            self.assertEqual(deploy.resolve_version(None, {'BUILD_VERSION': expected}), expected)
+            self.assertEqual(deploy.arch_package_version(expected), expected.replace('-', '.') + '-1')
+
+    def test_dirty_tagged_checkout_and_explicit_override(self):
+        for change in ('unstaged', 'staged', 'untracked', 'submodule'):
+            with self.subTest(change=change), version_checkout() as (root, git):
+                if change == 'submodule':
+                    with version_checkout(None) as (child, _):
+                        git('-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', str(child), 'dependency')
+                    git('commit', '-qam', 'Add dependency')
+                    git('tag', '-f', 'v1.20.0')
+                    (root / 'dependency/source').write_text('modified\n')
+                else:
+                    (root / ('new' if change == 'untracked' else 'source')).write_text('modified\n')
+                    if change == 'staged':
+                        git('add', 'source')
+                expected = '1.20.0-dirty-' + git('rev-parse', '--short=12', 'HEAD')
+                self.assertEqual(deploy.resolve_version(None, {}), expected)
+                self.assertEqual(deploy.resolve_version(VERSION, {}), VERSION)
+
+    def test_automatic_suffix_is_refreshed_and_removed_on_clean_release(self):
+        with version_checkout() as (root, git):
+            cached = {'BUILD_VERSION': '1.20.0-dirty-012345abcdef'}
+            self.assertEqual(deploy.resolve_version(None, cached), '1.20.0')
+            (root / 'source').write_text('modified\n')
+            self.assertEqual(deploy.resolve_version(None, cached),
+                             '1.20.0-dirty-' + git('rev-parse', '--short=12', 'HEAD'))
+
+    def test_untagged_checkout_requires_base_version(self):
+        with version_checkout(None) as (_, git):
+            with self.assertRaisesRegex(deploy.DeployError, 'Supply --version'):
+                deploy.resolve_version(None, {})
+            self.assertEqual(deploy.resolve_version(None, {'BUILD_VERSION': VERSION}),
+                             VERSION + '-dirty-' + git('rev-parse', '--short=12', 'HEAD'))
+
+    def test_skip_build_retains_artifact_version_without_using_current_git_state(self):
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(deploy, 'run') as run:
+            for version in (VERSION, VERSION + '-dirty-012345abcdef'):
+                self.assertEqual(deploy.resolve_version(None, {'BUILD_VERSION': version}, skip_build=True), version)
+            with self.assertRaisesRegex(deploy.DeployError, 'existing build version'):
+                deploy.resolve_version(None, {}, skip_build=True)
+            run.assert_not_called()
 
     def test_cached_toolchain_and_cuda_are_preserved(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -382,6 +462,24 @@ class NativePackageTests(unittest.TestCase):
         for recipe in ('depends=("$(id)")', 'depends=("${extra}")', ''):
             with self.assertRaises(deploy.DeployError):
                 deploy.package_array(recipe, 'depends')
+
+    def test_dirty_version_survives_native_packaging(self):
+        version = VERSION + '-dirty-012345abcdef'
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.dict(globals(), VERSION=version):
+            base = Path(temporary)
+            candidate = base / 'candidate.tar.gz'
+            with package() as fixture, tarfile.open(candidate, 'w:gz') as output:
+                for member in fixture:
+                    output.addfile(member, fixture.extractfile(member) if member.isfile() else None)
+            destination = base / 'candidate.pkg.tar.gz'
+            deploy.build_native_package(candidate, destination, version)
+            with tarfile.open(destination) as result:
+                self.assertIn('pkgver = 1.19.0.beta.5.dirty.012345abcdef-1\n',
+                              result.extractfile('.PKGINFO').read().decode())
+                self.assertEqual(result.getmember('usr/bin/vibepollo').linkname, f'vibepollo-{version}')
+            if deploy.shutil.which('pacman'):
+                self.assertEqual(deploy.run('pacman', '-Qp', '--', destination, stderr=subprocess.PIPE).stdout.strip(),
+                                 'vibepollo ' + deploy.arch_package_version(version))
 
     def test_package_phase_does_not_require_existing_account(self):
         with tempfile.TemporaryDirectory() as temporary:

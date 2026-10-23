@@ -21,6 +21,10 @@ using namespace std::literals;
 
 namespace platf {
 
+  namespace touch {
+    struct worker_t;
+  }
+
   inline std::string inputtino_name_for_seat(std::string_view base_name) {
     auto seat_id = inputtino_seat::get_target_seat();
     if (seat_id.empty() || seat_id == "seat0") {
@@ -111,6 +115,8 @@ namespace platf {
     // for each client.
     inputtino::Result<inputtino::TouchScreen> touch;
     inputtino::Result<inputtino::PenTablet> pen;
+    // Destroy/join the touch worker before its uinput handle disappears.
+    std::shared_ptr<touch::worker_t> touch_worker;
   };
 
   inline float deg2rad(float degree) {

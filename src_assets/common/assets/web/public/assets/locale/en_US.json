@@ -587,7 +587,7 @@
     "dd_refresh_rate_option_auto": "Use FPS value provided by the client (default)",
     "dd_refresh_rate_option_disabled": "Do not change refresh rate",
     "dd_refresh_rate_option_manual": "Use manually entered refresh rate",
-    "dd_refresh_rate_option_manual_desc": "⚠️ Enforcing a manual refresh rate forces the host to this refresh for all streams, overriding any refresh rules below and the automatic 4× refresh applied to virtual displays.",
+    "dd_refresh_rate_option_manual_desc": "Uses the manual refresh rate instead of refresh remapping rules and automatic virtual-display refresh. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override takes priority over this value.",
     "dd_resolution_option": "Resolution",
     "dd_resolution_option_auto": "Use resolution provided by the client (default)",
     "dd_resolution_option_disabled": "Do not change resolution",
@@ -883,7 +883,7 @@
     "virtual_display_driver_status_uninitialized": "Not initialized",
     "virtual_display_driver_status_version_incompatible": "Driver version mismatch",
     "virtual_display_driver_status_watchdog_failed": "Watchdog failed",
-    "dd_resolution_option_manual_desc": "⚠️ Enforcing a manual resolution disables all display overrides below. The host will always be set to this resolution regardless of any override rules.",
+    "dd_resolution_option_manual_desc": "Uses the manual resolution instead of resolution remapping rules. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override and launch resolution scaling take priority over this value.",
     "vigem_missing_title": "Virtual Gamepad Driver (ViGEm) not installed",
     "vigem_missing_desc": "Vibepollo requires the ViGEmBus driver to emulate controllers on Windows. It is no longer bundled. Please download and install it manually:",
     "vigem_install": "Download ViGEmBus",
@@ -1045,7 +1045,7 @@
     "dd_validation_mixed_final_required": "For mixed mappings, specify at least one Final field.",
     "dd_validation_resolution": "Invalid format. Use WIDTHxHEIGHT, e.g., {example} (x or ×).",
     "dd_validation_refresh_rate": "Invalid refresh rate. Use a positive number, e.g., 60 or 59.94.",
-    "dd_manual_enforcement_notice": "Overrides below are disabled while manual resolution or refresh rate is enforced. Manual refresh rates are applied forcefully and override game-aware refresh switching on virtual displays."
+    "dd_manual_enforcement_notice": "Manual values take priority over remapping for that value. Values set to Match the client keep their rules unless a client's Display mode override is active; that override bypasses all remapping and takes priority over manual values."
   },
   "index": {
     "description": "Vibepollo is a self-hosted game stream host for Moonlight.",
@@ -1534,7 +1534,8 @@
     "app_fallback_name": "App {id}",
     "stats_fps_bitrate": "FPS: {fps} | Bitrate: {bitrate}",
     "stats_latency_dropped": "Latency: {latency} | Dropped: {dropped}",
-    "stats_codec_size": "Codec: {codec} | Size: {size}"
+    "stats_codec_size": "Codec: {codec} | Size: {size}",
+    "touch_input_hint": "Touch: tap to left-click; slide one finger to drag. Extra fingers are ignored."
   },
   "clients": {
     "nav": "Clients",

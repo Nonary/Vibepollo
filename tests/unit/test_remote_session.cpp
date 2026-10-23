@@ -1,3 +1,4 @@
+#include "src/legacy_generated_app_identities.h"
 #include "../tests_common.h"
 
 #include "src/jthread.h"
@@ -22,8 +23,8 @@ TEST(RemoteSession, SyntheticIdsAndLegacyIdsNeverFallThrough) {
   const auto running_id = remote_session::synthetic_running_game_id(42);
   EXPECT_NE(running_id, 42);
   EXPECT_EQ(remote_session::identify(running_id), remote_session::control_e::none);
-  EXPECT_EQ(remote_session::identify(running_id, {}, 42), remote_session::control_e::running_game);
-  EXPECT_EQ(remote_session::identify(running_id, {}, 43), remote_session::control_e::none);
+  EXPECT_EQ(remote_session::identify(running_id, {}, 42, {}), remote_session::control_e::running_game);
+  EXPECT_EQ(remote_session::identify(running_id, {}, 43, {}), remote_session::control_e::none);
   EXPECT_EQ(remote_session::identify(11), remote_session::control_e::none);
   EXPECT_TRUE(remote_session::reserved_name("remote monitor"));
   EXPECT_TRUE(remote_session::reserved_name("    Remote Monitor"));
@@ -109,6 +110,38 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   ASSERT_EQ(game_owner_monitor.catalogue.size(), 2);
   EXPECT_EQ(game_owner_monitor.catalogue[0].id, remote_session::resume_id);
   EXPECT_EQ(game_owner_monitor.catalogue[1].id, remote_session::disconnect_monitor_id);
+}
+
+TEST(RemoteSession, InputTileSurvivesTeardownForBothGameOwnersAndSecondaryClients) {
+  for (const auto &uuid : {"owner", "secondary"}) {
+    for (const bool game_running : {false, true}) {
+      const auto active_game = game_running ? game() : remote_session::game_t {};
+      const auto before_cleanup = remote_session::project(caller(uuid), active_game, {.role = remote_session::role_e::input}, {}, true);
+      const auto after_cleanup = remote_session::project(caller(uuid), active_game, {}, {}, false);
+      const auto input_tile = [](const auto &catalogue) {
+        return std::find_if(catalogue.begin(), catalogue.end(), [](const auto &app) {
+          return remote_session::identify(app.id, app.uuid) == remote_session::control_e::input;
+        });
+      };
+      const auto before = input_tile(before_cleanup.catalogue);
+      const auto after = input_tile(after_cleanup.catalogue);
+      ASSERT_NE(before, before_cleanup.catalogue.end());
+      ASSERT_NE(after, after_cleanup.catalogue.end());
+      EXPECT_EQ(before->id, after->id);
+      EXPECT_EQ(before->uuid, after->uuid);
+    }
+  }
+}
+
+TEST(RemoteSession, InputRelaunchKeepsLaunchPermissionAndRoleIsolation) {
+  const remote_session::owner_t input_owner {.role = remote_session::role_e::input};
+  const auto retry = remote_session::dispatch(caller("input"), {}, input_owner, remote_session::control_e::input);
+  EXPECT_TRUE(retry.allowed);
+  EXPECT_EQ(retry.permission, remote_session::permission_e::launch);
+  EXPECT_FALSE(retry.resume);
+  EXPECT_FALSE(remote_session::dispatch(caller("input", true, false), {}, input_owner, remote_session::control_e::input).allowed);
+  EXPECT_FALSE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::input).allowed);
+  EXPECT_FALSE(remote_session::dispatch(caller("input"), {}, input_owner, remote_session::control_e::monitor).allowed);
 }
 
 TEST(RemoteSession, ConfiguredRemoteMarkersCannotShadowSyntheticControls) {
@@ -260,7 +293,7 @@ TEST(RemoteSession, PrioritizedIdentitiesPreserveActionsAndArtwork) {
   const auto other = caller("other");
   const auto projection = remote_session::project(other, active_game, {}, {}, true);
   for (const auto &app : projection.catalogue) {
-    const auto control = remote_session::identify(app.id, {}, active_game.app.id);
+    const auto control = remote_session::identify(app.id, {}, active_game.app.id, {});
     ASSERT_NE(control, remote_session::control_e::none);
     EXPECT_EQ(control, remote_session::identify(0, app.uuid));
     if (control == remote_session::control_e::running_game) continue;
@@ -338,6 +371,8 @@ TEST(RemoteSession, SecondaryGameTransportJoinsActiveOrRetainedOutput) {
   EXPECT_TRUE(remote_session::joins_existing_game_output(remote_session::role_e::game, true));
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::game, false));
   EXPECT_TRUE(remote_session::joins_existing_game_output(remote_session::role_e::game, false, true));
+  EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::game, false, true, true));
+  EXPECT_TRUE(remote_session::joins_existing_game_output(remote_session::role_e::game, true, true, true));
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::monitor, true));
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::monitor, false, true));
   EXPECT_FALSE(remote_session::joins_existing_game_output(remote_session::role_e::input, true));
@@ -580,4 +615,96 @@ TEST(RemoteSession, PendingRegistrySupportsEightClientsAndKeepsItsBound) {
   EXPECT_TRUE(registry.match_encrypted("7", "16", std::chrono::steady_clock::now()));
   registry.erase(16);
   EXPECT_TRUE(registry.add({.launch_id = 17, .client_uuid = "replacement", .crypto_binding = "new", .encrypted = true, .expires_at = expiry}));
+}
+
+TEST(RemoteSession, ExplicitProfilesKeepDistinctCatalogueIdentitiesBesideBuiltinMonitor) {
+  const std::vector<remote_session::app_t> configured {
+    {41, "a1234567-1234-4234-8234-123456789abc", "Remote Monitor", false, true},
+    {42, "b1234567-1234-4234-8234-123456789abc", "Remote Monitor", false, true},
+    {43, "ordinary", "Remote Monitor", false, false},
+  };
+  const auto catalogue = remote_session::project(caller("client"), {}, {}, configured, false);
+  ASSERT_EQ(catalogue.catalogue.size(), 4);
+  EXPECT_EQ(catalogue.catalogue[0].uuid, "a1234567-1234-4234-8234-123456789abc");
+  EXPECT_EQ(catalogue.catalogue[1].uuid, "b1234567-1234-4234-8234-123456789abc");
+  EXPECT_EQ(catalogue.catalogue[0].id, 41);
+  EXPECT_EQ(catalogue.catalogue[1].id, 42);
+  EXPECT_EQ(catalogue.catalogue.back().id, remote_session::monitor_id);
+  EXPECT_EQ(remote_session::identify(41, "a1234567-1234-4234-8234-123456789abc"), remote_session::control_e::none);
+  // A retained owner still sees exactly the generic Resume/Disconnect pair.
+  const auto retained = remote_session::project(caller("client"), {}, {.role = remote_session::role_e::monitor, .retained = true}, configured, true);
+  ASSERT_EQ(retained.catalogue.size(), 2);
+  EXPECT_EQ(retained.catalogue[0].id, remote_session::resume_id);
+  EXPECT_EQ(retained.catalogue[1].id, remote_session::disconnect_monitor_id);
+}
+
+TEST(RemoteSession, RetainedExplicitProfileKeepsAcceptedOverridesAfterEditOrDeletion) {
+  const remote_session::monitor_profile_t first {"profile-a", {{"remote_monitor_mute_audio", "true"}}};
+  const auto retained = remote_session::select_monitor_profile(first, std::nullopt);
+  ASSERT_TRUE(retained);
+  const auto edited = remote_session::select_monitor_profile({"profile-a", {{"remote_monitor_mute_audio", "false"}}}, retained);
+  ASSERT_TRUE(edited);
+  EXPECT_EQ(edited->app_overrides, first.app_overrides);
+  const auto deleted = remote_session::select_monitor_profile({"profile-a", {}}, retained);
+  ASSERT_TRUE(deleted);
+  EXPECT_EQ(deleted->uuid, first.uuid);
+  EXPECT_EQ(deleted->app_overrides, first.app_overrides);
+  // No retained state is mutated through the returned copy.
+  auto copy = *deleted;
+  copy.app_overrides.clear();
+  EXPECT_EQ(retained->app_overrides, first.app_overrides);
+}
+
+TEST(RemoteSession, DifferentProfileOrBuiltinCannotReplaceRetainedProfile) {
+  const std::optional<remote_session::monitor_profile_t> retained {{"profile-a", {{"key", "old"}}}};
+  EXPECT_FALSE(remote_session::select_monitor_profile({"profile-b", {{"key", "new"}}}, retained));
+  EXPECT_FALSE(remote_session::select_monitor_profile({remote_session::synthetic(remote_session::control_e::monitor).uuid, {}}, retained));
+  EXPECT_EQ(retained->uuid, "profile-a");
+  EXPECT_EQ(retained->app_overrides.at("key"), "old");
+  // Disconnect/unpair erases the owner; a new acceptance reads current config.
+  const auto after_disconnect = remote_session::select_monitor_profile({"profile-b", {{"key", "new"}}}, std::nullopt);
+  ASSERT_TRUE(after_disconnect);
+  EXPECT_EQ(after_disconnect->uuid, "profile-b");
+  EXPECT_EQ(after_disconnect->app_overrides.at("key"), "new");
+}
+
+TEST(RemoteSession, BuiltinMonitorKeepsLiveOverrideSemanticsAndRejectsProfileReplacement) {
+  const auto builtin = remote_session::synthetic(remote_session::control_e::monitor).uuid;
+  const std::optional<remote_session::monitor_profile_t> retained {{builtin, {{"key", "old"}}}};
+  const auto updated = remote_session::select_monitor_profile({builtin, {{"key", "current"}}}, retained);
+  ASSERT_TRUE(updated);
+  EXPECT_EQ(updated->app_overrides.at("key"), "current");
+  EXPECT_FALSE(remote_session::select_monitor_profile({"profile-a", {}}, retained));
+  EXPECT_FALSE(remote_session::select_monitor_profile({"", {}}, std::nullopt));
+}
+
+TEST(RemoteSession, ContextualRunningIdentityAvoidsConfiguredCurrentAliasesAndHiddenRows) {
+  const auto active_game = game();
+  const auto previous_id = remote_session::synthetic_running_game_id(active_game.app.id);
+  remote_session::app_t current {previous_id, "c1234567-1234-4234-8234-123456789abc", "Profile", false, true};
+  remote_session::app_t alias {77, "d1234567-1234-4234-8234-123456789abc", "Alias", false, true, {std::to_string(previous_id + 1)}};
+  remote_session::app_t hidden {previous_id + 2, "hidden", "Hidden", false, false, {}, false};
+  const std::vector<remote_session::app_t> configured {active_game.app, current, alias, hidden};
+  const auto projected = remote_session::project(caller("other"), active_game, {}, configured, true);
+  ASSERT_EQ(projected.catalogue.front().id, previous_id + 3);
+  EXPECT_EQ(remote_session::identify(projected.catalogue.front().id, {}, active_game.app.id, configured), remote_session::control_e::running_game);
+  EXPECT_EQ(remote_session::identify(previous_id, {}, active_game.app.id, configured), remote_session::control_e::none);
+  EXPECT_EQ(remote_session::identify(previous_id + 1, {}, active_game.app.id, configured), remote_session::control_e::none);
+  EXPECT_EQ(remote_session::identify(previous_id + 2, {}, active_game.app.id, configured), remote_session::control_e::none);
+  EXPECT_EQ(remote_session::identify(projected.catalogue.front().id, current.uuid, active_game.app.id, configured), remote_session::control_e::none);
+  EXPECT_EQ(remote_session::identify(previous_id, remote_session::synthetic_uuid(remote_session::control_e::running_game), active_game.app.id, configured), remote_session::control_e::running_game);
+  EXPECT_EQ(std::count_if(projected.catalogue.begin(), projected.catalogue.end(), [&](const auto &row) {return row.id == previous_id;}), 1);
+  EXPECT_EQ(std::count_if(projected.catalogue.begin(), projected.catalogue.end(), [](const auto &row) {return row.uuid == "hidden";}), 0);
+  // Existing unambiguous running tiles and fixed cached controls remain stable.
+  EXPECT_EQ(remote_session::synthetic_running_game_id(active_game.app.id, {active_game.app}), previous_id);
+  for (int id = 2147483500; id < 2147483610; ++id) {
+    EXPECT_EQ(remote_session::configured_app_id(id), remote_session::identify(id) == remote_session::control_e::none);
+  }
+}
+
+TEST(RemoteSession, MarkedProfilesRejectLegacyGeneratedUUIDsWithoutChangingOrdinaryRouting) {
+  for (const auto uuid : proc::legacy_generated_app_uuids) {
+    EXPECT_FALSE(remote_session::monitor_profile_uuid_error(uuid, {}).empty());
+    EXPECT_EQ(remote_session::identify(0, uuid), remote_session::control_e::none);
+  }
 }

@@ -33,7 +33,7 @@ class DailyVersionTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
-    def emit(self, name, elapsed, version='2.0.0-daily.d20261011+fixture', patch=0, source=None):
+    def emit(self, name, elapsed, version='2.0.0-nightly.d20261011.aaaaaaaaaaaa', patch=0, source=None):
         output = self.root / (name + '.h')
         result = subprocess.run(['cmake', f'-DOUTPUT_FILE={output}', f'-DSOURCE_DIR={source or self.root}',
                                  '-DPROJECT_VERSION_MAJOR=2', '-DPROJECT_VERSION_MINOR=0', f'-DPROJECT_VERSION_PATCH={patch}',
@@ -54,21 +54,21 @@ class DailyVersionTests(unittest.TestCase):
         self.assertIn('RC_VERSION_REVISION 6', output.read_text())
 
     def test_new_head_and_following_dates_keep_release_anchor(self):
-        for name, elapsed, version, expected in [('today', 601, '2.0.0-daily.d20261011+first', 6),
-                                                 ('tomorrow', 86401, '2.0.0-daily.d20261012+second', 721)]:
+        for name, elapsed, version, expected in [('today', 601, '2.0.0-nightly.d20261011.aaaaaaaaaaaa', 6),
+                                                 ('tomorrow', 86401, '2.0.0-nightly.d20261012.bbbbbbbbbbbb', 721)]:
             result, output = self.emit(name, elapsed, version)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn(f'anchor={self.anchor}', result.stdout)
             self.assertEqual(int(re.search(r'RC_VERSION_REVISION (\d+)', output.read_text())[1]), expected)
 
     def test_post_stable_patch_uses_previous_release_anchor(self):
-        result, output = self.emit('nextpatch', 601, '2.0.1-daily.d20261011.2+fixture', patch=1)
+        result, output = self.emit('nextpatch', 601, '2.0.1-nightly.d20261011.aaaaaaaaaaaa', patch=1)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(f'anchor={self.anchor}', result.stdout)
         self.assertIn('RC_VERSION_BUILD 190', output.read_text())
 
     def test_missing_matching_stable_anchor_fails_closed(self):
-        result, _ = self.emit('missing', 601, '2.0.2-daily.d20261011+fixture', patch=2)
+        result, _ = self.emit('missing', 601, '2.0.2-nightly.d20261011.aaaaaaaaaaaa', patch=2)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('requires a reachable', ' '.join(result.stderr.split()))
 
