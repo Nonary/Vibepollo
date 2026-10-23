@@ -26,23 +26,23 @@ trap {
 # DRIVER_INSTALL_SAFETY_BEGIN
 # Kept inline so pinned producer packages do not need a new runtime file.
 function ConvertTo-DriverComponentVersion {
-    param([string]$Value)
-    if ($Value -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "Unknown driver component version: '$Value'. Driver unchanged." }
+    param([string]$Value, [string]$Source = 'driver metadata')
+    if ($Value -notmatch '^\d+\.\d+\.\d+\.\d+$') { throw "Unknown driver component version from ${Source}: '$Value'. Driver unchanged." }
     foreach ($part in $Value.Split('.')) {
-        if ([uint64]$part -gt 65535) { throw "Invalid driver component version: '$Value'. Driver unchanged." }
+        if ([uint64]$part -gt 65535) { throw "Invalid driver component version from ${Source}: '$Value'. Driver unchanged." }
     }
     return [version]$Value
 }
 
 function Get-InfComponentVersion {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param([Parameter(Mandatory = $true)][string]$Path, [string]$Source = 'INF')
     $inVersion = $false
     $versions = @()
     foreach ($line in (Get-Content -LiteralPath $Path -ErrorAction Stop)) {
         $text = ($line -split ';', 2)[0].Trim()
         if ($text -match '^\[(.+)\]$') { $inVersion = $Matches[1] -ieq 'Version'; continue }
         if ($inVersion -and $text -match '^DriverVer\s*=\s*[^,]+,\s*(\S+)\s*$') {
-            $versions += ConvertTo-DriverComponentVersion $Matches[1]
+            $versions += ConvertTo-DriverComponentVersion $Matches[1] -Source $Source
         }
     }
     if ($versions.Count -ne 1) { throw "Missing or ambiguous INF DriverVer: $Path. Driver unchanged." }
@@ -101,22 +101,31 @@ function Get-DriverInstallSafetyInventory {
     $requestBase64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($requestJson))
     $queryScript = @'
 $ErrorActionPreference = 'Stop'
+$clock = [Diagnostics.Stopwatch]::StartNew()
+function Write-InventoryStage([string]$Stage) {
+    [Console]::Out.WriteLine('DRIVER_INSTALL_SAFETY_STAGE:' + $Stage + ':' + $clock.ElapsedMilliseconds)
+}
+Write-InventoryStage 'started'
 try {
     $requestJson = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('__REQUEST__'))
     $request = ConvertFrom-Json -InputObject $requestJson -ErrorAction Stop
     # These custom display packages cannot be inbox Windows drivers. Including
     # inbox packages makes this bounded query spend most of its budget on DISM.
+    Write-InventoryStage 'packages-start'
     $packages = @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
         [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq [string]$request.InfName
     } | ForEach-Object {
         [pscustomobject]@{ OriginalFileName = [string]$_.OriginalFileName; Driver = [string]$_.Driver }
     })
+    Write-InventoryStage 'packages-done'
+    Write-InventoryStage 'devices-start'
     $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
         ([string]$_.DeviceID).StartsWith([string]$request.HardwareId, [StringComparison]::OrdinalIgnoreCase) -or
         ([string]$_.HardwareID).Equals([string]$request.HardwareId, [StringComparison]::OrdinalIgnoreCase)
     } | ForEach-Object {
         [pscustomobject]@{ DeviceID = [string]$_.DeviceID; HardwareID = [string]$_.HardwareID; DriverVersion = [string]$_.DriverVersion }
     })
+    Write-InventoryStage 'devices-done'
     $inventory = [pscustomobject]@{ Packages = @($packages); Devices = @($devices) }
     $json = ConvertTo-Json -InputObject $inventory -Compress -Depth 5
     $encodedJson = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($json))
@@ -141,7 +150,7 @@ function Test-SafeDriverInstall {
         [string]$WarningMarker = 'VIRTUAL_DISPLAY_DRIVER_WARNING',
         [bool]$LocalTestPackage = $false
     )
-    $target = Get-InfComponentVersion $InfPath
+    $target = Get-InfComponentVersion $InfPath -Source 'bundled INF'
     $infName = [IO.Path]::GetFileName($InfPath)
     # Both queries must succeed. An empty successful query means missing;
     # errors, missing active versions, and unreadable store INFs mean unknown.
@@ -151,7 +160,7 @@ function Test-SafeDriverInstall {
     $installed = @()
     foreach ($device in $devices) {
         # CIM reports the active INF's numeric DriverVersion (not DriverDate).
-        $installed += ConvertTo-DriverComponentVersion ([string]$device.DriverVersion)
+        $installed += ConvertTo-DriverComponentVersion ([string]$device.DriverVersion) -Source 'active device'
     }
     foreach ($package in $packages) {
         $path = [string]$package.OriginalFileName
@@ -161,7 +170,7 @@ function Test-SafeDriverInstall {
             }
             $path = Join-Path (Join-Path $env:windir 'INF') ([string]$package.Driver)
         }
-        $installed += Get-InfComponentVersion $path
+        $installed += Get-InfComponentVersion $path -Source 'retained INF'
     }
     if (@($installed | Where-Object { $_ -ge $target }).Count -gt 0) {
         Write-Host "Driver component $target skipped: an equal or newer active/Driver Store component exists; installed driver retained."
@@ -567,7 +576,12 @@ function Invoke-DriverInstallSafetyCommand {
     ) -WorkingDirectory $scriptDir -TimeoutSeconds $TimeoutSeconds
 
     if ($result.TimedOut) {
-        throw "Driver safety inventory timed out after $TimeoutSeconds seconds; driver unchanged."
+        # Emit only bounded stage records, not arbitrary provider output or paths.
+        $stages = @(([string]$result.StdOut) -split '\r?\n' | Where-Object {
+            $_ -cmatch '^DRIVER_INSTALL_SAFETY_STAGE:(started|packages-start|packages-done|devices-start|devices-done):[0-9]{1,12}$'
+        } | Select-Object -Last 5) -join '; '
+        if (-not $stages) { $stages = 'No inventory stage reported.' }
+        throw "Driver safety inventory timed out after $TimeoutSeconds seconds; driver unchanged. $stages"
     }
     if ($result.ExitCode -ne 0) {
         $detail = ([string]$result.StdErr).Trim()
