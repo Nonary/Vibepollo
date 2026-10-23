@@ -272,7 +272,6 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
-        <a class="sidebar__legacy" href="/" :title="t('ui.shell.classic_interface')">
         <a class="sidebar__legacy" href="/" :title="t('ui.shell.classic_interface')" @click="selectLegacyWebUi">
           <UiIcon name="external-link" :size="16" />
           <span class="sidebar__label">{{ t('ui.shell.classic_interface') }}</span>
