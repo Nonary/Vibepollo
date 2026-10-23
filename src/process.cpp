@@ -3378,6 +3378,10 @@ namespace proc {
           BOOST_LOG(info) << "Virtual display cleanup completed after app termination.";
         }
       } else {
+        // The display stays for the shared owner, but this session's recovery
+        // monitor would re-apply the ended session's (exclusive) layout if the
+        // display flickers, blanking the physical monitors after disconnect.
+        VDISPLAY::cancel_virtual_display_recovery_monitor(_virtual_display_guid);
         BOOST_LOG(info) << "Deferring virtual display removal after app termination because shared stream runtime is still owned.";
       }
       std::memset(&_virtual_display_guid, 0, sizeof(_virtual_display_guid));
