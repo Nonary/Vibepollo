@@ -2,8 +2,8 @@
 
 The Windows API and driver boundary is replaced by a tiny in-memory transport.
 The recovery orchestration, transport-health helper, transport replacement,
-ping-thread startup, provenance comparison, and reclaimed-display policy are
-compiled from their production definitions.
+ping-thread startup, catalog preflight, provenance comparison, and reclaimed-display
+policy are compiled from their production definitions.
 """
 
 import pathlib
@@ -65,6 +65,14 @@ production_provenance_match = extract_function(
 production_ping_start = extract_function(
     SOURCE,
     "static bool start_ping_thread_impl(\n    std::function<void()> failCb,",
+)
+production_catalog_preflight = "\n".join(
+    extract_function(SOURCE, signature)
+    for signature in (
+        "bool allowsSharedCatalogCapture() {",
+        "bool supportsRequestedResolutionCatalog() {",
+        "std::optional<bool> virtualDisplayCatalogMatches(const GUID &guid, uint32_t width, uint32_t height, bool requested_only) {",
+    )
 )
 
 
@@ -214,6 +222,28 @@ namespace VDISPLAY_SUNSHINE {
   int retained_release_count = 0;
   int create_count = 0;
   bool last_requested_resolution_only = false;
+  int catalog_queries = 0;
+  int adapter_recoveries = 0;
+  bool shared_catalog_allowed = true;
+
+  namespace VDISPLAY::catalog_policy {
+    enum class inspection { unknown, absent, matches, replace_owned };
+    inspection retained_catalog = inspection::matches;
+    bool supported(sunshine_driver::ControlClient &) {
+      ++catalog_queries;
+      ++requested_resolution_catalog_checks;
+      return requested_resolution_catalog_supported;
+    }
+    bool allows_shared_capture(sunshine_driver::ControlClient &) {
+      ++catalog_queries;
+      return shared_catalog_allowed;
+    }
+    inspection inspect(sunshine_driver::ControlClient &, std::uint64_t, std::uint32_t, std::uint32_t, bool) {
+      ++catalog_queries;
+      return retained_catalog;
+    }
+  }
+  std::uint64_t client_uuid_to_virtual_display_id(const GUID &guid) { return guid; }
 
   struct LuidProvenance {
     std::weak_ptr<Transport> transport;
@@ -262,7 +292,8 @@ namespace VDISPLAY_SUNSHINE {
   struct LeaseTracker { std::vector<Lease> all() const { return {}; } };
   LeaseTracker &driver_lease_tracker() { static LeaseTracker tracker; return tracker; }
 
-  DRIVER_STATUS open_vdisplay_device_with_status(std::stop_token, OpenRecoveryBehavior) {
+  DRIVER_STATUS open_vdisplay_device_with_status(std::stop_token, OpenRecoveryBehavior behavior) {
+    if (behavior == OpenRecoveryBehavior::recover_driver) ++adapter_recoveries;
     if (!open_succeeds) {
       proc::setVDisplayDriverStatus(DRIVER_STATUS::FAILED, DRIVER_SELECTION::VIBESHINE);
       return DRIVER_STATUS::FAILED;
@@ -295,10 +326,7 @@ namespace VDISPLAY_SUNSHINE {
     std::string describe_target() const { return "test target"; }
     void update_identifiers(const std::optional<std::wstring> &, const std::optional<std::string> &, const std::optional<std::wstring> &) { ++identifier_updates; }
   };
-  bool supportsRequestedResolutionCatalog() {
-    ++requested_resolution_catalog_checks;
-    return requested_resolution_catalog_supported;
-  }
+  bool supportsRequestedResolutionCatalog();
   bool release_retained_ensure_display_for_stream(GUID, const char *, std::stop_token token) {
     ++retained_release_count;
     return !token.stop_requested();
@@ -343,7 +371,7 @@ namespace VDISPLAY_SUNSHINE {
   }
 ''' + production_ensure_declaration + r'''
   static bool start_ping_thread_impl(std::function<void()>, std::stop_token, OpenRecoveryBehavior);
-''' + production_attempt + production_ensure + production_luid_equal + production_provenance_match + production_ping_start + r'''
+''' + production_attempt + production_ensure + production_catalog_preflight + production_luid_equal + production_provenance_match + production_ping_start + r'''
 
   void reset_fixture() {
     stop_watchdog_thread();
@@ -366,6 +394,10 @@ namespace VDISPLAY_SUNSHINE {
     retained_release_count = 0;
     create_count = 0;
     last_requested_resolution_only = false;
+    catalog_queries = 0;
+    adapter_recoveries = 0;
+    shared_catalog_allowed = true;
+    VDISPLAY::catalog_policy::retained_catalog = VDISPLAY::catalog_policy::inspection::matches;
     provenance_matches = false;
     display_recreated = false;
     proc::setVDisplayDriverStatus(DRIVER_STATUS::UNKNOWN, DRIVER_SELECTION::UNKNOWN);
@@ -513,6 +545,59 @@ namespace VDISPLAY_SUNSHINE {
     check(last_requested_resolution_only, "requested-resolution-only policy reaches production create boundary");
   }
 
+  void test_catalog_preflight_opens_transport_on_first_launch() {
+    // Startup probing can use a physical display and never open the VDD.
+    // Exercise all three production entry points with that initial state.
+    for (int query = 0; query < 3; ++query) {
+      reset_fixture();
+      if (query == 0) check(allowsSharedCatalogCapture(), "cold shared-capture preflight queries the producer");
+      if (query == 1) check(supportsRequestedResolutionCatalog(), "cold capability preflight queries the producer");
+      if (query == 2) check(virtualDisplayCatalogMatches(17, 1920, 1080, false) == true,
+                            "cold retained-catalog preflight queries the producer");
+      check(device_open_count == 1, "catalog preflight opens a missing transport once");
+      check(catalog_queries == 1, "catalog preflight reaches producer policy after opening");
+      check(adapter_recoveries == 0, "catalog inspection never requests adapter recovery");
+      check(create_count == 0 && retained_release_count == 0, "catalog inspection preserves existing displays");
+    }
+  }
+
+  void test_catalog_preflight_preserves_healthy_transport_and_denials() {
+    reset_fixture();
+    auto original = replace_control_transport(std::make_unique<Transport>(Transport {1, true, true, 0}));
+    seed_provenance(uuid_util::uuid_t {"17"}, original, LUID {7, 0});
+    shared_catalog_allowed = false;
+    requested_resolution_catalog_supported = false;
+    VDISPLAY::catalog_policy::retained_catalog = VDISPLAY::catalog_policy::inspection::unknown;
+    check(!allowsSharedCatalogCapture(), "private catalog still rejects a shared join");
+    check(!supportsRequestedResolutionCatalog(), "unsupported producer still rejects private catalog requests");
+    check(!virtualDisplayCatalogMatches(17, 1920, 1080, false).has_value(), "unknown producer catalog still rejects reuse");
+    check(control_transport_snapshot() == original && device_open_count == 0,
+          "catalog preflight retains the healthy transport");
+    check(render_adapter_request_provenance_matches(uuid_util::uuid_t {"17"}, "catalog fixture"),
+          "catalog preflight retains adapter provenance");
+    VDISPLAY::catalog_policy::retained_catalog = VDISPLAY::catalog_policy::inspection::absent;
+    check(virtualDisplayCatalogMatches(17, 1920, 1080, false) == false,
+          "absent display permits creation instead of becoming an unknown catalog");
+  }
+
+  void test_catalog_preflight_reopens_stale_transport_and_fails_closed() {
+    for (int query = 0; query < 3; ++query) {
+      for (int failure = 0; failure < 3; ++failure) {
+        reset_fixture();
+        auto stale = replace_control_transport(std::make_unique<Transport>(Transport {1, true, false, 0}));
+        open_succeeds = failure != 1;
+        opened_transport_responsive = failure != 2;
+        if (query == 0) check(allowsSharedCatalogCapture() == (failure == 0), "shared-capture preflight requires a responsive producer");
+        if (query == 1) check(supportsRequestedResolutionCatalog() == (failure == 0), "capability preflight requires a responsive producer");
+        if (query == 2) check(virtualDisplayCatalogMatches(17, 1920, 1080, false).has_value() == (failure == 0),
+                              "retained-catalog preflight requires a responsive producer");
+        check(stale->cancelled == 1, "catalog preflight retires stale transport I/O");
+        check(catalog_queries == (failure == 0 ? 1 : 0), "failed transport cannot authorize a catalog query");
+        check(adapter_recoveries == 0, "failed catalog preflight never requests adapter recovery");
+      }
+    }
+  }
+
   int run() {
     [[maybe_unused]] auto cleanup_fixture = util::fail_guard([] {
       stop_watchdog_thread();
@@ -529,6 +614,9 @@ namespace VDISPLAY_SUNSHINE {
     test_cancelled_recovery_does_not_open_transport();
     test_requested_resolution_only_recovery_fails_before_retained_probe_without_catalog();
     test_requested_resolution_only_recovery_propagates_catalog_policy();
+    test_catalog_preflight_opens_transport_on_first_launch();
+    test_catalog_preflight_preserves_healthy_transport_and_denials();
+    test_catalog_preflight_reopens_stale_transport_and_fails_closed();
     std::cout << "Recovery transport fixture failures=" << failures << '\n';
     return failures == 0 ? 0 : 1;
   }
