@@ -11,10 +11,6 @@ on:
         description: Publish after validation (also requires DAILY_RELEASE_ENABLED)
         type: boolean
         default: false
-      upstream_tag:
-        description: Exact reserved Vibeshine nightly tag for a reviewed migration snapshot
-        type: string
-        default: ''
 
 # Both schedule and manual dispatch remain inert until explicitly activated.
 concurrency:
@@ -54,8 +50,6 @@ jobs:
           DAILY_PRIMARY_BRANCH: ${{ github.event.repository.default_branch }}
           DAILY_RELEASE_SOURCE_BRANCH: ${{ vars.DAILY_RELEASE_SOURCE_BRANCH }}
           DAILY_RELEASE_SOURCE_CONFIRMED: ${{ vars.DAILY_RELEASE_SOURCE_CONFIRMED }}
-          DAILY_RELEASE_MIGRATION_CONFIRMED: ${{ vars.DAILY_RELEASE_MIGRATION_CONFIRMED }}
-          DAILY_RELEASE_UPSTREAM_TAG: ${{ inputs.upstream_tag }}
         run: python scripts/daily_release.py resolve
       - name: Reserve exact qualified source identity before builds
         if: steps.identity.outputs.should_build == 'true' && (github.event_name == 'schedule' || inputs.publish == true)
