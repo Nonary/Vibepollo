@@ -30,7 +30,6 @@
               </n-button>
             </a>
           </RouterLink>
-          <a href="/v2/">
           <a href="/v2/" @click="selectV2WebUi">
             <n-button tag="span" type="default" strong class="w-full justify-center sm:w-auto">
               <i class="fas fa-arrow-right-arrow-left" />
