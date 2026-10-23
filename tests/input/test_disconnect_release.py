@@ -42,6 +42,8 @@ namespace platf {
     return alloc_result;
   }
 }
+// The forwarded attributes are not under test here; the fake gamepad_t keeps them as an int.
+void forward_steam_attributes(const gamepad_t &, int) {}
 int alloc_id(std::bitset<16> &mask) {
   for (int i = 0; i < 16; ++i) if (!mask[i]) { mask[i] = true; return i; }
   return -1;
@@ -350,7 +352,7 @@ int main(int argc, char **argv) {
     assert(platf::allocated_gamepads[2].globalIndex == first_host_id);
     assert(platf::allocated_gamepads[2].clientRelativeIndex == 0);
     disconnect(a);
-    assert(platf::freed_gamepads == std::vector<int>{first_host_id, first_host_id, second_host_id});
+    assert((platf::freed_gamepads == std::vector<int>{first_host_id, first_host_id, second_host_id}));
   } else if (test == "touch_pen_destroyed_while_context_retained") {
     a->client_context = std::make_unique<platf::client_input_t>();
     auto retained = a; disconnect(a);
