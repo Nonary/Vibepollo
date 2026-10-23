@@ -2,6 +2,7 @@
 #include "src/lutris_integration.h"
 #include "src/managed_app_focus.h"
 #include "managed_app_focus_hyprland.h"
+#include "managed_app_focus_step.h"
 #include "managed_app_focus_kwin.h"
 #include "src/managed_app_focus_candidates.h"
 #include "src/steam_integration.h"
@@ -258,31 +259,21 @@ int main(int argc, char **argv) {
       }
       pids = managed_app_focus::candidates({provider, id, directory}, *snapshot);
     }
-    const auto observed = apply(pids);
-    if (bound_compositor && !pids.empty() && observed.is_null() && !unavailable_reported) {
+    bool unavailable = false;
+    const bool confirmed = managed_app_focus::focus_step([&](const std::vector<std::string> &activate) {
+      if (cancelled) {
+        return nlohmann::json {};
+      }
+      auto result = apply(pids, activate);
+      unavailable = unavailable || (activate.empty() && result.is_null());
+      return result;
+    }, budget, pids, managed_app_focus::budget::clock::now());
+    if (bound_compositor && !pids.empty() && unavailable && !unavailable_reported) {
       report(LOG_WARNING, "the bound Hyprland IPC socket is unavailable");
       unavailable_reported = true;
     }
-    if (observed.is_object() && observed.contains("windows") && observed["windows"].is_array()) {
-      for (const auto &window : observed["windows"]) {
-        if (window.is_string()) {
-          budget.observe(window.get<std::string>(), managed_app_focus::budget::clock::now());
-        }
-      }
-      if (!cancelled && budget.can_focus(managed_app_focus::budget::clock::now()) && !observed["windows"].empty()) {
-        std::vector<std::string> allowed;
-        for (const auto &window : observed["windows"]) {
-          const auto identity = window.get<std::string>();
-          if (budget.can_focus(identity, managed_app_focus::budget::clock::now())) {
-            allowed.push_back(identity);
-          }
-        }
-        const auto applied = apply(pids, allowed);
-        if (!cancelled && applied.is_object() && applied.value("focused", false)) {
-          budget.confirmed();
-          report(LOG_INFO, "confirmed " + provider + ':' + id);
-        }
-      }
+    if (confirmed && !cancelled) {
+      report(LOG_INFO, "confirmed " + provider + ':' + id);
     }
     for (int i = 0; i < 10 && !cancelled; ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
