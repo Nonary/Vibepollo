@@ -329,6 +329,15 @@ namespace platf::dxgi::wgc_policy {
   }
 
   /**
+   * A new WGC frame may skip the scratch handoff and go straight into the
+   * shared texture only when no older frame is queued or mid-delivery;
+   * otherwise it would be published ahead of that older frame.
+   */
+  constexpr bool may_publish_directly(const bool stopping, const bool frame_pending, const bool frame_delivering) noexcept {
+    return !stopping && !frame_pending && !frame_delivering;
+  }
+
+  /**
    * How far an encoder reading the helper's shared texture directly has got:
    * the frame-record generation and the newest frame id it converted.
    */
