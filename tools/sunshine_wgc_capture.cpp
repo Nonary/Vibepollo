@@ -1788,7 +1788,8 @@ private:
     if (!platf::dxgi::wgc_policy::may_publish_directly(
           _delivery_stop || _shutting_down.load(std::memory_order_acquire),
           _pending_delivery_frame.has_value(),
-          frame_delivering)) {
+          frame_delivering
+        )) {
       return false;
     }
 

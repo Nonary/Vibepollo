@@ -5647,6 +5647,9 @@ namespace video {
 
           if (!placeholder_input) {
             bootstrap_state.real_frame_seen = true;
+            // Direct WGC input can convert a newer frame than the one claimed: the
+            // converted frame's stamps replace the claimed ones, and the pacing
+            // smoothing below starts from them.
             capture_timestamp = converted.frame_timestamp;
             host_processing_timestamp = converted.host_processing_timestamp;
             frame_timestamp = capture_timestamp;
