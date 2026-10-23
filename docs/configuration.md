@@ -292,6 +292,30 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### web_ui_preference
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            The web interface opened by the system tray's Open Vibepollo action.
+            Choosing V2 or Classic in the web interface saves this host-wide preference.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            legacy
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            web_ui_preference = v2
+            @endcode (allowed values: legacy, v2)</td>
+    </tr>
+</table>
+
 ### system_tray
 
 <table>

@@ -399,6 +399,24 @@ test('bulk unpair requires a confirmation and calls the existing endpoint', asyn
   await expect.poll(() => calls).toBe(1);
 });
 
+test('V2 switch to Classic persists the host UI preference', async ({ page }) => {
+  const patches = await host(page, 'windows');
+  // Intercept only the Classic landing URL, not the V2 application entrypoint.
+  await page.route('http://127.0.0.1:5173/', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: '<html><body>Classic UI test landing</body></html>',
+    });
+  });
+  await page.goto('/v2/');
+  const link = page.locator('.sidebar__legacy');
+  await expect(link).toHaveAttribute('href', '/');
+  await link.click();
+  await expect.poll(() => patches.find((patch) => patch.web_ui_preference === 'legacy')).toBeTruthy();
+  await expect.poll(() => new URL(page.url()).pathname).toBe('/');
+});
+
 test('Windows maintenance uses server-directed download markup', async ({ page }) => {
   await host(page, 'windows');
   await page.goto('/v2/maintenance');
