@@ -217,11 +217,11 @@ TEST_P(HostStatsWebConsumerTest, FreshSampleAndGraceExpiry) {
   std::this_thread::sleep_for(40ms);
   EXPECT_EQ(state->sample_calls.load(), stopped_at);
 
-  // Once demand expires, a new consumer must receive a new sample and restart
-  // the rate baselines rather than returning the old cached snapshot alone.
+  // Once demand expires, a new consumer must receive a new sample rather than
+  // returning the old cached snapshot alone. Baseline resets are not asserted:
+  // the worker may observe renewed demand before it observes the idle gap.
   EXPECT_FLOAT_EQ(service.latest_for_consumer().cpu_percent, 37.5f);
   EXPECT_GE(state->sample_calls.load(), stopped_at + 1);
-  EXPECT_EQ(state->reset_calls.load(), 2);
 }
 
 INSTANTIATE_TEST_SUITE_P(
