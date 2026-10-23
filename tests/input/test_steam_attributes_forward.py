@@ -98,14 +98,24 @@ constexpr int MAX_GAMEPADS = 16;
 namespace platf {
 @PLATF_TYPES@
   // The slot table and driver client vhf_gamepad_t::attributes() runs against.
-  struct slot_t { bool active {}; lvg::profile profile {}; std::uint16_t client_capabilities {}; };
+  struct slot_t {
+    bool active {}; lvg::profile profile {}; std::uint16_t client_capabilities {};
+    // The relay keeps the last attributes per slot for replay after a device-removal recovery.
+    std::optional<lvg::steam_controller_attributes> steam_attributes;
+  };
   struct driver_call_t { std::uint32_t controller_id; lvg::steam_controller_attributes attributes; };
   struct fake_client_t {
     DWORD status = ERROR_SUCCESS;
     std::vector<driver_call_t> calls;
     DWORD set_steam_controller_attributes(std::uint32_t id, const lvg::steam_controller_attributes &a) { calls.push_back({id, a}); return status; }
   };
-  struct impl_t { std::shared_mutex lifetime; std::array<slot_t, MAX_GAMEPADS> slots; fake_client_t client; };
+  // No device-removal recovery is ever pending here: every relay reaches the driver client.
+  struct recovery_t { bool pending() const { return false; } };
+  struct impl_t {
+    std::shared_mutex lifetime; std::array<slot_t, MAX_GAMEPADS> slots; fake_client_t client;
+    recovery_t recovery;
+    void observe_status(DWORD) {}
+  };
   impl_t impl_storage; impl_t *impl = &impl_storage;
 @RELAY@
   // The platform boundary input.cpp calls; the Windows backend routes it to the VHF slot.
@@ -136,6 +146,8 @@ struct gamepad_t {
 struct input_t {
   std::vector<gamepad_t> gamepads {MAX_GAMEPADS};
   std::atomic_uint32_t allocated_gamepads {0};
+  // Stands in for controller_speaker_pcm::owner_bindings: no speaker binding is ever queued here.
+  struct { std::uint64_t take(std::uint8_t) { return 0; } } speaker_bindings;
   bool persist_gamepads = false;
   int feedback_queue = 0;
 };

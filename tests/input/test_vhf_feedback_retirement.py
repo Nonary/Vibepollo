@@ -41,6 +41,7 @@ code = r'''
 #include <shared_mutex>
 #include <vector>
 #include "thread_safe_test.h"
+#include "controller_speaker_pcm.h"
 using namespace std::literals;
 #define BOOST_LOG(level) std::clog
 using DWORD = unsigned;
@@ -64,11 +65,20 @@ struct client_t {
     void close() { ++closes; }
 };
 void log_feedback_counters(client_t&, int, int) {}
+// Device-removal recovery is never pending here: the driver is present, so
+// free() destroys the controller and reads its feedback counters.
+struct recovery_t {
+    bool pending() const { return false; }
+    void reset() {}
+};
 struct impl_t {
     std::shared_mutex lifetime;
     std::array<slot_t, MAX_GAMEPADS> slots;
     std::atomic<unsigned> active_count {0};
     client_t client;
+    recovery_t recovery;
+    bool recovery_failure_logged = false;
+    void observe_status(DWORD) {}
 };
 struct vhf_gamepad_t { impl_t* impl; void free(int); };
 @RETIRE@

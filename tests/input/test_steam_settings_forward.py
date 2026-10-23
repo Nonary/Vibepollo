@@ -34,6 +34,7 @@ code=r"""
 #include <iostream>
 #include <vector>
 #include "thread_safe_test.h"
+#include "controller_speaker_pcm.h"
 using namespace std::literals;
 #define BOOST_LOG(level) std::clog
 constexpr int LI_CCAP_STEAM_HAPTIC=1;
