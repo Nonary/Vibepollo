@@ -150,7 +150,6 @@ namespace platf::provider_scan {
         const auto time = fs::last_write_time(path, ec);
         if (ec) continue;
         found = true;
-        // libc++ counts file times in __int128, which std::to_string has no overload for.
         const auto value = path.generic_string() + ":" + std::to_string(size) + ":" +
                            file_clock::count_string(time.time_since_epoch().count());
         for (const unsigned char byte : value) hash = (hash ^ byte) * 1099511628211ULL;
