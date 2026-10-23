@@ -1116,12 +1116,77 @@ function Test-DeviceNodePresent {
     return $false
 }
 
+function Get-RetainedSunshineInventory {
+    param(
+        [ValidateSet('Health', 'Packages')][string]$Kind,
+        [int]$TimeoutSeconds = 15
+    )
+    # Retained-device checks run after the initial safety gate, including after
+    # repair. Keep every CIM/DISM inventory behind the same bounded child edge.
+    $request = [pscustomobject]@{ Kind = $Kind; HardwareId = $hardwareId }
+    $encodedRequest = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes((ConvertTo-Json $request -Compress)))
+    $query = @'
+$ErrorActionPreference = 'Stop'
+try {
+    $request = ConvertFrom-Json ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('__REQUEST__')))
+    $nodes = @(); $signed = @(); $packages = @()
+    if ($request.Kind -eq 'Health') {
+        $nodes = @(Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction Stop | Where-Object {
+            @($_.HardwareID) -icontains $request.HardwareId
+        } | ForEach-Object {
+            [pscustomobject]@{ HardwareID = @($_.HardwareID); DeviceID = $_.DeviceID; Present = $_.Present; ConfigManagerErrorCode = $_.ConfigManagerErrorCode }
+        })
+        $signed = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
+            @($_.HardwareID) -icontains $request.HardwareId -or @($nodes.DeviceID) -icontains ([string]$_.DeviceID)
+        } | ForEach-Object {
+            [pscustomobject]@{ HardwareID = $_.HardwareID; DeviceID = $_.DeviceID; DriverVersion = $_.DriverVersion }
+        })
+    } elseif ($request.Kind -eq 'Packages') {
+        # This custom package cannot be an inbox driver; match the initial gate.
+        $packages = @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
+            [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq 'SunshineVirtualDisplayDriver.inf'
+        } | ForEach-Object {
+            [pscustomobject]@{ OriginalFileName = [string]$_.OriginalFileName; Driver = [string]$_.Driver }
+        })
+    } else { throw 'Unknown retained display inventory request.' }
+    $json = ConvertTo-Json -InputObject ([pscustomobject]@{ Nodes = @($nodes); SignedDrivers = @($signed); Packages = @($packages) }) -Compress -Depth 5
+    [Console]::Out.WriteLine('RETAINED_DISPLAY_INVENTORY:' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($json)))
+    exit 0
+} catch {
+    [Console]::Error.WriteLine($_.Exception.Message)
+    exit 1
+}
+'@
+    try {
+        $output = Invoke-DriverInstallSafetyQuery -ScriptText $query.Replace('__REQUEST__', $encodedRequest) -TimeoutSeconds $TimeoutSeconds
+    } catch {
+        # The same query also runs after repair. Do not reuse the safety gate's
+        # pre-mutation claim that the driver is unchanged at that point.
+        $detail = $_.Exception.Message -replace '(?i)driver unchanged[.]', 'further driver changes deferred.'
+        throw "Retained display $Kind inventory failed; automatic repair deferred. $detail"
+    }
+    $prefix = 'RETAINED_DISPLAY_INVENTORY:'
+    $markers = @($output -split '\r?\n' | Where-Object { $_.StartsWith($prefix, [StringComparison]::Ordinal) })
+    if ($markers.Count -ne 1) { throw 'Missing or ambiguous retained display inventory; automatic repair deferred.' }
+    try {
+        $encoded = $markers[0].Substring($prefix.Length)
+        if ($encoded -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'Malformed inventory encoding.' }
+        $inventory = ConvertFrom-Json -InputObject ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded))) -ErrorAction Stop
+        foreach ($name in @('Nodes', 'SignedDrivers', 'Packages')) {
+            $property = $inventory.PSObject.Properties[$name]
+            if ($null -eq $property -or $property.Value -isnot [Array]) { throw "Missing or invalid $name inventory." }
+        }
+    } catch {
+        throw "Invalid retained display inventory; automatic repair deferred. $($_.Exception.Message)"
+    }
+    return $inventory
+}
+
 function Get-SunshineDeviceHealth {
     # A signed/staged package is not evidence that a present device can start.
     # Use numeric PnP properties, not localized pnputil labels or registry ghosts.
-    $nodes = @(Get-CimInstance -ClassName Win32_PnPEntity -ErrorAction Stop | Where-Object {
-        @($_.HardwareID) -icontains $hardwareId
-    })
+    $inventory = Get-RetainedSunshineInventory -Kind Health
+    $nodes = @($inventory.Nodes)
     foreach ($node in $nodes) {
         if ($null -eq $node.Present -or $null -eq $node.ConfigManagerErrorCode) {
             throw 'Unknown virtual display device health; retained packages unchanged.'
@@ -1129,10 +1194,7 @@ function Get-SunshineDeviceHealth {
     }
     $present = @($nodes | Where-Object { $_.Present -eq $true })
     if ($present.Count -gt 1) { throw 'Multiple present virtual display devices; automatic repair deferred.' }
-    $signed = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
-        @($_.HardwareID) -icontains $hardwareId -or
-        @($nodes.DeviceID) -icontains ([string]$_.DeviceID)
-    })
+    $signed = @($inventory.SignedDrivers)
     $versions = @($signed | ForEach-Object { ConvertTo-DriverComponentVersion ([string]$_.DriverVersion) })
     $active = @($signed | Where-Object { @($present.DeviceID) -icontains ([string]$_.DeviceID) })
     if ($active.Count -gt 1) { throw 'Ambiguous active virtual display driver versions; automatic repair deferred.' }
@@ -1147,7 +1209,7 @@ function Get-RetainedSunshinePackage {
     param([Parameter(Mandatory = $true)][version]$MinimumVersion)
     $storeRoot = [IO.Path]::GetFullPath((Join-Path $env:windir 'System32/DriverStore/FileRepository')) + [IO.Path]::DirectorySeparatorChar
     $candidates = @()
-    foreach ($package in @(Get-WindowsDriver -Online -All -ErrorAction Stop)) {
+    foreach ($package in @((Get-RetainedSunshineInventory -Kind Packages).Packages)) {
         $path = [string]$package.OriginalFileName
         if ([IO.Path]::GetFileName($path) -ine 'SunshineVirtualDisplayDriver.inf') { continue }
         if (-not [IO.Path]::IsPathRooted($path) -or [string]$package.Driver -notmatch '^oem\d+\.inf$') {
