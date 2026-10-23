@@ -48,6 +48,7 @@ namespace {
     std::atomic<int> info_calls {0};
     std::atomic<int> reset_calls {0};
     std::atomic<bool> block_sample {false};
+    std::chrono::milliseconds sample_delay {0};
     std::mutex sample_mutex;
     std::condition_variable sample_cv;
     bool sample_entered = false;
@@ -61,6 +62,7 @@ namespace {
 
     platf::host_stats_t sample() override {
       ++state->sample_calls;
+      std::this_thread::sleep_for(state->sample_delay);
       if (state->block_sample.load()) {
         std::unique_lock lock(state->sample_mutex);
         state->sample_entered = true;
@@ -179,8 +181,11 @@ TEST(HostStatsService, StreamDemandWakesSamplerAndIdleStopsIt) {
   EXPECT_EQ(state->reset_calls.load(), 2);
 }
 
-TEST(HostStatsService, WebConsumerGetsFreshSampleAndGraceAvoidsNavigationChurn) {
+class HostStatsWebConsumerTest: public testing::TestWithParam<std::chrono::milliseconds> {};
+
+TEST_P(HostStatsWebConsumerTest, FreshSampleAndGraceExpiry) {
   auto state = std::make_shared<provider_state_t>();
+  state->sample_delay = GetParam();
   host_stats::service_t service {
     [state] {
       return std::make_unique<fake_provider_t>(state);
@@ -201,13 +206,29 @@ TEST(HostStatsService, WebConsumerGetsFreshSampleAndGraceAvoidsNavigationChurn) 
 
   const auto stats = service.latest_for_consumer();
   EXPECT_FLOAT_EQ(stats.cpu_percent, 37.5f);
-  ASSERT_TRUE(wait_for_calls(state->sample_calls, 3));
+  // Grace is a demand deadline, not a guarantee of a minimum sample count.
+  // A slow provider (or a descheduled worker) may consume the entire lease
+  // while producing the first fresh sample.
+  EXPECT_GE(state->sample_calls.load(), 1);
+  EXPECT_EQ(state->reset_calls.load(), 1);
 
   std::this_thread::sleep_for(100ms);
   const int stopped_at = state->sample_calls.load();
   std::this_thread::sleep_for(40ms);
   EXPECT_EQ(state->sample_calls.load(), stopped_at);
+
+  // Once demand expires, a new consumer must receive a new sample and restart
+  // the rate baselines rather than returning the old cached snapshot alone.
+  EXPECT_FLOAT_EQ(service.latest_for_consumer().cpu_percent, 37.5f);
+  EXPECT_GE(state->sample_calls.load(), stopped_at + 1);
+  EXPECT_EQ(state->reset_calls.load(), 2);
 }
+
+INSTANTIATE_TEST_SUITE_P(
+  FastAndSlowProviders,
+  HostStatsWebConsumerTest,
+  testing::Values(0ms, 100ms)
+);
 
 TEST(HostStatsService, ConcurrentWebConsumersShareOneFreshSample) {
   auto state = std::make_shared<provider_state_t>();
@@ -261,7 +282,7 @@ TEST(HostStatsService, ConcurrentWebConsumersShareOneFreshSample) {
   EXPECT_EQ(state->sample_calls.load(), 1);
 }
 
-TEST(HostStatsService, WebLeaseRenewalDoesNotBypassSamplingInterval) {
+TEST(HostStatsService, WebLeaseRenewalSharesBaselinesAndRespectsSamplingInterval) {
   auto state = std::make_shared<provider_state_t>();
   host_stats::service_t service {
     [state] {
@@ -281,6 +302,7 @@ TEST(HostStatsService, WebLeaseRenewalDoesNotBypassSamplingInterval) {
   EXPECT_FLOAT_EQ(service.latest_for_consumer().cpu_percent, 37.5f);
   std::this_thread::sleep_for(20ms);
   EXPECT_EQ(state->sample_calls.load(), 1);
+  EXPECT_EQ(state->reset_calls.load(), 1);
 }
 
 TEST(HostStatsService, ConfigurationChangesStopAndResumeActiveDemand) {
