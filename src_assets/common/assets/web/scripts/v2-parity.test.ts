@@ -193,11 +193,15 @@ test('Linux keeps common virtual-display policy and hides Windows display intern
     'dd_virtual_display_scale',
     'dd_config_revert_delay',
     'dd_config_revert_on_disconnect',
-    'dd_paused_virtual_display_timeout_secs',
   ]) {
     const field = fields.find((candidate) => candidate.key === key);
     assert.deepEqual(field?.platform, ['windows', 'linux'], `${key} must support Linux cleanup`);
   }
+  // macOS keeps a paused session's virtual display for this long too.
+  assert.deepEqual(
+    fields.find((candidate) => candidate.key === 'dd_paused_virtual_display_timeout_secs')?.platform,
+    ['windows', 'linux', 'macos'],
+  );
 });
 
 test('Linux exposes Remote Monitor behavior controls', () => {

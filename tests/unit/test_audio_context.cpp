@@ -4,6 +4,7 @@
 #include "src/audio_display_transition.h"
 #include "src/audio_role_control.h"
 #include "src/config_display_transition.h"
+#include "src/jthread.h"
 #include "src/webrtc_capture_owner.h"
 
 #include <algorithm>
@@ -141,7 +142,7 @@ namespace {
     endpoints_t os;
     roles_t::registry_t registry;
     std::vector<job_t> jobs;
-    std::vector<std::jthread> retired;
+    std::vector<util::jthread> retired;
     bool app_active {}, scheduler_failure {};
     std::string virtual_sink {"stream"};
     std::function<void()> observe_factory;
@@ -179,7 +180,7 @@ namespace {
         [this](const std::wstring &id) {
           return os.resolve(id);
         },
-        [this](std::jthread thread) {
+        [this](util::jthread thread) {
           if (thread.joinable()) {
             thread.request_stop();
             retired.push_back(std::move(thread));
@@ -206,7 +207,7 @@ namespace {
       std::promise<void> finished;
       auto completion = finished.get_future();
       roles_t retry_control(registry, devices());
-      std::jthread thread([&](std::stop_token stop) {
+      util::jthread thread([&](util::stop_token stop) {
         published.wait();
         for (const auto &role : job.roles) {
           result.push_back(retry_control.retry(role, stop, token, job.epoch));
@@ -221,7 +222,7 @@ namespace {
       }
       published.count_down();
       completion.wait();
-      std::jthread joined;
+      util::jthread joined;
       {
         std::scoped_lock lock(registry.mutex);
         if (registry.worker.get_id() == worker_id) {

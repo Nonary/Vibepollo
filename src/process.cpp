@@ -55,6 +55,7 @@
 #include "crypto.h"
 #include "display_device.h"
 #include "deferred_action.h"
+#include "file_clock.h"
 #include "file_handler.h"
 #include "globals.h"
 #include "logging.h"
@@ -76,7 +77,6 @@
   #include "platform/windows/virtual_display_cleanup.h"
   #include "tools/playnite_launcher/focus_utils.h"
   #include "tools/playnite_launcher/lossless_scaling.h"
-  #include "tools/playnite_launcher/lossless_scaling_policy.h"
 
   #include <Psapi.h>
 #elif defined(__linux__)
@@ -101,6 +101,11 @@
 #include "nvhttp.h"
 #include "prep_command_lifetime.h"
 #include "process.h"
+#ifdef __APPLE__
+  #include "platform/macos/virtual_display.h"
+#endif
+// Header-only policy used by shared launch code; safe on every platform.
+#include "tools/playnite_launcher/lossless_scaling_policy.h"
 #include "remote_monitor_profile_policy.h"
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
@@ -137,7 +142,6 @@ namespace proc {
     constexpr const char *LOSSLESS_PROFILE_CUSTOM = "custom";
     constexpr int LOSSLESS_DEFAULT_FLOW_SCALE = 50;
     constexpr int LOSSLESS_DEFAULT_RESOLUTION_SCALE = 100;
-    constexpr bool LOSSLESS_DEFAULT_PERFORMANCE_MODE = true;
     constexpr int LOSSLESS_MIN_FLOW_SCALE = 0;
     constexpr int LOSSLESS_MAX_FLOW_SCALE = 100;
     constexpr int LOSSLESS_MIN_RESOLUTION_SCALE = 10;
@@ -162,6 +166,7 @@ namespace proc {
     constexpr const char *ENV_LOSSLESS_ANIME4K_VRS = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS";
     constexpr const char *ENV_LOSSLESS_LAUNCH_DELAY = "SUNSHINE_LOSSLESS_SCALING_LAUNCH_DELAY";
     constexpr const char *ENV_LOSSLESS_LEGACY_AUTO_DETECT = "SUNSHINE_LOSSLESS_SCALING_LEGACY_AUTO_DETECT";
+#ifdef _WIN32  // RTX Video HDR is Windows-only
     constexpr std::array<std::string_view, 6> RTX_HDR_LIVE_KEYS {
       "rtx_hdr"sv,
       "rtx_hdr_sdr_brightness"sv,
@@ -170,6 +175,7 @@ namespace proc {
       "rtx_hdr_middle_gray"sv,
       "rtx_hdr_peak_brightness"sv,
     };
+#endif
 
 #ifdef _WIN32
     std::optional<std::filesystem::path> lossless_to_path(const std::string &utf8) {
@@ -3387,6 +3393,14 @@ namespace proc {
       (void) config::clear_runtime_output_name_override_if_lease(*_runtime_output_override_lease);
       _runtime_output_override_lease.reset();
     }
+#elif defined(__APPLE__)
+    // As on Windows: a paused game's display goes with the game, unless another stream still owns
+    // the runtime, in which case the final stream's cleanup releases it.
+    if (!other_streaming_session_active) {
+      platf::macos_virtual_display::end_pause_hold();
+    } else {
+      BOOST_LOG(info) << "Deferring virtual display removal after app termination because shared stream runtime is still owned.";
+    }
 #endif
 
     // Only show the Stopped notification if we actually have an app to stop
@@ -3923,7 +3937,7 @@ namespace proc {
         if (ec) return std::nullopt;
         const auto size = std::filesystem::file_size(path, ec);
         if (ec) return std::nullopt;
-        return std::to_string(modified.time_since_epoch().count()) + "-" + std::to_string(size);
+        return file_clock::count_string(modified.time_since_epoch().count()) + "-" + std::to_string(size);
       });
   }
 

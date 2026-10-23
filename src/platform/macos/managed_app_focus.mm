@@ -49,8 +49,9 @@ namespace managed_app_focus {
                     remaining.observe(identity, budget::clock::now());
                     has_window = remaining.can_focus(identity, budget::clock::now());
                   }
+                  // No NSApplicationActivateIgnoringOtherApps: deprecated, and it has no effect since macOS 14.
                   if (!cancelled_ && has_window && remaining.can_focus(budget::clock::now()) &&
-                      [candidate activateWithOptions:NSApplicationActivateIgnoringOtherApps] && candidate.active) {
+                      [candidate activateWithOptions:0] && candidate.active) {
                     remaining.confirmed();
                     break;
                   }

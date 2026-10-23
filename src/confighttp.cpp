@@ -55,6 +55,7 @@
 #include "globals.h"
 #include "http_auth.h"
 #include "httpcommon.h"
+#include "jthread.h"
 #include "https_listener_diagnostics.h"
 #include "platform/common.h"
 #ifdef _WIN32
@@ -628,7 +629,6 @@ namespace confighttp {
 
   // SESSION COOKIE
   std::string sessionCookie;
-  static std::chrono::time_point<std::chrono::steady_clock> cookie_creation_time;
 
   /**
    * @brief Log the request details.
@@ -6336,13 +6336,15 @@ namespace confighttp {
       };
       record_token_route(normalize_route_pattern(pattern), method);
     };
-    auto register_blocking_api_route = [&](const char *pattern, const char *method, const auto &handler, thread_pool_util::ThreadPool *route_pool = nullptr, bool stream_start = false) {
+    // By value: capturing a function reference in the nested lambdas below trips up Apple Clang 15.
+    auto register_blocking_api_route = [&](const char *pattern, const char *method, auto handler, thread_pool_util::ThreadPool *route_pool = nullptr, bool stream_start = false) {
       auto *worker_pool = route_pool ? route_pool : &blocking_route_pool;
       register_api_route(pattern, method, [worker_pool, handler, stream_start](resp_https_t response, req_https_t request, host_stream_control::ticket_t ticket) {
         if (!authenticate(response, request)) {
           return;
         }
         auto task = [handler, response, request = std::move(request), ticket]() mutable {
+          (void) ticket;  // Unused where no handler takes a ticket, as on macOS.
           try {
             if constexpr (std::is_invocable_v<decltype(handler), resp_https_t, req_https_t, host_stream_control::ticket_t>) {
               handler(response, request, ticket);
@@ -6539,7 +6541,7 @@ namespace confighttp {
     std::thread tcp {accept_and_run, &server};
 
     // Start a background task to clean up expired session tokens every hour
-    std::jthread cleanup_thread([shutdown_event]() {
+    util::jthread cleanup_thread([shutdown_event]() {
       while (!shutdown_event->view(std::chrono::hours(1))) {
         if (session_token_manager.cleanup_expired_session_tokens()) {
           session_token_manager.save_session_tokens();
@@ -6558,7 +6560,7 @@ namespace confighttp {
     blocking_route_pool.join();
     metadata_route_pool.join();
     webrtc_stream::shutdown_all_sessions();
-    // std::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
+    // util::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
   }
 
   /**
