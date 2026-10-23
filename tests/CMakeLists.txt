@@ -209,6 +209,7 @@ set(_sunshine_test_boost_components
     log
     log_setup
     property_tree
+    regex
     system
     uuid)
 if(SUNSHINE_TEST_ENABLE_COMPONENT)
@@ -1195,12 +1196,14 @@ if(NOT WIN32)
 endif()
 
 find_package(ZLIB REQUIRED)
+sunshine_register_component(NAME test_component_log_export_sanitizer TEST_SOURCE unit/test_log_export_sanitizer.cpp
+    LINK_LIBRARIES Boost::asio Boost::crc Boost::regex ZLIB::ZLIB ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_log_export_reader TEST_SOURCE unit/test_log_export_reader.cpp
-    LINK_LIBRARIES Boost::asio Boost::crc ZLIB::ZLIB ${SUNSHINE_TEST_SOCKET_LIBRARIES})
+    LINK_LIBRARIES Boost::asio Boost::crc Boost::regex ZLIB::ZLIB ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_log_sessions TEST_SOURCE unit/test_log_sessions.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging.cpp" "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging_policy.cpp"
     DEFINITIONS SUNSHINE_TESTS
-    LINK_LIBRARIES Boost::log Boost::asio Boost::crc Boost::format ZLIB::ZLIB ${SUNSHINE_TEST_SOCKET_LIBRARIES})
+    LINK_LIBRARIES Boost::log Boost::asio Boost::crc Boost::format Boost::regex ZLIB::ZLIB ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_logging_policy TEST_SOURCE unit/test_logging.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/logging_policy.cpp")
 # Exercise the Windows SCM calls with a narrow API shim on non-Windows hosts.

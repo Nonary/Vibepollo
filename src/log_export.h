@@ -8,6 +8,7 @@
 #include <array>
 #include <boost/asio/ip/address_v6.hpp>
 #include <boost/crc.hpp>
+#include <boost/regex.hpp>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
@@ -18,7 +19,6 @@
 #include <istream>
 #include <limits>
 #include <optional>
-#include <regex>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -111,10 +111,10 @@ namespace log_export {
       };
 
       std::vector<replacement_t> replacements;
-      const auto add_matches = [&](const std::regex &pattern, std::size_t capture, int priority, const std::string &kind, bool validate_ipv6 = false, bool preserve_service_identity = false) {
-        std::match_results<std::string::const_iterator> match;
+      const auto add_matches = [&](const boost::regex &pattern, std::size_t capture, int priority, const std::string &kind, bool validate_ipv6 = false, bool preserve_service_identity = false) {
+        boost::match_results<std::string::const_iterator> match;
         auto search_start = input.cbegin();
-        while (std::regex_search(search_start, input.cend(), match, pattern)) {
+        while (boost::regex_search(search_start, input.cend(), match, pattern)) {
           if (capture >= match.size() || !match[capture].matched) {
             break;
           }
@@ -141,16 +141,21 @@ namespace log_export {
 
       // Compiled once per process: sanitize() runs over every exported file and
       // regex construction is expensive enough to dominate small files.
+      // Boost's engine avoids the expensive per-character std::regex dispatch
+      // on multi-MiB logs. Disable its default multiline anchors to preserve
+      // the previous ECMAScript boundary behavior, including resumed searches.
+      static constexpr auto pattern_flags = boost::regex::ECMAScript | boost::regex::no_mod_m;
+      static constexpr auto user_pattern_flags = pattern_flags | boost::regex::icase;
       // Match only user components of conventional home-directory paths.
-      static const std::regex user_home_windows {R"((?:[A-Za-z]:[\\/]+Users[\\/]+)([^\\/,:;"'<>()[\]{}|]+))", std::regex_constants::icase};
-      static const std::regex user_home_posix {R"((?:^|[^A-Za-z0-9_])/(?:home|Users)/([^/\s:,;"'<>()[\]{}|]+))", std::regex_constants::icase};
+      static const boost::regex user_home_windows {R"((?:[A-Za-z]:[\\/]+Users[\\/]+)([^\\/,:;"'<>()[\]{}|]+))", user_pattern_flags};
+      static const boost::regex user_home_posix {R"((?:^|[^A-Za-z0-9_])/(?:home|Users)/([^/\s:,;"'<>()[\]{}|]+))", user_pattern_flags};
       // Explicit fields are safer to redact than arbitrary words that happen to look like names.
-      static const std::regex user_field_quoted {R"(\b(?:username|user_name|user)\b\s*[:=]\s*["']([^"']+)["'])", std::regex_constants::icase};
-      static const std::regex user_field_bare {R"(\b(?:username|user_name|user)\b\s*[:=]\s*([A-Za-z0-9._-]+))", std::regex_constants::icase};
-      static const std::regex ipv4_pattern {R"((?:^|[^0-9A-Za-z])((?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})(?:[^0-9A-Za-z]|$))"};
-      static const std::regex ipv6_candidate {R"((?:^|[^0-9A-Za-z:.])([0-9A-Fa-f:.]{2,})(?:[^0-9A-Za-z:.]|$))"};
-      static const std::regex mac_pattern {R"(\b([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})\b)"};
-      static const std::regex email_pattern {R"(\b[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b)"};
+      static const boost::regex user_field_quoted {R"(\b(?:username|user_name|user)\b\s*[:=]\s*["']([^"']+)["'])", user_pattern_flags};
+      static const boost::regex user_field_bare {R"(\b(?:username|user_name|user)\b\s*[:=]\s*([A-Za-z0-9._-]+))", user_pattern_flags};
+      static const boost::regex ipv4_pattern {R"((?:^|[^0-9A-Za-z])((?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])){3})(?:[^0-9A-Za-z]|$))", pattern_flags};
+      static const boost::regex ipv6_candidate {R"((?:^|[^0-9A-Za-z:.])([0-9A-Fa-f:.]{2,})(?:[^0-9A-Za-z:.]|$))", pattern_flags};
+      static const boost::regex mac_pattern {R"(\b([0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[0-9A-Fa-f]{2}(?:-[0-9A-Fa-f]{2}){5})\b)", pattern_flags};
+      static const boost::regex email_pattern {R"(\b[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+\b)", pattern_flags};
 
       add_matches(user_home_windows, 1, 10, "USER");
       add_matches(user_home_posix, 1, 10, "USER");
