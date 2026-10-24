@@ -547,6 +547,23 @@ namespace safe {
       return values;
     }
 
+    // Remove the front value if one is queued, without waiting. Unlike
+    // pop(0ms) this takes the queue lock, and unlike peek() followed by pop()
+    // it cannot be left waiting on a value another thread removed in between
+    // (discard_if() erases without waking consumers).
+    status_t try_pop() {
+      std::lock_guard lg {_lock};
+      if (!_poll_state.running() || _queue.empty()) {
+        return util::false_v<status_t>;
+      }
+
+      auto val = std::move(_queue.front());
+      _queue.erase(std::begin(_queue));
+      _poll_state.set_ready(!_queue.empty());
+
+      return val;
+    }
+
     status_t pop() {
       std::unique_lock ul {_lock};
 

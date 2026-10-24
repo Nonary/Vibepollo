@@ -2055,9 +2055,12 @@ namespace stream {
               has_processless_live_session = true;
             }
             auto &feedback_queue = session->control.feedback_queue;
-            while (feedback_queue->peek()) {
-              auto feedback_msg = feedback_queue->pop();
-
+            // A retiring controller discards its queued output from another
+            // thread without waking consumers, so a peek() followed by a
+            // blocking pop() could wait forever on an item that is gone.
+            // Dequeue atomically instead; the loop ends when the mailbox is
+            // empty or stopped.
+            while (auto feedback_msg = feedback_queue->try_pop()) {
               send_feedback_msg(session, *feedback_msg);
             }
 

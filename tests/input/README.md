@@ -79,6 +79,13 @@ retired controller's queued haptic and settings output is discarded, the other
 controller's feedback keeps its FIFO order, and a reused client-relative index
 receives only its new messages.
 
+`python3 tests/input/test_vhf_feedback_drain.py` runs the control thread's
+feedback drain from `stream.cpp` against the production queue and slot
+retirement with a barrier between its readiness check and its dequeue: the
+drain must finish when a controller (including the last one) retires its only
+queued message in that window, when the queue stops, and it must still deliver
+the surviving controller's messages in order. `--baseline` compiles `HEAD`.
+
 `python3 tests/input/test_vhf_fallback.py` executes the production Windows
 allocation and profile-selection functions with fake VHF/ViGEm driver objects:
 a Steam Controller client under `auto` prefers the VHF driver, a client-derived
