@@ -48,7 +48,6 @@ const stateTone = computed<'success' | 'warning' | 'danger' | 'neutral'>(() => {
     case 'failed':
     case 'watchdog_failed':
       return 'danger';
-    case 'uninitialized':
     case 'version_incompatible':
       return 'warning';
     default:
@@ -57,7 +56,8 @@ const stateTone = computed<'success' | 'warning' | 'danger' | 'neutral'>(() => {
 });
 
 const stateLabel = computed(() => {
-  if (health.value.state === 'failed') return t('ui.settings.windows_display.states.failed');
+  if (health.value.state === 'failed' || health.value.state === 'uninitialized')
+    return t(`ui.settings.windows_display.states.${health.value.state}`);
   return t(`config.virtual_display_driver_status_${health.value.state}`);
 });
 
@@ -92,9 +92,7 @@ const mismatchText = computed(() =>
 );
 
 const repairVisible = computed(() =>
-  ['failed', 'uninitialized', 'version_incompatible', 'watchdog_failed', 'unknown'].includes(
-    health.value.state,
-  ),
+  ['failed', 'version_incompatible', 'watchdog_failed', 'unknown'].includes(health.value.state),
 );
 
 function isState(value: WindowsDisplayDriverState): boolean {
