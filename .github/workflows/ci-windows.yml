@@ -236,11 +236,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ inputs.release_commit }}
-          VHF_ARCHIVE_SHA256: f6de993dc8ea8406190432fa83d6ee2f0f56ff28f4154a273302e5948bf228f4
-          VHF_DRIVER_VER: 10/17/2026,0.1.0.230
+          VHF_ARCHIVE_SHA256: 56be2b6c18162f88c38db65b062c86d6d7eb596b6eb77dd19da721a24cb19b08
+          VHF_DRIVER_VER: 10/24/2026,0.1.0.86
           VHF_PROTOCOL_VERSION: '2'
-          VHF_SOURCE_REVISION: 57de074169e5d65d06775edc6cff7ab4ec9305f1
-          VHF_TAG: v0.1.0-beta.154
+          VHF_SOURCE_REVISION: 09e635cc3570268e7cd2cbda2a6a39d4efa6e174
+          VHF_TAG: v0.1.0-beta.155
         run: |
           $ErrorActionPreference = 'Stop'
           $gitlink = (git rev-parse "$($env:RELEASE_COMMIT):third-party/libvirtualgamepad").Trim()
@@ -400,11 +400,11 @@ jobs:
       - name: Revalidate VHF producer package for packaging
         shell: pwsh
         env:
-          VHF_ARCHIVE_SHA256: f6de993dc8ea8406190432fa83d6ee2f0f56ff28f4154a273302e5948bf228f4
-          VHF_DRIVER_VER: 10/17/2026,0.1.0.230
+          VHF_ARCHIVE_SHA256: 56be2b6c18162f88c38db65b062c86d6d7eb596b6eb77dd19da721a24cb19b08
+          VHF_DRIVER_VER: 10/24/2026,0.1.0.86
           VHF_PROTOCOL_VERSION: '2'
-          VHF_SOURCE_REVISION: 57de074169e5d65d06775edc6cff7ab4ec9305f1
-          VHF_TAG: v0.1.0-beta.154
+          VHF_SOURCE_REVISION: 09e635cc3570268e7cd2cbda2a6a39d4efa6e174
+          VHF_TAG: v0.1.0-beta.155
         run: |
           $ErrorActionPreference = 'Stop'
           $packageRoot = Join-Path $env:RUNNER_TEMP 'vhf-gamepad-producer-release'
