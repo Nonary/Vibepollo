@@ -138,7 +138,15 @@ try {
 '@
     $queryScript = $queryScript.Replace('__REQUEST__', $requestBase64)
 
-    $output = Invoke-DriverInstallSafetyQuery -ScriptText $queryScript -TimeoutSeconds $TimeoutSeconds
+    try {
+        $output = Invoke-DriverInstallSafetyQuery -ScriptText $queryScript -TimeoutSeconds $TimeoutSeconds
+    } catch [TimeoutException] {
+        # A slow or temporarily busy inventory is not evidence of a missing driver.
+        # Retry the complete read-only snapshot once, with more time, before any
+        # version/trust decision. Never consume partial results from the first child.
+        Write-Host "Driver safety inventory exceeded its initial deadline; retrying once with a 60-second recovery budget. $($_.Exception.Message)"
+        $output = Invoke-DriverInstallSafetyQuery -ScriptText $queryScript -TimeoutSeconds 60
+    }
     return ConvertFrom-DriverInstallSafetyInventoryResult -OutputText $output
 }
 
@@ -486,7 +494,8 @@ function Invoke-Process {
         [Parameter(Mandatory = $true)][string]$FilePath,
         [string[]]$ArgumentList = @(),
         [string]$WorkingDirectory = $scriptDir,
-        [int]$TimeoutSeconds = 0
+        [int]$TimeoutSeconds = 0,
+        [switch]$BoundedTimeoutDiagnostics
     )
 
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -526,13 +535,17 @@ function Invoke-Process {
 
         $stdout = ''
         $stderr = ''
+        # Timeout diagnostics need only bounded stdout stages. Do not spend two
+        # additional five-second pipe waits after an already exhausted query.
+        $stdoutDrainMilliseconds = if ($timedOut -and $BoundedTimeoutDiagnostics) { 1000 } else { 5000 }
+        $stderrDrainMilliseconds = if ($timedOut -and $BoundedTimeoutDiagnostics) { 0 } else { 5000 }
         try {
-            if ($stdoutTask.Wait(5000)) { $stdout = $stdoutTask.Result }
+            if ($stdoutTask.Wait($stdoutDrainMilliseconds)) { $stdout = $stdoutTask.Result }
         } catch {
             $stdout = ''
         }
         try {
-            if ($stderrTask.Wait(5000)) { $stderr = $stderrTask.Result }
+            if ($stderrTask.Wait($stderrDrainMilliseconds)) { $stderr = $stderrTask.Result }
         } catch {
             $stderr = ''
         }
@@ -551,6 +564,7 @@ function Invoke-Process {
             StdOut   = $stdout
             StdErr   = $stderr
             TimedOut = $timedOut
+            ProcessExited = $process.HasExited
         }
     }
     finally {
@@ -573,15 +587,18 @@ function Invoke-DriverInstallSafetyCommand {
     $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($ScriptText))
     $result = Invoke-Process -FilePath $powerShellPath -ArgumentList @(
         '-NoLogo', '-NonInteractive', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand
-    ) -WorkingDirectory $scriptDir -TimeoutSeconds $TimeoutSeconds
+    ) -WorkingDirectory $scriptDir -TimeoutSeconds $TimeoutSeconds -BoundedTimeoutDiagnostics
 
     if ($result.TimedOut) {
+        if (-not $result.ProcessExited) {
+            throw 'Inventory child termination could not be confirmed; refusing recovery. Driver unchanged.'
+        }
         # Emit only bounded stage records, not arbitrary provider output or paths.
         $stages = @(([string]$result.StdOut) -split '\r?\n' | Where-Object {
             $_ -cmatch '^DRIVER_INSTALL_SAFETY_STAGE:(started|packages-start|packages-done|devices-start|devices-done):[0-9]{1,12}$'
         } | Select-Object -Last 5) -join '; '
         if (-not $stages) { $stages = 'No inventory stage reported.' }
-        throw "Driver safety inventory timed out after $TimeoutSeconds seconds; driver unchanged. $stages"
+        throw [TimeoutException]::new("Driver safety inventory timed out after $TimeoutSeconds seconds; driver unchanged. $stages")
     }
     if ($result.ExitCode -ne 0) {
         $detail = ([string]$result.StdErr).Trim()
