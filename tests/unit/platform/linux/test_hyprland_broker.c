@@ -24,6 +24,8 @@ int main(void) {
   strcpy(identity.compositor, "1234567890abcdef1234567890abcdef-42-123");
   assert(valid_backend_identity(&identity));
   assert(validate_xauthority(&identity));
+  // The focus helper receives only the validated peer PID and start time.
+  assert(!strcmp(hyprland_compositor_peer(&identity), "42-123"));
   strcpy(identity.x_display, ":0");
   assert(!valid_backend_identity(&identity));
   identity.x_display[0] = 0;
@@ -44,7 +46,9 @@ int main(void) {
     assert(identity_boundary_calls == 0);
   }
   assert(!hyprland_request_supported("touch-map"));
-  assert(!hyprland_request_supported("managed-focus"));
+  // Focus is a Hyprland IPC operation bound to the record's compositor.
+  assert(hyprland_request_supported("managed-focus"));
+  assert(!hyprland_request_supported("rtx-hdr-foreground"));
   assert(!hyprland_request_supported("app-wayland-hdr"));
   assert(!hyprland_request_supported("steam"));
   assert(hyprland_request_supported("app"));
