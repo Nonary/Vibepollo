@@ -22,6 +22,7 @@ namespace {
   using platf::gamepad_feedback_e;
   using platf::gamepad_feedback_msg_t;
   using platf::feedback_queue_t;
+  using platf::raise_gamepad_feedback;
   using platf::vhf_gamepad::backend_e;
   using platf::vhf_gamepad::decode_rumble_rgb;
   using platf::vhf_gamepad::decode_steam_haptic;
@@ -492,6 +493,9 @@ namespace {
     const auto make_rumble = [](const auto client_index, const auto low, const auto high) {
       return gamepad_feedback_msg_t::make_rumble(client_index, low, high);
     };
+    const auto admit = [](auto &target, gamepad_feedback_msg_t msg) {
+      return raise_gamepad_feedback(target, std::move(msg));
+    };
 
     // The first decoded sample queues the baseline even when both motors are zero.
     const auto initial_zero = observe_rumble_poll(event, 3, 1, feedback, true, false, {});
@@ -502,7 +506,7 @@ namespace {
     EXPECT_EQ(initial_zero.low_frequency, 0);
     EXPECT_EQ(initial_zero.high_frequency, 0);
     EXPECT_EQ(initial_zero.outcome, rumble_poll_outcome_e::raise_attempted);
-    EXPECT_TRUE(dispatch_rumble_poll(initial_zero, queue, make_rumble));
+    EXPECT_TRUE(dispatch_rumble_poll(initial_zero, queue, make_rumble, admit));
     ASSERT_EQ(queue->unsafe().size(), 1u);
     EXPECT_EQ(queue->unsafe().front().type, gamepad_feedback_e::rumble);
     EXPECT_EQ(queue->unsafe().front().id, 1);
@@ -518,7 +522,7 @@ namespace {
     ASSERT_TRUE(decode_rumble_rgb(event, feedback));
     const auto changed = observe_rumble_poll(event, 3, 1, feedback, true, true, zero_feedback);
     EXPECT_EQ(changed.outcome, rumble_poll_outcome_e::raise_attempted);
-    EXPECT_TRUE(dispatch_rumble_poll(changed, queue, make_rumble));
+    EXPECT_TRUE(dispatch_rumble_poll(changed, queue, make_rumble, admit));
     ASSERT_EQ(queue->unsafe().size(), 1u);
     EXPECT_EQ(queue->unsafe().front().id, 1);
     EXPECT_EQ(queue->unsafe().front().data.rumble.lowfreq, 0x1234);
@@ -529,29 +533,90 @@ namespace {
     auto previous = feedback;
     auto deduplicated = observe_rumble_poll(event, 3, 1, feedback, true, true, previous);
     EXPECT_EQ(deduplicated.outcome, rumble_poll_outcome_e::deduplicated);
-    EXPECT_FALSE(dispatch_rumble_poll(deduplicated, queue, make_rumble));
+    EXPECT_FALSE(dispatch_rumble_poll(deduplicated, queue, make_rumble, admit));
     EXPECT_TRUE(queue->unsafe().empty());
 
     previous.red = 0x55;
     previous.has_rgb = true;
     deduplicated = observe_rumble_poll(event, 3, 1, feedback, true, true, previous);
     EXPECT_EQ(deduplicated.outcome, rumble_poll_outcome_e::deduplicated);
-    EXPECT_FALSE(dispatch_rumble_poll(deduplicated, queue, make_rumble));
+    EXPECT_FALSE(dispatch_rumble_poll(deduplicated, queue, make_rumble, admit));
     EXPECT_TRUE(queue->unsafe().empty());
 
-    // Queue presence does not imply that it is running: raise() is void and drops after stop.
+    // Queue presence does not imply that it is running: a stopped queue rejects the message,
+    // and the caller must not record the feedback as delivered.
     queue->stop();
     const auto stopped_attempt = observe_rumble_poll(event, 3, 1, feedback, true, false, {});
     EXPECT_EQ(stopped_attempt.outcome, rumble_poll_outcome_e::raise_attempted);
-    EXPECT_TRUE(dispatch_rumble_poll(stopped_attempt, queue, make_rumble));
+    EXPECT_FALSE(dispatch_rumble_poll(stopped_attempt, queue, make_rumble, admit));
     EXPECT_TRUE(queue->unsafe().empty());
     feedback_queue_t missing_queue;
-    EXPECT_FALSE(dispatch_rumble_poll(stopped_attempt, missing_queue, make_rumble));
+    EXPECT_FALSE(dispatch_rumble_poll(stopped_attempt, missing_queue, make_rumble, admit));
 
     const auto unavailable = observe_rumble_poll(event, 3, 1, feedback, false, false, {});
     EXPECT_EQ(unavailable.outcome, rumble_poll_outcome_e::unavailable);
-    EXPECT_FALSE(dispatch_rumble_poll(unavailable, queue, make_rumble));
+    EXPECT_FALSE(dispatch_rumble_poll(unavailable, queue, make_rumble, admit));
     EXPECT_TRUE(queue->unsafe().empty());
+  }
+
+  TEST_F(VhfGamepadPolicyTest, RumblePollStopSurvivesAFullFeedbackMailbox) {
+    // The stream mailbox: bounded, and it drops the newest plain raise() when full.
+    auto feedback_mail = std::make_shared<safe::mail_raw_t>();
+    feedback_queue_t queue = feedback_mail->queue<gamepad_feedback_msg_t>(
+      "vhf-policy-full-mailbox", platf::GAMEPAD_FEEDBACK_QUEUE_CAPACITY, false);
+    const auto make_rumble = [](const auto client_index, const auto low, const auto high) {
+      return gamepad_feedback_msg_t::make_rumble(client_index, low, high);
+    };
+    const auto admit = [](auto &target, gamepad_feedback_msg_t msg) {
+      return raise_gamepad_feedback(target, std::move(msg));
+    };
+
+    // Every controller's protected state (15 keys each) plus the reserved settings chunks fill
+    // the mailbox to capacity with items plain raise() cannot evict.
+    for (std::uint16_t id = 0; id < 16; ++id) {
+      ASSERT_TRUE(raise_gamepad_feedback(*queue, gamepad_feedback_msg_t::make_rumble(id, 0x100, 0x200)));
+      ASSERT_TRUE(raise_gamepad_feedback(*queue, gamepad_feedback_msg_t::make_rumble_triggers(id, 1, 2)));
+      ASSERT_TRUE(raise_gamepad_feedback(*queue, gamepad_feedback_msg_t::make_rgb_led(id, 1, 2, 3)));
+      for (std::uint8_t motion : {1, 2}) {
+        ASSERT_TRUE(raise_gamepad_feedback(*queue, gamepad_feedback_msg_t::make_motion_event_state(id, motion, 100)));
+      }
+      for (std::uint8_t flags : {4, 8, 12}) {
+        ASSERT_TRUE(raise_gamepad_feedback(*queue, gamepad_feedback_msg_t::make_adaptive_triggers(id, flags, 0, 0, {}, {})));
+      }
+      ASSERT_TRUE(raise_gamepad_feedback(*queue, gamepad_feedback_msg_t::make_steam_haptic(id, 12, {0x80})));
+      for (std::uint8_t type : {0x81, 0x82}) {
+        for (std::uint8_t side = 0; side < 3; ++side) {
+          ASSERT_TRUE(raise_gamepad_feedback(*queue, gamepad_feedback_msg_t::make_steam_haptic(id, 12, {type, side})));
+        }
+      }
+    }
+    for (std::uint8_t chunk = 0; chunk < 16; ++chunk) {
+      ASSERT_TRUE(raise_gamepad_feedback(*queue, gamepad_feedback_msg_t::make_steam_settings(chunk, 0x87, 1, {chunk, 1, 0})));
+    }
+    ASSERT_EQ(queue->unsafe().size(), platf::GAMEPAD_FEEDBACK_QUEUE_CAPACITY);
+    // The plain path the dispatcher used before would drop the stop here.
+    EXPECT_FALSE(queue->try_raise(gamepad_feedback_msg_t::make_rumble(1, 0, 0)));
+
+    // Controller 1 goes from active motors to a stop while the mailbox is full.
+    rumble_rgb_t previous {};
+    previous.low_frequency = 0x100;
+    previous.high_frequency = 0x200;
+    const rumble_rgb_t stop {};
+    const auto observation = observe_rumble_poll(lvg::feedback_event {}, 3, 1, stop, true, true, previous);
+    ASSERT_EQ(observation.outcome, rumble_poll_outcome_e::raise_attempted);
+    EXPECT_TRUE(dispatch_rumble_poll(observation, queue, make_rumble, admit));
+
+    const auto &pending = queue->unsafe();
+    EXPECT_EQ(pending.size(), platf::GAMEPAD_FEEDBACK_QUEUE_CAPACITY);
+    const auto stops = std::count_if(pending.begin(), pending.end(), [](const gamepad_feedback_msg_t &msg) {
+      return msg.type == gamepad_feedback_e::rumble && msg.id == 1 &&
+             msg.data.rumble.lowfreq == 0 && msg.data.rumble.highfreq == 0;
+    });
+    EXPECT_EQ(stops, 1);
+    const auto stale = std::count_if(pending.begin(), pending.end(), [](const gamepad_feedback_msg_t &msg) {
+      return msg.type == gamepad_feedback_e::rumble && msg.id == 1 && msg.data.rumble.lowfreq == 0x100;
+    });
+    EXPECT_EQ(stale, 0);
   }
 
   TEST_F(VhfGamepadPolicyTest, RumblePollSummariesAreBoundedAndKeepOutcomeCounts) {

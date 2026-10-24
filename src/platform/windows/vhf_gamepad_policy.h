@@ -286,31 +286,35 @@ namespace platf::vhf_gamepad {
   ) noexcept;
 
   /**
-   * @brief Attempts the ordinary-rumble queue call recorded by an observation.
+   * @brief Submits the ordinary-rumble message recorded by an observation.
    * @details This shared dispatch helper keeps the VHF feedback path and portable policy test on
-   *          the same outcome gate. The queue's `raise` API is void and may silently drop the
-   *          message after shutdown, so `true` only means the queue call was made.
+   *          the same outcome gate. The message is handed to `admit`, which performs the queue
+   *          call under the caller's admission policy and reports whether the queue accepted it.
+   *          Production passes `raise_gamepad_feedback`, so a stop (both motors zero) competes as
+   *          a protected state key and is not dropped by a mailbox full of ordinary events, as the
+   *          plain `raise` would do. A stopped queue rejects the message.
    * @param observation The ordinary-rumble decision and decoded values.
    * @param queue The client feedback queue; a null queue prevents the call.
    * @param make_rumble Creates the platform's gamepad rumble message.
-   * @return Whether `queue->raise(...)` was attempted.
+   * @param admit Submits a message to `*queue` and returns whether it was accepted.
+   * @return Whether the queue accepted the rumble message.
    */
-  template<class Queue, class MakeRumble>
+  template<class Queue, class MakeRumble, class Admit>
   [[nodiscard]] bool dispatch_rumble_poll(
     const rumble_poll_observation_t &observation,
     Queue &queue,
-    MakeRumble &&make_rumble
+    MakeRumble &&make_rumble,
+    Admit &&admit
   ) {
     if (observation.outcome != rumble_poll_outcome_e::raise_attempted || !queue) {
       return false;
     }
 
-    queue->raise(std::forward<MakeRumble>(make_rumble)(
+    return std::forward<Admit>(admit)(*queue, std::forward<MakeRumble>(make_rumble)(
       observation.client_relative_index,
       observation.low_frequency,
       observation.high_frequency
     ));
-    return true;
   }
 
   /**

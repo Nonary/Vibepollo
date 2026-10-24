@@ -424,25 +424,34 @@ namespace platf {
                               slot.last_feedback.green != feedback.green ||
                               slot.last_feedback.blue != feedback.blue);
 
-    // We have to use the client-relative index when communicating back to the client
-    (void) vhf_gamepad::dispatch_rumble_poll(
-      observation,
-      slot.feedback_queue,
-      [](const auto client_relative_index, const auto low_frequency, const auto high_frequency) {
-        return gamepad_feedback_msg_t::make_rumble(
-          client_relative_index,
-          low_frequency,
-          high_frequency
-        );
-      }
-    );
+    // We have to use the client-relative index when communicating back to the client.
+    // Every message takes the protected state-key admission (raise_gamepad_feedback), so a
+    // stop is never dropped by a mailbox full of ordinary events. A rejected message leaves
+    // the recorded feedback stale and the next poll retries it.
+    bool admitted = true;
+    if (observation.outcome == vhf_gamepad::rumble_poll_outcome_e::raise_attempted) {
+      admitted = vhf_gamepad::dispatch_rumble_poll(
+        observation,
+        slot.feedback_queue,
+        [](const auto client_relative_index, const auto low_frequency, const auto high_frequency) {
+          return gamepad_feedback_msg_t::make_rumble(
+            client_relative_index,
+            low_frequency,
+            high_frequency
+          );
+        },
+        [](auto &queue, gamepad_feedback_msg_t msg) {
+          return raise_gamepad_feedback(queue, std::move(msg));
+        }
+      );
+    }
     if (rgb_changed) {
-      raise_gamepad_feedback(*slot.feedback_queue, gamepad_feedback_msg_t::make_rgb_led(
+      admitted = raise_gamepad_feedback(*slot.feedback_queue, gamepad_feedback_msg_t::make_rgb_led(
         slot.client_relative_index,
         feedback.red,
         feedback.green,
         feedback.blue
-      ));
+      )) && admitted;
     }
 
     if (feedback.has_trigger_effects) {
@@ -453,14 +462,14 @@ namespace platf {
         slot.last_feedback.left_effect != feedback.left_effect ||
         slot.last_feedback.right_effect != feedback.right_effect;
       if (effects_changed) {
-        raise_gamepad_feedback(*slot.feedback_queue, gamepad_feedback_msg_t::make_adaptive_triggers(
+        admitted = raise_gamepad_feedback(*slot.feedback_queue, gamepad_feedback_msg_t::make_adaptive_triggers(
           slot.client_relative_index,
           feedback.trigger_event_flags,
           feedback.left_effect.mode,
           feedback.right_effect.mode,
           feedback.left_effect.parameters,
           feedback.right_effect.parameters
-        ));
+        )) && admitted;
       }
     }
 
@@ -469,15 +478,17 @@ namespace platf {
                                    slot.last_feedback.left_trigger != feedback.left_trigger ||
                                    slot.last_feedback.right_trigger != feedback.right_trigger);
     if (triggers_changed) {
-      raise_gamepad_feedback(*slot.feedback_queue, gamepad_feedback_msg_t::make_rumble_triggers(
+      admitted = raise_gamepad_feedback(*slot.feedback_queue, gamepad_feedback_msg_t::make_rumble_triggers(
         slot.client_relative_index,
         feedback.left_trigger,
         feedback.right_trigger
-      ));
+      )) && admitted;
     }
 
-    slot.last_feedback = feedback;
-    slot.have_feedback = true;
+    if (admitted) {
+      slot.last_feedback = feedback;
+      slot.have_feedback = true;
+    }
     log_rumble_poll(slot.rumble_poll_summary, observation);
   }
 

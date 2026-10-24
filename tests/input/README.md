@@ -86,6 +86,12 @@ drain must finish when a controller (including the last one) retires its only
 queued message in that window, when the queue stops, and it must still deliver
 the surviving controller's messages in order. `--baseline` compiles `HEAD`.
 
+`python3 tests/input/test_vhf_rumble_admission.py` runs the production
+`dispatch_rumble_poll` with the protected admission against a mailbox filled to
+capacity with every controller's state keys and the reserved settings chunks:
+the plain raise is refused there, the active-to-zero rumble stop is admitted and
+replaces the stale motor state, and a stopped queue reports rejection.
+
 `python3 tests/input/test_vhf_fallback.py` executes the production Windows
 allocation and profile-selection functions with fake VHF/ViGEm driver objects:
 a Steam Controller client under `auto` prefers the VHF driver, a client-derived
