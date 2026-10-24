@@ -326,6 +326,53 @@ namespace platf {
       [](const auto &pending) { return pending.type == gamepad_feedback_e::steam_settings; }, 16);
   }
 
+  /**
+   * @brief Whether two feedback messages carry the same state for the same controller.
+   * @details Only the state types the legacy backends deduplicate are compared; anything else is
+   *          never a duplicate.
+   */
+  inline bool gamepad_feedback_same_value(const gamepad_feedback_msg_t &a, const gamepad_feedback_msg_t &b) {
+    if (a.type != b.type || a.id != b.id) return false;
+    switch (a.type) {
+      case gamepad_feedback_e::rumble:
+        return a.data.rumble.lowfreq == b.data.rumble.lowfreq && a.data.rumble.highfreq == b.data.rumble.highfreq;
+      case gamepad_feedback_e::rumble_triggers:
+        return a.data.rumble_triggers.left_trigger == b.data.rumble_triggers.left_trigger &&
+               a.data.rumble_triggers.right_trigger == b.data.rumble_triggers.right_trigger;
+      case gamepad_feedback_e::set_motion_event_state:
+        return a.data.motion_event_state.motion_type == b.data.motion_event_state.motion_type &&
+               a.data.motion_event_state.report_rate == b.data.motion_event_state.report_rate;
+      case gamepad_feedback_e::set_rgb_led:
+        return a.data.rgb_led.r == b.data.rgb_led.r && a.data.rgb_led.g == b.data.rgb_led.g && a.data.rgb_led.b == b.data.rgb_led.b;
+      case gamepad_feedback_e::set_adaptive_triggers:
+        return a.data.adaptive_triggers.event_flags == b.data.adaptive_triggers.event_flags &&
+               a.data.adaptive_triggers.type_left == b.data.adaptive_triggers.type_left &&
+               a.data.adaptive_triggers.type_right == b.data.adaptive_triggers.type_right &&
+               a.data.adaptive_triggers.left == b.data.adaptive_triggers.left &&
+               a.data.adaptive_triggers.right == b.data.adaptive_triggers.right;
+      default:
+        return false;
+    }
+  }
+
+  /**
+   * @brief Hands a legacy backend's (ViGEm, inputtino) feedback to the client mailbox, deduplicated
+   *        against the last message that backend delivered.
+   * @details The message takes the coalesced state-key admission of raise_gamepad_feedback(), and
+   *          `last` is updated only once the mailbox accepted it: a rejected message leaves the
+   *          cache stale, so the next callback with the same value is not suppressed as already
+   *          delivered. With every producer coalesced, each (controller, state key) is pending at
+   *          most once, and the 240 state keys plus the 16 reserved settings chunks fit the
+   *          256-slot mailbox, so a state message is only ever rejected by a stopped mailbox.
+   * @return Whether the message is pending or was already delivered.
+   */
+  inline bool raise_gamepad_feedback_deduped(safe::queue_t<gamepad_feedback_msg_t> &queue, const gamepad_feedback_msg_t &msg, gamepad_feedback_msg_t &last) {
+    if (gamepad_feedback_same_value(last, msg)) return true;
+    if (!raise_gamepad_feedback(queue, msg)) return false;
+    last = msg;
+    return true;
+  }
+
   namespace speaker {
     enum speaker_e {
       FRONT_LEFT,  ///< Front left

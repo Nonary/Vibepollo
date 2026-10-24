@@ -307,9 +307,9 @@ namespace platf {
         ds4_update_motion(gamepad, LI_MOTION_TYPE_ACCEL, 0.0f, EARTH_G, 0.0f);
         ds4_update_motion(gamepad, LI_MOTION_TYPE_GYRO, 0.0f, 0.0f, 0.0f);
 
-        // Request motion events from the client at 100 Hz
-        feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100));
-        feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100));
+        // Request motion events from the client at 100 Hz (coalesced: one pending request per type)
+        static_cast<void>(raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100)));
+        static_cast<void>(raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100)));
         gamepad.last_motion_request_ts = std::chrono::steady_clock::now();
 
         // We support pointer index 0 and 1
@@ -398,19 +398,17 @@ namespace platf {
           uint16_t normalizedLargeMotor = largeMotor << 8;
           uint16_t normalizedSmallMotor = smallMotor << 8;
 
-          // Don't resend duplicate rumble data
-          if (normalizedSmallMotor != gamepad.last_rumble.data.rumble.highfreq ||
-              normalizedLargeMotor != gamepad.last_rumble.data.rumble.lowfreq) {
-            // We have to use the client-relative index when communicating back to the client
-            gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rumble(
-              gamepad.client_relative_index,
-              normalizedLargeMotor,
-              normalizedSmallMotor
-            );
-            msg.from_vigem = true;
-            gamepad.feedback_queue->raise(msg);
-            gamepad.last_rumble = msg;
-          }
+          // We have to use the client-relative index when communicating back to the client.
+          // Coalesced admission, deduplicated against the last rumble this backend delivered; the
+          // cache follows acceptance, so a message the mailbox refused is retried by the next
+          // callback instead of being suppressed as already delivered.
+          gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rumble(
+            gamepad.client_relative_index,
+            normalizedLargeMotor,
+            normalizedSmallMotor
+          );
+          msg.from_vigem = true;
+          static_cast<void>(raise_gamepad_feedback_deduped(*gamepad.feedback_queue, msg, gamepad.last_rumble));
           return;
         }
       }
@@ -428,15 +426,11 @@ namespace platf {
         auto &gamepad = gamepads[x];
 
         if (gamepad.gp.get() == target) {
-          // Don't resend duplicate RGB data
-          if (r != gamepad.last_rgb_led.data.rgb_led.r ||
-              g != gamepad.last_rgb_led.data.rgb_led.g ||
-              b != gamepad.last_rgb_led.data.rgb_led.b) {
-            // We have to use the client-relative index when communicating back to the client
-            gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rgb_led(gamepad.client_relative_index, r, g, b);
-            gamepad.feedback_queue->raise(msg);
-            gamepad.last_rgb_led = msg;
-          }
+          // We have to use the client-relative index when communicating back to the client.
+          // Coalesced admission, deduplicated against the last LED state this backend delivered;
+          // the cache follows acceptance (see raise_gamepad_feedback_deduped).
+          gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rgb_led(gamepad.client_relative_index, r, g, b);
+          static_cast<void>(raise_gamepad_feedback_deduped(*gamepad.feedback_queue, msg, gamepad.last_rgb_led));
           return;
         }
       }
@@ -1778,8 +1772,8 @@ namespace platf {
             BOOST_LOG(debug) << "DS4 gyro stale for "sv
                              << std::chrono::duration_cast<std::chrono::milliseconds>(gyro_stale).count()
                              << "ms; re-requesting motion events from client"sv;
-            gamepad.feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100));
-            gamepad.feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100));
+            static_cast<void>(raise_gamepad_feedback(*gamepad.feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100)));
+            static_cast<void>(raise_gamepad_feedback(*gamepad.feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100)));
             gamepad.last_motion_request_ts = now;
           }
         }

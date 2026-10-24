@@ -30,6 +30,7 @@ jobs:
           python3 tests/input/test_vhf_feedback_retirement.py
           python3 tests/input/test_vhf_feedback_drain.py
           python3 tests/input/test_vhf_rumble_admission.py
+          python3 tests/input/test_legacy_feedback_admission.py
           python3 tests/input/test_vhf_fallback.py
       - name: Check SC2026 client-to-driver click fidelity and the firmware attribute relay
         run: |

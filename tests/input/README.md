@@ -92,6 +92,14 @@ capacity with every controller's state keys and the reserved settings chunks:
 the plain raise is refused there, the active-to-zero rumble stop is admitted and
 replaces the stale motor state, and a stopped queue reports rejection.
 
+`python3 tests/input/test_legacy_feedback_admission.py` runs the production ViGEm
+rumble/LED callbacks (`vigem_t::rumble`, `vigem_t::set_rgb_led`) and the inputtino
+rumble/LED lambdas against the shared mailbox under mixed-controller pressure:
+legacy producers coalesce to one pending entry per state, a legacy zero stop and
+a Steam slot's synthesized expiry stop are both admitted at capacity, a refused
+message leaves the duplicate cache stale for retry, and duplicates are suppressed.
+`--baseline` compiles `HEAD`.
+
 `python3 tests/input/test_vhf_fallback.py` executes the production Windows
 allocation and profile-selection functions with fake VHF/ViGEm driver objects:
 a Steam Controller client under `auto` prefers the VHF driver, a client-derived
