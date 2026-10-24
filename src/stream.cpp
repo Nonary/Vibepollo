@@ -64,6 +64,7 @@ extern "C" {
 #include "rtsp_pending_policy.h"
 #include "send_result_observation.h"
 #include "session_history.h"
+#include "steam_controller_protocol.h"
 #include "stream.h"
 #include "stream_broadcast_runtime.h"
 #include "sync.h"
@@ -111,6 +112,8 @@ extern "C" {
 #define IDX_SET_CLIPBOARD 16
 #define IDX_FILE_TRANSFER_NONCE_REQUEST 17
 #define IDX_SET_ADAPTIVE_TRIGGERS 18
+#define IDX_STEAM_HAPTIC 19
+#define IDX_STEAM_SETTINGS 20
 
 static const short packetTypes[] = {
   0x0305,  // Start A
@@ -132,6 +135,8 @@ static const short packetTypes[] = {
   0x3001,  // Set Clipboard (Apollo protocol extension)
   0x3002,  // File transfer nonce request (Apollo protocol extension)
   0x5503,  // Set Adaptive triggers (Sunshine protocol extension)
+  STEAM_HAPTIC_PACKET_TYPE,  // 0x5504: Steam Controller haptic report (Vibepollo protocol extension)
+  STEAM_SETTINGS_PACKET_TYPE,  // 0x5505: Steam Controller settings write (Vibepollo protocol extension)
 };
 
 namespace asio = boost::asio;
@@ -454,6 +459,32 @@ namespace stream {
     std::uint8_t type_right;
     std::uint8_t left[DS_EFFECT_PAYLOAD_SIZE];
     std::uint8_t right[DS_EFFECT_PAYLOAD_SIZE];
+  };
+
+  /**
+   * A Steam Controller (2026) haptic output report for a client with the real pads
+   * (LI_CCAP_STEAM_HAPTIC): `report` holds it as the host wrote it, id first, `length` bytes.
+   */
+  struct control_steam_haptic_t {
+    control_header_v2 header;
+
+    std::uint16_t id;
+    std::uint8_t length;
+    std::uint8_t report[STEAM_HAPTIC_REPORT_MAX];
+  };
+
+  /**
+   * A Steam Controller (2026) settings write for a client that drives the real controller
+   * (LI_CCAP_STEAM_SETTINGS): `command` 0x87 with `count` (id, lo, hi) triples, or 0x8E with none.
+   * Fixed size; the client reads the whole triple array and trusts `count`.
+   */
+  struct control_steam_settings_t {
+    control_header_v2 header;
+
+    std::uint16_t id;
+    std::uint8_t command;
+    std::uint8_t count;
+    std::uint8_t triples[STEAM_SETTINGS_PAYLOAD_SIZE];
   };
 
   struct control_hdr_mode_t {
@@ -1454,6 +1485,33 @@ namespace stream {
         encrypted_payload;
 
       payload = encode_control(session, util::view(plaintext), encrypted_payload);
+    } else if (msg.type == platf::gamepad_feedback_e::steam_haptic) {
+      control_steam_haptic_t plaintext {};
+      plaintext.header.type = packetTypes[IDX_STEAM_HAPTIC];
+      plaintext.header.payloadLength = sizeof(plaintext) - sizeof(control_header_v2);
+
+      plaintext.id = util::endian::little(msg.id);
+      plaintext.length = msg.data.steam_haptic.length;
+      std::ranges::copy(msg.data.steam_haptic.report, plaintext.report);
+
+      std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+        encrypted_payload;
+
+      payload = encode_control(session, util::view(plaintext), encrypted_payload);
+    } else if (msg.type == platf::gamepad_feedback_e::steam_settings) {
+      control_steam_settings_t plaintext {};
+      plaintext.header.type = packetTypes[IDX_STEAM_SETTINGS];
+      plaintext.header.payloadLength = sizeof(plaintext) - sizeof(control_header_v2);
+
+      plaintext.id = util::endian::little(msg.id);
+      plaintext.command = msg.data.steam_settings.command;
+      plaintext.count = msg.data.steam_settings.count;
+      std::ranges::copy(msg.data.steam_settings.triples, plaintext.triples);
+
+      std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(sizeof(plaintext)) + crypto::cipher::tag_size>
+        encrypted_payload;
+
+      payload = encode_control(session, util::view(plaintext), encrypted_payload);
     } else {
       BOOST_LOG(error) << "Unknown gamepad feedback message type"sv;
       return -1;
@@ -1907,7 +1965,11 @@ namespace stream {
           }
 
           auto session = *pos;
-          haptics_client |= (session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM) != 0;
+          // The gamepad feedback queues below are drained only by this loop, so a
+          // session with a controller attached needs the short wait too: a Steam
+          // haptic click or a rumble stop must not sit for up to 150 ms.
+          haptics_client |= (session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM) != 0 ||
+                            input::has_gamepad(session->input);
 
           if (now > session->pingTimeout) {
             auto address = session->control.peer ? platf::from_sockaddr((sockaddr *) &session->control.peer->address.address) : session->control.expected_peer_address;
@@ -1993,9 +2055,12 @@ namespace stream {
               has_processless_live_session = true;
             }
             auto &feedback_queue = session->control.feedback_queue;
-            while (feedback_queue->peek()) {
-              auto feedback_msg = feedback_queue->pop();
-
+            // A retiring controller discards its queued output from another
+            // thread without waking consumers, so a peek() followed by a
+            // blocking pop() could wait forever on an item that is gone.
+            // Dequeue atomically instead; the loop ends when the mailbox is
+            // empty or stopped.
+            while (auto feedback_msg = feedback_queue->try_pop()) {
               send_feedback_msg(session, *feedback_msg);
             }
 
@@ -2030,7 +2095,8 @@ namespace stream {
         break;
       }
 
-      // Haptic samples must keep flowing even when the player is not moving.
+      // Haptic samples and gamepad feedback must keep flowing even when the player
+      // is not moving.
       server->iterate(haptics_client ? 5ms : 150ms);
     }
 
@@ -4291,7 +4357,7 @@ namespace stream {
 #endif
 
       session->control.connect_data = launch_session.control_connect_data;
-      session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback);
+      session->control.feedback_queue = mail->queue<platf::gamepad_feedback_msg_t>(mail::gamepad_feedback, platf::GAMEPAD_FEEDBACK_QUEUE_CAPACITY, false);
       session->control.hdr_queue = mail->event<video::hdr_info_t>(mail::hdr);
       session->control.legacy_input_enc_iv = launch_session.iv;
       session->control.cipher = crypto::cipher::gcm_t {

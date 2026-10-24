@@ -30,13 +30,20 @@ namespace platf {
     uint16_t capabilities;
     uint32_t supportedButtons;
     bool persist_after_disconnect = false;
+    uint64_t speaker_owner = 0;
   };
+  int alloc_result = 0, alloc_calls = 0;
   std::vector<gamepad_id_t> allocated_gamepads;
   int alloc_gamepad(int, gamepad_id_t id, gamepad_arrival_t, int) {
-    allocated_gamepads.push_back(id);
-    return 0;
+    ++alloc_calls;
+    if (alloc_result == 0) {
+      allocated_gamepads.push_back(id);
+    }
+    return alloc_result;
   }
 }
+// The forwarded attributes are not under test here; the fake gamepad_t keeps them as an int.
+void forward_steam_attributes(const gamepad_t &, int) {}
 int alloc_id(std::bitset<16> &mask) {
   for (int i = 0; i < 16; ++i) if (!mask[i]) { mask[i] = true; return i; }
   return -1;
@@ -54,7 +61,7 @@ constexpr int MULTI_CONTROLLER_MAGIC_GEN5 = 0x0c;
 constexpr int SS_HSCROLL_MAGIC = 0x55000001, SS_TOUCH_MAGIC = 0x55000002;
 constexpr int SS_PEN_MAGIC = 0x55000003, SS_CONTROLLER_ARRIVAL_MAGIC = 0x55000004;
 constexpr int SS_CONTROLLER_TOUCH_MAGIC = 0x55000005, SS_CONTROLLER_MOTION_MAGIC = 0x55000006;
-constexpr int SS_CONTROLLER_BATTERY_MAGIC = 0x55000007;
+constexpr int SS_CONTROLLER_BATTERY_MAGIC = 0x55000007, SS_STEAM_CONTROLLER_ATTRIBUTES_MAGIC = 0x55000008;
 // Models validation success; this suite tests enqueue permissions/lifetime, not wire parsing.
 struct validated_input_packet_t { uint32_t magic; };
 std::optional<validated_input_packet_t> validate_packet(const std::vector<uint8_t> &data) {
@@ -267,6 +274,39 @@ int main(int argc, char **argv) {
     passthrough(a, packet_bytes(KEY_DOWN_EVENT_MAGIC), crypto::PERM::_all_inputs);
     assert(a->input_queue.empty() && task_pool.tasks.empty());
     expect({{0x41, false, 0}, {0x41, true, 0}});
+  } else if (test == "pending_attributes_removed_with_mask") {
+    // Attributes may precede arrival, so a removed slot can have no platform ID
+    // and no failure flag yet. Another controller's inventory still retires it.
+    a->gamepads[1].pending_steam_attributes = 111;
+    a->gamepads[2].pending_steam_attributes = 222;
+    controller_packet p {0, 5}; passthrough(a, &p);
+    assert(!a->gamepads[1].pending_steam_attributes);
+    assert(a->gamepads[2].pending_steam_attributes == 222);
+    assert(platf::freed_gamepads.empty());
+    p.activeGamepadMask = 1; passthrough(a, &p);
+    assert(!a->gamepads[2].pending_steam_attributes);
+  } else if (test == "legacy_exhausted_ids_retire_attributes") {
+    a->gamepads[0].pending_steam_attributes = 123;
+    gamepadMask.set();
+    controller_packet p {0, 1}; passthrough(a, &p);
+    assert(a->gamepads[0].alloc_failed && !a->gamepads[0].pending_steam_attributes);
+    gamepadMask.reset(9); passthrough(a, &p);
+    assert(platf::alloc_calls == 0 && a->gamepads[0].id < 0);
+    p.activeGamepadMask = 0; passthrough(a, &p);
+    assert(!a->gamepads[0].alloc_failed);
+    p.activeGamepadMask = 1; passthrough(a, &p);
+    assert(platf::alloc_calls == 1 && a->gamepads[0].id == 9);
+  } else if (test == "failed_allocation_not_retried_per_packet") {
+    a->gamepads[0].pending_steam_attributes = 123;
+    platf::alloc_result = -1;
+    controller_packet p {0, 1}; passthrough(a, &p); passthrough(a, &p); passthrough(a, &p);
+    assert(platf::alloc_calls == 1 && a->gamepads[0].id == -1 && a->gamepads[0].alloc_failed);
+    assert(!a->gamepads[0].pending_steam_attributes);
+    p.activeGamepadMask = 0; passthrough(a, &p);
+    assert(!a->gamepads[0].alloc_failed && platf::alloc_calls == 1);
+    platf::alloc_result = 0; p.activeGamepadMask = 1; passthrough(a, &p);
+    assert(platf::alloc_calls == 2 && a->gamepads[0].id >= 0 && !a->gamepads[0].alloc_failed);
+    disconnect(a); assert(!a->gamepads[0].alloc_failed);
   } else if (test == "controller_hold_disconnect") {
     controller_packet p {0, 1, platf::BACK, 0, 255, 255, 32767, -32768, 123, -456};
     passthrough(a, &p);
@@ -312,7 +352,7 @@ int main(int argc, char **argv) {
     assert(platf::allocated_gamepads[2].globalIndex == first_host_id);
     assert(platf::allocated_gamepads[2].clientRelativeIndex == 0);
     disconnect(a);
-    assert(platf::freed_gamepads == std::vector<int>{first_host_id, first_host_id, second_host_id});
+    assert((platf::freed_gamepads == std::vector<int>{first_host_id, first_host_id, second_host_id}));
   } else if (test == "touch_pen_destroyed_while_context_retained") {
     a->client_context = std::make_unique<platf::client_input_t>();
     auto retained = a; disconnect(a);

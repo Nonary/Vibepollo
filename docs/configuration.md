@@ -387,9 +387,10 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
             driver to be installed. It presents a DualSense to clients that report a PlayStation
             controller, or when motion_as_ds4 or touchpad_as_ds4 applies, and an Xbox Series
-            controller otherwise. On an older driver it falls back to a generic HID pad that
-            publishes the DirectInput Physical Interface Device report set, so force feedback still
-            works in DirectInput games.}</td>
+            controller otherwise. A client that reports a Steam Controller, Switch or PlayStation
+            controller gets that profile when the driver offers it, and the driver's automatic
+            profile otherwise. A driver that offers no console profile is reported as unusable
+            (the reserved generic HID profiles are never selected).}</td>
     </tr>
     <tr>
         <td>vhf_switch</td>
@@ -398,6 +399,24 @@ editing the `conf` file in a text editor. Use the examples as reference.
             driver to be installed. Includes motion sensors, battery reporting, rumble, and the
             Capture button. This controller has no analog triggers, so trigger travel is reported
             as ZL and ZR presses, and it has no touchpad.}</td>
+    </tr>
+    <tr>
+        <td>vhf_steam</td>
+        <td>Steam Controller (2026) on Vibepollo's own virtual gamepad driver
+            @note{This option applies to Windows only and requires a Vibepollo virtual gamepad
+            driver with the Steam Controller profile. Steam recognises it as a real Steam
+            Controller: two trackpads (the client's touchpad 0 and 1), four grip buttons, motion
+            sensors, battery and pad haptics rendered as rumble. Plain `vhf` and `auto` select it
+            for clients that report a Steam Controller. Whether selected here or automatically, only
+            a client controller that reports the Steam type together with the Steam extensions (grip
+            sense, the pad haptic relay or explicit pad clicks) gets this profile; any other controller
+            the same client forwards, a keyboard's joystick interface for instance, or a Steam Deck's
+            built-in controls through SDL, gets the automatic choice instead of becoming a second
+            Steam Controller. A client that reads the real controller's
+            firmware attributes (firmware and bootloader build times, board revision, build id,
+            serials) relays them, so Steam sees the real firmware build and offers an update only
+            when the real controller needs one; a driver that predates this keeps its defaults.}
+            @warning{Do not start a Steam Controller firmware update from Steam while streaming: the update would target this virtual controller, not the real one. Update with the controller connected directly to a PC.}</td>
     </tr>
     <tr>
         <td>vhf_xbox</td>
@@ -492,7 +511,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             <br>
             <br>
             When disabled, motion sensors will not be taken into account during gamepad type selection.
-            @hint{Only applies when gamepad is set to auto.}
+            @hint{Applies when gamepad is set to auto or vhf.}
         </td>
     </tr>
     <tr>
@@ -520,7 +539,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             <br>
             <br>
             When disabled, touchpad presence will not be taken into account during gamepad type selection.
-            @hint{Only applies when gamepad is set to auto.}
+            @hint{Applies when gamepad is set to auto or vhf.}
         </td>
     </tr>
     <tr>
@@ -5258,7 +5277,8 @@ Sets the display mode used when the requested streaming mode cannot be applied.
 
 ### forward_rumble
 
-Forwards controller rumble events to the emulated host gamepad.
+Forwards controller rumble events (and, for a Steam Controller, the haptic reports Steam writes
+to its pads) from the emulated host gamepad to the client's physical controller.
 
 ### global_state_cmd
 

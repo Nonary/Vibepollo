@@ -611,6 +611,15 @@ const KeyCodeMap kKeyCodesMap[] = {
     // Unimplemented
   }
 
+  /**
+   * @brief Hands the real Steam Controller's firmware attributes to the virtual controller.
+   * @param input The global input context.
+   * @param attributes The attributes.
+   */
+  void gamepad_attributes(input_t &input, const steam_controller_attributes_t &attributes) {
+    // Unimplemented: no virtual gamepad on this platform
+  }
+
   input_t input() {
     input_t result {new macos_input_t()};
 
