@@ -100,6 +100,13 @@ a Steam slot's synthesized expiry stop are both admitted at capacity, a refused
 message leaves the duplicate cache stale for retry, and duplicates are suppressed.
 `--baseline` compiles `HEAD`.
 
+`python3 tests/input/test_usbip_trigger_admission.py` runs the production DualSense
+USB/IP flush (`flush_output`, `publish_latest`) against a mailbox nobody drains:
+left-only and right-only trigger programs both stay queued, a newer program for
+the same enables replaces its predecessor, hundreds of changed programs coalesce
+to one per enable set, a Steam slot's consumed-start expiry stop is still
+admitted afterwards, and a refused program keeps its enables pending.
+
 `python3 tests/input/test_vhf_fallback.py` executes the production Windows
 allocation and profile-selection functions with fake VHF/ViGEm driver objects:
 a Steam Controller client under `auto` prefers the VHF driver, a client-derived
