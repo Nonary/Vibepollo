@@ -1,6 +1,7 @@
 #pragma once
 
 #include "version_compare.h"
+#include <chrono>
 #include <nlohmann/json.hpp>
 #include <regex>
 
@@ -20,7 +21,7 @@ namespace release_selection {
   inline bool daily_tag(const std::string &tag) {
     static const std::regex pattern(R"(^daily-[0-9]{4}-[0-9]{2}-[0-9]{2}(\.([1-9][0-9]{0,2}))?$)");
     static const std::regex semver(R"(^[0-9]+\.[0-9]+\.[0-9]+-daily\.d[0-9]{8}(\.([1-9][0-9]{0,2}))?$)");
-    static const std::regex nightly(R"(^[0-9]+\.[0-9]+\.[0-9]+-nightly\.d[0-9]{8}\.[0-9a-f]{12}$)");
+    static const std::regex nightly(R"(^[0-9]+\.[0-9]+\.[0-9]+-nightly\.d[0-9]{8}\.(r\.[1-9][0-9]{0,2}\.)?[0-9a-f]{12}$)");
     return std::regex_match(tag, pattern) || std::regex_match(tag, semver) || std::regex_match(tag, nightly);
   }
   inline bool asset(const json &release, const std::string &name) {
@@ -74,17 +75,23 @@ namespace release_selection {
   }
   inline bool valid_metadata(const std::string &tag, const json &metadata) {
     if (!daily_tag(tag) || !metadata.is_object()) return false;
-    static const std::regex new_nightly(R"(^([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d([0-9]{4})([0-9]{2})([0-9]{2})\.([0-9a-f]{12})$)");
+    static const std::regex new_nightly(R"(^([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d([0-9]{4})([0-9]{2})([0-9]{2})\.(?:r\.([1-9][0-9]{0,2})\.)?([0-9a-f]{12})$)");
     std::smatch nightly_match;
     if (std::regex_match(tag, nightly_match, new_nightly)) {
       const auto source = metadata.value("source_commit", "");
       static const std::regex sha(R"(^[0-9a-f]{40}$)");
       if (!std::regex_match(source, sha) || !ordered_version(tag) || metadata.value("schema_version", 0) != 1 ||
           metadata.value("channel", "") != "nightly" || metadata.value("tag", "") != tag ||
-          metadata.value("version", "") != tag || nightly_match[5].str() != source.substr(0, 12) ||
+          metadata.value("version", "") != tag || nightly_match[6].str() != source.substr(0, 12) ||
           !metadata.contains("nightly_sequence") || !metadata["nightly_sequence"].is_number_integer()) return false;
       const auto day = nightly_match[2].str() + nightly_match[3].str() + nightly_match[4].str();
-      return metadata["nightly_sequence"].get<long long>() == std::stoll(day);
+      const auto calendar = std::chrono::year_month_day {
+        std::chrono::year {std::stoi(nightly_match[2])},
+        std::chrono::month {static_cast<unsigned>(std::stoi(nightly_match[3]))},
+        std::chrono::day {static_cast<unsigned>(std::stoi(nightly_match[4]))}};
+      if (!calendar.ok() || int(calendar.year()) < 2000 || int(calendar.year()) > 2099) return false;
+      const auto sequence = nightly_match[5].matched ? std::stoll(day) * 1000 + std::stoi(nightly_match[5]) : std::stoll(day);
+      return metadata["nightly_sequence"].get<long long>() == sequence;
     }
     if (!tag.starts_with("daily-")) {
       static const std::regex semver(R"(^([0-9]+\.[0-9]+\.[0-9]+)-daily\.d([0-9]{4})([0-9]{2})([0-9]{2})(\.([1-9][0-9]{0,2}))?$)");
@@ -127,7 +134,12 @@ namespace release_selection {
   }
   inline std::string identity(const json &release) {
     const auto tag = release.value("tag_name", "");
-    if (!daily_tag(tag)) return ordered_version(tag) ? tag : "";
+    if (!daily_tag(tag)) {
+      // Malformed nightly identities must not fall back to an unqualified
+      // ordinary prerelease and bypass metadata verification.
+      if (tag.find("-nightly.d") != std::string::npos || tag.find("-daily.d") != std::string::npos) return "";
+      return ordered_version(tag) ? tag : "";
+    }
     const auto metadata = api_metadata(release);
     if (metadata.is_null()) return "";
     return metadata["version"].get<std::string>();
@@ -147,11 +159,23 @@ namespace release_selection {
       // sorted channel between beta and rc. Stable respins remain above it.
       return a ? -1 : 1;
     }
-    // New tags carry random SHA identity, not a monotonic same-day revision.
-    static const std::regex dated_nightly(R"(^[0-9]+\.[0-9]+\.[0-9]+-nightly\.d([0-9]{8})\.[0-9a-f]{12}$)");
+    // Compare calendar day and revision, never the random source SHA. Legacy
+    // hash-only nightlies are revision zero; old daily.N forms remain accepted.
+    static const std::regex dated_nightly(R"(^[0-9]+\.[0-9]+\.[0-9]+-(?:nightly\.d([0-9]{8})\.(?:r\.([1-9][0-9]{0,2})\.)?[0-9a-f]{12}|daily\.d([0-9]{8})(?:\.([1-9][0-9]{0,2}))?)(?:\+[0-9A-Za-z.-]+)?$)");
     std::smatch lm, rm;
-    if (std::regex_match(left, lm, dated_nightly) && std::regex_match(right, rm, dated_nightly) &&
-        same_base(left, right) && lm[1] == rm[1]) return 0;
+    if (same_base(left, right) && std::regex_match(left, lm, dated_nightly) &&
+        std::regex_match(right, rm, dated_nightly)) {
+      const auto key = [](const std::smatch &match) {
+        const bool nightly = match[1].matched;
+        return std::pair {std::stoll(match[nightly ? 1 : 3]),
+                          match[nightly ? 2 : 4].matched ? std::stoi(match[nightly ? 2 : 4]) : 0};
+      };
+      const auto l = key(lm), r = key(rm);
+      // On the same day the SHA-tagged nightly family supersedes historical
+      // daily revisions, independent of their old channel spelling.
+      if (l.first == r.first && lm[1].matched != rm[1].matched) return lm[1].matched ? 1 : -1;
+      return l == r ? 0 : l < r ? -1 : 1;
+    }
     return version_compare::compare_semver(left, right);
   }
   inline json select(const json &releases, const std::string &installed, bool allow_prereleases) {

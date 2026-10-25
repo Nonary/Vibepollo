@@ -182,6 +182,8 @@ jobs:
       - name: Create once, upload all assets, then expose prerelease
         run: |
           set -euo pipefail
+          # Partial reruns must not publish a duplicate or older qualified source.
+          python scripts/daily_release.py publication
           # The reserved tag pins the tested source even if canary advances.
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha)" = "$DAILY_COMMIT"
           gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$DAILY_TAG" --notes-file daily-notes.md --draft --prerelease --latest=false

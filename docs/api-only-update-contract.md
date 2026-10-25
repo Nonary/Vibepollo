@@ -49,3 +49,12 @@ Scheduled no-source-change skips, exact tag/source checks, draft-first
 publication and `latest=false` are retained. CI may read historical metadata
 assets to establish a verified publishing baseline; that does not run in an
 installed application's ordinary update check.
+
+Same-day host nightlies use `{base}-nightly.dYYYYMMDD.r.N.{sha12}`. The numeric
+revision precedes the hash, so the previously shipped date-only updater can
+find the bridge through its existing SemVer route. That legacy route retains
+its ordinary prerelease completeness checks; it cannot acquire the new
+metadata validation until upgraded. Revised clients validate the new identity
+and compare UTC day/revision, never SHA order. Existing public releases and
+metadata assets remain unchanged. See [nightly metadata](../scripts/NIGHTLY_METADATA.md)
+for reservation, no-repeat-source, Windows version and recovery contracts.
