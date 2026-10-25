@@ -163,6 +163,7 @@ namespace config {
 
     virtual_display_mode_e virtual_display_mode;
     virtual_display_layout_e virtual_display_layout;
+    bool virtual_display_keep_while_paused;  ///< macOS: keep the virtual display, so the other displays stay off, while a game is paused.
 
     int virtual_display_max_clients;  ///< Shared normal-game/Remote Monitor client identity limit (1..8).
 
@@ -527,6 +528,7 @@ namespace config {
     int hardware_metrics_interval {1000};  ///< Minimum client sample interval, in milliseconds
     bool realtime_stats_enabled {true};  ///< Sample live host stats (CPU/GPU/RAM/VRAM) for the web UI
     int realtime_stats_poll_interval_ms {2000};  ///< Host stats sampler interval in milliseconds
+    bool lid_close_ends_streams {true};  ///< macOS: end streams when a MacBook's lid closes, even if the Mac stays awake.
   };
 
   extern video_t video;

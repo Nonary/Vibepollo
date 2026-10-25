@@ -69,7 +69,6 @@ namespace session_history::writer {
     settings_t g_settings;
 
     constexpr int MAX_HISTORY_SESSIONS = 50;
-    constexpr std::size_t MAX_PENDING_WRITE_COMMANDS = 4096;
     constexpr int DEFAULT_DETAIL_SAMPLE_LIMIT = 1800;
     constexpr int DEFAULT_DETAIL_EVENT_LIMIT = 500;
     constexpr int MAX_SAMPLES_PER_SESSION = 7200;

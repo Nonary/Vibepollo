@@ -1,6 +1,7 @@
 #include "src/legacy_generated_app_identities.h"
 #include "../tests_common.h"
 
+#include "src/jthread.h"
 #include "src/remote_session.h"
 
 #include <atomic>
@@ -86,6 +87,8 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   EXPECT_EQ(monitor.catalogue[0].id, remote_session::resume_id);
   EXPECT_EQ(monitor.catalogue[1].id, remote_session::disconnect_monitor_id);
 
+  // Moonlight fetches the list while its Remote Input session is closing,
+  // so the tile stays listed for that client.
   const auto input = remote_session::project(caller("input"), {}, {.role = remote_session::role_e::input}, configured, true);
   ASSERT_EQ(input.catalogue.size(), 4);
   EXPECT_EQ(input.catalogue[0].id, 1);
@@ -324,6 +327,7 @@ TEST(RemoteSession, DispatchEnforcesCallerPermissionsAndRetention) {
   EXPECT_TRUE(ownerless_disconnect.already_complete);
   EXPECT_FALSE(remote_session::dispatch(caller("monitor"), {}, {.role = remote_session::role_e::monitor}, remote_session::control_e::input).allowed);
   EXPECT_FALSE(remote_session::dispatch(caller("input"), {}, {.role = remote_session::role_e::input}, remote_session::control_e::monitor).allowed);
+  EXPECT_TRUE(remote_session::dispatch(caller("input"), {}, {.role = remote_session::role_e::input}, remote_session::control_e::input).allowed);
   const auto stale_monitor_launch = remote_session::dispatch(
     caller("monitor"),
     {},
@@ -543,7 +547,7 @@ TEST(RemoteSession, NormalAppTransitionGateSerializesProcessStartPublication) {
   std::atomic_bool contender_started {false};
   std::atomic_bool contender_entered {false};
   std::unique_lock first_transition {gate};
-  std::jthread contender {[&] {
+  util::jthread contender {[&] {
     contender_started.store(true, std::memory_order_release);
     std::lock_guard second_transition {gate};
     contender_entered.store(true, std::memory_order_release);

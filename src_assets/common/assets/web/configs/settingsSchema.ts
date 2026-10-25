@@ -415,6 +415,9 @@ const virtualDisplayCustomizationFields = (): SettingsField[] => [
     labelKey: 'ui.settings.fields.wayland_hdr_compatibility.label',
     descriptionKey: 'ui.settings.fields.wayland_hdr_compatibility.description',
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
+  }),  boolean('virtual_display_keep_while_paused', {
+    platform: 'macos',
+    visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
   }),
 ];
 
@@ -805,7 +808,7 @@ export const settingsCategories: SettingsCategory[] = [
           number('dd_paused_virtual_display_timeout_secs', {
             min: 0,
             step: 1,
-            platform: ['windows', 'linux'],
+            platform: ['windows', 'linux', 'macos'],
           }),
           text('dd_snapshot_restore_hotkey', { platform: 'windows' }),
           text('dd_snapshot_restore_hotkey_modifiers', { platform: 'windows' }),
@@ -1068,6 +1071,7 @@ export const settingsCategories: SettingsCategory[] = [
           extendedField('update_check_interval'),
           text('sunshine_name', { placeholderKey: 'ui.settings.placeholders.host_name' }),
           boolean('system_tray'),
+          boolean('lid_close_ends_streams', { platform: 'macos' }),
           boolean('hide_tray_controls'),
           boolean('envvar_compatibility_mode'),
           boolean('notify_pre_releases'),
@@ -1147,6 +1151,7 @@ export const settingsDefaults: Record<string, unknown> = {
   gamepad: 'auto',
   virtual_display_mode: 'per_client',
   virtual_display_layout: 'exclusive',
+  virtual_display_keep_while_paused: true,
   virtual_display_max_clients: 4,
   remote_monitor_mute_audio: false,
   remote_monitor_disconnect_on_stream_end: false,
@@ -1257,6 +1262,7 @@ export const settingsDefaults: Record<string, unknown> = {
   wan_encryption_mode: 1,
   csrf_allowed_origins: '',
   system_tray: true,
+  lid_close_ends_streams: true,
   notify_pre_releases: true,
   min_log_level: 2,
   global_prep_cmd: [],

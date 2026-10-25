@@ -11,8 +11,9 @@
 #include <mutex>
 #include <optional>
 #include <span>
-#include <stop_token>
 #include <thread>
+
+#include "src/jthread.h"
 
 namespace platf::linux_private_display::cleanup_policy {
   struct no_completion_t {
@@ -96,7 +97,7 @@ namespace platf::linux_private_display::cleanup_policy {
     const std::uint64_t expected_generation,
     ProtectedOwner protected_owner,
     Restore restore,
-    std::stop_token stop = {},
+    util::stop_token stop = {},
     std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(),
     Complete complete = {},
     admission_e admission = admission_e::respect_owners
@@ -158,7 +159,7 @@ namespace platf::linux_private_display::cleanup_policy {
     Restore restore,
     RetryAllowed retry_allowed,
     std::span<const std::chrono::milliseconds> retry_delays,
-    std::stop_token stop = {},
+    util::stop_token stop = {},
     std::chrono::steady_clock::duration attempt_timeout = std::chrono::seconds(30),
     Complete complete = {}
   ) {
