@@ -25,6 +25,7 @@
 #include "src/input.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/platform/macos/display_policy.h"
 #include "src/platform/macos/virtual_display.h"
 #include "src/utility.h"
 
@@ -82,17 +83,17 @@ namespace platf {
     return display;
   }
 
-  // A Remote Monitor stream's pointer belongs to its own display, which display() records by the
-  // stream's touch port offset. Every other stream's goes to the streamed display.
+  // A Remote Monitor stream's pointer belongs to its own display, which display() names in the
+  // stream's touch port. Every other stream's goes to the streamed display.
   CGDirectDisplayID pointer_display(macos_input_t *macos_input, const touch_port_t &touch_port) {
     static std::atomic<CGDirectDisplayID> last_remote {kCGNullDirectDisplay};
-    if (const auto remote = macos_virtual_display::remote_display_captured_at(touch_port.offset_x, touch_port.offset_y)) {
-      if (last_remote.exchange(*remote) != *remote) {
-        BOOST_LOG(info) << "Remote Monitor pointer: moving on display "sv << *remote;
-      }
-      return *remote;
+    const auto stream_display = macos_display_policy::parse_display_identity(touch_port.output_name);
+    const auto streamed = current_display(macos_input);
+    const auto display = macos_display_policy::pointer_display(stream_display, macos_virtual_display::is_remote_display, streamed);
+    if (display != streamed && last_remote.exchange(display) != display) {
+      BOOST_LOG(info) << "Remote Monitor pointer: moving on display "sv << display;
     }
-    return current_display(macos_input);
+    return display;
   }
 
   // A struct to hold a Windows keycode to Mac virtual keycode mapping.

@@ -858,6 +858,12 @@ namespace remote_display_topology {
         .configured_mode = state_it->second.effective_mode,
         .last_requested_mode = state_it->second.effective_mode,
       };
+      if (callbacks_.layout_size) {
+        if (const auto size = callbacks_.layout_size(uuid, node.configured_mode)) {
+          node.layout_width = size->first;
+          node.layout_height = size->second;
+        }
+      }
       const auto append_right = [&](const std::string &warning) {
         node.x = rightmost;
         rightmost += layout_width(node);

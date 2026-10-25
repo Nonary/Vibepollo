@@ -83,6 +83,7 @@ namespace platf::macos_virtual_display {
   bool remote_apply_composed_topology(const std::vector<remote_display_topology::node_t> &composed);
   std::optional<std::string> remote_exact_capture_output(const std::string &client_uuid, const remote_display_topology::mode_t &mode);
   bool remote_remove_owned_display(const std::string &client_uuid);
+  std::optional<std::pair<int, int>> remote_layout_size(const std::string &client_uuid, const remote_display_topology::mode_t &mode);
 
   /// The active displays other than Remote Monitor ones, which the topology arranges them around.
   std::vector<remote_display_topology::node_t> remote_baseline();
@@ -92,16 +93,6 @@ namespace platf::macos_virtual_display {
 
   /// Whether a display is one of Vibepollo's virtual displays, made as an HDR display.
   bool is_hdr_display(std::uint32_t display_id);
-
-  /**
-   * @brief Record where a Remote Monitor display was when its capture started.
-   * @details Its stream's input carries that origin as its touch port offset, which is how input
-   *          finds the display even after the display moves.
-   */
-  void note_remote_capture_origin(std::uint32_t display_id, int x, int y);
-
-  /// The Remote Monitor display whose capture started at an origin, from note_remote_capture_origin().
-  std::optional<std::uint32_t> remote_display_captured_at(int x, int y);
   /** @} */
 
   /**

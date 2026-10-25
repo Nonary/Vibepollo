@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace remote_display_topology {
@@ -69,6 +70,10 @@ namespace remote_display_topology {
     // A false result retains ownership for retry; shared normal-game outputs
     // and captures still prevent removal.
     std::function<bool(const std::string &client_uuid)> terminate_owned_display;
+    // Optional desktop footprint of a client display in the given mode, for
+    // platforms whose desktop coordinates aren't capture pixels (a Retina
+    // display at 3840x2160 occupies 1920x1080 points). Mode reporting stays native.
+    std::function<std::optional<std::pair<int, int>>(const std::string &client_uuid, const mode_t &mode)> layout_size;
   };
 
   struct activation_result_t {

@@ -599,14 +599,13 @@ namespace platf {
     // We also need set env_width and env_height for absolute mouse coordinates
     display->env_width = display->width;
     display->env_height = display->height;
-    // Where the display sits on the desktop, in points. Input sends each stream's pointer to the
-    // display at its offset, so a Remote Monitor client's clicks land on its own display.
+    // Where the display sits on the desktop, in points.
     const CGRect bounds = CGDisplayBounds(display->display_id);
     display->offset_x = static_cast<int>(bounds.origin.x);
     display->offset_y = static_cast<int>(bounds.origin.y);
-    if (remote_monitor) {
-      macos_virtual_display::note_remote_capture_origin(display->display_id, display->offset_x, display->offset_y);
-    }
+    // The stream's input carries the display's ID, so a Remote Monitor client's pointer stays on
+    // its own display wherever that display moves, and wherever other displays take its old place.
+    display->input_output_name = std::to_string(display->display_id);
 
     return display;
   }
