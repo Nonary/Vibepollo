@@ -331,6 +331,11 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
             "${CMAKE_CURRENT_LIST_DIR}/unit/test_dolby_session_isolation.py"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
     set_tests_properties(test_component_dolby_session_isolation PROPERTIES LABELS "component" TIMEOUT 30)
+
+    add_test(NAME test_component_ffmpeg_package_pin
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_ffmpeg_package_pin.py")
+    set_tests_properties(test_component_ffmpeg_package_pin PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
 
 if(WIN32)
