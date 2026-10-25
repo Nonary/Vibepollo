@@ -455,9 +455,6 @@ sunshine_add_test_target(
     CATEGORY fast
     TEST_SOURCES unit/test_legacy_nightly_update_standalone.cpp
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
-if(TARGET test_fast_legacy_nightly_update)
-    target_include_directories(test_fast_legacy_nightly_update PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}/src")
-endif()
 
 sunshine_add_test_target(
     NAME test_component_update_notification_state
