@@ -13,6 +13,7 @@ namespace managed_app_focus {
 var result={windows:[],focused:false};
 var active=workspace.activeWindow;
 result.foreground_pid=active && active.normalWindow && !active.minimized ? Number(active.pid) : 0;
+result.foreground=result.foreground_pid && active.internalId ? String(active.pid)+":"+String(active.internalId) : "";
 var windows=workspace.windowList();
 // Prefer a fullscreen game over its launcher/dialog, without matching titles.
 windows.sort(function(a,b) { return Number(b.fullScreen)-Number(a.fullScreen); });

@@ -287,7 +287,11 @@ let fallback=run([xwayland,native],[7,8],['8:xwayland-game','7:wayland-game'],w=
 native.minimized=false;
 let observe=run([native,xwayland],[1],[],()=>{throw Error('read-only query attempted activation');},native);
 assert.strictEqual(observe.result.foreground_pid,7);assert.strictEqual(observe.active,native);
+// The exact active window, so a same-PID launcher is not mistaken for the game.
+assert.strictEqual(observe.result.foreground,'7:wayland-game');
+assert.strictEqual(run([native,splash],[7],[],()=>true,{...splash,minimized:false}).result.foreground,'7:splash');
 assert.strictEqual(run([native],[1],[],()=>true,{pid:99,normalWindow:false}).result.foreground_pid,0);
+assert.strictEqual(run([native],[1],[],()=>true,{pid:99,normalWindow:false}).result.foreground,'');
 assert.strictEqual(run([native],[1],[],()=>true,{pid:7,normalWindow:true,minimized:true}).result.foreground_pid,0);
 console.log('production KWin script: passed');
 '''.replace('PRODUCTION', json.dumps(script))
