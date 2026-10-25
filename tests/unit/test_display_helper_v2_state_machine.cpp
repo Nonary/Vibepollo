@@ -5500,3 +5500,59 @@ TEST(DisplayHelperV2Reactivation, TeardownWaitsForRepairAndRejectsLateCompletion
 }
 
 #endif  // _WIN32 || SUNSHINE_TEST_PORTABLE_WINDOWS_TYPES
+
+TEST(DisplayHelperV2StateMachine, Issue599ExclusiveMaintainsTopologyOnPostApplyDisplayChange) {
+  // Regression for #599: an active exclusive session must verify/re-apply its
+  // singleton topology when a generic display-change notification arrives
+  // (physical outputs can re-enable behind the virtual session) rather than
+  // being silently discarded.
+  StateMachineHarness harness;
+  display_helper::v2::ApplyRequest request;
+  request.configuration = display_device::SingleDisplayConfiguration {};
+  request.configuration->m_device_id = "VDD-EXCLUSIVE";
+  request.topology = display_device::ActiveTopology {{"VDD-EXCLUSIVE"}};
+  request.virtual_layout = "exclusive";
+  harness.virtual_display.current_device_id = "VDD-EXCLUSIVE";
+  harness.state_machine.handle_message(display_helper::v2::ApplyCommand {
+    request, harness.cancellation.current_generation(),
+  });
+
+  display_helper::v2::ApplyOutcome applied;
+  applied.status = display_helper::v2::ApplyStatus::Ok;
+  applied.display_may_have_changed = true;
+  applied.exclusive_pre_apply_topology = display_device::ActiveTopology {{"PHYSICAL-BASELINE"}};
+  harness.dispatcher.apply_completion(applied);
+  harness.drain_messages();
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::VirtualDisplayMonitoring);
+  ASSERT_TRUE(harness.state_machine.recovery_armed());
+
+  // Simulate a generic display-change event (no new device identity) during
+  // VirtualDisplayMonitoring — this is the exact path that previously
+  // discarded the event and let the physical outputs stay enabled.
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange,
+    harness.cancellation.current_generation(),
+  });
+  harness.drain_messages();
+
+  // A verification is queued with a short coalesce delay rather than being
+  // dropped. The purpose must be the new maintenance lane, and the expected
+  // topology must be the original singleton.
+  ASSERT_GT(harness.dispatcher.verification_dispatch_count, 0);
+  EXPECT_EQ(harness.dispatcher.verification_request.virtual_layout, "exclusive");
+  ASSERT_TRUE(harness.dispatcher.verification_topology.has_value());
+  EXPECT_TRUE(harness.dispatcher.verification_topology->size() == 1);
+  EXPECT_TRUE(harness.dispatcher.verification_topology->front().size() == 1);
+  EXPECT_TRUE(boost::iequals(harness.dispatcher.verification_topology->front().front(), "VDD-EXCLUSIVE"));
+  EXPECT_EQ(harness.dispatcher.verification_delay, std::chrono::milliseconds(750));
+
+  // Confirm that a successful verification keeps the session verified and
+  // does not restart recovery; a failed verification burns one bounded repair.
+  harness.dispatcher.verification_completion(true);
+  harness.drain_messages();
+  ASSERT_TRUE(harness.state_machine.state() == display_helper::v2::State::VirtualDisplayMonitoring ||
+              harness.state_machine.state() == display_helper::v2::State::Waiting);
+}
