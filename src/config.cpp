@@ -2153,6 +2153,8 @@ namespace config {
     string_f(vars, "audio_sink", audio.sink);
     string_f(vars, "virtual_sink", audio.virtual_sink);
     bool_f(vars, "stream_audio", audio.stream);
+    string_restricted_f(vars, "audio_format", audio.format, {"opus"sv, "ac3"sv, "eac3"sv});
+    bool_f(vars, "high_quality_audio", audio.high_quality_audio);
     bool_f(vars, "audio_sink_capture_only", audio.sink_capture_only);
     bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
     bool_f(vars, "keep_sink_default", audio.keep_default);

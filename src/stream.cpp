@@ -524,7 +524,7 @@ namespace stream {
     return ((size + 15) / 16) * 16;
   }
 
-  constexpr std::size_t MAX_AUDIO_PACKET_SIZE = 1400;
+  constexpr std::size_t MAX_AUDIO_PACKET_SIZE = 4096;
 
   using audio_aes_t = std::array<char, round_to_pkcs7_padded(MAX_AUDIO_PACKET_SIZE)>;
 
@@ -4583,7 +4583,7 @@ namespace stream {
       }
 
       if (!session->audio_disabled) {
-        constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(2048);
+        constexpr auto max_block_size = crypto::cipher::round_to_pkcs7_padded(MAX_AUDIO_PACKET_SIZE);
         util::buffer_t<char> shards {RTPA_TOTAL_SHARDS * max_block_size};
         util::buffer_t<uint8_t *> shards_p {RTPA_TOTAL_SHARDS};
         for (auto x = 0; x < RTPA_TOTAL_SHARDS; ++x) shards_p[x] = (uint8_t *) &shards[x * max_block_size];
