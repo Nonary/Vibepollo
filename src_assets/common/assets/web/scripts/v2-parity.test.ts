@@ -109,6 +109,7 @@ test('gamepad options follow the host platform', () => {
       'vhf_ds5',
       'usbip_ds5',
       'vhf_switch',
+      'vhf_steam',
     ],
   );
   assert.deepEqual(
