@@ -1,7 +1,10 @@
 #include "../../../../packaging/linux/managed_app_focus_hyprland.h"
+#include "../../../../packaging/linux/managed_app_focus_step.h"
 
 #include <atomic>
 #include <cassert>
+#include <cerrno>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -13,6 +16,14 @@
 #include <vector>
 
 namespace {
+  // Names the failed fixture syscall; the sandbox may forbid any of them.
+  void require(bool ok, const char *operation) {
+    if (!ok) {
+      std::cerr << "fake_socket: " << operation << ": " << std::strerror(errno) << '\n';
+      std::abort();
+    }
+  }
+
   // A one-reply-per-connection server like Hyprland's .socket.sock. It runs in
   // this process, so its peer credentials are this test's PID and start time.
   class fake_socket {
@@ -20,10 +31,12 @@ namespace {
     explicit fake_socket(const std::filesystem::path &path, std::string reply):
         reply_(std::move(reply)) {
       fd_ = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+      require(fd_ >= 0, "socket");
       sockaddr_un address {};
       address.sun_family = AF_UNIX;
       std::snprintf(address.sun_path, sizeof(address.sun_path), "%s", path.c_str());
-      assert(fd_ >= 0 && !bind(fd_, reinterpret_cast<sockaddr *>(&address), sizeof(address)) && !listen(fd_, 4));
+      require(!bind(fd_, reinterpret_cast<sockaddr *>(&address), sizeof(address)), "bind");
+      require(!listen(fd_, 4), "listen");
       worker_ = std::thread([this] {
         while (const int connection = accept4(fd_, nullptr, nullptr, SOCK_CLOEXEC)) {
           if (connection < 0) return;
@@ -113,12 +126,14 @@ namespace {
 
 int main() {
   using managed_app_focus::hyprland::apply;
+  using managed_app_focus::focus_step;
   {
     // Observation alone lists the fullscreen game first and changes nothing.
     fake_hyprland hyprland;
     const auto observed = apply(hyprland.transport(), {700, 701});
     assert(observed.value("focused", true) == false);
     assert(observed.value("foreground_pid", 0) == 900);
+    assert(observed.value("foreground", std::string {}) == "900:0x5a03");
     assert((observed["windows"] == nlohmann::json {"701:0x5a02", "700:0x5a01"}));
     assert((hyprland.requests == std::vector<std::string> {"j/clients", "j/activewindow"}));
   }
@@ -130,6 +145,29 @@ int main() {
     assert(hyprland.requests.back() == "j/activewindow");
     assert(std::ranges::count(hyprland.requests, std::string {"/dispatch focuswindow address:0x5a02"}) == 1);
     assert(std::ranges::count_if(hyprland.requests, [](const auto &request) { return request.find("0x5a03") != std::string::npos; }) == 0);
+  }
+  {
+    // A launcher of the game's own process in front of the fullscreen game
+    // is lost focus, not the game.
+    fake_hyprland hyprland;
+    hyprland.listed = R"([{"address":"0xaaaa","mapped":true,"hidden":false,"pid":700,"fullscreen":2},
+                          {"address":"0xbbbb","mapped":true,"hidden":false,"pid":700,"fullscreen":0}])";
+    hyprland.active = R"({"address":"0xbbbb","mapped":true,"hidden":false,"pid":700})";
+    managed_app_focus::budget focus({1, 15, false}, managed_app_focus::budget::clock::now());
+    const auto ipc = hyprland.transport();
+    assert(focus_step([&](const auto &activate) { return apply(ipc, {700}, activate); }, focus, managed_app_focus::budget::clock::now()));
+    assert(std::ranges::count(hyprland.requests, std::string {"/dispatch focuswindow address:0xaaaa"}) == 1);
+  }
+  {
+    // The exact game window already active gets no dispatch and spends nothing.
+    fake_hyprland hyprland;
+    hyprland.active = R"({"address":"0x5a02","mapped":true,"hidden":false,"pid":701})";
+    const auto now = managed_app_focus::budget::clock::now();
+    managed_app_focus::budget focus({1, 15, false}, now);
+    const auto ipc = hyprland.transport();
+    assert(!focus_step([&](const auto &activate) { return apply(ipc, {700, 701}, activate); }, focus, now));
+    assert(std::ranges::none_of(hyprland.requests, [](const auto &request) { return request.starts_with("/dispatch"); }));
+    assert(focus.can_focus(now));
   }
   {
     // A Lua config refuses dispatcher syntax; the same validated address is

@@ -1445,6 +1445,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
     add_executable(test_linux_hyprland_focus
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_focus.cpp")
     target_compile_options(test_linux_hyprland_focus PRIVATE -UNDEBUG)
+    target_include_directories(test_linux_hyprland_focus PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
     target_link_libraries(test_linux_hyprland_focus PRIVATE nlohmann_json::nlohmann_json Threads::Threads)
     add_test(NAME test_component_linux_hyprland_focus COMMAND test_linux_hyprland_focus)
     set_tests_properties(test_component_linux_hyprland_focus PROPERTIES LABELS "component" TIMEOUT 30)

@@ -165,6 +165,12 @@ namespace managed_app_focus::hyprland {
       return valid ? text : std::string {};
     }
 
+    inline std::string identity(const nlohmann::json &window) {
+      const auto pid = visible_pid(window);
+      const auto text = address(window);
+      return pid && !text.empty() ? std::to_string(pid) + ":" + text : std::string {};
+    }
+
     // Hyprland has no window types but floats dialogs: fullscreen, then tiled.
     inline std::pair<bool, bool> rank(const nlohmann::json &window) {
       const auto *fullscreen = field(window, "fullscreen");
@@ -193,10 +199,10 @@ namespace managed_app_focus::hyprland {
       if (pid && std::ranges::find(pids, pid) != pids.end() && !detail::address(window).empty()) windows.push_back(window);
     }
     std::ranges::stable_sort(windows, std::greater {}, detail::rank);
-    nlohmann::json result {{"windows", nlohmann::json::array()}, {"focused", false}, {"foreground_pid", detail::visible_pid(active)}};
+    nlohmann::json result {{"windows", nlohmann::json::array()}, {"focused", false}, {"foreground_pid", detail::visible_pid(active)}, {"foreground", detail::identity(active)}};
     for (const auto &window : windows) {
       const auto address = detail::address(window);
-      const auto identity = std::to_string(detail::visible_pid(window)) + ":" + address;
+      const auto identity = detail::identity(window);
       result["windows"].push_back(identity);
       if (result["focused"].get<bool>() || std::ranges::find(activate, identity) == activate.end()) continue;
       // Only activewindow confirms the activation.
