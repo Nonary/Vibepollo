@@ -231,16 +231,19 @@ jobs:
           ref: ${{ inputs.release_commit }}
           fetch-depth: 1
 
+      - name: Resolve audited producer identity for the exact source
+        shell: pwsh
+        env:
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+        run: |
+          python .github/scripts/vhf_release_identity.py --source-commit $env:RELEASE_COMMIT --github-env $env:GITHUB_ENV
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Download and verify immutable producer release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_COMMIT: ${{ inputs.release_commit }}
-          VHF_ARCHIVE_SHA256: 59e89ab90c6e360e3e23bb4717b43339c4ec0050aedc52fe05e4f3ef306d62ee
-          VHF_DRIVER_VER: 10/16/2026,0.1.0.53
-          VHF_PROTOCOL_VERSION: '2'
-          VHF_SOURCE_REVISION: 7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a
-          VHF_TAG: v0.1.0-beta.9
         run: |
           $ErrorActionPreference = 'Stop'
           $gitlink = (git rev-parse "$($env:RELEASE_COMMIT):third-party/libvirtualgamepad").Trim()
@@ -250,7 +253,7 @@ jobs:
 
           $packageRoot = Join-Path $env:RUNNER_TEMP 'vhf-gamepad-producer-release'
           .\scripts\download_libvirtualgamepad_release.ps1 `
-            -Repository Nonary/libvirtualgamepad `
+            -Repository $env:VHF_REPOSITORY `
             -Tag $env:VHF_TAG `
             -ExpectedArchiveSha256 $env:VHF_ARCHIVE_SHA256 `
             -ExpectedSourceRevision $env:VHF_SOURCE_REVISION `
@@ -397,20 +400,22 @@ jobs:
           name: vhf-gamepad-producer-release-Windows
           path: ${{ runner.temp }}\vhf-gamepad-producer-release
 
-      - name: Revalidate VHF producer package for packaging
+      - name: Resolve audited producer identity for the exact source
         shell: pwsh
         env:
-          VHF_ARCHIVE_SHA256: 59e89ab90c6e360e3e23bb4717b43339c4ec0050aedc52fe05e4f3ef306d62ee
-          VHF_DRIVER_VER: 10/16/2026,0.1.0.53
-          VHF_PROTOCOL_VERSION: '2'
-          VHF_SOURCE_REVISION: 7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a
-          VHF_TAG: v0.1.0-beta.9
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+        run: |
+          python .github/scripts/vhf_release_identity.py --source-commit $env:RELEASE_COMMIT --github-env $env:GITHUB_ENV
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Revalidate VHF producer package for packaging
+        shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $packageRoot = Join-Path $env:RUNNER_TEMP 'vhf-gamepad-producer-release'
           .\scripts\download_libvirtualgamepad_release.ps1 `
             -ValidateOnly `
-            -Repository Nonary/libvirtualgamepad `
+            -Repository $env:VHF_REPOSITORY `
             -Tag $env:VHF_TAG `
             -ExpectedArchiveSha256 $env:VHF_ARCHIVE_SHA256 `
             -ExpectedSourceRevision $env:VHF_SOURCE_REVISION `
@@ -673,16 +678,16 @@ jobs:
           vhf_gamepad_package_arg=(
             -DSUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER=ON
             -DSUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR="$(cygpath -u "${VHF_PACKAGE_ROOT}")"
-            -DSUNSHINE_VHF_GAMEPAD_RELEASE_TAG=v0.1.0-beta.9
-            -DSUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256=59e89ab90c6e360e3e23bb4717b43339c4ec0050aedc52fe05e4f3ef306d62ee
-            -DSUNSHINE_VHF_GAMEPAD_SOURCE_REVISION=7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a
-            -DSUNSHINE_VHF_GAMEPAD_DRIVER_VER=10/16/2026,0.1.0.53
-            -DSUNSHINE_VHF_GAMEPAD_PROTOCOL_VERSION=2
+            -DSUNSHINE_VHF_GAMEPAD_RELEASE_TAG="${VHF_TAG}"
+            -DSUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256="${VHF_ARCHIVE_SHA256}"
+            -DSUNSHINE_VHF_GAMEPAD_SOURCE_REVISION="${VHF_SOURCE_REVISION}"
+            -DSUNSHINE_VHF_GAMEPAD_DRIVER_VER="${VHF_DRIVER_VER}"
+            -DSUNSHINE_VHF_GAMEPAD_PROTOCOL_VERSION="${VHF_PROTOCOL_VERSION}"
           )
           if [[ "${DAILY_UNSIGNED}" == "true" ]]; then
             vhf_gamepad_package_arg+=(-DSUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE=ON)
           fi
-          echo "Using verified VHF producer release v0.1.0-beta.9"
+          echo "Using verified VHF producer release ${VHF_TAG} (${VHF_SOURCE_REVISION})"
           truehdr_runtime_arg=()
           if [[ "${REQUIRE_TRUEHDR_RUNTIME}" == "true" ]]; then
             truehdr_runtime_arg=(
@@ -982,11 +987,11 @@ jobs:
             -ValidateOnly `
             -PrebuiltPackageDir $env:VHF_PACKAGE_ROOT `
             -PackageDir $packageDir `
-            -ReleaseTag v0.1.0-beta.9 `
-            -ExpectedReleaseAssetSha256 59e89ab90c6e360e3e23bb4717b43339c4ec0050aedc52fe05e4f3ef306d62ee `
-            -ExpectedSourceRevision 7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a `
-            -ExpectedDriverVer '10/16/2026,0.1.0.53' `
-            -ExpectedProtocolVersion 2
+            -ReleaseTag $env:VHF_TAG `
+            -ExpectedReleaseAssetSha256 $env:VHF_ARCHIVE_SHA256 `
+            -ExpectedSourceRevision $env:VHF_SOURCE_REVISION `
+            -ExpectedDriverVer $env:VHF_DRIVER_VER `
+            -ExpectedProtocolVersion $env:VHF_PROTOCOL_VERSION
           $expected = @(
             'cleanup.ps1',
             'driver/VibeshineVhfGamepad.cat',
@@ -1540,6 +1545,15 @@ jobs:
           New-Item -ItemType Directory -Path (Join-Path $PWD 'artifacts') -Force | Out-Null
           Copy-Item -LiteralPath $symbolPack -Destination (Join-Path $PWD 'artifacts') -Force
 
+      - name: Resolve audited producer identity for signed payload verification
+        if: env.SIGNPATH_ENABLED == 'true'
+        shell: pwsh
+        env:
+          RELEASE_COMMIT: ${{ inputs.release_commit }}
+        run: |
+          python .github/scripts/vhf_release_identity.py --source-commit $env:RELEASE_COMMIT --github-env $env:GITHUB_ENV
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Verify SignPath signatures
         if: env.SIGNPATH_ENABLED == 'true'
         shell: pwsh
@@ -1724,7 +1738,7 @@ jobs:
           }
 
           # The VHF package arrives unsigned: SignPath is not available on
-          # Nonary/libvirtualgamepad, so its catalog and setup tool are signed
+          # jlobue10/libvirtualgamepad, so its catalog and setup tool are signed
           # by this repository's MSI request instead. That inverts what this
           # check is for. The signature assertions below now confirm OUR
           # signing ran, rather than that upstream signed it, and the manifest
@@ -1768,9 +1782,9 @@ jobs:
                   'tools/VibeshineVhfGamepadDeviceSetup.exe'
                 )
                 if ($vhfManifest.schema_version -ne 1 -or
-                    $vhfManifest.source_revision -cne '7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a' -or
-                    $vhfManifest.driver_ver -cne '10/16/2026,0.1.0.53' -or
-                    [uint16] $vhfManifest.protocol_version -ne 2 -or
+                    $vhfManifest.source_revision -cne $env:VHF_SOURCE_REVISION -or
+                    $vhfManifest.driver_ver -cne $env:VHF_DRIVER_VER -or
+                    [uint16] $vhfManifest.protocol_version -ne [uint16] $env:VHF_PROTOCOL_VERSION -or
                     $vhfManifest.platform -cne 'x64' -or
                     $vhfManifest.signing.channel -cne 'msi-request-signing') {
                   throw 'manifest metadata does not match the pinned producer release'
@@ -1851,10 +1865,10 @@ jobs:
                 }
                 $vhfManifestHash = (Get-FileHash -LiteralPath $vhfManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
                 if ($vhfReleaseLock.channel -cne 'production' -or
-                    $vhfReleaseLock.repository -cne 'Nonary/libvirtualgamepad' -or
-                    $vhfReleaseLock.release_tag -cne 'v0.1.0-beta.9' -or
-                    $vhfReleaseLock.release_asset_name -cne 'libvirtualgamepad-0.1.0-beta.9-windows-x64.zip' -or
-                    $vhfReleaseLock.release_asset_sha256 -cne '59e89ab90c6e360e3e23bb4717b43339c4ec0050aedc52fe05e4f3ef306d62ee' -or
+                    $vhfReleaseLock.repository -cne $env:VHF_REPOSITORY -or
+                    $vhfReleaseLock.release_tag -cne $env:VHF_TAG -or
+                    $vhfReleaseLock.release_asset_name -cne $env:VHF_ASSET_NAME -or
+                    $vhfReleaseLock.release_asset_sha256 -cne $env:VHF_ARCHIVE_SHA256 -or
                     $vhfReleaseLock.source_revision -cne $vhfManifest.source_revision -or
                     $vhfReleaseLock.driver_ver -cne $vhfManifest.driver_ver -or
                     [uint16] $vhfReleaseLock.protocol_version -ne [uint16] $vhfManifest.protocol_version -or
