@@ -11,6 +11,7 @@
 #include "utility.h"
 
 #include <bitset>
+#include <string_view>
 
 namespace audio {
   enum stream_config_e : int {
@@ -64,6 +65,9 @@ namespace audio {
     uint64_t __padding;
 
     bool input_only;
+    bool use_ac3 {false};  ///< Encode audio as AC-3 instead of Opus for this streaming session.
+    bool use_eac3 {false};  ///< Encode audio as E-AC-3 instead of Opus for this streaming session.
+    bool high_quality_dolby {false};  ///< Higher bitrate for Dolby only; ignored for Opus.
   };
 
   using buffer_t = util::buffer_t<std::uint8_t>;
@@ -113,4 +117,26 @@ namespace audio {
    * @examples_end
    */
   bool is_audio_ctx_sink_available(const audio_ctx_t &ctx);
+
+  /** @brief Check whether the linked FFmpeg build provides the AC-3 encoder. */
+  bool ac3_available();
+  /** @brief Check whether the linked FFmpeg build provides the E-AC-3 encoder. */
+  bool eac3_available();
+
+  enum class dolby_codec_e { opus, ac3, eac3 };
+
+  /** @brief Configure Dolby only after an exact offer/accept match; otherwise retain Opus. */
+  dolby_codec_e configure_dolby_audio(
+    config_t &config,
+    std::string_view offered,
+    std::string_view accepted,
+    bool ac3_encoder_available,
+    bool eac3_encoder_available,
+    bool high_quality
+  );
+
+  /** @brief Return the encoded format's RTSP response-header label. */
+  std::string_view dolby_codec_name(dolby_codec_e codec);
+  /** @brief Choose the AC-3/E-AC-3 bitrate for stereo or 5.1. */
+  int dolby_bitrate_kbps(bool eac3, bool high_quality, int channels);
 }  // namespace audio

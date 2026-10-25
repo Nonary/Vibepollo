@@ -34,6 +34,8 @@ endfunction()
 
 unset(ENV{BUILD_VERSION})
 check_version("2.0.0-nightly.d20261011.aaaaaaaaaaaa" "2.0.90.0")
+check_version("2.0.0-nightly.d20261011.r.1.aaaaaaaaaaaa" "2.0.90.0")
+check_version("2.0.0-nightly.d20261011.r.2.bbbbbbbbbbbb" "2.0.90.0")
 check_version("2.0.0-daily.d20261011+aaaaaaaaaaaa" "2.0.90.0")
 check_version("2.0.0-daily.d20261012+bbbbbbbbbbbb" "2.0.90.0")
 check_version("2.0.0" "2.0.99.0")

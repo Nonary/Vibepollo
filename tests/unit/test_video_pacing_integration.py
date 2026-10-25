@@ -58,6 +58,8 @@ else:
     pacer = section('        size_t pacing_bps;', '        if (pyrowave_session) {')
     clamp = ''
 batches = section('        size_t max_batch_size_bytes =', '        // Don\'t ignore the last ratecontrol group')
+adaptive = section('        } else if (session->video.adaptive_pacing_enabled) {',
+                   '\n\n        if (!pyrowave_session && config::stream.pacing_batch_demand_limit) {')
 batch_quantum = section(
     '        if (!pyrowave_session && config::stream.pacing_batch_demand_limit) {\n          const auto &monitor = session->config.monitor;',
     '        // Send less than 64K in a single batch.',
@@ -87,7 +89,7 @@ if updated:
     assert 'startup_status, startup_status == 400 ? "BAD REQUEST"' in rtsp
 template = (Path(__file__).with_suffix('.cpp.in')).read_text()
 program = template
-for key, text in {'HELPERS': helpers, 'BITRATE_INIT': bitrate_init, 'PUBLISH': publish, 'PACER': pacer, 'CLAMP': clamp,
+for key, text in {'HELPERS': helpers, 'BITRATE_INIT': bitrate_init, 'PUBLISH': publish, 'PACER': pacer, 'CLAMP': clamp, 'ADAPTIVE': adaptive,
                   'BATCH_QUANTUM': batch_quantum, 'BATCHES': batches, 'FRAME_DELAY': frame_delay, 'CONDITION': condition, 'FEC_COUNT': fec_count, 'SPLITTER': splitter,
                   'DETAIL_MAX': detail_max, 'UPDATED': '1' if updated else '0',
                   'RATE_HELPERS': ('using stream::video_pacing_batch_packets; using stream::video_pacing_delay_ns;' if fractional else 'using stream::video_pacing_packets_per_ms;'),

@@ -61,6 +61,14 @@ class DailyVersionTests(unittest.TestCase):
             self.assertIn(f'anchor={self.anchor}', result.stdout)
             self.assertEqual(int(re.search(r'RC_VERSION_REVISION (\d+)', output.read_text())[1]), expected)
 
+    def test_same_day_revisions_keep_shared_anchor_and_timed_file_order(self):
+        for name, elapsed, revision, expected in [('same-first', 601, 1, 6), ('same-second', 841, 2, 8)]:
+            result, output = self.emit(name, elapsed, f'2.0.0-nightly.d20261011.r.{revision}.aaaaaaaaaaaa')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f'anchor={self.anchor}', result.stdout)
+            self.assertIn('RC_VERSION_BUILD 90', output.read_text())
+            self.assertIn(f'RC_VERSION_REVISION {expected}', output.read_text())
+
     def test_post_stable_patch_uses_previous_release_anchor(self):
         result, output = self.emit('nextpatch', 601, '2.0.1-nightly.d20261011.aaaaaaaaaaaa', patch=1)
         self.assertEqual(result.returncode, 0, result.stderr)

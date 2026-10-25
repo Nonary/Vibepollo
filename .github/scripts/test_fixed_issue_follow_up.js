@@ -440,6 +440,8 @@ test("workflow eligibility accepts legacy daily and commit-bound nightly tags", 
   assert.ok(literal, "workflow must retain its release tag gate");
   const gate = new Function(`return ${literal[1]}`)();
   assert.ok(gate.test("2.0.2-daily.d20261020.4"));
+  assert.ok(gate.test("2.0.2-nightly.d20261025.r.2.aaaaaaaaaaaa"));
+  assert.ok(!gate.test("2.0.2-nightly.d20261025.r.0.aaaaaaaaaaaa"));
   assert.ok(gate.test("2.0.2-nightly.d20261022.aaaaaaaaaaaa"));
   assert.equal(gate.test("2.0.2-nightly.d20261022.invalid"), false);
 });

@@ -24,8 +24,14 @@ int main(void) {
   strcpy(identity.compositor, "1234567890abcdef1234567890abcdef-42-123");
   assert(valid_backend_identity(&identity));
   assert(validate_xauthority(&identity));
+  // Hyprland's Xwayland uses no Xauthority. The controller publishes :N only
+  // after binding that X socket's peer to the record's compositor.
   strcpy(identity.x_display, ":0");
+  assert(valid_backend_identity(&identity));
+  assert(validate_xauthority(&identity));
+  strcpy(identity.xauthority, "/run/user/1000/xauth_fixture");
   assert(!valid_backend_identity(&identity));
+  identity.xauthority[0] = 0;
   identity.x_display[0] = 0;
   strcpy(identity.compositor, "00000000000000000000000000000000-42-123");
   assert(!valid_backend_identity(&identity));
@@ -43,14 +49,37 @@ int main(void) {
     assert(execute_request(i == 1 ? 3 : 2, args, &identity, getgid()) == 126);
     assert(identity_boundary_calls == 0);
   }
-  assert(!hyprland_request_supported("touch-map"));
-  assert(!hyprland_request_supported("managed-focus"));
-  assert(!hyprland_request_supported("app-wayland-hdr"));
-  assert(!hyprland_request_supported("steam"));
-  assert(hyprland_request_supported("app"));
-  assert(hyprland_request_supported("audio-capture"));
-  assert(hyprland_request_supported("display-observe"));
-  assert(hyprland_request_supported("provider-steam-scan"));
+  assert(!hyprland_request_supported(&identity, "touch-map"));
+  assert(!hyprland_request_supported(&identity, "managed-focus"));
+  assert(!hyprland_request_supported(&identity, "app-wayland-hdr"));
+  assert(hyprland_request_supported(&identity, "app"));
+  assert(hyprland_request_supported(&identity, "audio-capture"));
+  assert(hyprland_request_supported(&identity, "display-observe"));
+  assert(hyprland_request_supported(&identity, "provider-steam-scan"));
+  // Steam and Lutris launches need the bound Xwayland display.
+  char *steam[] = {"broker", "steam", "3259780", NULL};
+  char *lutris[] = {"broker", "lutris", "7", NULL};
+  char *big_picture[] = {"broker", "app", "setsid steam steam://open/bigpicture", NULL};
+  struct { char **args; int argc; } launches[] = {{steam, 3}, {lutris, 3}, {big_picture, 3}};
+  for (size_t i = 0; i < sizeof(launches) / sizeof(launches[0]); ++i) {
+    identity_boundary_calls = 0;
+    assert(execute_request(launches[i].argc, launches[i].args, &identity, getgid()) == 126);
+    assert(identity_boundary_calls == 0);
+  }
+  assert(!hyprland_request_supported(&identity, "steam-direct"));
+  // systemd applies UnsetEnvironment= after --setenv assignments, so the unit
+  // may drop only what the record does not set itself.
+  assert(!strcmp(hyprland_unset_environment(&identity), "--property=UnsetEnvironment=DISPLAY XAUTHORITY"));
+  strcpy(identity.x_display, ":0");
+  assert(!strcmp(hyprland_unset_environment(&identity), "--property=UnsetEnvironment=XAUTHORITY"));
+  for (size_t i = 0; i < sizeof(launches) / sizeof(launches[0]); ++i) {
+    identity_boundary_calls = 0;
+    assert(execute_request(launches[i].argc, launches[i].args, &identity, getgid()) == 126);
+    assert(identity_boundary_calls == 1);
+  }
+  assert(hyprland_request_supported(&identity, "steam-direct"));
+  assert(!hyprland_request_supported(&identity, "lutris-wayland-hdr"));
+  identity.x_display[0] = 0;
   strcpy(identity.backend, "kwin");
   identity.compositor[0] = 0;
   assert(valid_backend_identity(&identity));
@@ -59,6 +88,6 @@ int main(void) {
   identity_boundary_calls = 0;
   assert(execute_request(2, control, &identity, getgid()) == 126);
   assert(identity_boundary_calls == 1); // KWin actually reaches the inert edge.
-  puts("PASS: explicit Hyprland identity and broker operation boundary; KWin still requires Xauthority");
+  puts("PASS: explicit Hyprland identity and broker operation boundary; X11 launches need the bound Xwayland display; KWin still requires Xauthority");
   return 0;
 }

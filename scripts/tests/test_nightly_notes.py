@@ -23,6 +23,16 @@ class NightlyNotesTests(unittest.TestCase):
         for tag, version in [('daily-2026-10-11.2', f'2.0.1-daily.d20261011.3+{A[:12]}'), ('daily-2026-10-11.1000', f'2.0.1-daily.d20261011.1000+{A[:12]}')]:
             with self.assertRaises(ValueError): n.sequence(REPO, tag, version, A)
 
+    def test_revised_host_nightly_identity(self):
+        tag = '2.0.1-nightly.d20261011.r.2.' + A[:12]
+        self.assertEqual(n.sequence(REPO, tag, tag, A), 20261011002)
+        notes, metadata = n.make_notes(REPO, tag, tag, A, None, [])
+        self.assertEqual(metadata['nightly_sequence'], 20261011002)
+        for invalid in (tag.replace('.r.2.', '.r.0.'), tag.replace('.r.2.', '.r.1000.'),
+                        tag.replace('20261011', '20260230')):
+            with self.assertRaises(ValueError): n.sequence(REPO, invalid, invalid, A)
+        with self.assertRaises(ValueError): n.sequence(REPO, tag, tag, B)
+
     def test_new_nightly_tag_binds_source_and_version(self):
         tag = '2.0.1-nightly.d20261011.' + A[:12]
         self.assertEqual(n.sequence(REPO, tag, tag, A), 20261011)

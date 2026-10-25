@@ -11,7 +11,7 @@ import subprocess
 import shutil
 
 
-def identity(commit, day, base):
+def identity(commit, day, base, revision=1):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Expected an exact source commit SHA")
     if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", base):
@@ -21,7 +21,9 @@ def identity(commit, day, base):
         raise ValueError("Source version base exceeds MSI limits or is zero")
     if not 2000 <= day.year <= 2099:
         raise ValueError("Daily version year must fit the installer version scheme")
-    tag = f"{base}-nightly.d{day:%Y%m%d}.{commit[:12]}"
+    if type(revision) is not int or not 1 <= revision <= 999:
+        raise ValueError("Nightly revision must be between 1 and 999")
+    tag = f"{base}-nightly.d{day:%Y%m%d}.r.{revision}.{commit[:12]}"
     return {"commit": commit, "tag": tag, "version": tag}
 
 
@@ -64,15 +66,32 @@ def emit_outputs(info):
     print(json.dumps(info))
 
 
+def validate_invocation(branch):
+    event = os.environ.get("GITHUB_EVENT_NAME")
+    primary = os.environ.get("DAILY_PRIMARY_BRANCH")
+    ref = os.environ.get("GITHUB_REF_NAME")
+    if (event not in {"schedule", "workflow_dispatch"} or primary not in {"master", "main"}
+            or os.environ.get("GITHUB_REF_TYPE") != "branch"
+            or not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", ""))):
+        raise ValueError("Expected a branch-based nightly invocation with an exact workflow SHA")
+    manual_canary = event == "workflow_dispatch" and ref == "canary" and branch == "canary"
+    if ref != primary and not manual_canary:
+        raise ValueError("Nightly invocation must use the default branch or explicitly confirmed manual Canary")
+    return manual_canary
+
+
 def resolve():
     repository = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ.get("DAILY_RELEASE_SOURCE_BRANCH", "")
     validate_source(repository, branch, os.environ.get("DAILY_RELEASE_SOURCE_CONFIRMED", ""))
     if branch != os.environ.get("DAILY_PRIMARY_BRANCH") and branch != "canary":
         raise ValueError("Daily source must equal the verified repository default primary or canary")
+    manual_canary = validate_invocation(branch)
     # Fetch only the explicitly confirmed remote branch; ignore local HEAD/tags.
     run("git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}:refs/remotes/origin/daily-source")
     commit = run("git", "rev-parse", "refs/remotes/origin/daily-source^{commit}")
+    if manual_canary and commit != os.environ["GITHUB_SHA"]:
+        raise ValueError("Canary advanced after dispatch; rerun from its intended exact workflow/source commit")
     run("git", "fetch", "--no-recurse-submodules", "origin", "refs/tags/*:refs/tags/*")
     releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
     previous = previous_successful_nightly(repository, releases)
@@ -95,26 +114,110 @@ def resolve():
     # Do not change SemVer precedence to place an old nightly above its final stable.
     base = f"{major}.{minor}.{patch + 1}"
     day = dt.datetime.now(dt.timezone.utc).date()
-    # A hex SHA is an identity, not an ordinal. Keep at most one published
-    # new-style nightly per UTC day so installed clients and package managers
-    # never need to guess same-day upgrade order from lexical SHA values.
-    published_today = [r for page in releases for r in page
-                       if r.get("draft") is False and r.get("prerelease") is True and
-                       r.get("published_at") and re.fullmatch(
-                           r"[0-9]+\.[0-9]+\.[0-9]+-nightly\.d" + f"{day:%Y%m%d}" + r"\.[0-9a-f]{12}",
-                           r.get("tag_name", ""))]
-    if published_today:
-        emit_outputs({"commit": commit, "should_build": "false",
-                      "skip_reason": f"Nightly already published today: {published_today[0]['tag_name']}"})
+    duplicate = published_source(commit, day, releases)
+    if duplicate:
+        emit_outputs({"commit": commit, "should_build": "false", "skip_reason": f"Source already published as {duplicate}"})
         return
-    info = identity(commit, day, base)
-    reserved = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{info['tag']}")
-    for line in reserved.splitlines():
-        target, ref = line.split()
-        if ref == f"refs/tags/{info['tag']}" and target != commit:
-            raise ValueError("Immutable nightly tag is reserved at another source commit")
+    if previous:
+        # A changed source must advance the qualified source, never rewind or
+        # silently publish an unrelated history as an update.
+        run("git", "merge-base", "--is-ancestor", previous["source_commit"], commit)
+    info = reserve_identity(commit, day, base, releases)
     info["should_build"] = "true"
     emit_outputs(info)
+
+
+def host_nightly_order(tag):
+    match = re.fullmatch(r"(?:[0-9]+\.[0-9]+\.[0-9]+-nightly\.d([0-9]{8})\.(?:r\.([1-9][0-9]{0,2})\.)?[0-9a-f]{12}|"
+                         r"(?:[0-9]+\.[0-9]+\.[0-9]+-daily\.d([0-9]{8})|daily-([0-9]{4})-([0-9]{2})-([0-9]{2}))(?:\.([1-9][0-9]{0,2}))?)", tag)
+    if not match:
+        return None
+    date = match[1] or match[3] or ''.join(match.groups()[3:6])
+    dt.datetime.strptime(date, "%Y%m%d")  # Never manufacture calendar ordinals.
+    return (int(date), int(bool(match[1])), int(match[2] or match[7] or 0))
+
+
+def published_source(commit, day, releases, tag=None):
+    # Published immutable tag targets, including older accepted sources, prevent
+    # repeat builds. Qualification of the latest source is checked separately.
+    for page in releases:
+        for release in page:
+            if (release.get("draft") is not False or release.get("prerelease") is not True
+                    or not release.get("published_at")):
+                continue
+            published_tag = release.get("tag_name", "")
+            order = host_nightly_order(published_tag)
+            if order is None:
+                continue
+            source = run("git", "rev-parse", f"refs/tags/{published_tag}^{{commit}}")
+            if source == commit:
+                return published_tag
+            if order[0] > int(f"{day:%Y%m%d}"):
+                raise ValueError("Published nightly date is newer than the current UTC date")
+            if tag is not None:
+                def core(value):
+                    match = re.match(r"([0-9]+)\.([0-9]+)\.([0-9]+)-", value)
+                    return tuple(map(int, match.groups())) if match else None
+                old_core, new_core = core(published_tag), core(tag)
+                if old_core is not None and new_core is not None and old_core != new_core:
+                    if old_core > new_core:
+                        raise ValueError("A newer numeric nightly base is already published")
+                elif order >= host_nightly_order(tag):
+                    raise ValueError("A newer or equal nightly identity is already published")
+    return None
+
+
+def guard_publication(repository, commit, tag):
+    # Recheck live publication state even on a partial rerun of an old build.
+    # Do not retag or relabel artifacts when source or release state advances.
+    if not re.fullmatch(r"[0-9a-f]{40}", commit) or host_nightly_order(tag) is None:
+        raise ValueError("Invalid exact publication identity")
+    if run("git", "rev-parse", f"refs/tags/{tag}^{{commit}}") != commit:
+        raise ValueError("Reserved release tag no longer matches this build")
+    releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
+    if any(r.get("tag_name") == tag for page in releases for r in page):
+        raise ValueError("Release already exists; recovery must preserve its original assets")
+    if published_source(commit, dt.datetime.now(dt.timezone.utc).date(), releases, tag):
+        raise ValueError("Source already published; refusing duplicate release")
+    previous = previous_successful_nightly(repository, releases)
+    if previous:
+        run("git", "merge-base", "--is-ancestor", previous["source_commit"], commit)
+
+
+def reserve_identity(commit, day, base, releases):
+    prefix = f"{base}-nightly.d{day:%Y%m%d}."
+    reserved = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{prefix}*")
+    occupied = {}
+    for line in reserved.splitlines():
+        target, ref = line.split()
+        if ref.endswith("^{}"):
+            raise ValueError("Nightly reservations must be lightweight exact-commit tags")
+        tag = ref.removeprefix("refs/tags/")
+        suffix = tag.removeprefix(prefix)
+        match = re.fullmatch(r"(?:r\.([1-9][0-9]{0,2})\.)?([0-9a-f]{12})", suffix)
+        if not tag.startswith(prefix) or not match:
+            raise ValueError("Invalid reserved nightly identity")
+        revision = int(match[1] or 0)
+        if revision and revision in occupied:
+            raise ValueError("Nightly revision is reserved by multiple source identities")
+        if match[2] == commit[:12] and target != commit:
+            raise ValueError("Immutable nightly tag is reserved at another source commit")
+        if not re.fullmatch(r"[0-9a-f]{40}", target) or match[2] != target[:12]:
+            raise ValueError("Reserved nightly suffix does not match its exact source commit")
+        # Old failed builds can leave several hash-only reservations on one
+        # date. Those are identities without an allocated numeric revision.
+        if revision:
+            occupied[revision] = (tag, target)
+    latest = max(occupied, default=0)
+    # A failed build can reuse its exact latest lightweight reservation. Drafts
+    # retain their assets and require explicit recovery, never create/upload over.
+    if latest and occupied[latest][1] == commit:
+        info = identity(commit, day, base, latest)
+    else:
+        info = identity(commit, day, base, latest + 1)
+    if any(release.get("tag_name") == info["tag"] for page in releases for release in page):
+        raise ValueError("Nightly release already exists; inspect or recover it without replacement")
+    return info
 
 
 def verify_assets(root, product, commit, tag, version):
@@ -123,10 +226,10 @@ def verify_assets(root, product, commit, tag, version):
     actual = {p.name for p in root.iterdir()}
     if actual != expected or any(not p.is_file() or p.is_symlink() or p.stat().st_size == 0 for p in root.iterdir()):
         raise ValueError(f"Expected exactly the finalized nonempty assets {sorted(expected)}; got {sorted(actual)}")
-    match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d([0-9]{8})\.([0-9a-f]{12})", tag)
+    match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d([0-9]{8})\.r\.([1-9][0-9]{0,2})\.([0-9a-f]{12})", tag)
     if not match:
         raise ValueError("New releases require a commit-bound nightly tag")
-    info = identity(commit, dt.datetime.strptime(match[2], "%Y%m%d").date(), match[1])
+    info = identity(commit, dt.datetime.strptime(match[2], "%Y%m%d").date(), match[1], int(match[3]))
     if info["tag"] != tag or info["version"] != version:
         raise ValueError("Release tag/version/source identity is incoherent")
     provenance = json.loads((root / "release-provenance.json").read_text(encoding="utf-8-sig"))
@@ -195,7 +298,7 @@ def stage_public_assets(root, destination, product):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["resolve", "verify", "linux", "public"])
+    parser.add_argument("command", choices=["resolve", "verify", "linux", "public", "publication"])
     parser.add_argument("--assets")
     parser.add_argument("--linux-assets")
     parser.add_argument("--destination")
@@ -203,6 +306,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if args.command == "resolve":
         resolve()
+    elif args.command == "publication":
+        guard_publication(os.environ["GITHUB_REPOSITORY"], os.environ["DAILY_COMMIT"], os.environ["DAILY_TAG"])
     elif args.command == 'verify':
         verify_assets(args.assets, args.product, os.environ["DAILY_COMMIT"], os.environ["DAILY_TAG"], os.environ["DAILY_VERSION"])
     elif args.command == 'public':
