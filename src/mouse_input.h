@@ -19,7 +19,7 @@ namespace mouse_input {
     int offset_y;
     int width;
     int height;
-    std::string output_name;  ///< The captured output's identity, where the platform uses one.
+    std::string output_name {};  ///< The captured output's identity, where the platform uses one.
   };
 
   struct absolute_position_t {
