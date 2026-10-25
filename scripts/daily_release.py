@@ -66,15 +66,32 @@ def emit_outputs(info):
     print(json.dumps(info))
 
 
+def validate_invocation(branch):
+    event = os.environ.get("GITHUB_EVENT_NAME")
+    primary = os.environ.get("DAILY_PRIMARY_BRANCH")
+    ref = os.environ.get("GITHUB_REF_NAME")
+    if (event not in {"schedule", "workflow_dispatch"} or primary not in {"master", "main"}
+            or os.environ.get("GITHUB_REF_TYPE") != "branch"
+            or not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", ""))):
+        raise ValueError("Expected a branch-based nightly invocation with an exact workflow SHA")
+    manual_canary = event == "workflow_dispatch" and ref == "canary" and branch == "canary"
+    if ref != primary and not manual_canary:
+        raise ValueError("Nightly invocation must use the default branch or explicitly confirmed manual Canary")
+    return manual_canary
+
+
 def resolve():
     repository = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ.get("DAILY_RELEASE_SOURCE_BRANCH", "")
     validate_source(repository, branch, os.environ.get("DAILY_RELEASE_SOURCE_CONFIRMED", ""))
     if branch != os.environ.get("DAILY_PRIMARY_BRANCH") and branch != "canary":
         raise ValueError("Daily source must equal the verified repository default primary or canary")
+    manual_canary = validate_invocation(branch)
     # Fetch only the explicitly confirmed remote branch; ignore local HEAD/tags.
     run("git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}:refs/remotes/origin/daily-source")
     commit = run("git", "rev-parse", "refs/remotes/origin/daily-source^{commit}")
+    if manual_canary and commit != os.environ["GITHUB_SHA"]:
+        raise ValueError("Canary advanced after dispatch; rerun from its intended exact workflow/source commit")
     run("git", "fetch", "--no-recurse-submodules", "origin", "refs/tags/*:refs/tags/*")
     releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
     previous = previous_successful_nightly(repository, releases)
