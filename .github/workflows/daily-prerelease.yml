@@ -40,7 +40,9 @@ jobs:
           # The default branch controls the workflow; the resolver fetches canary.
           fetch-depth: 0
       - name: Test daily release contracts
-        run: python -m unittest discover -s scripts/tests -p test_daily_release.py
+        run: |
+          python -m unittest discover -s scripts/tests -p test_daily_release.py
+          python -m unittest discover -s .github/scripts -p test_vhf_release_identity.py
       - name: Test nightly notes and immutable metadata
         run: python -m unittest discover -s scripts/tests -p test_nightly_notes.py
       - name: Resolve explicitly confirmed remote source and immutable identity

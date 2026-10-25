@@ -21,9 +21,17 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
         with:
           persist-credentials: false
+      - name: Resolve exact-source driver policy and test its selector
+        env:
+          RELEASE_COMMIT: ${{ github.sha }}
+        run: |
+          python3 -m unittest discover -s .github/scripts -p test_vhf_release_identity.py
+          python3 .github/scripts/vhf_release_identity.py --source-commit "$RELEASE_COMMIT" --github-env "$GITHUB_ENV"
       - name: Install host test headers
         run: sudo apt-get update && sudo apt-get install -y nlohmann-json3-dev libboost-dev
       - name: Check Steam Controller feedback forwarding, queue policy, slot retirement and VHF fallback
+        # Legacy master has no Steam implementation; Steam sources must run every harness.
+        if: env.VHF_TAG == 'v0.1.0-beta.155'
         run: |
           python3 tests/input/test_haptic_queue.py
           python3 tests/input/test_steam_settings_forward.py
@@ -34,6 +42,8 @@ jobs:
           python3 tests/input/test_usbip_trigger_admission.py
           python3 tests/input/test_vhf_fallback.py
       - name: Check SC2026 client-to-driver click fidelity and the firmware attribute relay
+        # Missing fixtures in a Steam source remain a failure.
+        if: env.VHF_TAG == 'v0.1.0-beta.155'
         run: |
           git submodule update --init --depth 1 third-party/moonlight-common-c third-party/libvirtualgamepad
           python3 tests/input/test_sc26_buttons.py
