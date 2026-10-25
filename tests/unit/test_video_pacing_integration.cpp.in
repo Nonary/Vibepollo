@@ -3,6 +3,7 @@
 #include "src/stream_broadcast_runtime.h"
 #include "src/sync.h"
 #include "src/video_pacing_policy.h"
+#include "src/video_adaptive_pacing.h"
 #include <gtest/gtest.h>
 #include <algorithm>
 #include <array>
@@ -36,7 +37,7 @@ namespace pyrowave {
 namespace config {
   struct { int pacing_max_bitrate_kbps = 0, fec_percentage = 20,
                pyrowave_critical_fec_percentage = 20, video_max_batch_size_kb = 64;
-          bool pacing_batch_demand_limit = false; } stream;
+          bool pacing_batch_demand_limit = false, host_adaptive_pacing = false; } stream;
 }
 struct config_t {
   struct { int bitrate = 150000, client_requested_bitrate = 150000, videoFormat = 1,
@@ -58,6 +59,9 @@ struct session_t {
   struct {
     safe::mail_raw_t::event_t<int> bitrate_events;
     std::atomic<int> pacing_bitrate_kbps {0};
+    bool adaptive_pacing_enabled = false;
+    std::mutex adaptive_pacing_mutex;
+    pacing::adaptive_pacing_t adaptive_pacing;
     bool cipher = false;
     peer_t peer;
   } video;
@@ -97,11 +101,15 @@ int publish_session(session_t &session) {
 @PUBLISH@
   return 0;
 }
+// Logging is an external edge; the controller and sender decisions are production fragments.
+void log_adaptive_pacing(const pacing::adaptive_pacing_events_t &, const pacing::adaptive_pacing_snapshot_t &, std::uint64_t) {}
 std::pair<size_t, size_t> pace(int cap, bool encrypted = false, bool pyro = false, size_t blocksize = 1408,
-                             std::uint64_t packets = 0, bool delay_mode = false, bool demand_limit = false) {
+                             std::uint64_t packets = 0, bool delay_mode = false, bool demand_limit = false, bool adaptive = false) {
   config::stream.pacing_max_bitrate_kbps = cap;
   config::stream.pacing_batch_demand_limit = demand_limit;
   session_t instance;
+  instance.video.adaptive_pacing_enabled = adaptive && !pyro;
+  instance.video.adaptive_pacing = pacing::adaptive_pacing_t{instance.video.adaptive_pacing_enabled};
   instance.video.cipher = encrypted;
   auto *session = &instance;
   const bool pyrowave_session = pyro;
@@ -110,14 +118,16 @@ std::pair<size_t, size_t> pace(int cap, bool encrypted = false, bool pyro = fals
                                      (monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate) :
                                      (monitor.bitrate > 0 ? monitor.bitrate : monitor.client_requested_bitrate);
   session->video.pacing_bitrate_kbps.store(pacing_bitrate_kbps, std::memory_order_relaxed);
+  video_short_frame_header_t frame_header{};
+  const std::size_t payload_blocksize = blocksize - sizeof(video_packet_raw_t);
+  const std::size_t min_parity_shards = session->config.minRequiredFecPackets;
   for (int once = 0; once != 1; ++once) {
 @PACER@
     if (pyrowave_session) {
       ratecontrol_packets_in_1ms = 900; // deterministic adaptive-policy boundary
 @CLAMP@
-    }
+@ADAPTIVE@
     std::size_t pacing_frame_packets = 5;
-    const std::size_t payload_blocksize = blocksize - sizeof(video_packet_raw_t);
 @BATCH_QUANTUM@
 @BATCHES@
 @FRAME_DELAY@
@@ -127,6 +137,28 @@ std::pair<size_t, size_t> pace(int cap, bool encrypted = false, bool pyro = fals
 }
 std::uint64_t sender_delay(int cap, bool encrypted = false, bool pyro = false, std::uint64_t packets = 1) {
   return pace(cap, encrypted, pyro, 1408, packets, true).first;
+}
+TEST(VideoPacingIntegration, AdaptiveDeadlinesRetainOperatorCeilingWithEitherBatchOption) {
+  for(const bool encrypted : {false,true})for(const bool demand : {false,true}) {
+    for(const int cap : {8000,200000,10000000})for(const std::uint64_t packets : {1u,101u,10001u}) {
+      const auto selected=pace(cap,encrypted,false,1408,packets,true,demand,true).first;
+      const auto hard_limit=stream::video_pacing_delay_ns(packets,1408+(encrypted?32:0),cap);
+      EXPECT_GE(selected,hard_limit);
+    }
+    // A fast operator ceiling must not replace the slower adaptive startup rate.
+    EXPECT_GT(pace(10000000,encrypted,false,1408,1000,true,demand,true).first,
+              stream::video_pacing_delay_ns(1000,1408+(encrypted?32:0),10000000));
+  }
+}
+TEST(VideoPacingIntegration, AdaptiveWithoutOperatorLimitUsesExactWireDeadlines) {
+  const auto expected=pacing::packet_pace_t::at_rate(300000000,1408+38+20+8).offset(1000).count();
+  EXPECT_EQ(pace(0,false,false,1408,1000,true,false,true).first,std::uint64_t(expected));
+  EXPECT_GT(pace(0,false,false,1408,1000,true,false,true).first,sender_delay(0,false,false,1000));
+  EXPECT_LE(pace(0,false,false,1408,0,false,true,true).second,pace(0,false,false,1408,0,false,false,true).second);
+}
+TEST(VideoPacingIntegration, PyroWaveIgnoresOrdinaryAdaptiveOption) {
+  for(const int cap : {0,8000,200000})for(const bool demand : {false,true})
+    EXPECT_EQ(pace(cap,true,true,1408,1000,true,demand,true),pace(cap,true,true,1408,1000,true,demand,false));
 }
 bool checks_deadline(int pacing_ceiling, size_t ratecontrol_group_packets_sent, size_t ratecontrol_frame_packets_sent, size_t ratecontrol_packets_in_1ms) {
   return @CONDITION@;

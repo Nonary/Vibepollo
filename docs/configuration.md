@@ -2727,6 +2727,44 @@ These settings are host-wide and are not application runtime overrides.
     </tr>
 </table>
 
+### host_adaptive_pacing
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Experimental opt-in for ordinary H.264, HEVC and AV1 streams. Vibepollo spaces video packets using a rate that
+            starts at twice the encoder bitrate or 1.25 times the stream's packetized wire demand (including FEC), whichever
+            is higher, within the usual 800 Mbps ceiling. It then probes upward by up to 12.5% at most every half second,
+            but only while video is busy, recent standard client pings arrive and the control stream's round trip time is
+            stable and nonzero. Loss reported by the client during a probe restores the previous rate and extends the
+            recovery hold (8 seconds, up to a minute). Outside probes, the rate is halved only after two distinct failed
+            frames, or several recovered frames missing at least 2% of the packets sent, in a half-second sample.
+            The rate never drops below 1.25 times the current wire demand unless the configured ceiling is lower.
+            A nonzero <code>pacing_max_bitrate_kbps</code> remains a hard UDP-datagram ceiling, including cumulative
+            pacing debt across frames. <code>pacing_batch_demand_limit</code> remains an independent per-call batch bound.
+            Encoder bitrate and frame rate never change.
+            <br><br>
+            Loss reports (<code>SS_FRAME_FEC_STATUS</code>) come from Moonlight clients that send them to Sunshine-family
+            hosts. Clients that do not send them cannot trigger a cut or reject a probe, so
+            such a stream keeps its conservative starting rate or probes without loss feedback. Startup adds transmission time, mostly to a large first
+            keyframe. Batches hold at most about one millisecond of traffic at the selected rate.
+            This does not guarantee a wire-level burst limit or establish the cause of a reported streaming failure.
+            PyroWave streams are unaffected. Rate changes are logged at info level.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            host_adaptive_pacing = true
+            @endcode</td>
+    </tr>
+</table>
+
 ## Config Files
 
 ### file_apps
