@@ -11,6 +11,7 @@ namespace playnite_launcher::focus {
   HWND find_main_window_for_pid(DWORD pid);
   bool try_focus_hwnd(HWND hwnd);
   bool confirm_foreground_pid(DWORD pid);
+  HWND find_foreground_game_window(const std::vector<HWND> &windows);
 
   bool focus_process_by_name_extended(const wchar_t *exe_name_w, int max_successes, int timeout_secs, bool exit_on_first, std::function<bool()> cancel = {}, DWORD *confirmed_pid_out = nullptr);
 

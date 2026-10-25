@@ -344,8 +344,10 @@ namespace playnite_launcher {
         if (msg.status_name == "gameStarted") {
           std::string install_for_ls;
           std::string exe_for_ls;
+          bool new_game_started = false;
           {
             std::lock_guard<std::mutex> lk(game_mutex);
+            new_game_started = !active_game_flag.load() || game_state.id_norm != norm_id;
             game_state.id_original = msg.status_game_id;
             game_state.id_norm = norm_id;
             if (!msg.status_install_dir.empty()) {
@@ -368,7 +370,11 @@ namespace playnite_launcher {
           active_game_flag.store(true);
           // A fresh launch overrides any prior "Playnite is exiting" intent.
           playnite_user_exit.store(false);
-          game_start_signal.store(true);
+          // Connector sync/handoff can replay gameStarted for the same running
+          // game. Keep that lifecycle's focus budget rather than rearming it.
+          if (new_game_started) {
+            game_start_signal.store(true);
+          }
           cleanup_spawn_signal.store(true);
           renew_grace_deadline("gameStarted");
           if (lossless_options.enabled && !fullscreen_lossless_applied) {
@@ -827,22 +833,30 @@ namespace playnite_launcher {
                 return !active_game_flag.load() || game_start_signal.load() ||
                        !game_focus_budget->can_focus(std::chrono::steady_clock::now());
               };
-              for (auto window : windows) {
-                if (cancel()) {
-                  break;
+              if (!cancel() && focus::find_foreground_game_window(windows)) {
+                game_focus_budget->confirmed();
+                if (game_successes_left > 0) {
+                  --game_successes_left;
                 }
-                const auto identity = focus::window_identity(window);
-                const auto cancel_window = [&] { return cancel() || !game_focus_budget->can_focus(identity, std::chrono::steady_clock::now()); };
-                if (cancel_window()) {
-                  continue;
-                }
-                if (focus::focus_game_window(window, cancel_window)) {
-                  game_focus_budget->confirmed();
-                  if (game_successes_left > 0) {
-                    --game_successes_left;
+                game_focus_budget_active = game_focus_budget->active(std::chrono::steady_clock::now());
+              } else {
+                for (auto window : windows) {
+                  if (cancel()) {
+                    break;
                   }
-                  game_focus_budget_active = game_focus_budget->active(std::chrono::steady_clock::now());
-                  break;
+                  const auto identity = focus::window_identity(window);
+                  const auto cancel_window = [&] { return cancel() || !game_focus_budget->can_focus(identity, std::chrono::steady_clock::now()); };
+                  if (cancel_window()) {
+                    continue;
+                  }
+                  if (focus::focus_game_window(window, cancel_window)) {
+                    game_focus_budget->confirmed();
+                    if (game_successes_left > 0) {
+                      --game_successes_left;
+                    }
+                    game_focus_budget_active = game_focus_budget->active(std::chrono::steady_clock::now());
+                    break;
+                  }
                 }
               }
             } catch (...) {
@@ -1511,7 +1525,9 @@ namespace playnite_launcher {
           }
           next_focus_attempt_ms.store(steady_to_millis(now + 1s), std::memory_order_relaxed);
         };
-        bool visible = is_game_foreground() && game_focus_budget->can_focus(focus::window_identity(GetForegroundWindow()), now);
+        // A live foreground game remains acceptable after its activation
+        // allowance expires; a newly appearing side window is not a replacement.
+        bool visible = is_game_foreground() && focus::find_foreground_game_window(windows);
         if (visible) {
           consume_focus_confirmation("foreground", foreground_pid());
           return;

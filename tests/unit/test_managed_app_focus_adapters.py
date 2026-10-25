@@ -61,6 +61,7 @@ namespace playnite_launcher::focus {
 std::vector<DWORD> find_pids_under_install_dir_sorted(const std::wstring&){return {7};}
 bool get_process_image_path(DWORD pid,std::wstring &image){image=images.at(pid);return true;}
 bool confirm_foreground_pid(DWORD pid){return foreground&&windows.at(foreground).pid==pid;}
+bool is_eligible_game_window(HWND w){return windows.at(w).visible&&!windows.at(w).owned;}
 bool try_focus_hwnd(HWND w){++activations;foreground=w;if(during_activate)during_activate();return true;}
 PRODUCTION
 }
@@ -126,13 +127,7 @@ int main() {
         subprocess.run([str(directory / 'route')], check=True)
 
 
-def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--compiler', default='g++')
-    parser.add_argument('--node', default='node')
-    parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[2])
-    args = parser.parse_args()
-    root = args.repo.resolve()
+def windows_adapter_harness(root):
     launcher = (root / 'tools/playnite_launcher/launcher.cpp').read_text()
     direct = block(launcher, 'auto focus_game_after_start = [&]()') + ';\nfocus_game_after_start();'
     fullscreen = '\n'.join(block(launcher, marker) for marker in (
@@ -145,6 +140,7 @@ def main():
     fullscreen = fullscreen.replace('std::chrono::steady_clock::now()', 'test_now')
     harness = r'''
 #include "src/managed_app_focus.h"
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <functional>
@@ -169,6 +165,7 @@ DWORD GetWindowThreadProcessId(HWND window,DWORD *pid) { if(pid)*pid=window<20?7
 namespace platf::dxgi { std::wstring utf8_to_wide(const std::string &s) {return {s.begin(),s.end()};} }
 namespace focus {
 std::vector<HWND> discover_game_windows(const std::wstring &,const std::wstring &,bool=false){if(during_discovery)during_discovery();return offered;}
+HWND find_foreground_game_window(const std::vector<HWND>& windows){return std::find(windows.begin(),windows.end(),foreground)!=windows.end()?foreground:0;}
 std::string window_identity(HWND w) { DWORD pid;GetWindowThreadProcessId(w,&pid);return std::to_string(pid)+":"+std::to_string(w); }
 bool focus_game_window(HWND w,std::function<bool()> cancel) {
  if(cancel())return false;
@@ -234,7 +231,7 @@ int main(){
  reset();Direct disabled;disabled.config.focus_attempts=0;disabled.tick();assert(!disabled.request_game_focus&&focus_calls==0);
  reset();Direct first;first.focus_exit_on_first_flag=true;test_now=start+25s;offered={11};first.tick();assert(!first.request_game_focus&&focus_calls==1);
  reset();Fullscreen fs;fs.tick();test_now=start+16s;fs.tick();assert(fs.game_focus_budget_active&&focus_calls==0);test_now=start+25s;offered={11};fs.tick();assert(focus_calls==1&&fs.game_successes_left==2);
- test_now=start+41s;fs.tick();assert(focus_calls==1);test_now=start+50s;offered={11,21};fs.tick();assert(foreground==21);assert(focus_calls==2&&fs.game_successes_left==1);
+ test_now=start+41s;fs.tick();assert(focus_calls==1);test_now=start+50s;offered={21};foreground=0;fs.tick();assert(foreground==21);assert(focus_calls==2&&fs.game_successes_left==1);
  fs.game_stop_signal=true;fs.active_game_flag=false;test_now=start+51s;fs.tick();assert(!fs.game_focus_budget_active&&!fs.game_focus_budget&&focus_calls==2);
  reset();Fullscreen empty;empty.tick();test_now=start+180s;offered={11};empty.tick();assert(!empty.game_focus_budget_active&&focus_calls==0);
  reset();Fullscreen longwait;longwait.config.focus_timeout_secs=240;longwait.tick();test_now=start+200s;offered={11};longwait.tick();assert(focus_calls==1);test_now=start+240s;longwait.tick();assert(!longwait.game_focus_budget_active);
@@ -244,6 +241,17 @@ int main(){
 '''
     harness = harness.replace('auto_type_placeholder', '''managed_app_focus::budget::clock::time_point next_game_focus_check=start,next_fullscreen_focus_check=start,fullscreen_focus_deadline=start;''')
     harness = harness.replace('DIRECT_BODY', direct).replace('FULLSCREEN_BODY', fullscreen).replace('SCHEDULE_BODY', schedule).replace('STOP_BODY', stop)
+    return harness
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--compiler', default='g++')
+    parser.add_argument('--node', default='node')
+    parser.add_argument('--repo', type=Path, default=Path(__file__).resolve().parents[2])
+    args = parser.parse_args()
+    root = args.repo.resolve()
+    harness = windows_adapter_harness(root)
     with tempfile.TemporaryDirectory(prefix='managed-focus-paths-') as directory:
         directory = Path(directory)
         cpp = directory / 'production.cpp'
