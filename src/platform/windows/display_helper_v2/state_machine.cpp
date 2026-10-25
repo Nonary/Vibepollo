@@ -14,6 +14,12 @@ namespace display_helper::v2 {
     constexpr auto kRecoveryFeedbackQuietPeriod = std::chrono::milliseconds(1000);
     constexpr std::size_t kMaxVirtualIdentityDiscoveriesPerSession = 2;
     constexpr std::size_t kMaxVirtualIdentityRepairsPerSession = 2;
+    // Coalesce the WM_DISPLAYCHANGE burst that follows an APPLY before reading
+    // back the exclusive contract, then stay quiet so the session's own
+    // notifications cannot form a re-check/modeset loop.
+    constexpr auto kExclusiveTopologyCheckDelay = std::chrono::milliseconds(750);
+    constexpr auto kExclusiveTopologyQuietPeriod = std::chrono::milliseconds(5000);
+    constexpr std::size_t kMaxExclusiveTopologyRepairsPerSession = 3;
 
     bool is_exclusive_request(const ApplyRequest &request) {
       return request.virtual_layout && boost::iequals(*request.virtual_layout, "exclusive");
@@ -473,6 +479,8 @@ namespace display_helper::v2 {
     explicit_recovery_required_ = false;
     last_apply_started_.reset();
     reset_transient_disconnect_settlement();
+    exclusive_topology_check_pending_ = false;
+    exclusive_topology_quiet_until_.reset();
     system_.disarm_heartbeat();
     recovery_snapshot_.reset();
     recovery_event_feedback_quiet_until_.reset();
@@ -743,6 +751,9 @@ namespace display_helper::v2 {
     const ApplyRequest &request,
     std::chrono::milliseconds delay,
     bool reset_virtual_display) {
+    // Any mutation supersedes an in-flight exclusive topology check; its
+    // cancelled verification never reports back, so drop the pending flag.
+    exclusive_topology_check_pending_ = false;
     active_mutation_worker_ = ActiveMutationWorker {
       .kind = MutationWorkerKind::Apply,
       .generation = apply_.dispatch_apply(request, delay, reset_virtual_display),
@@ -1278,6 +1289,14 @@ namespace display_helper::v2 {
     baseline_topology_repair_available_ =
       current_request_.virtual_layout.has_value() &&
       !boost::iequals(*current_request_.virtual_layout, "exclusive");
+
+    // A verified exclusive session owns an exact singleton topology, but
+    // Windows can re-activate physical outputs after APPLY. Arm a bounded
+    // maintenance lane so later display notifications re-assert that contract
+    // instead of being discarded (issue #599).
+    exclusive_topology_repairs_remaining_ = is_exclusive_request(current_request_) ? kMaxExclusiveTopologyRepairsPerSession : 0;
+    exclusive_topology_check_pending_ = false;
+    exclusive_topology_quiet_until_.reset();
 
     last_apply_started_ = system_.now();
 
@@ -2037,6 +2056,35 @@ namespace display_helper::v2 {
       return;
     }
 
+    if (completed.purpose == VerificationPurpose::ExclusiveTopologyMaintenance) {
+      exclusive_topology_check_pending_ = false;
+      if (state_ != State::Verification) {
+        // A newer transaction owns the desktop; the superseded check is moot.
+        return;
+      }
+      // Stay quiet for a full burst window either way: success swallows the
+      // Apply's own notification tail, and a repair must not re-trigger itself.
+      exclusive_topology_quiet_until_ = system_.now() + kExclusiveTopologyQuietPeriod;
+      if (completed.success) {
+        BOOST_LOG(info) << "Display helper: exclusive singleton topology confirmed after a display change.";
+        enter_steady_state();
+        return;
+      }
+      if (exclusive_topology_repairs_remaining_ == 0) {
+        BOOST_LOG(warning) << "Display helper: physical outputs returned after the bounded exclusive repairs; leaving later display changes unrepaired.";
+        enter_steady_state();
+        return;
+      }
+      --exclusive_topology_repairs_remaining_;
+      BOOST_LOG(warning) << "Display helper: physical outputs returned during an exclusive session; re-applying the exclusive topology (" << exclusive_topology_repairs_remaining_ << " repair(s) left).";
+      // Re-assert the original exclusive contract. The generic reapply ladder
+      // stays consumed so this maintenance lane cannot stair-step modesets.
+      verification_reapply_available_ = false;
+      transition(State::InProgress, ApplyAction::Apply, ApplyStatus::VerificationFailed);
+      dispatch_apply_worker(current_request_, std::chrono::milliseconds(0), false);
+      return;
+    }
+
     if (completed.success) {
       if (baseline_topology_admission_check || baseline_topology_repair_check) {
         if (expected_topology_) {
@@ -2444,6 +2492,33 @@ namespace display_helper::v2 {
 
     const bool device_identity_event = event.event == DisplayEvent::DeviceArrival ||
                                        event.event == DisplayEvent::DeviceRemoval;
+    // An active exclusive session owns an exact singleton topology, but a
+    // physical output can re-activate behind it seconds after APPLY without
+    // carrying any device identity. Read back the exclusive contract on the
+    // first such notification instead of discarding it (issue #599); the quiet
+    // period after each check keeps this session's own Apply notifications
+    // from forming a re-check loop.
+    if (state_ == State::VirtualDisplayMonitoring &&
+        is_exclusive_request(current_request_) &&
+        current_request_.topology && !current_request_.topology->empty() &&
+        topology_evidence_event &&
+        !device_identity_event &&
+        !mutation_worker_active() &&
+        !staged_state_reset_pending_ &&
+        !exclusive_topology_check_pending_ &&
+        exclusive_topology_repairs_remaining_ > 0 &&
+        (!exclusive_topology_quiet_until_ || system_.now() >= *exclusive_topology_quiet_until_)) {
+      BOOST_LOG(info) << "Display helper: display change during an exclusive session; verifying the singleton topology.";
+      exclusive_topology_check_pending_ = true;
+      transition(State::Verification, ApplyAction::Apply);
+      apply_.dispatch_verification(
+        verification_request(),
+        current_request_.topology,
+        resolved_target_,
+        kExclusiveTopologyCheckDelay,
+        VerificationPurpose::ExclusiveTopologyMaintenance);
+      return;
+    }
     if ((state_ == State::VirtualDisplayMonitoring || state_ == State::InProgress || state_ == State::Verification) &&
         current_request_.virtual_layout &&
         !device_identity_event) {

@@ -525,6 +525,13 @@ namespace display_helper::v2 {
     // After an exclusive identity repair is rolled back, settlement verifies
     // only the restored topology; the replacement configuration is obsolete.
     bool transient_disconnect_rollback_verification_ = false;
+    // An active exclusive session must keep owning its singleton topology when
+    // later display notifications report physical outputs re-activating (issue
+    // #599). Checks are read-only; only a failed check re-applies, and both the
+    // check and repair lanes stay bounded per explicit APPLY.
+    std::size_t exclusive_topology_repairs_remaining_ = 0;
+    bool exclusive_topology_check_pending_ = false;
+    std::optional<std::chrono::steady_clock::time_point> exclusive_topology_quiet_until_;
     std::optional<std::chrono::steady_clock::time_point> last_apply_started_;
     ApplyRequest current_request_ {};
     std::optional<ResolvedConfigurationTarget> resolved_target_;
