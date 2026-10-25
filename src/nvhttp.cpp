@@ -816,6 +816,7 @@ namespace nvhttp {
         .apply_composed_topology = platf::macos_virtual_display::remote_apply_composed_topology,
         .exact_target_has_current_mode_and_dxgi = platf::macos_virtual_display::remote_exact_capture_output,
         .remove_owned_display = platf::macos_virtual_display::remote_remove_owned_display,
+        .layout_size = platf::macos_virtual_display::remote_layout_size,
       });
       remote_display_topology::instance().set_plaintext_rtsp_warning_provider([](const std::string &) {
         return rtsp_stream::plaintext_route_warning();

@@ -133,7 +133,7 @@ namespace input {
     }
 
     void move_absolute(const mouse_input::viewport_t &viewport, mouse_input::absolute_position_t position) override {
-      const platf::touch_port_t port {viewport.offset_x, viewport.offset_y, viewport.width, viewport.height};
+      const platf::touch_port_t port {viewport.offset_x, viewport.offset_y, viewport.width, viewport.height, 0, 0, viewport.output_name};
       platf::abs_mouse(_input, port, position.x, position.y);
     }
 
@@ -813,7 +813,7 @@ namespace input {
     };
 
     mouse_controller->move_absolute(
-      {abs_port.offset_x, abs_port.offset_y, abs_port.width, abs_port.height},
+      {abs_port.offset_x, abs_port.offset_y, abs_port.width, abs_port.height, touch_port.output_name},
       {tpcoords->first, tpcoords->second}
     );
   }

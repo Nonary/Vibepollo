@@ -59,6 +59,7 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/remote_display_topology.h"
+#include "src/utility.h"
 #include "src/video.h"
 #include "virtual_display.h"
 
@@ -179,11 +180,30 @@ namespace platf::macos_virtual_display {
       return platf::appdata() / "macos_displays_turned_off";
     }
 
-    void write_marker(const std::vector<CGDirectDisplayID> &ids) {
-      std::ofstream file {marker_path()};
-      for (const auto id : ids) {
-        file << id << '\n';
+    /// Replaces the marker whole, so a failed write never leaves a partial list behind.
+    bool write_marker(const std::vector<CGDirectDisplayID> &ids) {
+      const auto path = marker_path();
+      auto temporary = path;
+      temporary += ".tmp";
+      {
+        std::ofstream file {temporary};
+        for (const auto id : ids) {
+          file << id << '\n';
+        }
+        file.flush();
+        if (!file) {
+          BOOST_LOG(warning) << "Virtual display: couldn't write "sv << temporary.string();
+          return false;
+        }
       }
+      std::error_code ec;
+      std::filesystem::rename(temporary, path, ec);
+      if (ec) {
+        BOOST_LOG(warning) << "Virtual display: couldn't write "sv << path.string() << ": "sv << ec.message();
+        std::filesystem::remove(temporary, ec);
+        return false;
+      }
+      return true;
     }
 
     std::vector<CGDirectDisplayID> read_marker() {
@@ -362,10 +382,7 @@ namespace platf::macos_virtual_display {
     };
 
     /// The helper that turns displays back on if Vibepollo exits without doing so.
-    struct watchdog_t {
-      pid_t pid = -1;
-      int fd = -1;  ///< Write end of the helper's stdin; EOF without "done" makes it restore.
-    };
+    using watchdog_t = macos_display_policy::restore_helper_t;
 
     struct virtual_display_t {
       CGVirtualDisplay *display = nil;
@@ -413,6 +430,7 @@ namespace platf::macos_virtual_display {
       if (_NSGetExecutablePath(executable, &size) != 0) {
         close(fds[0]);
         close(fds[1]);
+        BOOST_LOG(warning) << "Virtual display: couldn't start the restore helper: no executable path"sv;
         return {};
       }
 
@@ -451,6 +469,7 @@ namespace platf::macos_virtual_display {
 
     void stop_watchdog(watchdog_t &watchdog, const bool displays_restored) {
       if (watchdog.fd < 0) {
+        watchdog.pid = -1;
         return;
       }
       if (displays_restored) {
@@ -467,42 +486,50 @@ namespace platf::macos_virtual_display {
       watchdog.pid = -1;
     }
 
-    /**
-     * @brief Point both safeguards at a larger set of displays, before turning the new ones off.
-     * @return The previous helper, to stop once the displays are off: some helper always covers
-     *         every display that's off, and turning them off needn't wait for the old one to exit.
-     */
-    watchdog_t cover_displays(virtual_display_t &display, const std::vector<CGDirectDisplayID> &ids) {
-      write_marker(ids);
-      return std::exchange(display.watchdog, start_watchdog(ids));
+    /// The safeguards and display changes macos_display_policy::cover_and_turn_off() makes.
+    const macos_display_policy::safeguard_ops_t &safeguard_ops() {
+      static const macos_display_policy::safeguard_ops_t ops {
+        .write_marker = write_marker,
+        .remove_marker = remove_marker,
+        .start_helper = start_watchdog,
+        .stop_helper = stop_watchdog,
+        .turn_off = [](const std::vector<CGDirectDisplayID> &ids) {
+          return set_displays_enabled(ids, false);
+        },
+      };
+      return ops;
     }
+
+    /**
+     * @brief Whether a display is one of Vibepollo's own virtual displays.
+     * @details They carry Vibepollo's vendor and product from the moment macOS makes them, so a
+     *          Remote Monitor that's still coming online is never taken for a physical display.
+     */
+    bool is_own_display(const CGDirectDisplayID id) {
+      return CGDisplayVendorNumber(id) == vendor_id && CGDisplayModelNumber(id) == product_id;
+    }
+
+    /// The displays the exclusive layout keeps on, and whether a Remote Monitor is still being made.
+    std::pair<std::vector<CGDirectDisplayID>, bool> exclusive_keep_on(const CGDirectDisplayID stream_display, const std::vector<CGDirectDisplayID> &candidates);
 
     bool turn_off_other_displays(virtual_display_t &display) {
       if (!configure_display_enabled()) {
         return false;
       }
 
-      std::vector<CGDirectDisplayID> others;
-      for (const auto id : display_list(CGGetOnlineDisplayList)) {
-        // Remote Monitors are other clients' displays, not the host's.
-        if (id != display.id && !is_remote_display(id)) {
-          others.push_back(id);
-        }
-      }
+      const auto online = display_list(CGGetOnlineDisplayList);
+      const auto [keep_on, pending] = exclusive_keep_on(display.id, online);
+      auto others = macos_display_policy::plan_exclusive_layout(online, keep_on, {}, pending).turn_off;
       if (others.empty()) {
-        // Such as a MacBook with its lid closed: displays that come on later are turned off then.
+        // Such as a MacBook with its lid closed, or while a Remote Monitor is still being made:
+        // displays that come on later are turned off then.
         display.exclusive = true;
         return true;
       }
 
       // Safeguards first: macOS won't turn these back on if Vibepollo dies.
       display.turned_off_modes = std::make_unique<saved_modes_t>();
-      write_marker(others);
-      display.watchdog = start_watchdog(others);
-
-      if (!set_displays_enabled(others, false)) {
-        stop_watchdog(display.watchdog, true);
-        remove_marker();
+      if (macos_display_policy::cover_and_turn_off(safeguard_ops(), display.watchdog, {}, others, others) != macos_display_policy::cover_result_e::turned_off) {
         return false;
       }
       display.exclusive = true;
@@ -617,10 +644,11 @@ namespace platf::macos_virtual_display {
 
       const bool hidpi = use_hidpi(width, height);
       // HiDPI modes are sized in points; their backing store, which is what gets captured, is 2x.
-      const unsigned int mode_width = hidpi ? width / 2 : width;
-      const unsigned int mode_height = hidpi ? height / 2 : height;
-      const unsigned int pixel_width = hidpi ? mode_width * 2 : mode_width;
-      const unsigned int pixel_height = hidpi ? mode_height * 2 : mode_height;
+      const auto size = macos_display_policy::virtual_display_size(width, height, hidpi);
+      const unsigned int mode_width = size.width;
+      const unsigned int mode_height = size.height;
+      const unsigned int pixel_width = size.pixel_width;
+      const unsigned int pixel_height = size.pixel_height;
 
       CGVirtualDisplayDescriptor *descriptor = [[descriptor_class alloc] init];
       descriptor.queue = dispatch_queue_create("dev.vibepollo.virtual-display", DISPATCH_QUEUE_SERIAL);
@@ -901,6 +929,8 @@ namespace platf::macos_virtual_display {
       remote_display_topology::mode_t mode;  ///< As requested.
     };
 
+    void request_exclusive_enforcement();
+
     std::mutex remote_mutex;  ///< Held while displays are created, which takes seconds.
     std::map<std::string, remote_display_t> remote_displays;  ///< By client UUID.
 
@@ -908,7 +938,7 @@ namespace platf::macos_virtual_display {
     std::mutex remote_ids_mutex;
     std::vector<CGDirectDisplayID> remote_ids;
     std::vector<CGDirectDisplayID> remote_hdr_ids;
-    std::map<CGDirectDisplayID, std::pair<int, int>> remote_capture_origins;
+    int remote_displays_pending = 0;  ///< Remote Monitor displays being made, not yet in remote_ids.
 
     // Call with remote_mutex held.
     void publish_remote_ids() {
@@ -923,9 +953,6 @@ namespace platf::macos_virtual_display {
         }
       }
       std::lock_guard lock {remote_ids_mutex};
-      std::erase_if(remote_capture_origins, [&ids](const auto &entry) {
-        return std::find(ids.begin(), ids.end(), entry.first) == ids.end();
-      });
       remote_ids = std::move(ids);
       remote_hdr_ids = std::move(hdr_ids);
     }
@@ -967,6 +994,20 @@ namespace platf::macos_virtual_display {
       return true;
     }
 
+    // Until it's published, the exclusive layout leaves displays it hasn't seen before alone: the
+    // new display could be taken for a physical one. Once it is, the layout is enforced again.
+    {
+      std::lock_guard ids_lock {remote_ids_mutex};
+      ++remote_displays_pending;
+    }
+    const auto published = util::fail_guard([]() {
+      {
+        std::lock_guard ids_lock {remote_ids_mutex};
+        --remote_displays_pending;
+      }
+      request_exclusive_enforcement();
+    });
+
     // A new mode gets a new display: two at once with the same serial would confuse macOS.
     remote.display.reset();
     publish_remote_ids();
@@ -979,6 +1020,12 @@ namespace platf::macos_virtual_display {
     remote.mode = mode;
     publish_remote_ids();
     return true;
+  }
+
+  std::optional<std::pair<int, int>> remote_layout_size(const std::string &, const remote_display_topology::mode_t &mode) {
+    // Desktop coordinates are in points; a Retina display's capture mode is twice that.
+    const auto size = macos_display_policy::virtual_display_size(mode.width, mode.height, use_hidpi(mode.width, mode.height));
+    return std::pair {size.width, size.height};
   }
 
   void remote_resolve_mode(const std::string &, remote_display_topology::mode_t &mode) {
@@ -1071,23 +1118,6 @@ namespace platf::macos_virtual_display {
     return std::find(remote_hdr_ids.begin(), remote_hdr_ids.end(), display_id) != remote_hdr_ids.end();
   }
 
-  void note_remote_capture_origin(const std::uint32_t display_id, const int x, const int y) {
-    std::lock_guard lock {remote_ids_mutex};
-    if (std::find(remote_ids.begin(), remote_ids.end(), display_id) != remote_ids.end()) {
-      remote_capture_origins[display_id] = {x, y};
-    }
-  }
-
-  std::optional<std::uint32_t> remote_display_captured_at(const int x, const int y) {
-    std::lock_guard lock {remote_ids_mutex};
-    for (const auto &[id, origin] : remote_capture_origins) {
-      if (origin == std::pair {x, y}) {
-        return id;
-      }
-    }
-    return std::nullopt;
-  }
-
   namespace {
     // Changes arrive in bursts (a reopened lid adds a display, then macOS rearranges and picks modes),
     // so wait for them to stop before acting.
@@ -1113,17 +1143,26 @@ namespace platf::macos_virtual_display {
       select_mode(display.id, display.pixel_width, display.pixel_height);
     }
 
+    std::pair<std::vector<CGDirectDisplayID>, bool> exclusive_keep_on(const CGDirectDisplayID stream_display, const std::vector<CGDirectDisplayID> &candidates) {
+      std::vector<CGDirectDisplayID> keep_on {stream_display};
+      for (const auto id : candidates) {
+        if (is_own_display(id)) {
+          keep_on.push_back(id);
+        }
+      }
+      std::lock_guard lock {remote_ids_mutex};
+      keep_on.insert(keep_on.end(), remote_ids.begin(), remote_ids.end());
+      return {std::move(keep_on), remote_displays_pending > 0};
+    }
+
     /**
      * @brief Turn off displays that came back on while the exclusive layout is in effect.
      * @details Call with state_mutex held. Safeguards are updated before anything is turned off.
      */
     void enforce_exclusive_layout(virtual_display_t &display, const std::chrono::steady_clock::time_point noticed) {
-      std::vector<CGDirectDisplayID> keep_on {display.id};
-      {
-        std::lock_guard lock {remote_ids_mutex};
-        keep_on.insert(keep_on.end(), remote_ids.begin(), remote_ids.end());
-      }
-      const auto plan = macos_display_policy::plan_exclusive_layout(display_list(CGGetActiveDisplayList), keep_on, display.turned_off);
+      const auto active = display_list(CGGetActiveDisplayList);
+      const auto [keep_on, pending] = exclusive_keep_on(display.id, active);
+      const auto plan = macos_display_policy::plan_exclusive_layout(active, keep_on, display.turned_off, pending);
       if (plan.turn_off.empty() || display.gave_up_enforcing) {
         return;
       }
@@ -1134,26 +1173,33 @@ namespace platf::macos_virtual_display {
         return;
       }
 
-      watchdog_t previous_watchdog;
-      if (!plan.newly_tracked.empty()) {
+      // Safeguards first, and only for displays they don't cover yet. Turning displays back off
+      // that are already covered needs a running helper too: one that couldn't start, or the
+      // helper's own failure, would leave nothing to turn them back on.
+      using macos_display_policy::cover_result_e;
+      auto covered = display.turned_off;
+      covered.insert(covered.end(), plan.newly_tracked.begin(), plan.newly_tracked.end());
+      auto result = cover_result_e::turned_off;
+      if (!plan.newly_tracked.empty() || !display.watchdog.running()) {
         if (!display.turned_off_modes) {
           display.turned_off_modes = std::make_unique<saved_modes_t>();
         }
         for (const auto id : plan.newly_tracked) {
           display.turned_off_modes->add(id);
         }
-        auto covered = display.turned_off;
-        covered.insert(covered.end(), plan.newly_tracked.begin(), plan.newly_tracked.end());
-        previous_watchdog = cover_displays(display, covered);
-        display.turned_off = std::move(covered);
+        result = macos_display_policy::cover_and_turn_off(safeguard_ops(), display.watchdog, display.turned_off, covered, plan.turn_off);
+      } else if (!set_displays_enabled(plan.turn_off, false)) {
+        result = cover_result_e::turn_off_failed;
       }
-
-      const bool turned_off = set_displays_enabled(plan.turn_off, false);
-      stop_watchdog(previous_watchdog, true);
-      if (!turned_off) {
+      if (result == cover_result_e::safeguards_failed) {
+        BOOST_LOG(warning) << "Virtual display: couldn't prepare to turn display(s) "sv << format_ids(plan.turn_off) << " back on, so they stay on"sv;
+        return;
+      }
+      if (result != cover_result_e::turned_off) {
         BOOST_LOG(warning) << "Virtual display: couldn't turn off display(s) "sv << format_ids(plan.turn_off);
         return;
       }
+      display.turned_off = std::move(covered);
       wait_until([&display, &plan]() {
         return CGDisplayIsMain(display.id) && std::none_of(plan.turn_off.begin(), plan.turn_off.end(), is_active);
       },
@@ -1193,6 +1239,17 @@ namespace platf::macos_virtual_display {
       }
     }
 
+    /// Enforce the exclusive layout again soon, as once a Remote Monitor it waited for is published.
+    void request_exclusive_enforcement() {
+      const auto noticed = std::chrono::steady_clock::now();
+      dispatch_async(reconcile_queue(), ^{
+        std::lock_guard lock {state_mutex};
+        if (exclusive_in_effect()) {
+          enforce_exclusive_layout(*current, noticed);
+        }
+      });
+    }
+
     void display_reconfigured(CGDirectDisplayID, const CGDisplayChangeSummaryFlags flags, void *) {
       if (flags & kCGDisplayBeginConfigurationFlag) {
         return;
@@ -1201,13 +1258,7 @@ namespace platf::macos_virtual_display {
       // don't wait for the changes to settle for that: macOS has already made it the main display.
       // The settled pass below catches anything this misses while macOS is still rearranging.
       if (flags & (kCGDisplayAddFlag | kCGDisplayEnabledFlag)) {
-        const auto noticed = std::chrono::steady_clock::now();
-        dispatch_async(reconcile_queue(), ^{
-          std::lock_guard lock {state_mutex};
-          if (exclusive_in_effect()) {
-            enforce_exclusive_layout(*current, noticed);
-          }
-        });
+        request_exclusive_enforcement();
       }
       pending_flags.fetch_or(static_cast<std::uint32_t>(flags));
       const auto generation = ++change_generation;

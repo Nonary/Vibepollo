@@ -2246,3 +2246,132 @@ TEST(RemoteDisplayTopology, TerminalRemovalRetainsFailedPhysicalRestoreUntilShut
   coordinator.refresh_idle_physical_baseline({{.id = "updated", .physical = true, .active = true}});
   EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"updated"});
 }
+
+namespace {
+  // As macOS sizes its virtual displays: Retina above 1920x1200, which occupies half its pixels in points.
+  std::optional<std::pair<int, int>> retina_layout_size(const std::string &, const mode_t &mode) {
+    const bool hidpi = mode.width > 1920 || mode.height > 1200;
+    return std::pair {hidpi ? mode.width / 2 : mode.width, hidpi ? mode.height / 2 : mode.height};
+  }
+
+  remote_display_topology::node_t retina_physical_baseline() {
+    // A 4K Retina display that looks like 1920x1080, as remote_baseline() reports it.
+    remote_display_topology::node_t physical {
+      .id = "physical",
+      .device_id = "1",
+      .label = "Built-in Display",
+      .preexisting = true,
+      .physical = true,
+      .active = true,
+      .primary = true,
+      .configured_mode = {3840, 2160, 60},
+    };
+    physical.layout_width = 1920;
+    physical.layout_height = 1080;
+    return physical;
+  }
+
+  remote_display_topology::runtime_callbacks_t retina_callbacks(std::vector<remote_display_topology::node_t> &composed) {
+    return {
+      .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+      .apply_composed_topology = [&composed](const auto &nodes) {
+        composed = nodes;
+        return true;
+      },
+      .exact_target_has_current_mode_and_dxgi = [](const auto &uuid, const auto &) { return std::optional<std::string> {uuid}; },
+      .layout_size = retina_layout_size,
+    };
+  }
+
+  const remote_display_topology::node_t &composed_node(const std::vector<remote_display_topology::node_t> &composed, const std::string &id) {
+    const auto node = std::find_if(composed.begin(), composed.end(), [&id](const auto &candidate) { return candidate.id == id; });
+    EXPECT_NE(node, composed.end()) << id;
+    return *node;
+  }
+}  // namespace
+
+TEST(RemoteDisplayTopology, RetinaRemoteMonitorsSitAdjacentInDesktopPoints) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<remote_display_topology::node_t> composed;
+  coordinator.set_physical_baseline({retina_physical_baseline()});
+  coordinator.set_runtime_callbacks(retina_callbacks(composed));
+
+  ASSERT_TRUE(coordinator.activate_or_resume("one", "One", {3840, 2160, 60}, 1).ready);
+  ASSERT_TRUE(coordinator.activate_or_resume("two", "Two", {3840, 2160, 60}, 1).ready);
+  ASSERT_EQ(composed.size(), 3);
+  // These are the coordinates the platform hands CoreGraphics.
+  EXPECT_EQ(composed_node(composed, "one").x, 1920);
+  EXPECT_EQ(composed_node(composed, "two").x, 3840);
+  // Mode reporting stays in native pixels.
+  EXPECT_EQ(composed_node(composed, "one").configured_mode.width, 3840);
+  EXPECT_EQ(composed_node(composed, "two").configured_mode.height, 2160);
+  EXPECT_EQ(coordinator.snapshot({})["nodes"][1]["mode"]["width"], 3840);
+}
+
+TEST(RemoteDisplayTopology, MixedScalingRemoteMonitorsSitAdjacentInDesktopPoints) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<remote_display_topology::node_t> composed;
+  coordinator.set_physical_baseline({retina_physical_baseline()});
+  coordinator.set_runtime_callbacks(retina_callbacks(composed));
+
+  ASSERT_TRUE(coordinator.activate_or_resume("retina", "Retina", {2560, 1440, 60}, 1).ready);
+  ASSERT_TRUE(coordinator.activate_or_resume("standard", "Standard", {1920, 1080, 60}, 1).ready);
+  ASSERT_TRUE(coordinator.activate_or_resume("retina-4k", "Retina 4K", {3840, 2160, 60}, 1).ready);
+  EXPECT_EQ(composed_node(composed, "retina").x, 1920);
+  EXPECT_EQ(composed_node(composed, "standard").x, 1920 + 1280);
+  EXPECT_EQ(composed_node(composed, "retina-4k").x, 1920 + 1280 + 1920);
+}
+
+TEST(RemoteDisplayTopology, RetinaPlacementUsesPointsForEveryEdgeAndAlignment) {
+  // A 2560x1440 Retina client occupies 1280x720 points beside the 1920x1080-point physical display.
+  struct expected_t {
+    const char *edge;
+    const char *alignment;
+    int x;
+    int y;
+  };
+
+  for (const auto &expected : std::vector<expected_t> {
+         {"right", "start", 1928, 0},
+         {"right", "center", 1928, 180},
+         {"right", "end", 1928, 360},
+         {"left", "start", -1288, 0},
+         {"left", "center", -1288, 180},
+         {"left", "end", -1288, 360},
+         {"above", "start", 0, -728},
+         {"above", "center", 320, -728},
+         {"above", "end", 640, -728},
+         {"below", "start", 0, 1088},
+         {"below", "center", 320, 1088},
+         {"below", "end", 640, 1088},
+       }) {
+    remote_display_topology::coordinator_t coordinator;
+    std::vector<remote_display_topology::node_t> composed;
+    coordinator.set_physical_baseline({retina_physical_baseline()});
+    coordinator.set_runtime_callbacks(retina_callbacks(composed));
+    coordinator.set_layout(layout({{"client", {{"anchor_kind", "physical"}, {"anchor_id", "physical"}, {"edge", expected.edge}, {"alignment", expected.alignment}, {"gap_px", 8}}}}));
+
+    ASSERT_TRUE(coordinator.activate_or_resume("client", "Client", {2560, 1440, 60}, 1).ready);
+    const auto &client = composed_node(composed, "client");
+    EXPECT_EQ(client.x, expected.x) << expected.edge << '/' << expected.alignment;
+    EXPECT_EQ(client.y, expected.y) << expected.edge << '/' << expected.alignment;
+  }
+}
+
+TEST(RemoteDisplayTopology, RetinaClientAnchorsUsePointsToo) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<remote_display_topology::node_t> composed;
+  coordinator.set_physical_baseline({retina_physical_baseline()});
+  coordinator.set_runtime_callbacks(retina_callbacks(composed));
+  coordinator.set_layout(layout({
+    {"standard", {{"anchor_kind", "client"}, {"anchor_id", "retina"}, {"edge", "below"}, {"alignment", "end"}, {"gap_px", 0}}},
+  }));
+
+  ASSERT_TRUE(coordinator.activate_or_resume("retina", "Retina", {3840, 2160, 60}, 1).ready);
+  ASSERT_TRUE(coordinator.activate_or_resume("standard", "Standard", {1280, 720, 60}, 1).ready);
+  const auto &retina = composed_node(composed, "retina");
+  const auto &standard = composed_node(composed, "standard");
+  EXPECT_EQ(retina.x, 1920);
+  EXPECT_EQ(standard.y, retina.y + 1080);
+  EXPECT_EQ(standard.x, retina.x + 1920 - 1280);
+}

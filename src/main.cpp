@@ -1138,25 +1138,33 @@ int main(int argc, char *argv[]) {
   // either way. A stream that ends with the lid closed leaves the built-in display off until it
   // opens, so it's turned back on then.
   platf::watch_lid([]() {
-    using platf::macos_display_policy::lid_close_action_e;
-    const auto sessions = rtsp_stream::session_count();
-    switch (platf::macos_display_policy::lid_close_action(config::sunshine.lid_close_ends_streams, sessions, proc::proc.running() > 0)) {
-      case lid_close_action_e::none:
-        if (sessions > 0) {
-          BOOST_LOG(info) << "The lid was closed; streaming continues while the Mac stays awake (lid_close_ends_streams is off)"sv;
-        }
-        break;
-      case lid_close_action_e::quit_app:
-        // As when an app exits, its clients are told the stream ended.
-        BOOST_LOG(info) << "The lid was closed; quitting the app to end the stream (lid_close_ends_streams is on)"sv;
-        proc::proc.terminate();
-        break;
-      case lid_close_action_e::end_streams:
-        BOOST_LOG(info) << "The lid was closed; ending the stream (lid_close_ends_streams is on)"sv;
-        for (const auto &session : rtsp_stream::get_sessions_snapshot()) {
-          stream::session::graceful_stop(*session);
-        }
-        break;
+    using platf::macos_display_policy::stream_role_e;
+    const auto sessions = rtsp_stream::get_sessions_snapshot();
+    std::vector<stream_role_e> roles;
+    for (const auto &session : sessions) {
+      const bool remote = stream::session::remote_role_match(*session, remote_session::role_e::monitor) ||
+                          stream::session::remote_role_match(*session, remote_session::role_e::input);
+      roles.push_back(remote ? stream_role_e::remote : stream_role_e::app);
+    }
+    const auto plan = platf::macos_display_policy::plan_lid_close(config::sunshine.lid_close_ends_streams, roles, proc::proc.running() > 0);
+    if (!plan.quit_app && plan.end_streams.empty()) {
+      if (!sessions.empty()) {
+        BOOST_LOG(info) << "The lid was closed; streaming continues while the Mac stays awake (lid_close_ends_streams is off)"sv;
+      }
+      return;
+    }
+    if (plan.quit_app) {
+      // As when an app exits, its clients are told the stream ended.
+      BOOST_LOG(info) << "The lid was closed; quitting the app to end its stream (lid_close_ends_streams is on)"sv;
+      proc::proc.terminate();
+    }
+    // The app's exit leaves Remote Monitor and Remote Input streams running on purpose, so they're
+    // ended here, along with any stream when no app is running.
+    if (!plan.end_streams.empty()) {
+      BOOST_LOG(info) << "The lid was closed; ending "sv << plan.end_streams.size() << " stream(s) (lid_close_ends_streams is on)"sv;
+    }
+    for (const auto index : plan.end_streams) {
+      stream::session::graceful_stop(*sessions[index]);
     }
   },
                    platf::macos_virtual_display::recover_disabled_displays);
