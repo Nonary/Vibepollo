@@ -28,13 +28,14 @@ def sequence(repo, tag, version=None, source=None):
         if not match or (version is not None and tag != 'v' + version):
             raise ValueError('Invalid Moonlight nightly identity')
         return int(match[1])
-    nightly = re.fullmatch(r'([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d(20[0-9]{2})([0-9]{2})([0-9]{2})\.([0-9a-f]{12})', tag)
+    nightly = re.fullmatch(r'([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d(20[0-9]{2})([0-9]{2})([0-9]{2})\.(?:r\.([1-9][0-9]{0,2})\.)?([0-9a-f]{12})', tag)
     if nightly:
         import datetime
         datetime.date(*map(int, nightly.groups()[1:4]))
-        if version is not None and (version != tag or nightly[5] != exact_sha(source)[:12]):
+        if version is not None and (version != tag or nightly[6] != exact_sha(source)[:12]):
             raise ValueError('Nightly tag/version must match the exact source')
-        return int(''.join(nightly.groups()[1:4]))
+        day = int(''.join(nightly.groups()[1:4]))
+        return day * 1000 + int(nightly[5]) if nightly[5] else day
     semver = re.fullmatch(r'([0-9]+\.[0-9]+\.[0-9]+)-daily\.d(20[0-9]{2})([0-9]{2})([0-9]{2})(?:\.([1-9][0-9]{0,2}))?', tag)
     if semver:
         if version is not None and version != tag + '+' + exact_sha(source)[:12]:

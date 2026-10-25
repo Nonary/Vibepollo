@@ -47,6 +47,15 @@ json nightly(std::string day, std::string sha = std::string(40, 'b')) {
                                  {"source_commit",sha},{"nightly_sequence",std::stoi("202610"+day)}};
   return result;
 }
+json revised_nightly(std::string day, int revision, std::string sha) {
+  auto result = nightly(day, sha);
+  auto tag = "2.0.1-nightly.d202610" + day + ".r." + std::to_string(revision) + "." + sha.substr(0, 12);
+  result["tag_name"] = tag;
+  result["nightly_metadata"]["tag"] = tag;
+  result["nightly_metadata"]["version"] = tag;
+  result["nightly_metadata"]["nightly_sequence"] = std::stoll("202610" + day) * 1000 + revision;
+  return result;
+}
 int main() {
   auto select = [](json releases, const std::string &installed, bool pre) {
     for (auto &item : releases) if (item.is_object() && item.contains("nightly_metadata"))
@@ -66,6 +75,35 @@ int main() {
   assert(!release_selection::select(json::array({with_body(next_nightly)}), current_nightly["tag_name"], true).is_null());
   assert(release_selection::select(json::array({with_body(next_nightly)}), "2.0.0", false).is_null());
   assert(release_selection::select(json::array({with_body(next_nightly)}), "2.0.1", true).is_null());
+  auto revision1 = revised_nightly("22", 1, std::string(40, '0'));
+  auto revision2 = revised_nightly("22", 2, std::string(40, 'a'));
+  auto revision10 = revised_nightly("22", 10, std::string(40, '1'));
+  auto revisions = json::array({revision10, current_nightly, revision2, revision1});
+  assert(select(revisions, current_nightly["tag_name"], true)["tag_name"] == revision10["tag_name"]);
+  assert(select(revisions, revision1["tag_name"], true)["tag_name"] == revision10["tag_name"]);
+  assert(select(revisions, revision10["tag_name"], true).is_null());
+  assert(select(json::array({current_nightly}), revision1["tag_name"], true).is_null());
+  assert(select(json::array({next_nightly}), revision10["tag_name"], true)["tag_name"] == next_nightly["tag_name"]);
+  assert(select(json::array({revision10}), next_nightly["tag_name"], true).is_null());
+  assert(select(revisions, "2.0.1", true).is_null());
+  assert(select(revisions, "2.0.0", false).is_null());
+  assert(select(json::array({revision1}), "2.0.1-daily.d20261021.999+aaaaaaaaaaaa", true)["tag_name"] == revision1["tag_name"]);
+  assert(select(json::array({revision1}), "2.0.1-daily.d20261023.1+aaaaaaaaaaaa", true).is_null());
+  assert(select(json::array({daily("23", "2.0.1")}), revision1["tag_name"], true)["tag_name"] == "daily-2026-10-23");
+  for (const auto &field : {"source_commit", "nightly_sequence", "version"}) {
+    auto invalid = revision1;
+    invalid["nightly_metadata"][field] = "tampered";
+    assert(select(json::array({invalid}), "2.0.0", true).is_null());
+  }
+  auto malformed = revision1;
+  malformed["tag_name"] = "2.0.1-nightly.d20261022.r.0.aaaaaaaaaaaa";
+  assert(select(json::array({malformed}), "2.0.0", true).is_null());
+  auto missing_body = with_body(revision1);
+  missing_body.erase("body");
+  assert(release_selection::select(json::array({missing_body}), "2.0.0", true).is_null());
+  auto missing_sums = revision1;
+  missing_sums["assets"].erase(2);
+  assert(select(json::array({missing_sums}), "2.0.0", true).is_null());
   auto tampered_nightly = current_nightly;
   tampered_nightly["nightly_metadata"]["source_commit"] = std::string(40, 'c');
   assert(release_selection::select(json::array({with_body(tampered_nightly)}), "2.0.0", true).is_null());

@@ -26,6 +26,7 @@
 #include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/steam_controller_protocol.h"
 #include "vhf_gamepad.h"
 #include "dualsense_usbip_gamepad.h"
 #include "dualsense_usbip_gamepad_policy.h"
@@ -306,9 +307,9 @@ namespace platf {
         ds4_update_motion(gamepad, LI_MOTION_TYPE_ACCEL, 0.0f, EARTH_G, 0.0f);
         ds4_update_motion(gamepad, LI_MOTION_TYPE_GYRO, 0.0f, 0.0f, 0.0f);
 
-        // Request motion events from the client at 100 Hz
-        feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100));
-        feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100));
+        // Request motion events from the client at 100 Hz (coalesced: one pending request per type)
+        static_cast<void>(raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100)));
+        static_cast<void>(raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100)));
         gamepad.last_motion_request_ts = std::chrono::steady_clock::now();
 
         // We support pointer index 0 and 1
@@ -397,19 +398,17 @@ namespace platf {
           uint16_t normalizedLargeMotor = largeMotor << 8;
           uint16_t normalizedSmallMotor = smallMotor << 8;
 
-          // Don't resend duplicate rumble data
-          if (normalizedSmallMotor != gamepad.last_rumble.data.rumble.highfreq ||
-              normalizedLargeMotor != gamepad.last_rumble.data.rumble.lowfreq) {
-            // We have to use the client-relative index when communicating back to the client
-            gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rumble(
-              gamepad.client_relative_index,
-              normalizedLargeMotor,
-              normalizedSmallMotor
-            );
-            msg.from_vigem = true;
-            gamepad.feedback_queue->raise(msg);
-            gamepad.last_rumble = msg;
-          }
+          // We have to use the client-relative index when communicating back to the client.
+          // Coalesced admission, deduplicated against the last rumble this backend delivered; the
+          // cache follows acceptance, so a message the mailbox refused is retried by the next
+          // callback instead of being suppressed as already delivered.
+          gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rumble(
+            gamepad.client_relative_index,
+            normalizedLargeMotor,
+            normalizedSmallMotor
+          );
+          msg.from_vigem = true;
+          static_cast<void>(raise_gamepad_feedback_deduped(*gamepad.feedback_queue, msg, gamepad.last_rumble));
           return;
         }
       }
@@ -427,15 +426,11 @@ namespace platf {
         auto &gamepad = gamepads[x];
 
         if (gamepad.gp.get() == target) {
-          // Don't resend duplicate RGB data
-          if (r != gamepad.last_rgb_led.data.rgb_led.r ||
-              g != gamepad.last_rgb_led.data.rgb_led.g ||
-              b != gamepad.last_rgb_led.data.rgb_led.b) {
-            // We have to use the client-relative index when communicating back to the client
-            gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rgb_led(gamepad.client_relative_index, r, g, b);
-            gamepad.feedback_queue->raise(msg);
-            gamepad.last_rgb_led = msg;
-          }
+          // We have to use the client-relative index when communicating back to the client.
+          // Coalesced admission, deduplicated against the last LED state this backend delivered;
+          // the cache follows acceptance (see raise_gamepad_feedback_deduped).
+          gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rgb_led(gamepad.client_relative_index, r, g, b);
+          static_cast<void>(raise_gamepad_feedback_deduped(*gamepad.feedback_queue, msg, gamepad.last_rgb_led));
           return;
         }
       }
@@ -537,7 +532,8 @@ namespace platf {
            config::input.gamepad == "vhf_xbox_one"sv ||
            config::input.gamepad == "vhf_ds4"sv ||
            config::input.gamepad == "vhf_ds5"sv ||
-           config::input.gamepad == "vhf_switch"sv;
+           config::input.gamepad == "vhf_switch"sv ||
+           config::input.gamepad == "vhf_steam"sv;
   }
 
   /**
@@ -1387,20 +1383,49 @@ namespace platf {
     const bool automatic_vhf_fallback =
       config::input.gamepad == "auto"sv &&
       vhf_gamepad::select_automatic_backend(vigem_available, vhf_available) == vhf_gamepad::backend_e::vhf;
+    // Only the VHF driver can present a Steam Controller; under `auto` with ViGEmBus installed
+    // the client would otherwise silently become an Xbox 360 pad and lose both pads, grips,
+    // motion, battery and haptics. ViGEmBus remains the fallback if the allocation fails.
+    const bool steam_client_prefers_vhf =
+      config::input.gamepad == "auto"sv && vhf_available &&
+      vhf_gamepad::is_steam_controller_client(metadata.type, metadata.capabilities);
 
-    if (vhf_gamepad_selected() || automatic_vhf_fallback) {
+    if (vhf_gamepad_selected() || automatic_vhf_fallback || steam_client_prefers_vhf) {
       const auto desired = vhf_desired_profile(metadata);
+
+      if (config::input.gamepad == "vhf_steam"sv && desired != vhf_profile_e::steam_controller) {
+        BOOST_LOG(info) << "Gamepad " << id.globalIndex << " is not a Steam Controller (2026) client controller (type "sv
+                        << static_cast<int>(metadata.type) << ", capabilities "sv << metadata.capabilities
+                        << "); vhf_steam is kept for Steam Controllers and this one gets the automatic choice"sv;
+      }
 
       if (vhf_available) {
         BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will use the Vibepollo virtual gamepad driver"sv
-                        << (automatic_vhf_fallback ? " (automatic fallback)"sv : ""sv);
+                        << (automatic_vhf_fallback ? " (automatic fallback)"sv :
+                            steam_client_prefers_vhf ? " (Steam Controller client)"sv : ""sv);
 
-        if (raw->vhf->alloc(id, feedback_queue, desired) == 0) {
+        if (raw->vhf->alloc(id, feedback_queue, desired, metadata.capabilities) == 0) {
           raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
           return 0;
         }
       }
 
+      // Only a vhf_* config value is an explicit choice. A profile inferred from the
+      // client's controller type (Steam Controller, Switch, PlayStation) under plain
+      // `vhf` is a preference: when the installed driver does not offer it, retry with
+      // the driver's automatic profile rather than leaving the client with no controller.
+      const bool explicit_profile = config::input.gamepad != "vhf"sv && config::input.gamepad != "auto"sv;
+      if (vhf_available && desired != vhf_profile_e::automatic && !explicit_profile) {
+        BOOST_LOG(warning) << "Gamepad " << id.globalIndex
+                           << " could not get the profile its controller type suggests; retrying with the driver's automatic profile"sv;
+        if (raw->vhf->alloc(id, feedback_queue, vhf_profile_e::automatic, metadata.capabilities) == 0) {
+          raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
+          return 0;
+        }
+      }
+
+      // With no ViGEm backend, exhaust the driver's automatic profile before
+      // failing. The client-derived profile above is only a preference under auto.
       if (automatic_vhf_fallback) {
         BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not be created on the Vibepollo virtual gamepad driver"sv;
         return -1;
@@ -1408,8 +1433,9 @@ namespace platf {
 
       // An explicit profile must not be replaced by an automatic/client-selected profile or by
       // ViGEmBus. Otherwise a failed Switch Pro allocation makes the client override appear to
-      // win even though the user selected a specific VHF profile.
-      if (desired != vhf_profile_e::automatic) {
+      // win even though the user selected a specific VHF profile. A Steam Controller client
+      // under `auto` chose nothing explicitly, so it may still fall back to ViGEmBus.
+      if (explicit_profile && desired != vhf_profile_e::automatic && !steam_client_prefers_vhf) {
         BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not create the requested Vibepollo controller profile; refusing to substitute another profile"sv;
         return -1;
       }
@@ -1746,8 +1772,8 @@ namespace platf {
             BOOST_LOG(debug) << "DS4 gyro stale for "sv
                              << std::chrono::duration_cast<std::chrono::milliseconds>(gyro_stale).count()
                              << "ms; re-requesting motion events from client"sv;
-            gamepad.feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100));
-            gamepad.feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100));
+            static_cast<void>(raise_gamepad_feedback(*gamepad.feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100)));
+            static_cast<void>(raise_gamepad_feedback(*gamepad.feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100)));
             gamepad.last_motion_request_ts = now;
           }
         }
@@ -1987,6 +2013,21 @@ namespace platf {
   }
 
   /**
+   * @brief Hands the real Steam Controller's firmware attributes to the virtual controller.
+   * @details Only the VHF driver presents a Steam Controller; ViGEmBus and the DualSense USB/IP
+   *          backend have no device that answers Steam's attribute reads, so they get nothing.
+   * @param input The global input context.
+   * @param attributes The attributes.
+   */
+  void gamepad_attributes(input_t &input, const steam_controller_attributes_t &attributes) {
+    auto raw = (input_raw_t *) input.get();
+
+    if (vhf_owns_gamepad(raw, attributes.id.globalIndex)) {
+      raw->vhf->attributes(attributes.id.globalIndex, attributes);
+    }
+  }
+
+  /**
    * @brief Sends a gamepad battery event to the OS.
    * @param input The global input context.
    * @param battery The battery event.
@@ -2091,6 +2132,7 @@ namespace platf {
         supported_gamepad_t {"vhf_ds5", false, ""},
         supported_gamepad_t {"usbip_ds5", false, ""},
         supported_gamepad_t {"vhf_switch", false, ""},
+        supported_gamepad_t {"vhf_steam", false, ""},
       };
 
       return gps;
@@ -2117,7 +2159,8 @@ namespace platf {
       supported_gamepad_t {"vhf_ds4", vhf_enabled, vhf_reason},
       supported_gamepad_t {"vhf_ds5", vhf_enabled, vhf_reason},
       supported_gamepad_t {"usbip_ds5", usbip_enabled, usbip_reason},
-      supported_gamepad_t {"vhf_switch", vhf_enabled, vhf_reason}
+      supported_gamepad_t {"vhf_switch", vhf_enabled, vhf_reason},
+      supported_gamepad_t {"vhf_steam", vhf_enabled, vhf_reason}
     };
 
     // A gamepad type that is unavailable only because its backend is not installed is not
@@ -2145,6 +2188,12 @@ namespace platf {
   platform_caps::caps_t get_capabilities() {
     platform_caps::caps_t caps = 0;
 
+    // Controller touch depends on which controller the client will get (see
+    // vhf_gamepad::supports_controller_touch): plain `vhf` selects a pad-bearing profile
+    // from the client's controller type (Steam Controller, PlayStation) whatever
+    // motion_as_ds4/touchpad_as_ds4 say, so only x360 and the explicit Xbox and Switch
+    // selections rule a touchpad out. Withholding the flag silences both Steam Controller
+    // trackpads: the client never sends a touch packet without it.
     const bool composite_dualsense = config::input.gamepad == "usbip_ds5"sv || dualsense_usbip_gamepad::enabled();
     if (vhf_gamepad::supports_controller_touch(config::input.gamepad, composite_dualsense)) {
       caps |= platform_caps::controller_touch;

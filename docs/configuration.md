@@ -416,9 +416,10 @@ editing the `conf` file in a text editor. Use the examples as reference.
             @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
             driver to be installed. It presents a DualSense to clients that report a PlayStation
             controller, or when motion_as_ds4 or touchpad_as_ds4 applies, and an Xbox Series
-            controller otherwise. On an older driver it falls back to a generic HID pad that
-            publishes the DirectInput Physical Interface Device report set, so force feedback still
-            works in DirectInput games.}</td>
+            controller otherwise. A client that reports a Steam Controller, Switch or PlayStation
+            controller gets that profile when the driver offers it, and the driver's automatic
+            profile otherwise. A driver that offers no console profile is reported as unusable
+            (the reserved generic HID profiles are never selected).}</td>
     </tr>
     <tr>
         <td>vhf_switch</td>
@@ -427,6 +428,24 @@ editing the `conf` file in a text editor. Use the examples as reference.
             driver to be installed. Includes motion sensors, battery reporting, rumble, and the
             Capture button. This controller has no analog triggers, so trigger travel is reported
             as ZL and ZR presses, and it has no touchpad.}</td>
+    </tr>
+    <tr>
+        <td>vhf_steam</td>
+        <td>Steam Controller (2026) on Vibepollo's own virtual gamepad driver
+            @note{This option applies to Windows only and requires a Vibepollo virtual gamepad
+            driver with the Steam Controller profile. Steam recognises it as a real Steam
+            Controller: two trackpads (the client's touchpad 0 and 1), four grip buttons, motion
+            sensors, battery and pad haptics rendered as rumble. Plain `vhf` and `auto` select it
+            for clients that report a Steam Controller. Whether selected here or automatically, only
+            a client controller that reports the Steam type together with the Steam extensions (grip
+            sense, the pad haptic relay or explicit pad clicks) gets this profile; any other controller
+            the same client forwards, a keyboard's joystick interface for instance, or a Steam Deck's
+            built-in controls through SDL, gets the automatic choice instead of becoming a second
+            Steam Controller. A client that reads the real controller's
+            firmware attributes (firmware and bootloader build times, board revision, build id,
+            serials) relays them, so Steam sees the real firmware build and offers an update only
+            when the real controller needs one; a driver that predates this keeps its defaults.}
+            @warning{Do not start a Steam Controller firmware update from Steam while streaming: the update would target this virtual controller, not the real one. Update with the controller connected directly to a PC.}</td>
     </tr>
     <tr>
         <td>vhf_xbox</td>
@@ -521,7 +540,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             <br>
             <br>
             When disabled, motion sensors will not be taken into account during gamepad type selection.
-            @hint{Only applies when gamepad is set to auto.}
+            @hint{Applies when gamepad is set to auto or vhf.}
         </td>
     </tr>
     <tr>
@@ -549,7 +568,7 @@ editing the `conf` file in a text editor. Use the examples as reference.
             <br>
             <br>
             When disabled, touchpad presence will not be taken into account during gamepad type selection.
-            @hint{Only applies when gamepad is set to auto.}
+            @hint{Applies when gamepad is set to auto or vhf.}
         </td>
     </tr>
     <tr>
@@ -1081,6 +1100,43 @@ dualsense_haptics_gain = 1.5
             virtual_sink = Steam Streaming Speakers
             @endcode</td>
     </tr>
+</table>
+
+### audio_format
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Selects the encoded audio format sent to a compatible client. Opus remains the default.
+            AC-3 (Dolby Digital) and E-AC-3 (Dolby Digital Plus) are offered only when the linked FFmpeg build
+            includes the selected encoder. The client must explicitly accept the exact codec offer; otherwise
+            Vibepollo falls back to Opus. Dolby supports stereo and 5.1 channels.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2"><code>opus</code></td>
+    </tr>
+    <tr><td>Choices</td><td>opus</td><td>Use Opus encoding.</td></tr>
+    <tr><td></td><td>ac3</td><td>Use Dolby Digital AC-3 encoding.</td></tr>
+    <tr><td></td><td>eac3</td><td>Use Dolby Digital Plus E-AC-3 encoding.</td></tr>
+    <tr><td>Example</td><td colspan="2"><code>audio_format = ac3</code></td></tr>
+</table>
+
+### high_quality_audio
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            When AC-3 or E-AC-3 is accepted by the client, selects a higher Dolby bitrate at the cost of increased
+            network bandwidth. Stereo uses 128 kbit/s by default or 192 kbit/s with high quality; AC-3 5.1 uses
+            384 or 640 kbit/s; E-AC-3 5.1 uses 192 or 384 kbit/s. This setting has no effect when Opus is selected.
+        </td>
+    </tr>
+    <tr><td>Default</td><td colspan="2"><code>disabled</code></td></tr>
+    <tr><td>Example</td><td colspan="2"><code>high_quality_audio = enabled</code></td></tr>
 </table>
 
 ### install_steam_audio_drivers
@@ -2766,6 +2822,44 @@ These settings are host-wide and are not application runtime overrides.
         <td>Example</td>
         <td colspan="2">@code{}
             pacing_batch_demand_limit = true
+            @endcode</td>
+    </tr>
+</table>
+
+### host_adaptive_pacing
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Experimental opt-in for ordinary H.264, HEVC and AV1 streams. Vibepollo spaces video packets using a rate that
+            starts at twice the encoder bitrate or 1.25 times the stream's packetized wire demand (including FEC), whichever
+            is higher, within the usual 800 Mbps ceiling. It then probes upward by up to 12.5% at most every half second,
+            but only while video is busy, recent standard client pings arrive and the control stream's round trip time is
+            stable and nonzero. Loss reported by the client during a probe restores the previous rate and extends the
+            recovery hold (8 seconds, up to a minute). Outside probes, the rate is halved only after two distinct failed
+            frames, or several recovered frames missing at least 2% of the packets sent, in a half-second sample.
+            The rate never drops below 1.25 times the current wire demand unless the configured ceiling is lower.
+            A nonzero <code>pacing_max_bitrate_kbps</code> remains a hard UDP-datagram ceiling, including cumulative
+            pacing debt across frames. <code>pacing_batch_demand_limit</code> remains an independent per-call batch bound.
+            Encoder bitrate and frame rate never change.
+            <br><br>
+            Loss reports (<code>SS_FRAME_FEC_STATUS</code>) come from Moonlight clients that send them to Sunshine-family
+            hosts. Clients that do not send them cannot trigger a cut or reject a probe, so
+            such a stream keeps its conservative starting rate or probes without loss feedback. Startup adds transmission time, mostly to a large first
+            keyframe. Batches hold at most about one millisecond of traffic at the selected rate.
+            This does not guarantee a wire-level burst limit or establish the cause of a reported streaming failure.
+            PyroWave streams are unaffected. Rate changes are logged at info level.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            host_adaptive_pacing = true
             @endcode</td>
     </tr>
 </table>
@@ -5320,7 +5414,8 @@ Sets the display mode used when the requested streaming mode cannot be applied.
 
 ### forward_rumble
 
-Forwards controller rumble events to the emulated host gamepad.
+Forwards controller rumble events (and, for a Steam Controller, the haptic reports Steam writes
+to its pads) from the emulated host gamepad to the client's physical controller.
 
 ### global_state_cmd
 

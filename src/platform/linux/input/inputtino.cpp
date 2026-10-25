@@ -109,6 +109,10 @@ namespace platf {
     platf::gamepad::battery(raw, battery);
   }
 
+  void gamepad_attributes(input_t &input, const steam_controller_attributes_t &attributes) {
+    // No UHID backend presents a Steam Controller, so there is nothing to apply them to.
+  }
+
   platform_caps::caps_t get_capabilities() {
     platform_caps::caps_t caps = 0;
     // TODO: if has_uinput

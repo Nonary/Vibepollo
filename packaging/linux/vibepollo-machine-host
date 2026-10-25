@@ -692,6 +692,10 @@ load_session() {
   if [[ "$session_role" == desktop && "$session_backend" == kwin ]]; then
     [[ "$session_xdisplay" =~ ^:[0-9]+(\.[0-9]+)?$ && "$session_xauthority" == "$session_runtime"/* &&
        "$session_xauthority" != */../* && "$session_xauthority" != */.. ]] || fail 'desktop X11 record is invalid'
+  elif [[ "$session_backend" == hyprland-kms ]]; then
+    # Hyprland's Xwayland has no Xauthority; the controller binds its display.
+    [[ ( -z "$session_xdisplay" || "$session_xdisplay" =~ ^:[0-9]+$ ) && -z "$session_xauthority" ]] ||
+      fail 'Hyprland X11 record is invalid'
   else
     [[ -z "$session_xdisplay" && -z "$session_xauthority" ]] || fail 'Wayland-only record must not contain X11 credentials'
   fi

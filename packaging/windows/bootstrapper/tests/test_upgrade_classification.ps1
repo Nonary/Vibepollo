@@ -33,5 +33,7 @@ try {
  $older='{01A12B94-FB65-7E1E-9604-6BDE51F787D6}';$newer='{01A12B98-4F2E-7315-9F87-EFAA9540F09A}'
  Check-Order '2.0.190.0' '2.0.190.0' 'Upgrade' $older $newer
  Check-Order '2.0.190.0' '2.0.190.0' 'Downgrade' $newer $older
+ Check-Order '2.0.190.0' '2.0.190.0' 'Reinstall' $older $older
+ Check-Order '2.0.190.0' '2.0.190.0' 'Reinstall' '{FFFFFFFF-FFFF-4FFF-9FFF-FFFFFFFFFFFF}' $newer
  Write-Output 'Compiled setup upgrade/downgrade/reinstall checks passed'
 } finally {Remove-Item -LiteralPath $output -ErrorAction SilentlyContinue}

@@ -19,12 +19,19 @@ p.add_argument('--boost-include', default='')
 a = p.parse_args()
 root=a.source.resolve(); out=a.build_dir.resolve(); out.mkdir(parents=True, exist_ok=True)
 rtsp=(root/'src/rtsp.cpp').read_text(); nv=(root/'src/nvhttp.cpp').read_text(); web=(root/'src/webrtc_stream.cpp').read_text()
+audio_header=(root/'src/audio.h').read_text(); audio_source=(root/'src/audio.cpp').read_text()
 def body(s, signature, indent):
     start=s.index(signature); end=s.index('\n'+indent+'}',start)+len('\n'+indent+'}')
     return s[start:end]
 fragments={
 'CLAIM_STARTUP':body(rtsp,'    bool claim_launch_startup(','    '),
 'RELEASE_CLAIM':body(rtsp,'    void release_launch_startup_claim(','    '),
+'AUDIO_PARAMS':body(audio_header,'  struct stream_params_t {','  ')+';',
+'AUDIO_CONFIG':body(audio_header,'  struct config_t {','  ')+';',
+'DOLBY_CODEC':audio_header[audio_header.index('  enum class dolby_codec_e'):audio_header.index(';',audio_header.index('  enum class dolby_codec_e'))+1],
+'DOLBY_CONFIGURE':body(audio_source,'  dolby_codec_e configure_dolby_audio(','  '),
+'DOLBY_BITRATE':body(audio_source,'  int dolby_bitrate_kbps(','  '),
+'DOLBY_NAME':body(audio_source,'  std::string_view dolby_codec_name(','  '),
 'CLEAR':body(rtsp,'    void clear(bool all = true','    '),
 'CANCEL_PENDING':body(rtsp,'    void cancel_pending_launches(','    '),
 'EXPIRE':body(rtsp,'    void arm_launch_timer()','    '),

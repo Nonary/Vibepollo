@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <bitset>
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
@@ -49,14 +50,25 @@ long from_view(std::string_view s) { parser_pause.wait(); return std::stol(std::
 template<class F> struct guard {F fn; ~guard(){fn();}};
 template<class F> guard<F> fail_guard(F f){return {f};}
 }
-namespace audio { struct config_t {enum {HOST_AUDIO,HIGH_QUALITY,CUSTOM_SURROUND_PARAMS,CONTINUOUS_AUDIO};}; }
+namespace audio {
+@AUDIO_PARAMS@
+@AUDIO_CONFIG@
+@DOLBY_CODEC@
+// Encoder discovery is an external capability edge; negotiation stays production code.
+bool ac3_encoder=true,eac3_encoder=true;
+bool ac3_available(){return ac3_encoder;}
+bool eac3_available(){return eac3_encoder;}
+@DOLBY_CONFIGURE@
+@DOLBY_BITRATE@
+@DOLBY_NAME@
+}
 namespace stream {
 struct monitor_t {
  int height=0,width=0,framerate=0,encodingFramerate=0,framerateX100=0,bitrate=0,client_requested_bitrate=0,slicesPerFrame=0,numRefFrames=0,encoderCscMode=0,videoFormat=0,dynamicRange=0,chromaSamplingType=0,enableIntraRefresh=0,packetsize=0,pyrowave_min_parity_shards=0;
  bool input_only=false,vrr_low_latency=false,force_sdr=false,prefer_sdr_10bit=false; std::uint64_t pyrowave_peer_link_bps=0,pyrowave_peer_pace_bps=0; int pyrowave_framing=0;
 };
 struct config_t {
- struct {bool input_only=false;std::array<bool,4> flags{}; int channels=0,mask=0,packetDuration=0; struct {int channelCount=0,streams=0,coupledStreams=0; std::array<unsigned,8> mapping{};} customStreamParams;} audio;
+ audio::config_t audio{};
  monitor_t monitor;
  int controlProtocolType=0,packetsize=0,minRequiredFecPackets=0,mlFeatureFlags=0,audioQosType=0,videoQosType=0,encryptionFlagsEnabled=0;
  int gen1_framegen_fix=0,gen2_framegen_fix=0,frame_generation_enabled=0,lossless_scaling_framegen=0,frame_generation_provider=0,lossless_scaling_target_fps=0,lossless_scaling_rtss_limit=0;
@@ -77,11 +89,13 @@ bool has_shared_runtime_owner() {return running!=0 || topology.managed_client_id
 struct shared_runtime_finalize_context_t {std::optional<std::array<std::uint8_t,16>> virtual_display_guid_bytes;};
 bool finalize_shared_runtime_if_idle(std::string_view, const shared_runtime_finalize_context_t & = {}) {++finalizer_calls; if(has_shared_runtime_owner()) return false; if(armed.exchange(false) && physical) late_ordinary=true; return true;}
 void join(session_t &s,bool=false) {join_pause.wait(); std::lock_guard lock(nvhttp::lifecycle);s.audio_context_guard.reset();s.display_power_guard.reset(); --running; finalize_shared_runtime_if_idle("natural_join");}
-std::shared_ptr<session_t> alloc(const config_t &,auto &launch) {auto s=std::make_shared<session_t>();s->audio_context_guard=std::move(launch.audio_context_guard);s->display_power_guard=launch.display_power_guard;return s;}
+audio::config_t allocated_audio{};
+std::shared_ptr<session_t> alloc(const config_t &config,auto &launch) {allocated_audio=config.audio;auto s=std::make_shared<session_t>();s->audio_context_guard=std::move(launch.audio_context_guard);s->display_power_guard=launch.display_power_guard;return s;}
 int start(session_t &,const std::string &) {++running;armed=true;return 0;}
 }
 }
 namespace config { struct {int fec_percentage=0,packetsize=0;std::chrono::seconds ping_timeout{5};} stream; struct {bool limit_framerate=false;int max_bitrate=0;} video; constexpr int PACKETSIZE_MIN=100,PACKETSIZE_MAX=2000,PACKETSIZE_SMALL=500,PACKETSIZE_LARGE=1400; constexpr int ENCRYPTION_MODE_MANDATORY=1; void maybe_apply_deferred() {} struct Gate {~Gate(){}}; Gate acquire_apply_read_gate(){return {};}}
+namespace config {struct {std::string format="opus";bool high_quality_audio=false;} audio;}
 namespace video {int active_hevc_mode=3,active_av1_mode=3,active_pyrowave_mode=2;}
 namespace net {int encryption_mode_for_address(int) {return 0;}}
 namespace platf {std::uint64_t routed_link_bps(int,int){return 0;}}
@@ -106,7 +120,7 @@ struct launch_session_t {
  std::shared_ptr<void> exact_target_hold;
  std::array<std::uint8_t,16> virtual_display_guid_bytes{};
  std::shared_ptr<void> audio_context_guard,display_power_guard;
- std::string remote_capture_output,rtsp_source_address,av_ping_payload,client_name,device_name,normal_vdd_owner_uuid;
+ std::string remote_capture_output,rtsp_source_address,av_ping_payload,client_name,device_name,normal_vdd_owner_uuid,audio_codec_offered;
  int gcm_key=0,iv=0,control_connect_data=0,secondary_game_client=0,client_display_mode_override=0,client_display_refresh_millihz=0,prefer_sdr_10bit=0,virtual_display=0,normal_vdd_identity_token=0,framegen_refresh_rate=0,framegen_refresh_millihz=0,framegen_refresh_multiplier=0,framegen_fixed_refresh=0;
  bool host_audio=false,client_vrr_requested=false,continuous_audio=false,force_sdr=false,enable_hdr=false;
  int gen1_framegen_fix=0,gen2_framegen_fix=0,frame_generation_enabled=0,lossless_scaling_framegen=0,frame_generation_provider=0,lossless_scaling_target_fps=0,lossless_scaling_rtss_limit=0;
@@ -121,7 +135,11 @@ struct Address {operator int() const{return 0;} std::string to_string() const{re
 struct Endpoint {Address address() const{return {};}};
 struct Socket {Endpoint local_endpoint(boost::system::error_code &) {return {};} Endpoint remote_endpoint(boost::system::error_code &) {return {};} Endpoint remote_endpoint(){return {};}};
 struct socket_t {Socket sock;};
-void respond(Socket &,launch_session_t &,OPTION_ITEM *,int,const char *,int,std::initializer_list<int>) {}
+int response_status=0;std::string response_audio_codec;
+void respond(Socket &,launch_session_t &,OPTION_ITEM *option,int status,const char *,int,std::initializer_list<int>) {
+ response_status=status;
+ for(;option;option=option->next)if(option->option && std::string_view(option->option)=="X-SS-Audio-Codec")response_audio_codec=option->content;
+}
 struct Pool {std::vector<std::function<void()>> queue;template<class F> void push(F f){queue.emplace_back(std::move(f));} void run(){auto q=std::move(queue);queue.clear();for(auto &f:q)f();}};
 namespace boost::asio {template<class F> void post(Pool &pool,F f){pool.push(std::move(f));}}
 namespace asio = boost::asio;
@@ -182,6 +200,7 @@ namespace nvhttp {
 }
 void reset() {
  physical=false;terminal_entered=false;late_ordinary=false;armed=true;running=0;finalizer_calls=0;config_applies=0;
+ audio::ac3_encoder=true;audio::eac3_encoder=true;config::audio={};stream::session::allocated_audio={};response_status=0;response_audio_codec.clear();
  join_pause.reset(false);expiry_pause.reset(false);parser_pause.reset(false);peer_pause.reset(false);
  server._session_state->sessions.clear();server._launch_sessions.clear();server.startup_pool.queue.clear();server.io_context.queue.clear();
  topology.shutdown(true);topology.set_runtime_callbacks({});
@@ -196,7 +215,8 @@ void blocked_cleanup(Pause &pause,const char *name,std::function<void()> cleanup
  check(waited && !before && physical && !late_ordinary,name);
 }
 int main() {
- launch_session_t metadata;metadata.guide_button=37;metadata.monitor_profile_uuid="exact-monitor-profile";auto copied=metadata.clone_for_startup();check(copied->guide_button==37,"actual startup snapshot preserves Guide metadata");check(copied->monitor_profile_uuid=="exact-monitor-profile","actual startup snapshot preserves Monitor profile metadata");
+ launch_session_t metadata;metadata.audio_codec_offered="EAC3";metadata.guide_button=37;metadata.monitor_profile_uuid="exact-monitor-profile";auto copied=metadata.clone_for_startup();check(copied->guide_button==37,"actual startup snapshot preserves Guide metadata");check(copied->monitor_profile_uuid=="exact-monitor-profile","actual startup snapshot preserves Monitor profile metadata");
+ check(copied->audio_codec_offered=="EAC3","actual startup clone preserves the codec offer");
  reset();running=1;join_pause.reset(true);server._session_state->sessions.insert(std::make_shared<stream::session_t>());
  blocked_cleanup(join_pause,"actual natural clear drains removed owner before recovery",[]{server.clear(false);});
  reset();expiry_pause.reset(true);auto session=std::make_shared<launch_session_t>();server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{session,std::chrono::steady_clock::now()-1s});
@@ -267,6 +287,41 @@ int main() {
  check(topology.managed_client_identity_count()==0 && !topology.shutdown_complete(),"removed display retains pending physical restore");
  terminal();check(!physical,"empty-map pending restore failure prevents final physical cleanup");
  fail=false;terminal();check(physical && topology.shutdown_complete(),"empty-map pending restore succeeds on retry");
+ // Exercise the unchanged ANNOUNCE parser and production negotiation helper,
+ // controlling only FFmpeg encoder discovery. Each accepted session must still
+ // transfer and retire its resource owner through the real terminal path.
+ struct AudioCase {const char *offered,*accepted,*expected;int channels;bool encoder,quality;int status;};
+ for(const auto &test:std::array<AudioCase,8>{{
+   {"AC3","AC3","AC3",2,true,false,200},
+   {"EAC3","EAC3","EAC3",6,true,true,200},
+   {"AC3","","Opus",2,true,false,200},
+   {"EAC3","AC3","Opus",6,true,false,200},
+   {"AC3","AC3","",2,false,false,400},
+   {"EAC3","EAC3","",6,false,false,400},
+   {"AC3","AC3","",8,true,false,400},
+   {"","EAC3","Opus",2,true,false,200},
+ }}) {
+   reset();audio::ac3_encoder=test.encoder;audio::eac3_encoder=test.encoder;config::audio.high_quality_audio=test.quality;
+   pending=std::make_shared<launch_session_t>();pending->audio_codec_offered=test.offered;
+   pending->audio_context_guard=std::make_shared<int>(1);resource=pending->audio_context_guard;
+   server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
+   auto audio_payload=payload;const auto channels=audio_payload.find("numChannels:2");audio_payload.replace(channels,13,"numChannels:"+std::to_string(test.channels));
+   if(*test.accepted)audio_payload+="a=x-ss-audio-codec-accept:"+std::string(test.accepted)+"\n";
+   auto audio_request=std::make_shared<Request>();audio_request->payload=audio_payload.data();audio_request->payloadLength=audio_payload.size();
+   const bool admitted=cmd_announce(&server,std::make_shared<socket_t>(),pending,std::move(audio_request));
+   check(admitted==(test.status==200),"actual ANNOUNCE rejects accepted Dolby with unavailable encoder or unsupported channels");
+   server.startup_pool.run();server.io_context.run();
+   check(response_status==test.status && response_audio_codec==test.expected,"actual ANNOUNCE response reports the negotiated codec or rejection");
+   if(admitted) {
+     const auto &selected=stream::session::allocated_audio;const bool dolby=std::string_view(test.expected)!="Opus";
+     check(selected.use_ac3==(std::string_view(test.expected)=="AC3") && selected.use_eac3==(std::string_view(test.expected)=="EAC3") &&
+           selected.high_quality_dolby==(dolby && test.quality) && selected.packetDuration==(dolby?32:5) &&
+           (!dolby || (selected.flags[audio::config_t::HIGH_QUALITY] && !selected.flags[audio::config_t::CUSTOM_SURROUND_PARAMS])),
+           "production negotiation reaches capture with exact codec, quality and packet duration");
+     check(running==1 && !resource.expired(),"negotiated ANNOUNCE retains its active resource handoff");
+   } else check(running==0 && server.startup_pool.queue.empty(),"rejected negotiation never queues capture");
+   terminal();check(resource.expired() && running==0 && !late_ordinary,"terminal drains negotiated or rejected session resources before recovery");
+ }
  auto fresh=host_stream_control::start_guard_t(host_stream_control::request_ticket());check(bool(fresh),"fresh starts remain eligible after terminal reopen");
  return failures?1:0;
 }

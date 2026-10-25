@@ -6,11 +6,20 @@
 #include <mutex>
 #include <thread>
 
+// Use the build's existing FFmpeg linkage for optional Dolby audio encoding.
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavutil/avutil.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/frame.h>
+}
+
 // lib includes
 #include <opus/opus_multistream.h>
 
 // local includes
 #include "audio.h"
+#include "dolby_session_worker.h"
 #include "audio_lifecycle_policy.h"
 #include "audio_lifecycle_state.h"
 #include "audio_policy.h"
@@ -107,6 +116,134 @@ namespace audio {
     },
   };
 
+  /**
+   * @brief Encode one interleaved stereo or 5.1 float PCM frame as an AC-3-family access unit.
+   */
+  class ffmpeg_audio_encoder_t {
+  public:
+    ffmpeg_audio_encoder_t() = default;
+    ffmpeg_audio_encoder_t(const ffmpeg_audio_encoder_t &) = delete;
+    ffmpeg_audio_encoder_t &operator=(const ffmpeg_audio_encoder_t &) = delete;
+    ffmpeg_audio_encoder_t(ffmpeg_audio_encoder_t &&) = delete;
+    ffmpeg_audio_encoder_t &operator=(ffmpeg_audio_encoder_t &&) = delete;
+
+    ~ffmpeg_audio_encoder_t() {
+      if (packet_) {
+        av_packet_free(&packet_);
+      }
+      if (frame_) {
+        av_frame_free(&frame_);
+      }
+      if (context_) {
+        avcodec_free_context(&context_);
+      }
+    }
+
+    /**
+     * @brief Initialize the selected FFmpeg encoder for stereo or 5.1 PCM.
+     *
+     * @param codec_id FFmpeg codec identifier for AC-3 or E-AC-3.
+     * @param bit_rate Target encoded bitrate in bits per second.
+     * @param channels Number of channels; only 2 and 6 are supported.
+     * @return True if the encoder context and frame buffers initialize successfully.
+     */
+    bool initialize(AVCodecID codec_id, std::int64_t bit_rate, int channels) {
+      if (channels != 2 && channels != 6) {
+        return false;
+      }
+
+      const auto *codec = avcodec_find_encoder(codec_id);
+      if (!codec) {
+        return false;
+      }
+
+      context_ = avcodec_alloc_context3(codec);
+      if (!context_) {
+        return false;
+      }
+
+      context_->bit_rate = bit_rate;
+      context_->sample_rate = SAMPLE_RATE;
+      context_->sample_fmt = AV_SAMPLE_FMT_FLTP;
+      context_->time_base = AVRational {1, SAMPLE_RATE};
+      context_->thread_count = 1;
+      channels_ = channels;
+
+      if (const auto channel_layout = channels == 2 ? AV_CH_LAYOUT_STEREO : AV_CH_LAYOUT_5POINT1_BACK; av_channel_layout_from_mask(&context_->ch_layout, channel_layout) < 0 || avcodec_open2(context_, codec, nullptr) < 0) {
+        return false;
+      }
+
+      // AC-3 and E-AC-3 use 1536 samples per frame here (32 ms at 48 kHz).
+      if (context_->frame_size != 1536) {
+        return false;
+      }
+
+      frame_ = av_frame_alloc();
+      if (!frame_) {
+        return false;
+      }
+
+      frame_->format = context_->sample_fmt;
+      frame_->sample_rate = context_->sample_rate;
+      frame_->nb_samples = context_->frame_size;
+      if (av_channel_layout_copy(&frame_->ch_layout, &context_->ch_layout) < 0 || av_frame_get_buffer(frame_, 0) < 0) {
+        return false;
+      }
+
+      packet_ = av_packet_alloc();
+      return packet_ != nullptr;
+    }
+
+    /**
+     * @brief Encode an interleaved floating-point PCM frame into a Dolby access unit.
+     *
+     * @param interleaved Interleaved float PCM samples for one complete frame.
+     * @param output Destination buffer for the encoded access unit.
+     * @return Encoded access-unit size in bytes, or -1 if input validation or encoding fails.
+     */
+    int encode(const std::vector<float> &interleaved, buffer_t &output) {
+      if (!frame_ || interleaved.size() != static_cast<std::size_t>(frame_->nb_samples * channels_)) {
+        return -1;
+      }
+
+      if (av_frame_make_writable(frame_) < 0) {
+        return -1;
+      }
+
+      for (int channel = 0; channel < channels_; ++channel) {
+        auto *destination = static_cast<float *>(static_cast<void *>(frame_->extended_data[channel]));
+        for (int sample = 0; sample < frame_->nb_samples; ++sample) {
+          destination[sample] = interleaved[static_cast<std::size_t>(sample * channels_ + channel)];
+        }
+      }
+
+      frame_->pts = next_pts_;
+      next_pts_ += frame_->nb_samples;
+
+      if (avcodec_send_frame(context_, frame_) < 0 || avcodec_receive_packet(context_, packet_) < 0) {
+        av_packet_unref(packet_);
+        return -1;
+      }
+
+      const auto packet_size = packet_->size;
+      if (packet_size <= 0 || static_cast<std::size_t>(packet_size) > output.size()) {
+        av_packet_unref(packet_);
+        return -1;
+      }
+
+      std::copy_n(packet_->data, packet_size, std::begin(output));
+      av_packet_unref(packet_);
+      return packet_size;
+    }
+
+  private:
+    AVCodecContext *context_ {nullptr};
+    AVFrame *frame_ {nullptr};
+    AVPacket *packet_ {nullptr};
+    std::int64_t next_pts_ {0};
+    int channels_ {0};
+  };
+
   void encodeThread(sample_queue_t samples, config_t config, void *channel_data) {
     auto packets = mail::man->queue<packet_t>(mail::audio_packets);
     auto stream = stream_configs[map_stream(config.channels, config.flags[config_t::HIGH_QUALITY])];
@@ -117,6 +254,45 @@ namespace audio {
     // Encoding takes place on this thread
     platf::set_thread_name("audio::encode");
     platf::adjust_thread_priority(platf::thread_priority_e::high);
+
+    if (config.use_ac3 || config.use_eac3) {
+      const auto codec_id = config.use_eac3 ? AV_CODEC_ID_EAC3 : AV_CODEC_ID_AC3;
+      const auto codec_name = config.use_eac3 ? "E-AC-3"sv : "AC-3"sv;
+      const auto bitrate_kbps = dolby_bitrate_kbps(config.use_eac3, config.high_quality_dolby, config.channels);
+      ffmpeg_audio_encoder_t encoder;
+
+      // The worker's control flow is shared with the CPU-only regression test.
+      // FFmpeg and packet delivery remain production callbacks.
+      dolby::run_encoder_worker(
+        *samples,
+        encoder,
+        [&](auto &active_encoder) {
+          if (bitrate_kbps <= 0 || !active_encoder.initialize(codec_id, static_cast<std::int64_t>(bitrate_kbps) * 1000, config.channels)) {
+            BOOST_LOG(error) << "Couldn't initialize the linked FFmpeg "sv << codec_name << " encoder"sv;
+            return false;
+          }
+          BOOST_LOG(info) << codec_name << " initialized: "sv << config.channels
+                          << " channels, 48 kHz, "sv << bitrate_kbps << " kbit/s"sv;
+          return true;
+        },
+        [](auto &active_encoder, const auto &sample, buffer_t &packet) {
+          return active_encoder.encode(sample, packet);
+        },
+        [] {
+          // Reserve enough room for the largest supported 640 kbit/s AC-3 access unit.
+          return buffer_t {4096};
+        },
+        [&](const auto &sample, buffer_t packet, int bytes) {
+          if (webrtc_stream::has_active_sessions() && channel_data == nullptr) {
+            // Dolby frame duration is fixed at 1536 samples at 48 kHz (32 ms).
+            webrtc_stream::submit_audio_frame(sample, SAMPLE_RATE, config.channels, 1536);
+          }
+          packet.fake_resize(bytes);
+          packets->raise(channel_data, std::move(packet));
+        }
+      );
+      return;
+    }
 
     opus_t opus {opus_multistream_encoder_create(
       stream.sampleRate,
@@ -239,14 +415,12 @@ namespace audio {
     }
 
     auto fg = util::fail_guard([&]() {
-      if (samples) {
-        samples->stop();
-        if (thread.joinable()) {
-          thread.join();
-        }
-      }
-
-      shutdown_event->view();
+      dolby::finish_capture_session(
+        samples,
+        thread,
+        [&]() { shutdown_event->view(); },
+        [&]() { mic.reset(); }
+      );
     });
 
     int samples_per_frame = frame_size * stream.channelCount;
@@ -323,6 +497,63 @@ namespace audio {
   void app_started() { context_manager().app_started(); }
   void audio_owner_acquired() { context_manager().owner_acquired(); }
   void audio_owner_released() { context_manager().owner_released(); }
+
+  bool ac3_available() {
+    return avcodec_find_encoder(AV_CODEC_ID_AC3) != nullptr;
+  }
+
+  bool eac3_available() {
+    return avcodec_find_encoder(AV_CODEC_ID_EAC3) != nullptr;
+  }
+
+  int dolby_bitrate_kbps(bool eac3, bool high_quality, int channels) {
+    if (channels == 2) return high_quality ? 192 : 128;
+    if (channels == 6) {
+      if (eac3) return high_quality ? 384 : 192;
+      return high_quality ? 640 : 384;
+    }
+    return 0;
+  }
+
+  dolby_codec_e configure_dolby_audio(
+    config_t &config,
+    std::string_view offered,
+    std::string_view accepted,
+    bool ac3_encoder_available,
+    bool eac3_encoder_available,
+    bool high_quality
+  ) {
+    using enum audio::dolby_codec_e;
+    config.use_ac3 = false;
+    config.use_eac3 = false;
+    config.high_quality_dolby = false;
+    const bool supported_channels = config.channels == 2 || config.channels == 6;
+    auto selected = opus;
+    if (supported_channels && offered == "AC3" && accepted == offered && ac3_encoder_available) {
+      selected = ac3;
+    } else if (supported_channels && offered == "EAC3" && accepted == offered && eac3_encoder_available) {
+      selected = eac3;
+    }
+    if (selected != opus) {
+      config.use_ac3 = selected == ac3;
+      config.use_eac3 = selected == eac3;
+      config.packetDuration = 32;
+      config.flags[config_t::HIGH_QUALITY] = true;
+      config.flags[config_t::CUSTOM_SURROUND_PARAMS] = false;
+      config.high_quality_dolby = high_quality;
+    }
+    return selected;
+  }
+
+  std::string_view dolby_codec_name(dolby_codec_e codec) {
+    using enum audio::dolby_codec_e;
+    switch (codec) {
+      case ac3: return "AC3";
+      case eac3: return "EAC3";
+      case opus:
+      default: return "Opus";
+    }
+  }
 
   bool is_audio_ctx_sink_available(const audio_ctx_t &ctx) {
     if (!ctx.control) {

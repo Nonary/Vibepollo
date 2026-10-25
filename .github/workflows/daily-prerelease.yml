@@ -3,8 +3,6 @@ name: Daily prerelease
 permissions: {}
 
 on:
-  schedule:
-    - cron: '32 6 * * *'
   workflow_dispatch:
     inputs:
       publish:
@@ -12,7 +10,8 @@ on:
         type: boolean
         default: false
 
-# Both schedule and manual dispatch remain inert until explicitly activated.
+# The default branch owns the cron launcher. This workflow owns qualification
+# and publication, whether dispatched by that launcher or manually from Canary.
 concurrency:
   group: daily-windows-prerelease
   cancel-in-progress: false
@@ -20,10 +19,12 @@ concurrency:
 jobs:
   prepare:
     if: >-
-      (github.event_name == 'workflow_dispatch' || vars.DAILY_RELEASE_ENABLED == 'true') &&
+      github.event_name == 'workflow_dispatch' &&
       github.repository == 'Nonary/Vibepollo' &&
       github.ref_type == 'branch' &&
-      github.ref_name == github.event.repository.default_branch
+      github.ref_name == 'canary' &&
+      vars.DAILY_RELEASE_SOURCE_BRANCH == 'canary' &&
+      vars.DAILY_RELEASE_SOURCE_CONFIRMED == 'Nonary/Vibepollo:canary'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -37,10 +38,14 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
-          # The default branch controls the workflow; the resolver fetches canary.
+          ref: ${{ github.sha }}
+          # The resolver requires the confirmed remote Canary to still name
+          # this exact dispatched workflow/source commit.
           fetch-depth: 0
       - name: Test daily release contracts
-        run: python -m unittest discover -s scripts/tests -p test_daily_release.py
+        run: |
+          python -m unittest discover -s scripts/tests -p test_daily_release.py
+          python -m unittest discover -s .github/scripts -p test_vhf_release_identity.py
       - name: Test nightly notes and immutable metadata
         run: python -m unittest discover -s scripts/tests -p test_nightly_notes.py
       - name: Resolve explicitly confirmed remote source and immutable identity
@@ -52,7 +57,7 @@ jobs:
           DAILY_RELEASE_SOURCE_CONFIRMED: ${{ vars.DAILY_RELEASE_SOURCE_CONFIRMED }}
         run: python scripts/daily_release.py resolve
       - name: Reserve exact qualified source identity before builds
-        if: steps.identity.outputs.should_build == 'true' && (github.event_name == 'schedule' || inputs.publish == true)
+        if: steps.identity.outputs.should_build == 'true' && vars.DAILY_RELEASE_ENABLED == 'true' && inputs.publish == true
         env:
           GH_TOKEN: ${{ github.token }}
           DAILY_TAG: ${{ steps.identity.outputs.tag }}
@@ -114,7 +119,7 @@ jobs:
     needs: [prepare, build, linux]
     if: >-
       needs.build.result == 'success' && needs.linux.result == 'success' && vars.DAILY_RELEASE_ENABLED == 'true' &&
-      (github.event_name == 'schedule' || inputs.publish == true)
+      inputs.publish == true
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -128,6 +133,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          ref: ${{ needs.prepare.outputs.commit }}
           fetch-depth: 0
       - name: Download finalized installer from this run
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7.0.0
@@ -180,6 +186,8 @@ jobs:
       - name: Create once, upload all assets, then expose prerelease
         run: |
           set -euo pipefail
+          # Partial reruns must not publish a duplicate or older qualified source.
+          python scripts/daily_release.py publication
           # The reserved tag pins the tested source even if canary advances.
           test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha)" = "$DAILY_COMMIT"
           gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$DAILY_TAG" --notes-file daily-notes.md --draft --prerelease --latest=false

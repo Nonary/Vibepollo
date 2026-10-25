@@ -44,7 +44,8 @@ read_user_environment || fail_test 'published UWSM environment rejected'
 [[ "$candidate_display" == wayland-1 && -z "$candidate_xdisplay" && -z "$candidate_xauthority" ]] ||
   fail_test 'Hyprland imported stale X11 credentials'
 session_is_ready || fail_test 'ready fixed UWSM session rejected'
-[[ $(wc -l <"$calls") == 4 ]] || fail_test 'readiness did not perform two fixed target checks, a socket peer check and a Wayland probe'
+[[ $(wc -l <"$calls") == 5 ]] || fail_test 'readiness did not perform two fixed target checks, Wayland and X socket peer checks and a Wayland probe'
+[[ "$candidate_xdisplay" == :99 && -z "$candidate_xauthority" ]] || fail_test 'readiness did not bind the compositor-served display'
 [[ $(tail -n 1 "$calls") == wayland-info ]] || fail_test 'readiness invoked a topology helper'
 fixture_wayland=../../untrusted
 if read_user_environment; then fail_test 'arbitrary Wayland path admitted'; fi
@@ -89,6 +90,75 @@ fixture_bound_backend=kwin
 if binding_matches_candidate identity; then fail_test 'backend policy switch retained host binding'; fi
 printf 'PASS: Hyprland UWSM readiness, bounded environment and restart fencing\n'
 )
+
+# Bind Hyprland's Xwayland display through the bound compositor's own root:
+# the controller's private /tmp cannot see /tmp/.X11-unix.
+(
+source "$root/packaging/linux/vibepollo-session-controller"
+fail_test() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
+candidate_user=fixture candidate_uid=1000 candidate_gid=1000
+candidate_home=/home/fixture candidate_runtime=/run/user/1000 candidate_role=desktop
+candidate_backend=hyprland-kms candidate_compositor=1234567890abcdef1234567890abcdef-42-123
+fixture_published=:0 fixture_x_status=0 fixture_x_peer=42-123
+fixture_bound_compositor=$candidate_compositor fixture_bound_xdisplay=''
+probes=$(mktemp)
+trap 'rm -f -- "$probes"' EXIT
+/usr/bin/setpriv() {
+  case "$*" in
+    *'/usr/bin/stat -c %u'*) printf '1000\n' ;;
+    *) return 0 ;;
+  esac
+}
+user_systemctl() {
+  case "$*" in
+    *show-environment*) printf 'WAYLAND_DISPLAY=wayland-1\nDISPLAY=%s\nXAUTHORITY=/arbitrary/stale/path\n' "$fixture_published" ;;
+    *) return 1 ;;
+  esac
+}
+session_command_bounded() {
+  case "$*" in
+    *'/proc/42/root/tmp/.X11-unix/X'*)
+      printf '%s\n' "${@: -1}" >>"$probes"
+      ((fixture_x_status == 0)) && printf '%s\n' "$fixture_x_peer"
+      return "$fixture_x_status" ;;
+    *) return 1 ;;
+  esac
+}
+read_session_record() {
+  local -n destination=$1
+  destination=([backend]=hyprland-kms [compositor]="$fixture_bound_compositor" [xdisplay]="$fixture_bound_xdisplay")
+}
+read_user_environment || fail_test 'published UWSM environment rejected'
+[[ -z "$candidate_xdisplay" && -z "$candidate_xauthority" && ! -s "$probes" ]] ||
+  fail_test 'published DISPLAY trusted before compositor binding'
+hyprland_bind_xdisplay
+[[ "$candidate_xdisplay" == :0 && $(cat "$probes") == /proc/42/root/tmp/.X11-unix/X0 ]] ||
+  fail_test 'compositor-served Xwayland display rejected'
+[[ -z "$candidate_xauthority" ]] || fail_test 'Hyprland imported an Xauthority path'
+fixture_x_peer=42-124
+hyprland_bind_xdisplay
+[[ -z "$candidate_xdisplay" ]] || fail_test 'X socket of a reused compositor PID accepted'
+fixture_x_status=1
+hyprland_bind_xdisplay
+[[ -z "$candidate_xdisplay" ]] || fail_test 'display admitted although its first probe failed'
+# A transient probe failure keeps the display proven for this same compositor;
+# otherwise the controller would stop the host and its stream.
+fixture_x_status=1 fixture_bound_xdisplay=:0
+hyprland_bind_xdisplay
+[[ "$candidate_xdisplay" == :0 ]] || fail_test 'transient X probe failure revoked the bound display'
+fixture_bound_compositor=1234567890abcdef1234567890abcdef-43-123
+hyprland_bind_xdisplay
+[[ -z "$candidate_xdisplay" ]] || fail_test 'display retained across a compositor replacement'
+fixture_bound_compositor=$candidate_compositor fixture_bound_xdisplay=''
+fixture_x_status=0 fixture_x_peer=42-123
+for fixture_published in localhost:0 ':0/../X1'; do
+  : >"$probes"
+  read_user_environment || fail_test "published environment rejected for DISPLAY=$fixture_published"
+  hyprland_bind_xdisplay
+  [[ -z "$candidate_xdisplay" && ! -s "$probes" ]] || fail_test "malformed DISPLAY probed or accepted: $fixture_published"
+done
+)
+printf 'PASS: Hyprland Xwayland display bound to the compositor socket peer\n'
 
 # Exercise the installed package parser and concrete launch overrides without
 # reading /etc or starting any host. Substitute stat ownership only; all file
@@ -142,6 +212,14 @@ printf 'PASS: package policy compatibility and explicit KMS launch options\n'
   printf 'session=42\ngeneration=3\nuser=fixture\nuid=1000\ngid=1000\nhome=/home/fixture\nruntime=/run/user/1000\ndisplay=wayland-1\nxdisplay=\nxauthority=\ngroups=1000\nrole=desktop\nbackend=hyprland-kms\ncompositor=1234567890abcdef1234567890abcdef-42-123\n' >"$fixture_session"
   load_session || fail_test 'published Hyprland record rejected by host'
   [[ "$session_backend" == hyprland-kms && -z "$session_xdisplay" ]] || fail_test 'host did not retain explicit backend'
+  # A compositor-bound Xwayland display is allowed; Hyprland has no Xauthority.
+  printf 'session=42\ngeneration=3\nuser=fixture\nuid=1000\ngid=1000\nhome=/home/fixture\nruntime=/run/user/1000\ndisplay=wayland-1\nxdisplay=:0\nxauthority=\ngroups=1000\nrole=desktop\nbackend=hyprland-kms\ncompositor=1234567890abcdef1234567890abcdef-42-123\n' >"$fixture_session"
+  load_session || fail_test 'Hyprland record with bound Xwayland display rejected by host'
+  [[ "$session_backend" == hyprland-kms && "$session_xdisplay" == :0 ]] || fail_test 'host dropped bound Xwayland display'
+  for invalid in 'xdisplay=:0\nxauthority=/run/user/1000/xauth_fixture'; do
+    printf "session=42\ngeneration=3\nuser=fixture\nuid=1000\ngid=1000\nhome=/home/fixture\nruntime=/run/user/1000\ndisplay=wayland-1\n${invalid}\ngroups=1000\nrole=desktop\nbackend=hyprland-kms\ncompositor=1234567890abcdef1234567890abcdef-42-123\n" >"$fixture_session"
+    if (load_session) 2>/dev/null; then fail_test "invalid Hyprland X11 record accepted: $invalid"; fi
+  done
   printf 'session=42\ngeneration=3\nuser=fixture\nuid=1000\ngid=1000\nhome=/home/fixture\nruntime=/run/user/1000\ndisplay=wayland-1\nxdisplay=:0\nxauthority=/run/user/1000/xauth_fixture\ngroups=1000\nrole=desktop\n' >"$fixture_session"
   load_session || fail_test 'legacy KWin record rejected by upgraded host'
   [[ "$session_backend" == kwin && -z "$session_compositor" ]] || fail_test 'legacy record retained stale Hyprland identity'

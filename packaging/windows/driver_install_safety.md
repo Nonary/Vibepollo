@@ -18,6 +18,19 @@ USB/IP uses the pinned original Microsoft-signed package and retains existing sh
 
 Run `powershell -NoProfile -File packaging/windows/test_driver_install_safety.ps1` before daily publication. It includes the numeric version/signature matrix, mocked exact-certificate consent/import/staging/rollback tests, compiled bootstrapper consent tests, and read-only native crypto tests against existing signed public fixtures and modified copies. These tests never import certificates, execute a driver installer or generate keys. Publication additionally compares extracted MSI script hashes with this source.
 
+The initial Sunshine and SudoVDA inventories retain a 15-second fast-path budget.
+A confirmed child-process timeout now permits one fresh, complete read-only
+snapshot with a 60-second recovery budget. No retry occurs for provider errors,
+malformed results or uncertain child termination; partial first-attempt output
+never enters version or trust decisions. Existing bounded stage diagnostics are
+logged before recovery. Each timed-out attempt permits up to five seconds for
+termination and one second for stdout drain, so the two execution budgets plus
+cleanup may take about 87 seconds per selected display installer (excluding
+process-launch/scheduling overhead). Selecting both drivers can incur this twice.
+This mitigates slow/transient inventory, not a deterministic provider hang, and
+does not change the separate VHF inventory or retained-device health budgets.
+Native Windows provider behavior and MSI cancellation need Windows qualification.
+
 The retained-display production guard and repair fixtures also run on Linux with `pwsh -NoProfile -File packaging/windows/test_retained_display_device.ps1`. Only Windows inventory, signature verification and process boundaries are mocked; these fixtures do not perform native driver operations.
 
 Windows documentation:

@@ -10,6 +10,14 @@ endforeach()
 target_link_options(vibepollo_dualsense_haptics PRIVATE -municode)
 target_link_libraries(vibepollo_dualsense_haptics PRIVATE setupapi)
 target_link_libraries(vibepollo_dualsense_audio PRIVATE minhook::minhook ole32 propsys uuid shell32)
+if(MINGW AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|amd64|x86_64")
+    # Recent MinGW CRTs define FE_DFL_ENV in libmingw32's CRT_fp10 object,
+    # before libmingwex introduces its reference through fesetenv. Unlike an
+    # executable, DLL startup does not pull in _fpreset. Seed the reference so
+    # the normal archive order selects the CRT's own default environment;
+    # do not replace the environment or reset the injecting process's FPU.
+    target_link_options(vibepollo_dualsense_audio PRIVATE "LINKER:--undefined=__mingw_fe_dfl_env")
+endif()
 add_dependencies(sunshine vibepollo_dualsense_haptics vibepollo_dualsense_audio)
 if(DEFINED _MINHOOK_DLL)
     add_custom_command(TARGET vibepollo_dualsense_audio POST_BUILD

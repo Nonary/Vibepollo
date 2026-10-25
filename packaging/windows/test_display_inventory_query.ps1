@@ -40,6 +40,8 @@ function Get-WindowsDriver {
     param([switch]$Online, [switch]$All, $ErrorAction)
     if (!$Online -or $All) { throw 'Display inventory must exclude inbox driver enumeration.' }
     if ($FixtureCase -eq 'packages-hang') { Write-FixtureNoise; Start-Sleep -Seconds 45 }
+    if ($FixtureCase -eq 'slow-packages') { Start-Sleep -Seconds 3 }
+    if ($FixtureCase -eq 'timeout-looking-error') { throw 'Provider timed out after 15 seconds but returned failure, not a child deadline.' }
     if ($FixtureCase -eq 'packages-failure') { throw 'FIXTURE_PACKAGE_PROVIDER_FAILURE' }
     if ($FixtureCase -eq 'success') { [Console]::Out.WriteLine('UNRELATED_SUCCESS_OUTPUT') }
     return @($state.Packages)
@@ -88,6 +90,8 @@ try {
         function Invoke-DriverInstallSafetyQuery {
             param($ScriptText, $TimeoutSeconds)
             $script:observedTimeout = $TimeoutSeconds
+            $script:observedTimeouts += $TimeoutSeconds
+            if ($TimeoutSeconds -eq 60) { Assert-ChildStopped }
             $script:queryCalls++
             $script:childPidPath = Join-Path $scratch ('child-' + [guid]::NewGuid().ToString('N') + '.pid')
             $encodedState = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes((ConvertTo-Json $script:fixtureState -Depth 6 -Compress)))
@@ -98,9 +102,11 @@ try {
                 # Simulate a child blocked before the query can report its first stage.
                 $prelude += "Write-FixtureNoise; Start-Sleep -Seconds 45`n"
             }
+            $effectiveTimeout = $script:fixtureTimeout
+            if ($script:fixtureCase -eq 'slow-packages' -and $TimeoutSeconds -eq 60) { $effectiveTimeout = 6 }
             $timer = [Diagnostics.Stopwatch]::StartNew()
             try {
-                $script:lastQueryOutput = & $script:realSafetyQuery -ScriptText ($prelude + $ScriptText) -TimeoutSeconds $script:fixtureTimeout
+                $script:lastQueryOutput = & $script:realSafetyQuery -ScriptText ($prelude + $ScriptText) -TimeoutSeconds $effectiveTimeout
                 return $script:lastQueryOutput
             } finally {
                 $timer.Stop()
@@ -109,6 +115,7 @@ try {
         }
 
         $script:queryCalls = 0
+        $script:observedTimeouts = @()
         $inventory = Get-DriverInstallSafetyInventory -InfName 'COMPONENT.INF' -HardwareId 'ROOT\TEST'
         Assert-That ($script:observedTimeout -eq 15) "$driver must retain its default 15-second inventory deadline"
         Assert-That ($inventory.Packages.Count -eq 1 -and $inventory.Packages[0].Driver -eq 'oem1.inf') "$driver must retain only matching Driver Store packages"
@@ -120,8 +127,9 @@ try {
         $script:fixtureTimeout = 2
         foreach ($case in @('packages-hang', 'devices-hang', 'startup-hang')) {
             $script:fixtureCase = $case
+            $script:observedTimeouts = @()
             $message = Get-FailureMessage { Get-DriverInstallSafetyInventory -InfName 'component.inf' -HardwareId 'ROOT\TEST' }
-            Assert-That ($script:observedTimeout -eq 15) "$driver $case must originate with the production default deadline"
+            Assert-That (($script:observedTimeouts -join ',') -eq '15,60') "$driver $case must retry a timeout exactly once with the recovery budget"
             Assert-That ($message.Contains('timed out after 2 seconds') -and $message.Contains('driver unchanged')) "$driver $case must fail closed at the shortened test deadline: $message"
             $expected = switch ($case) {
                 'packages-hang' { @('started', 'packages-start') }
@@ -136,6 +144,13 @@ try {
             Assert-That (!$message.Contains('DRIVER_INSTALL_SAFETY_INVENTORY:')) 'Timeout diagnostics must not include an inventory payload'
             Assert-ChildStopped
         }
+
+        $script:fixtureCase = 'slow-packages'
+        $script:observedTimeouts = @()
+        $inventory = Get-DriverInstallSafetyInventory -InfName 'component.inf' -HardwareId 'ROOT\TEST'
+        Assert-That (($script:observedTimeouts -join ',') -eq '15,60') "$driver slow inventory must use exactly one recovery attempt"
+        Assert-That ($inventory.Packages.Count -eq 1 -and $inventory.Devices.Count -eq 2) 'Recovery must return a complete fresh snapshot'
+        Assert-ChildStopped
 
         # A stream of otherwise valid records must also remain bounded. This is
         # real child output, not a mocked timeout exception or a source assertion.
@@ -153,12 +168,56 @@ Start-Sleep -Seconds 45
         $script:fixtureTimeout = 15
         foreach ($case in @('packages-failure', 'devices-failure')) {
             $script:fixtureCase = $case
+            $beforeQueries = $script:queryCalls
             $message = Get-FailureMessage { Get-DriverInstallSafetyInventory -InfName 'component.inf' -HardwareId 'ROOT\TEST' }
+            Assert-That ($script:queryCalls -eq ($beforeQueries + 1)) 'Provider errors must not trigger recovery'
             $providerError = if ($case -eq 'packages-failure') { 'FIXTURE_PACKAGE_PROVIDER_FAILURE' } else { 'FIXTURE_CIM_PROVIDER_FAILURE' }
             Assert-That ($message.Contains('failed with exit code 1') -and $message.Contains($providerError) -and $message.Contains('driver unchanged')) "$driver $case must preserve its actual provider failure: $message"
             Assert-That (!$message.Contains('timed out')) 'Provider failure must not be mislabeled as a timeout'
             Assert-ChildStopped
         }
+
+        $script:fixtureCase = 'timeout-looking-error'
+        $beforeQueries = $script:queryCalls
+        $message = Get-FailureMessage { Get-DriverInstallSafetyInventory -InfName 'component.inf' -HardwareId 'ROOT\TEST' }
+        Assert-That ($script:queryCalls -eq ($beforeQueries + 1) -and $message.Contains('failed with exit code 1')) 'Provider text must not impersonate a retryable process timeout'
+        Assert-ChildStopped
+
+        if ($driver -eq 'sudovda') {
+            $savedProcess = ${function:Invoke-Process}
+            try {
+                function Invoke-Process {
+                    param($FilePath, $ArgumentList, $WorkingDirectory, $TimeoutSeconds, [switch]$BoundedTimeoutDiagnostics)
+                    return [pscustomobject]@{ TimedOut=$true; ProcessExited=$false; StdOut=''; StdErr=''; ExitCode=1460 }
+                }
+                $script:observedTimeouts = @()
+                $message = Get-FailureMessage { Get-DriverInstallSafetyInventory -InfName 'component.inf' -HardwareId 'ROOT\TEST' }
+                Assert-That (($script:observedTimeouts -join ',') -eq '15' -and $message.Contains('termination could not be confirmed')) 'Uncertain child termination must prevent a second inventory'
+            } finally { Set-Item Function:Invoke-Process $savedProcess }
+        }
+
+        # An unsuccessful process containing timeout-looking provider text is
+        # not a timeout, and a malformed completed payload is not retryable.
+        $savedQuery = ${function:Invoke-DriverInstallSafetyQuery}
+        try {
+            foreach ($badOutput in @('missing', 'malformed', 'incomplete', 'duplicate')) {
+                $script:queryCalls = 0
+                $script:badOutput = $badOutput
+                function Invoke-DriverInstallSafetyQuery {
+                    param($ScriptText, $TimeoutSeconds)
+                    $script:queryCalls++
+                    $valid = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('{"Packages":[],"Devices":[]}'))
+                    switch ($script:badOutput) {
+                        'missing' { return 'No inventory result' }
+                        'malformed' { return 'DRIVER_INSTALL_SAFETY_INVENTORY:!' }
+                        'incomplete' { return ('DRIVER_INSTALL_SAFETY_INVENTORY:' + [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('{"Packages":[]}'))) }
+                        'duplicate' { return "DRIVER_INSTALL_SAFETY_INVENTORY:$valid`nDRIVER_INSTALL_SAFETY_INVENTORY:$valid" }
+                    }
+                }
+                $message = Get-FailureMessage { Get-DriverInstallSafetyInventory -InfName 'component.inf' -HardwareId 'ROOT\TEST' }
+                Assert-That ($script:queryCalls -eq 1 -and $message.Contains('Driver unchanged')) 'Malformed completed results must fail closed without recovery'
+            }
+        } finally { Set-Item Function:Invoke-DriverInstallSafetyQuery $savedQuery }
 
         # Exercise source provenance through the real guard, INF reader, and
         # version parser. Only catalog verification is replaced, and no install

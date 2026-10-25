@@ -273,7 +273,14 @@ static bool valid_backend_identity(const struct session_identity *identity) {
   *separator++ = 0;
   unsigned long pid = 0, start = 0;
   if (!parse_number(numbers, 1, INT_MAX, &pid) || !parse_number(separator, 1, ULONG_MAX, &start)) return false;
-  return !identity->x_display[0] && !identity->xauthority[0];
+  // Hyprland's Xwayland has no Xauthority; the controller binds any display.
+  return !identity->xauthority[0];
+}
+
+// systemd applies UnsetEnvironment= after --setenv; keep the bound display.
+static const char *hyprland_unset_environment(const struct session_identity *identity) {
+  return identity->x_display[0] ? "--property=UnsetEnvironment=XAUTHORITY"
+                                : "--property=UnsetEnvironment=DISPLAY XAUTHORITY";
 }
 
 static bool validate_xauthority(const struct session_identity *identity) {
@@ -1198,9 +1205,7 @@ static int exec_user_service(const struct session_identity *identity, const char
     arguments[index++] = "--property=Restart=no";
     arguments[index++] = "--property=RemainAfterExit=no";
     if (hyprland_kms_identity(identity)) {
-      // UWSM's manager can retain Xwayland variables. This slice deliberately
-      // authorizes native Wayland apps only, with no unverified X11 endpoint.
-      arguments[index++] = "--property=UnsetEnvironment=DISPLAY XAUTHORITY";
+      arguments[index++] = (char *) hyprland_unset_environment(identity);
     }
     arguments[index++] = "--unit";
     arguments[index++] = unit;
@@ -1322,10 +1327,13 @@ static bool steam_big_picture_request(const char *operation, const char *command
          steam_big_picture_uri(command);
 }
 
-static bool hyprland_request_supported(const char *operation) {
+static bool hyprland_request_supported(const struct session_identity *identity, const char *operation) {
   return !strcmp(operation, "display-observe") || !strcmp(operation, "display-observe-events") ||
          !strncmp(operation, "audio-", 6) || !strncmp(operation, "provider-", 9) ||
-         !strcmp(operation, "app");
+         !strcmp(operation, "app") ||
+         // X11/Proton launches need the bound Xwayland display.
+         (identity->x_display[0] && (!strcmp(operation, "steam") || !strcmp(operation, "steam-direct") ||
+                                     !strcmp(operation, "lutris")));
 }
 
 static int execute_request(int argc, char **argv,
@@ -1414,7 +1422,8 @@ static int execute_request(int argc, char **argv,
   }
 
   if (hyprland_kms_identity(identity) &&
-      (!hyprland_request_supported(argv[1]) || operation == STEAM_BIG_PICTURE)) {
+      (!hyprland_request_supported(identity, argv[1]) ||
+       (operation == STEAM_BIG_PICTURE && !identity->x_display[0]))) {
     fprintf(stderr, "vibepollo-session-broker: Hyprland KMS supports existing physical SDR outputs and native Wayland apps; request '%s' is unsupported\n", argv[1]);
     return 126;
   }

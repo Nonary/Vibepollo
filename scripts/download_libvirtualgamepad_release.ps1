@@ -289,8 +289,8 @@ function Assert-ProducerReleaseDirectory {
     Assert-ExactList -Actual (Get-RelativeFiles -Root $Root) -Expected $expectedStagedFiles -Name 'Verified consumer artifact layout'
 }
 
-if ($Repository -cne 'Nonary/libvirtualgamepad') {
-    throw 'Repository must be the public Nonary/libvirtualgamepad producer.'
+if ($Repository -cne 'jlobue10/libvirtualgamepad') {
+    throw 'Repository must be the public jlobue10/libvirtualgamepad producer.'
 }
 if ($Tag -notmatch '^v0\.1\.0-beta\.[1-9][0-9]*$') {
     throw 'Tag does not match the supported libvirtualgamepad release line.'

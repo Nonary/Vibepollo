@@ -324,6 +324,21 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
     endforeach()
 endif()
 
+# Dolby encoder failure isolation is a source-driven, CPU-only regression test.
+# It runs on Windows and Unix hosts and needs neither FFmpeg nor audio hardware.
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+    add_test(NAME test_component_dolby_session_isolation
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_dolby_session_isolation.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_dolby_session_isolation PROPERTIES LABELS "component" TIMEOUT 30)
+
+    add_test(NAME test_component_ffmpeg_package_pin
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_ffmpeg_package_pin.py")
+    set_tests_properties(test_component_ffmpeg_package_pin PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
+
 if(WIN32)
     find_program(SUNSHINE_TEST_POWERSHELL_EXECUTABLE NAMES pwsh powershell)
     if(SUNSHINE_TEST_POWERSHELL_EXECUTABLE)
@@ -437,6 +452,12 @@ sunshine_add_test_target(
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
 
 sunshine_add_test_target(
+    NAME test_fast_legacy_nightly_update
+    CATEGORY fast
+    TEST_SOURCES unit/test_legacy_nightly_update_standalone.cpp
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
+
+sunshine_add_test_target(
     NAME test_component_update_notification_state
     CATEGORY component
     TEST_SOURCES unit/test_update_notification_state_standalone.cpp
@@ -444,7 +465,7 @@ sunshine_add_test_target(
 
 # The source standalone harnesses use assert. Preserve their checks when the
 # application and CI test targets are configured in Release mode.
-foreach(_update_test IN ITEMS test_fast_update_release test_component_update_notification_state)
+foreach(_update_test IN ITEMS test_fast_update_release test_fast_legacy_nightly_update test_component_update_notification_state)
     if(TARGET ${_update_test})
         if(MSVC)
             target_compile_options(${_update_test} PRIVATE /UNDEBUG)
@@ -1320,6 +1341,8 @@ if(SUNSHINE_TEST_ENABLE_COMPONENT AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     endif()
 endif()
 sunshine_register_component(NAME test_component_present_timing_policy TEST_SOURCE unit/test_present_timing_policy.cpp)
+sunshine_register_component(NAME test_component_video_adaptive_pacing TEST_SOURCE unit/test_video_adaptive_pacing.cpp)
+sunshine_register_component(NAME test_component_video_fec_status TEST_SOURCE unit/test_video_fec_status.cpp)
 sunshine_register_component(NAME test_component_encoder_probe_policy TEST_SOURCE unit/test_encoder_probe_policy.cpp)
 sunshine_register_component(NAME test_component_gpu_priority_lifetime
     TEST_SOURCE unit/platform/windows/test_gpu_priority_lifetime.cpp)
@@ -1438,6 +1461,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
     add_executable(test_linux_hyprland_broker
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_broker.c")
     target_include_directories(test_linux_hyprland_broker PRIVATE "${LIBCAP_INCLUDE_DIRS}")
+    # The fixture asserts the production dispatch boundary; keep it in release builds.
+    target_compile_options(test_linux_hyprland_broker PRIVATE -UNDEBUG)
     target_link_libraries(test_linux_hyprland_broker PRIVATE "${LIBCAP_LIBRARIES}")
     add_test(NAME test_component_linux_hyprland_broker COMMAND test_linux_hyprland_broker)
     set_tests_properties(test_component_linux_hyprland_broker PROPERTIES LABELS "component")

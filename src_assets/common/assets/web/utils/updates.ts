@@ -51,7 +51,7 @@ function asset(release: UpdateRelease, name: string): boolean {
 export function isDailyTag(tag: string): boolean {
   return /^daily-\d{4}-\d{2}-\d{2}(?:\.(?:[1-9][0-9]{0,2}))?$/.test(tag) ||
     /^\d+\.\d+\.\d+-daily\.d\d{8}(?:\.(?:[1-9][0-9]{0,2}))?$/.test(tag) ||
-    /^\d+\.\d+\.\d+-nightly\.d\d{8}\.[0-9a-f]{12}$/.test(tag);
+    /^\d+\.\d+\.\d+-nightly\.d\d{8}\.(?:r\.[1-9][0-9]{0,2}\.)?[0-9a-f]{12}$/.test(tag);
 }
 
 export function validNightlyMetadata(
@@ -59,13 +59,18 @@ export function validNightlyMetadata(
   metadata: Record<string, unknown> | undefined,
 ): boolean {
   if (!isDailyTag(tag) || !metadata || typeof metadata !== 'object') return false;
-  const nightly = tag.match(/^\d+\.\d+\.\d+-nightly\.d(\d{8})\.([0-9a-f]{12})$/);
+  const nightly = tag.match(/^\d+\.\d+\.\d+-nightly\.d(\d{8})\.(?:r\.([1-9][0-9]{0,2})\.)?([0-9a-f]{12})$/);
   if (nightly) {
     const source = metadata['source_commit'];
-    return orderedVersion(tag) && metadata['schema_version'] === 1 && metadata['channel'] === 'nightly' &&
+    const date = nightly[1]!;
+    const year = Number(date.slice(0, 4)), month = Number(date.slice(4, 6)), day = Number(date.slice(6, 8));
+    const calendar = new Date(Date.UTC(year, month - 1, day));
+    const validDate = year >= 2000 && year <= 2099 && calendar.getUTCFullYear() === year &&
+      calendar.getUTCMonth() === month - 1 && calendar.getUTCDate() === day;
+    return validDate && orderedVersion(tag) && metadata['schema_version'] === 1 && metadata['channel'] === 'nightly' &&
       metadata['tag'] === tag && metadata['version'] === tag &&
-      metadata['nightly_sequence'] === Number(nightly[1]) &&
-      typeof source === 'string' && /^[0-9a-f]{40}$/.test(source) && source.slice(0, 12) === nightly[2];
+      metadata['nightly_sequence'] === (nightly[2] ? Number(date) * 1000 + Number(nightly[2]) : Number(date)) &&
+      typeof source === 'string' && /^[0-9a-f]{40}$/.test(source) && source.slice(0, 12) === nightly[3];
   }
   if (!tag.startsWith('daily-')) {
     const match = tag.match(/^\d+\.\d+\.\d+-daily\.d(\d{4})(\d{2})(\d{2})(\.[1-9][0-9]{0,2})?$/);
@@ -160,10 +165,17 @@ function compareNotificationVersions(left: string, right: string): number {
   const a = nightlyVersion(left),
     b = nightlyVersion(right);
   if (sameBase(left, right) && a !== b) return a ? -1 : 1;
-  // A SHA suffix identifies a build; it cannot order two builds on one day.
-  const dated = /^\d+\.\d+\.\d+-nightly\.d(\d{8})\.[0-9a-f]{12}$/;
+  // Keep the backend's UTC day/revision order, never random source SHA order.
+  const dated = /^\d+\.\d+\.\d+-(?:nightly\.d(\d{8})\.(?:r\.([1-9][0-9]{0,2})\.)?[0-9a-f]{12}|daily\.d(\d{8})(?:\.([1-9][0-9]{0,2}))?)(?:\+[0-9A-Za-z.-]+)?$/;
   const l = left.match(dated), r = right.match(dated);
-  if (l && r && sameBase(left, right) && l[1] === r[1]) return 0;
+  if (l && r && sameBase(left, right)) {
+    const dayL = Number(l[1] ?? l[3]), dayR = Number(r[1] ?? r[3]);
+    if (dayL !== dayR) return dayL > dayR ? 1 : -1;
+    if (!!l[1] !== !!r[1]) return l[1] ? 1 : -1;
+    const revisionL = Number(l[1] ? l[2] ?? 0 : l[4] ?? 0);
+    const revisionR = Number(r[1] ? r[2] ?? 0 : r[4] ?? 0);
+    return revisionL === revisionR ? 0 : revisionL > revisionR ? 1 : -1;
+  }
   return compareChangelogTags(left, right);
 }
 
@@ -192,7 +204,9 @@ export function selectAvailableUpdate(
       entry = githubReleaseToChangelogEntry({ ...release, tag_name: identity });
       if (entry) entry.tag = release.tag_name!;
     } else {
-      if (!orderedVersion(identity)) continue;
+      // An invalid nightly shape must not bypass nightly qualification through
+      // the ordinary prerelease fallback.
+      if (nightlyVersion(identity) || !orderedVersion(identity)) continue;
       entry = githubReleaseToChangelogEntry(release);
     }
     if (

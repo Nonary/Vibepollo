@@ -282,6 +282,7 @@ const gamepadOptions = [
   option('vhf_ds5', 'config.gamepad_vhf_ds5'),
   option('usbip_ds5', 'config.gamepad_usbip_ds5'),
   option('vhf_switch', 'config.gamepad_vhf_switch'),
+  option('vhf_steam', 'config.gamepad_vhf_steam'),
 ];
 
 export function gamepadOptionsForPlatform(platform: string): SettingsOption[] {
@@ -298,6 +299,7 @@ export function gamepadOptionsForPlatform(platform: string): SettingsOption[] {
         'vhf_ds5',
         'usbip_ds5',
         'vhf_switch',
+        'vhf_steam',
       ])
     : normalized.includes('linux')
       ? new Set(['auto', 'xone', 'ds4', 'ds5', 'switch'])
@@ -922,6 +924,12 @@ export const settingsCategories: SettingsCategory[] = [
           boolean('stream_audio'),
           boolean('keep_sink_default'),
           boolean('auto_capture_sink'),
+          select('audio_format', [
+            option('opus', 'config.audio_format_opus'),
+            option('ac3', 'config.audio_format_ac3'),
+            option('eac3', 'config.audio_format_eac3'),
+          ]),
+          boolean('high_quality_audio', { visibleWhen: { key: 'audio_format', notEquals: 'opus' } }),
           text('audio_sink', { monospace: true, stacked: true }),
           boolean('audio_sink_capture_only', { platform: 'windows' }),
           text('virtual_sink', { monospace: true, stacked: true }),
@@ -1218,6 +1226,8 @@ export const settingsDefaults: Record<string, unknown> = {
   key_repeat_delay: 500,
   key_repeat_frequency: 24.9,
   install_steam_audio_drivers: true,
+  audio_format: 'opus',
+  high_quality_audio: false,
   audio_sink: '',
   audio_sink_capture_only: false,
   virtual_sink: '',
