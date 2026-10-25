@@ -126,6 +126,17 @@ int main() {
   auto malformed = revision1;
   malformed["tag_name"] = "2.0.1-nightly.d20261022.r.0.aaaaaaaaaaaa";
   assert(select(json::array({malformed}), "2.0.0", true).is_null());
+  for (const auto &invalid_tag : {
+    "2.0.1-nightly.d20261022.r.1000.aaaaaaaaaaaa",
+    "2.0.1-nightly.d20260230.r.1.aaaaaaaaaaaa"}) {
+    auto invalid = revision1;
+    invalid["tag_name"] = invalid_tag;
+    invalid["nightly_metadata"]["tag"] = invalid_tag;
+    invalid["nightly_metadata"]["version"] = invalid_tag;
+    invalid["nightly_metadata"]["source_commit"] = std::string(40, 'a');
+    invalid["nightly_metadata"]["nightly_sequence"] = 20260230001LL;
+    assert(select(json::array({invalid}), "2.0.0", true).is_null());
+  }
   auto missing_body = with_body(revision1);
   missing_body.erase("body");
   assert(release_selection::select(json::array({missing_body}), "2.0.0", true).is_null());
