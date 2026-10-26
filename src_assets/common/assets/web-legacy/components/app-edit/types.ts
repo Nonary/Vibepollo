@@ -144,6 +144,7 @@ export interface ServerApp {
   'prefer-10bit-sdr'?: boolean;
   'playnite-id'?: string | undefined;
   'playnite-managed'?: 'manual' | string | undefined;
+  'playnite-fullscreen'?: boolean | undefined;
   'gen1-framegen-fix'?: boolean;
   'gen2-framegen-fix'?: boolean;
   'dlss-framegen-capture-fix'?: boolean;

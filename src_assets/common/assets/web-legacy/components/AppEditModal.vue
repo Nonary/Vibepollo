@@ -559,6 +559,7 @@ import {
   isRemoteMonitorApplication,
   preserveRemoteMonitorRouting,
 } from '../utils/remoteMonitorPolicy';
+import { preservePlayniteFullscreen } from '../utils/playniteFullscreenPolicy';
 import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useMessage } from 'naive-ui';
 import { http } from '@/http';
@@ -1215,6 +1216,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
     payload['dd-configuration-option'] = f.ddConfigurationOption;
   }
   preserveRemoteMonitorRouting(props.app, payload);
+  preservePlayniteFullscreen(props.app, payload);
   return payload;
 }
 let liveRtxHdrSuppress = false;
