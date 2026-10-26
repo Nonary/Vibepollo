@@ -34,8 +34,9 @@ desktop_backend=hyprland-kms
 
 Keep the existing `desktop_user` line. The package's configure/upgrade path
 preserves this selection; omitting the setting selects `kwin`. With the setting
-present, later installer and local-deploy upgrades check for Hyprland and UWSM
-instead of Plasma and KWin. A policy or
+present, upgrades through the installer script, including package-backed local
+deploys on Arch-based systems, check for Hyprland and UWSM instead of Plasma and
+KWin. A policy or
 session change stops the host and its applications before binding a new
 generation, interrupting active streams. The Plasma Login greeter continues to
 use the KWin backend, independent of the desktop policy. SDDM greeter streaming
