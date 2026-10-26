@@ -5,6 +5,7 @@
 // this include
 #include "nvenc_base.h"
 #include "nvenc_api.h"
+#include "nvenc_log_flags.h"
 
 // standard includes
 #include <algorithm>
@@ -741,6 +742,7 @@ namespace nvenc {
     }
 
     init_params.encodeConfig = &enc_config;
+    bool initialized_with_driver_defaults = false;
 
     if (nvenc_failed(nvenc->nvEncInitializeEncoder(encoder, &init_params))) {
       auto init_error = last_nvenc_error_string;
@@ -789,6 +791,7 @@ namespace nvenc {
           return false;
         }
 
+        initialized_with_driver_defaults = true;
         BOOST_LOG(info) << "NvEnc: initialized with driver defaults (preset config was unavailable)";
       } else if (!have_preset_config && init_status == NV_ENC_ERR_INVALID_PARAM && hdr_metadata_requires_explicit_config) {
         BOOST_LOG(error) << "NvEnc: NvEncInitializeEncoder() failed: " << init_error
@@ -856,10 +859,7 @@ namespace nvenc {
       if (encoder_params.rfi) {
         extra += " rfi";
       }
-      if ((client_config.videoFormat == 0 && enc_config.encodeCodecConfig.h264Config.enableIntraRefresh) ||
-          (client_config.videoFormat == 1 && enc_config.encodeCodecConfig.hevcConfig.enableIntraRefresh)) {
-        extra += " intra-refresh";
-      }
+      extra += log_flags::intra_refresh(enc_config, client_config.videoFormat, initialized_with_driver_defaults);
       if (init_params.enableWeightedPrediction) {
         extra += " weighted-prediction";
       }
