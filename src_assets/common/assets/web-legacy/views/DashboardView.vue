@@ -570,7 +570,7 @@ async function selectV2WebUi(event: MouseEvent): Promise<void> {
   if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
   try {
-    await http.patch('/api/config', { web_ui_preference: 'v2' });
+    await http.post('/api/web-ui-preference', { preference: 'v2' });
   } catch (error) {
     console.warn('Could not save the V2 web UI preference:', error);
   }
