@@ -2283,7 +2283,6 @@ namespace config {
     bool_f(vars, "enable_input_only_mode", input.enable_input_only_mode);
 
     bool_f(vars, "system_tray", sunshine.system_tray);
-    string_restricted_f(vars, "web_ui_preference", sunshine.web_ui_preference, {"legacy"sv, "v2"sv});
     bool_f(vars, "hide_tray_controls", sunshine.hide_tray_controls);
     bool_f(vars, "enable_pairing", sunshine.enable_pairing);
     bool_f(vars, "enable_discovery", sunshine.enable_discovery);
