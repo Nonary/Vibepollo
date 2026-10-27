@@ -98,6 +98,31 @@ TEST(RtspLaunchRegistry, StoppedBeforeControlLaunchIsClearedForSameSourceRetry) 
   EXPECT_EQ(registry.size(), 2u);
 }
 
+TEST(RtspLaunchRegistry, BroadcastShutdownClearsOnlyTheRemovedSessionsLaunch) {
+  // A broadcast shutdown after ANNOUNCE 200 but before the control stream
+  // attaches removes the session while keeping pending launches. rtsp.cpp then
+  // clears the removed session's launch by ID, and a launch queued for the next
+  // broadcast, which has no session yet, survives.
+  registry_t registry;
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_EQ(registry.add(plaintext(1, "10.0.0.2"), t0, ping_timeout, capacity), add_result_e::added);
+  ASSERT_TRUE(registry.claim_startup(1, "launch-1", t0 + 9500ms));
+  registry.finish_startup(1, "launch-1", true, t0 + 9900ms, ping_timeout);
+  ASSERT_EQ(registry.add(plaintext(2, "10.0.0.3"), t0 + 10s, ping_timeout, capacity), add_result_e::added);
+
+  EXPECT_EQ(registry.add(plaintext(3, "10.0.0.2"), t0 + 10500ms, ping_timeout, capacity), add_result_e::duplicate_plaintext_source);
+
+  const auto removed = registry.remove_if([](const fake_session_t &session) {
+    return session.id == 1;
+  });
+  ASSERT_EQ(removed.size(), 1u);
+
+  EXPECT_EQ(registry.add(plaintext(3, "10.0.0.2"), t0 + 10500ms, ping_timeout, capacity), add_result_e::added);
+  EXPECT_TRUE(registry.contains_live(2, "launch-2", t0 + 10500ms));
+  EXPECT_TRUE(registry.contains_live(3, "launch-3", t0 + 10500ms));
+  EXPECT_EQ(registry.size(), 2u);
+}
+
 TEST(RtspLaunchRegistry, UnclaimedLaunchExpiresAtItsDeadline) {
   registry_t registry;
   const auto t0 = std::chrono::steady_clock::now();
