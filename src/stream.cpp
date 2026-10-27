@@ -4041,6 +4041,14 @@ namespace stream {
     }
 #endif
 
+    std::uint32_t launch_session_id(const session_t &session) {
+      return session.launch_session_id;
+    }
+
+    bool control_peer_attached(const session_t &session) {
+      return session.control.peer != nullptr;
+    }
+
     void mark_client_disconnected(session_t &session) {
       session.client_disconnected.store(true, std::memory_order_release);
     }
