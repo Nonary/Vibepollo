@@ -30,7 +30,7 @@
               </n-button>
             </a>
           </RouterLink>
-          <a href="/v2/">
+          <a href="/v2/" @click="selectV2WebUi">
             <n-button tag="span" type="default" strong class="w-full justify-center sm:w-auto">
               <i class="fas fa-arrow-right-arrow-left" />
               <span>{{ $t('navbar.use_v2_web_ui') }}</span>
@@ -565,6 +565,17 @@ import { http } from '@/http';
 import type { CrashDumpStatus } from '@/utils/crashDump';
 import { isCrashDumpEligible, sanitizeCrashDumpStatus } from '@/utils/crashDump';
 import { toIntlLocale } from '@/utils/intlLocale';
+
+async function selectV2WebUi(event: MouseEvent): Promise<void> {
+  if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  try {
+    await http.post('/api/web-ui-preference', { preference: 'v2' });
+  } catch (error) {
+    console.warn('Could not save the V2 web UI preference:', error);
+  }
+  window.location.assign('/v2/');
+}
 
 const installedVersion = ref<VibepolloVersion>(new VibepolloVersion('0.0.0'));
 const availableUpdate = ref<ChangelogEntry | null>(null);

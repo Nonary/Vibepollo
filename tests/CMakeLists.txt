@@ -668,6 +668,8 @@ sunshine_register_component(NAME test_component_remote_display_topology TEST_SOU
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_config_parse TEST_SOURCE unit/test_config_parse.cpp
     PRODUCT_SOURCES)
+sunshine_register_component(NAME test_component_web_ui_preference TEST_SOURCE unit/test_web_ui_preference.cpp
+    PRODUCT_SOURCES)
 sunshine_register_component(NAME test_component_managed_app_focus TEST_SOURCE unit/test_managed_app_focus.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/managed_app_focus.cpp"
                     "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/steam_process_tracker.cpp")
