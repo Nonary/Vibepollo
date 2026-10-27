@@ -313,6 +313,81 @@ void test_pending_restore_keeps_golden() {
 '''
 program = program.replace('int main() {', golden_program + '\nint main() {\n  golden_capture::test_pending_restore_keeps_golden();')
 
+
+client = (root / "src/platform/windows/ipc/display_settings_client.cpp").read_text()
+bounded_snapshot = function(client, "::display_helper::SnapshotResult send_snapshot_current_within(")
+bounded_program = r'''
+#include <chrono>
+#include "src/platform/windows/display_snapshot_result.h"
+namespace bounded_snapshot_fixture {
+using std::uint8_t;
+using display_helper::SnapshotResult;
+enum class ApplyResponseProtocol { Unknown, V2 };
+ApplyResponseProtocol protocol = ApplyResponseProtocol::Unknown;
+bool send_ok = true;
+std::optional<bool> saved;
+int waits = 0, retired = 0;
+constexpr int kSnapshotResultTimeoutMs = 3000, kConnectTimeoutMs = 1, kSendTimeoutMs = 1, kStaleConnectionRetireTimeoutMs = 1;
+int session;
+std::atomic<std::uint64_t> generation {0}, next_id {1};
+auto &apply_wait_generation() { return generation; }
+auto &next_auxiliary_request_id() { return next_id; }
+template<class... T> int *connected_session_within(T &&...) { return &session; }
+ApplyResponseProtocol current_apply_response_protocol(int *) { return protocol; }
+bool session_is_current(int *) { return true; }
+template<class... T> bool lock_response_reader_until(T &&...) { return true; }
+enum class MsgType { SnapshotCurrent };
+template<class... T> bool send_serialized_within(T &&...) { return send_ok; }
+int remaining_timeout_ms(std::chrono::steady_clock::time_point) { return 100; }
+template<class... T> std::optional<bool> wait_for_snapshot_result_locked(T &&...) { ++waits; return saved; }
+template<class... T> void drop_connection_if_current_within(T &&...) { ++retired; }
+''' + bounded_snapshot + r'''
+void test_failed_dispatched_saved_mapping() {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  const auto send = [&] { return send_snapshot_current_within("{}", deadline, {}); };
+  saved = false;  // An unknown/legacy helper may later skip/fail the save.
+  assert(send() == SnapshotResult::dispatched && waits == 0);
+  send_ok = false;
+  assert(send() == SnapshotResult::failed && waits == 0);
+  send_ok = true;
+  protocol = ApplyResponseProtocol::V2;
+  assert(send() == SnapshotResult::failed && waits == 1);
+  saved = true;
+  assert(send() == SnapshotResult::saved && waits == 2);
+  saved = std::nullopt;
+  assert(send() == SnapshotResult::failed && waits == 3 && retired == 1);
+}
+}
+'''
+program = program.replace('int main() {', bounded_program + '\nint main() {\n  bounded_snapshot_fixture::test_failed_dispatched_saved_mapping();')
+
+
+integration = (root / "src/platform/windows/display_helper_integration.cpp").read_text()
+remote_compose = function(integration, "bool apply_remote_composed_topology(")
+prepare_program = r'''
+#include "src/platform/windows/display_restore_guard.h"
+namespace display_helper::borrow {
+struct native_mutation_scope_t { static bool enter(bool) { return true; } };
+}
+namespace prepare_fixture {
+struct DisplayTopologyDefinition {};
+display_helper_integration::DisplayRestoreGuard composed_restore_guard;
+bool ready = false;
+int applies = 0;
+std::optional<int> make_settings_manager() { return ready ? std::optional<int> {1} : std::nullopt; }
+bool apply_topology_definition(const DisplayTopologyDefinition &, const char *, std::optional<int>) { ++applies; return false; }
+''' + remote_compose + r'''
+void test_preparation_failure_does_not_latch_protection() {
+  assert(!apply_remote_composed_topology({}));
+  assert(applies == 0 && composed_restore_guard.baseline_publisher());
+  ready = true;
+  assert(!apply_remote_composed_topology({}));
+  assert(applies == 1 && composed_restore_guard.protects_baseline());
+}
+}
+'''
+program = program.replace('int main() {', prepare_program + '\nint main() {\n  prepare_fixture::test_preparation_failure_does_not_latch_protection();')
+
 with tempfile.TemporaryDirectory(prefix="recovery-status-protocol-") as temporary:
     source = pathlib.Path(temporary) / "recovery_status_protocol.cpp"
     binary = pathlib.Path(temporary) / "recovery_status_protocol"

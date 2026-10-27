@@ -1,4 +1,5 @@
 #include "src/platform/windows/display_restore_guard.h"
+#include "src/platform/windows/display_baseline_node.h"
 #include "src/platform/windows/display_snapshot_restore.h"
 
 #include <display_device/types.h>
@@ -56,7 +57,6 @@ namespace {
   };
   const auto ignore_failure = [](const auto &, const auto &) {};
   const auto ignore_skip = [](const char *) {};
-  const auto connected = [] { return false; };
   const auto capture = [](const auto &) { return display_helper::SnapshotResult::saved; };
 }
 
@@ -90,7 +90,7 @@ TEST(DisplayCoordinatorRestore, GeometrySuccessAndRefreshFailureAdmitsNextSnapsh
   ASSERT_FALSE(guard.compose([] { return false; }));
   EXPECT_TRUE(guard.compose([&] { return display_helper::restore_composed_topology(device, Layout {}, ignore_failure); }));
   EXPECT_FALSE(guard.protects_baseline());
-  EXPECT_TRUE(guard.snapshot(capture, connected, ignore_skip));
+  EXPECT_TRUE(guard.snapshot(capture, ignore_skip));
 }
 
 TEST(DisplayCoordinatorRestore, RefreshReadFailureOrExceptionDoesNotProtectRepairedGeometry) {
@@ -110,7 +110,7 @@ TEST(DisplayCoordinatorRestore, RefreshReadFailureOrExceptionDoesNotProtectRepai
     EXPECT_NE(warnings.front().find("requested 240/4"), std::string::npos);
     EXPECT_NE(warnings.front().find(missing_modes ? "readback unavailable" : "readback 59997/1000"), std::string::npos);
     EXPECT_FALSE(guard.protects_baseline());
-    EXPECT_TRUE(guard.snapshot(capture, connected, ignore_skip));
+    EXPECT_TRUE(guard.snapshot(capture, ignore_skip));
   }
 }
 
@@ -124,7 +124,7 @@ TEST(DisplayCoordinatorRestore, AnyGeometryFailureProtectsBaselineAndRejectsSnap
     display_helper_integration::DisplayRestoreGuard guard;
     EXPECT_FALSE(guard.compose([&] { return display_helper::restore_composed_topology(device, Layout {}, ignore_failure); }));
     EXPECT_TRUE(guard.protects_baseline());
-    EXPECT_FALSE(guard.snapshot(capture, connected, ignore_skip));
+    EXPECT_FALSE(guard.snapshot(capture, ignore_skip));
   }
 }
 
@@ -145,9 +145,9 @@ TEST(DisplayCoordinatorRestore, ExclusiveApplySkipsInactivePhysicalRefreshTarget
   EXPECT_EQ(device.calls, (std::vector<std::string> {"primary", "origin:VDD"}));
 }
 
-TEST(DisplayRestoreGuard, NormalCaptureNeverQueriesConnectivity) {
+TEST(DisplayRestoreGuard, NormalCaptureIsAdmitted) {
   display_helper_integration::DisplayRestoreGuard guard;
-  EXPECT_TRUE(guard.snapshot(capture, [] { ADD_FAILURE(); return false; }, ignore_skip));
+  EXPECT_TRUE(guard.snapshot(capture, ignore_skip));
 }
 
 TEST(DisplayRestoreGuard, StableButUnrestoredLayoutRemainsBlockedUntilSuccessfulCompose) {
@@ -155,65 +155,32 @@ TEST(DisplayRestoreGuard, StableButUnrestoredLayoutRemainsBlockedUntilSuccessful
   ASSERT_FALSE(guard.compose([] { return false; }));
   int warnings = 0;
   for (int i = 0; i < 2; ++i) {
-    EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return display_helper::SnapshotResult::saved; }, connected,
+    EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return display_helper::SnapshotResult::saved; },
       [&](const char *reason) { ++warnings; EXPECT_NE(std::string(reason).find("failed compose"), std::string::npos); }));
   }
   EXPECT_EQ(warnings, 2);
   EXPECT_TRUE(guard.compose([] { return true; }));
-  EXPECT_TRUE(guard.snapshot(capture, connected, ignore_skip));
+  EXPECT_TRUE(guard.snapshot(capture, ignore_skip));
 }
 
-TEST(DisplayRestoreGuard, DisconnectedBaselineAdmitsRecapture) {
+TEST(DisplayRestoreGuard, FailedComposeNeverRecapturesSurvivingGeometry) {
   display_helper_integration::DisplayRestoreGuard guard;
   ASSERT_FALSE(guard.compose([] { return false; }));
-  EXPECT_TRUE(guard.snapshot(capture, [] { return true; }, ignore_skip));
-  EXPECT_TRUE(guard.snapshot(capture, [] { ADD_FAILURE(); return false; }, ignore_skip));
-}
-
-TEST(DisplayRestoreGuard, FailedReplacementCaptureKeepsProtectionAfterReconnect) {
-  display_helper_integration::DisplayRestoreGuard guard;
-  ASSERT_FALSE(guard.compose([] { return false; }));
+  int saves = 0;
   EXPECT_FALSE(guard.snapshot([&](const auto &) {
-    EXPECT_TRUE(guard.protects_baseline());
-    return display_helper::SnapshotResult::failed;  // Helper unavailable or capture deadline expired.
-  }, [] { return true; }, ignore_skip));
-  EXPECT_TRUE(guard.protects_baseline());  // Remote Monitor activation must keep the saved geometry.
-  EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return display_helper::SnapshotResult::saved; }, connected, ignore_skip));
+    ++saves;
+    return display_helper::SnapshotResult::saved;
+  }, ignore_skip));
+  EXPECT_EQ(saves, 0);
   EXPECT_TRUE(guard.protects_baseline());
-  EXPECT_TRUE(guard.snapshot(capture, [] { return true; }, ignore_skip));
-  EXPECT_FALSE(guard.protects_baseline());
 }
 
-TEST(DisplayRestoreGuard, ThrowingReplacementCaptureKeepsProtectionAfterReconnect) {
+TEST(DisplayRestoreGuard, ThrowingCaptureReleasesCaptureAdmission) {
   display_helper_integration::DisplayRestoreGuard guard;
-  ASSERT_FALSE(guard.compose([] { return false; }));
   EXPECT_THROW(guard.snapshot([](const auto &) -> display_helper::SnapshotResult {
     throw std::runtime_error("capture failed");
-  }, [] { return true; }, ignore_skip), std::runtime_error);
-  EXPECT_TRUE(guard.protects_baseline());
-  EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return display_helper::SnapshotResult::saved; }, connected, ignore_skip));
-}
-
-TEST(DisplayRestoreGuard, SuccessfulReplacementCaptureCannotClearNewComposeFailure) {
-  display_helper_integration::DisplayRestoreGuard guard;
-  ASSERT_FALSE(guard.compose([] { return false; }));
-  EXPECT_FALSE(guard.snapshot([&](const auto &superseded) {
-    EXPECT_FALSE(guard.compose([] { return false; }));
-    EXPECT_TRUE(superseded());
-    return display_helper::SnapshotResult::saved;
-  }, [] { return true; }, ignore_skip));
-  EXPECT_TRUE(guard.protects_baseline());
-  EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return display_helper::SnapshotResult::saved; }, connected, ignore_skip));
-}
-
-TEST(DisplayRestoreGuard, ConcurrentComposeInvalidatesConnectivityEvidence) {
-  display_helper_integration::DisplayRestoreGuard guard;
-  ASSERT_FALSE(guard.compose([] { return false; }));
-  EXPECT_FALSE(guard.snapshot(capture, [&] {
-    EXPECT_FALSE(guard.compose([] { return false; }));
-    return true;
-  }, ignore_skip));
-  EXPECT_FALSE(guard.snapshot(capture, connected, ignore_skip));
+  }, ignore_skip), std::runtime_error);
+  EXPECT_TRUE(guard.snapshot(capture, ignore_skip));
 }
 
 TEST(DisplayRestoreGuard, HungSnapshotDoesNotBlockComposeAndCannotReportStaleSuccess) {
@@ -222,7 +189,7 @@ TEST(DisplayRestoreGuard, HungSnapshotDoesNotBlockComposeAndCannotReportStaleSuc
   std::promise<void> release;
   auto released = release.get_future();
   auto snapshot = std::async(std::launch::async, [&] {
-    return guard.snapshot([&](const auto &) { entered.set_value(); released.wait(); return display_helper::SnapshotResult::saved; }, connected, ignore_skip);
+    return guard.snapshot([&](const auto &) { entered.set_value(); released.wait(); return display_helper::SnapshotResult::saved; }, ignore_skip);
   });
   entered.get_future().wait();
   auto compose = std::async(std::launch::async, [&] { return guard.compose([] { return true; }); });
@@ -231,23 +198,6 @@ TEST(DisplayRestoreGuard, HungSnapshotDoesNotBlockComposeAndCannotReportStaleSuc
   EXPECT_EQ(status, std::future_status::ready);
   EXPECT_TRUE(compose.get());
   EXPECT_FALSE(snapshot.get());
-}
-
-TEST(DisplayRestoreGuard, DispatchWithoutSaveConfirmationKeepsProtection) {
-  display_helper_integration::DisplayRestoreGuard guard;
-  ASSERT_FALSE(guard.compose([] { return false; }));
-  bool queued = false;
-  EXPECT_TRUE(guard.snapshot([&](const auto &) {
-    queued = true;
-    return display_helper::SnapshotResult::dispatched;
-  }, [] { return true; }, ignore_skip));
-  ASSERT_TRUE(queued);
-  // The legacy helper later fails or skips the queued save; there is no ACK.
-  EXPECT_TRUE(guard.protects_baseline());
-  EXPECT_FALSE(guard.snapshot([](const auto &) {
-    ADD_FAILURE();
-    return display_helper::SnapshotResult::saved;
-  }, connected, ignore_skip));
 }
 
 TEST(DisplayRestoreGuard, GoldenExportCannotReplaceFailedComposeBaseline) {
@@ -260,4 +210,55 @@ TEST(DisplayRestoreGuard, GoldenExportCannotReplaceFailedComposeBaseline) {
   EXPECT_FALSE(guard.export_snapshot(send, ignore_skip));
   EXPECT_EQ(sends, 1);
   EXPECT_TRUE(guard.protects_baseline());
+}
+
+TEST(DisplayRestoreGuard, PublisherRemainsAvailableDuringUnrelatedCapture) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  const auto before = guard.baseline_publisher();
+  int publications = 0;
+  EXPECT_TRUE(guard.snapshot([&](const auto &) {
+    const auto during = guard.baseline_publisher();
+    EXPECT_TRUE(static_cast<bool>(during));
+    if (during) EXPECT_TRUE(during([&] { ++publications; }));
+    EXPECT_TRUE(before([&] { ++publications; }));
+    return display_helper::SnapshotResult::dispatched;
+  }, ignore_skip));
+  EXPECT_EQ(publications, 2);
+}
+
+TEST(DisplayRestoreGuard, AcceptedSupersededSnapshotWarnsAndKeepsFailedProtection) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  std::string warning;
+  EXPECT_FALSE(guard.snapshot([&](const auto &) {
+    EXPECT_FALSE(guard.compose([] { return false; }));
+    return display_helper::SnapshotResult::saved;
+  }, [&](const char *reason) { warning = reason; }));
+  EXPECT_NE(warning.find("accepted snapshot superseded"), std::string::npos);
+  EXPECT_TRUE(guard.protects_baseline());
+}
+
+TEST(DisplayCoordinatorRestore, InventoryBaselinePreservesExactMetadataAndRejectsSessionVdd) {
+  display_device::EnumeratedDevice main;
+  main.m_device_id = "main";
+  main.m_display_name = "DISPLAY1";
+  main.m_info = display_device::EnumeratedDevice::Info {};
+  main.m_info->m_primary = true;
+  main.m_info->m_origin_point = {3840, 0};
+  main.m_info->m_refresh_rate = display_device::Rational {240, 4};
+  main.m_info->m_hdr_state = display_device::HdrState::Enabled;
+  auto vdd = main;
+  vdd.m_device_id = "session";
+  vdd.m_friendly_name = "Plain label";
+  vdd.m_edid = display_device::EdidData {};
+  vdd.m_edid->m_manufacturer_id = "SDD";
+  vdd.m_edid->m_product_code = "5ABC";
+  EXPECT_FALSE(display_helper_integration::physical_baseline_nodes({main, vdd}, {}));
+  const auto nodes = display_helper_integration::physical_baseline_nodes({main, vdd}, {"session"});
+  ASSERT_TRUE(nodes);
+  ASSERT_EQ(nodes->size(), 1u);
+  EXPECT_EQ(nodes->front().baseline_refresh_rate, (std::optional<std::pair<unsigned, unsigned>> {{240, 4}}));
+  EXPECT_EQ(nodes->front().configured_mode.refresh_hz, 60);
+  EXPECT_TRUE(nodes->front().configured_mode.hdr);
+  EXPECT_TRUE(nodes->front().primary);
+  EXPECT_EQ(nodes->front().x, 3840);
 }

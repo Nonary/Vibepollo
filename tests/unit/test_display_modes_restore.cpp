@@ -190,22 +190,6 @@ namespace {
     }
   }
 
-  bool attempt_snapshot_after_failed_compose(
-    FakeWinApiLayer &api,
-    int &capture_count) {
-    display_helper_integration::DisplayRestoreGuard guard;
-    EXPECT_FALSE(guard.compose([] { return false; }));
-
-    const auto is_disconnected = [&] {
-      return display_helper_integration::disconnected_baseline_device(api, {"saved-display"}).has_value();
-    };
-    const auto capture = [&](const auto &) {
-      ++capture_count;
-      return display_helper::SnapshotResult::saved;
-    };
-    const auto report_skip = [](const char *) {};
-    return guard.snapshot(capture, is_disconnected, report_skip);
-  }
 }  // namespace
 
 TEST(DisplayModesRestore, ExactTemporaryApplyPreservesSavedRationalWithoutPersistence) {
@@ -296,23 +280,19 @@ TEST(DisplayBaselinePresence, ConnectedInactivePathWithoutDisplayNameKeepsBaseli
   all_data.m_paths.push_back(make_path(1, false, true, {0, 0}, false));
   api.all_data_override = std::move(all_data);
   api.display_name_unavailable.insert(1);
-  int capture_count = 0;
 
-  EXPECT_FALSE(attempt_snapshot_after_failed_compose(api, capture_count));
-  EXPECT_EQ(capture_count, 0);
+  EXPECT_FALSE(display_helper_integration::disconnected_baseline_devices(api, {"saved-display"}).value_or(std::vector<std::string> {}).size());
   EXPECT_EQ(api.queries, (std::vector<QueryType> {QueryType::All}));
   EXPECT_EQ(api.display_name_queries, 0);
 }
 
-TEST(DisplayBaselinePresence, FullyAbsentBaselineDeviceAllowsNewSnapshot) {
+TEST(DisplayBaselinePresence, FullyAbsentBaselineDeviceIsPrunable) {
   FakeWinApiLayer api;
   PathAndModeData all_data;
   all_data.m_paths.push_back(make_path(2, false, true, {0, 0}, false));
   api.all_data_override = std::move(all_data);
-  int capture_count = 0;
 
-  EXPECT_TRUE(attempt_snapshot_after_failed_compose(api, capture_count));
-  EXPECT_EQ(capture_count, 1);
+  EXPECT_EQ(display_helper_integration::disconnected_baseline_devices(api, {"saved-display"}), (std::optional<std::vector<std::string>> {{"saved-display"}}));
   EXPECT_EQ(api.queries, (std::vector<QueryType> {QueryType::All}));
   EXPECT_EQ(api.display_name_queries, 0);
 }
@@ -320,10 +300,8 @@ TEST(DisplayBaselinePresence, FullyAbsentBaselineDeviceAllowsNewSnapshot) {
 TEST(DisplayBaselinePresence, FailedAllPathsQueryConservativelyKeepsBaselineProtected) {
   FakeWinApiLayer api;
   api.fail_all_query = true;
-  int capture_count = 0;
 
-  EXPECT_FALSE(attempt_snapshot_after_failed_compose(api, capture_count));
-  EXPECT_EQ(capture_count, 0);
+  EXPECT_FALSE(display_helper_integration::disconnected_baseline_devices(api, {"saved-display"}).value_or(std::vector<std::string> {}).size());
   EXPECT_EQ(api.queries, (std::vector<QueryType> {QueryType::All}));
 }
 

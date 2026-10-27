@@ -84,7 +84,8 @@
   #include "platform/windows/display_target_borrow.h"
   #include "platform/windows/display_helper_request_policy.h"
   #include "platform/windows/display_helper_request_helpers.h"
-  #include "platform/windows/display_snapshot_policy.h"
+  #include "platform/windows/display_baseline_node.h"
+#include "platform/windows/display_snapshot_policy.h"
   #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
   #include "platform/windows/virtual_display_cleanup.h"
@@ -330,6 +331,7 @@ namespace nvhttp {
     }
 
     void refresh_remote_monitor_baseline(const bool extend_active_stream) {
+      display_helper_integration::prune_disconnected_coordinator_baseline();
       const auto publish = display_helper_integration::coordinator_baseline_publisher();
       if (!publish) return;
       const auto devices = display_helper_integration::enumerate_active_devices();
@@ -370,28 +372,11 @@ namespace nvhttp {
           // do not reintroduce physical outputs that it intentionally replaced.
           continue;
         }
-        remote_display_topology::node_t node;
+        auto node = *display_helper_integration::baseline_node(device);
         const bool owner_already_managed = std::find(managed_client_ids.begin(), managed_client_ids.end(), active_game.client_uuid) != managed_client_ids.end();
         node.id = is_virtual && !active_game.client_uuid.empty() ?
                     active_game.client_uuid + (owner_already_managed ? ":streamed" : "") :
                     device.m_device_id;
-        node.device_id = device.m_device_id;
-        node.label = device.m_friendly_name.empty() ? device.m_display_name : device.m_friendly_name;
-        node.preexisting = true;
-        node.physical = !is_virtual;
-        node.active = true;
-        node.primary = device.m_info->m_primary;
-        node.x = device.m_info->m_origin_point.m_x;
-        node.y = device.m_info->m_origin_point.m_y;
-        node.configured_mode = {
-          .width = static_cast<int>(device.m_info->m_resolution.m_width),
-          .height = static_cast<int>(device.m_info->m_resolution.m_height),
-          .refresh_hz = remote_refresh_hz(device.m_info->m_refresh_rate),
-          .hdr = device.m_info->m_hdr_state.value_or(display_device::HdrState::Disabled) == display_device::HdrState::Enabled,
-        };
-        if (const auto *rate = std::get_if<display_device::Rational>(&device.m_info->m_refresh_rate)) {
-          node.baseline_refresh_rate = {rate->m_numerator, rate->m_denominator};
-        }
         baseline.push_back(std::move(node));
       }
       remote_display_topology::instance().set_physical_baseline(std::move(baseline), publish);

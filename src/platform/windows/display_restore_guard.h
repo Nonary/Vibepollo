@@ -16,14 +16,12 @@ namespace display_helper_integration {
       return failed_ || applying_;
     }
 
-    using BaselinePublisher = std::function<bool(const std::function<void()> &)>;
-
-    BaselinePublisher baseline_publisher() {
+    display_helper::BaselinePublisher baseline_publisher(bool protected_layout = false) {
       std::lock_guard lock(mutex_);
-      if (failed_ || applying_ || capturing_) return {};
+      if (failed_ != protected_layout || applying_) return {};
       return [this, generation = generation_](const std::function<void()> &publish) {
         std::lock_guard lock(mutex_);
-        if (generation != generation_ || failed_ || applying_ || capturing_) return false;
+        if (generation != generation_) return false;
         publish();
         return true;
       };
@@ -56,21 +54,19 @@ namespace display_helper_integration {
       return snapshot([&](const auto &superseded) {
         if (superseded() || !send(superseded)) return display_helper::SnapshotResult::failed;
         return display_helper::SnapshotResult::dispatched;
-      }, [] { return false; }, report_skip);
+      }, report_skip);
     }
 
-    template<class Capture, class Disconnected, class ReportSkip>
-    bool snapshot(Capture capture, Disconnected disconnected, ReportSkip report_skip) {
+    template<class Capture, class ReportSkip>
+    bool snapshot(Capture capture, ReportSkip report_skip) {
       std::uint64_t generation;
-      bool failed;
       {
         std::lock_guard lock(mutex_);
-        if (applying_ || capturing_) {
-          report_skip(applying_ ? "compose in progress" : "snapshot in progress");
+        if (failed_ || applying_ || capturing_) {
+          report_skip(failed_ ? "failed compose; protected layout requires repair" : (applying_ ? "compose in progress" : "snapshot in progress"));
           return false;
         }
         generation = generation_;
-        failed = failed_;
         capturing_ = true;
       }
       const auto superseded = [&] {
@@ -81,25 +77,12 @@ namespace display_helper_integration {
         std::lock_guard lock(mutex_);
         capturing_ = false;
         if (generation != generation_) {
-          report_skip("snapshot superseded by compose");
+          report_skip(result == display_helper::SnapshotResult::failed ? "snapshot superseded by compose" : "accepted snapshot superseded by compose; helper save may already be queued");
           return false;
         }
-        // Disconnection admits a replacement attempt, but only its successful
-        // completion may release the saved geometry for this generation.
-        if (result == display_helper::SnapshotResult::saved) failed_ = false;
         return result != display_helper::SnapshotResult::failed;
       };
       try {
-        // The potentially side-effecting All-paths probe is only justified
-        // when failed-compose admission would otherwise reject the snapshot.
-        if (failed) {
-          const bool gone = disconnected();
-          if (superseded()) return finish(display_helper::SnapshotResult::failed);
-          if (!gone) {
-            report_skip("failed compose; saved baseline devices still connected or connectivity unknown");
-            return finish(display_helper::SnapshotResult::failed);
-          }
-        }
         if (superseded()) return finish(display_helper::SnapshotResult::failed);
         return finish(capture(superseded));
       } catch (...) {

@@ -165,14 +165,13 @@ namespace remote_display_topology {
     return node;
   }
 
-  void coordinator_t::set_physical_baseline(std::vector<node_t> nodes, const baseline_publisher_t &publish) {
+  void coordinator_t::set_physical_baseline(std::vector<node_t> nodes, const display_helper::BaselinePublisher &publish) {
     std::lock_guard lock(mutex_);
     const auto replace = [&] { physical_baseline_ = std::move(nodes); };
     if (publish) publish(replace);
-    else replace();
   }
 
-  void coordinator_t::refresh_idle_physical_baseline(std::vector<node_t> nodes, const baseline_publisher_t &publish) {
+  void coordinator_t::refresh_idle_physical_baseline(std::vector<node_t> nodes, const display_helper::BaselinePublisher &publish) {
     std::lock_guard lock(mutex_);
     if (nodes.empty() || physical_restore_pending_ || std::any_of(clients_.begin(), clients_.end(), [](const auto &entry) {
           return entry.second.normal_game || entry.second.remote_monitor;
@@ -181,7 +180,15 @@ namespace remote_display_topology {
     }
     const auto replace = [&] { physical_baseline_ = std::move(nodes); };
     if (publish) publish(replace);
-    else replace();
+  }
+
+  bool coordinator_t::prune_physical_baseline(const std::vector<std::string> &missing, const display_helper::BaselinePublisher &publish) {
+    std::lock_guard lock(mutex_);
+    if (!publish || missing.empty()) return false;
+    const std::unordered_set<std::string> absent(missing.begin(), missing.end());
+    return publish([&] {
+      std::erase_if(physical_baseline_, [&](const auto &node) { return node.physical && absent.contains(node.id); });
+    });
   }
 
   std::vector<std::string> coordinator_t::physical_node_ids() const {

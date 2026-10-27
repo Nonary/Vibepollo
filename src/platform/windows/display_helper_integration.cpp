@@ -553,13 +553,14 @@ namespace {
 
   bool apply_topology_definition(
     const display_helper_integration::DisplayTopologyDefinition &topology,
-    const char *label
+    const char *label,
+    std::optional<InProcessDisplayContext> ctx = std::nullopt
   ) {
     auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
     if (!borrowed_output_mutation) return false;
     if (topology.topology.empty() && topology.monitor_positions.empty() &&
         !topology.primary_device && topology.device_refresh_rate_overrides.empty()) return true;
-    auto ctx = make_settings_manager();
+    if (!ctx) ctx = make_settings_manager();
     if (!ctx) {
       BOOST_LOG(warning) << "Display helper: unable to initialize display context for topology apply (" << label << ").";
       return false;
@@ -2933,12 +2934,32 @@ namespace display_helper_integration {
     return ok;
   }
 
-  bool coordinator_baseline_protected() {
-    return composed_restore_guard.protects_baseline();
+  display_helper::BaselinePublisher coordinator_baseline_publisher() {
+    auto publish = composed_restore_guard.baseline_publisher();
+    if (!publish) {
+      BOOST_LOG(debug) << "Display helper: skipping protected coordinator baseline refresh.";
+      return {};
+    }
+    return [publish](const auto &replace) {
+      if (publish && publish(replace)) return true;
+      BOOST_LOG(debug) << "Display helper: rejected stale or protected coordinator baseline publication.";
+      return false;
+    };
   }
 
-  std::function<bool(const std::function<void()> &)> coordinator_baseline_publisher() {
-    return composed_restore_guard.baseline_publisher();
+  void prune_disconnected_coordinator_baseline() {
+    const auto prune = composed_restore_guard.baseline_publisher(true);
+    if (!prune) return;
+    try {
+      display_device::WinApiLayer api;
+      auto &coordinator = remote_display_topology::instance();
+      const auto missing = disconnected_baseline_devices(api, coordinator.physical_node_ids());
+      if (missing && coordinator.prune_physical_baseline(*missing, prune)) {
+        BOOST_LOG(info) << "Display helper: pruned " << missing->size() << " disconnected baseline device(s); surviving geometry remains protected.";
+      }
+    } catch (...) {
+      BOOST_LOG(warning) << "Display helper: baseline connectivity unknown; retaining protected geometry.";
+    }
   }
 
   bool snapshot_current_display_state(
@@ -2948,16 +2969,6 @@ namespace display_helper_integration {
       BOOST_LOG(warning) << "Display helper: skipping SNAPSHOT_CURRENT while normal-game release is pending.";
       return false;
     }
-    const auto disconnected = [&] {
-      try {
-        display_device::WinApiLayer api;
-        const auto id = disconnected_baseline_device(api, remote_display_topology::instance().physical_node_ids());
-        if (id) BOOST_LOG(warning) << "Display helper: disconnected baseline device " << *id << "; considering recapture.";
-        return id.has_value();
-      } catch (...) {
-        return false;
-      }
-    };
     return composed_restore_guard.snapshot([&](const auto &superseded) {
       const auto snapshot_cancelled = [&] { return superseded() || cancellation_requested(cancellation_predicate); };
       std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
@@ -3010,7 +3021,7 @@ namespace display_helper_integration {
                       << " accepted=" << (result != display_helper::SnapshotResult::failed)
                       << " saved=" << (result == display_helper::SnapshotResult::saved);
       return result;
-    }, disconnected, [](const char *reason) {
+    }, [](const char *reason) {
       BOOST_LOG(warning) << "Display helper: skipping SNAPSHOT_CURRENT: " << reason << '.';
     });
   }
@@ -3490,8 +3501,10 @@ namespace display_helper_integration {
   bool apply_remote_composed_topology(const DisplayTopologyDefinition &topology) {
     auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
     if (!borrowed_output_mutation) return false;
+    auto ctx = make_settings_manager();
+    if (!ctx) return false;
     return composed_restore_guard.compose([&] {
-      return apply_topology_definition(topology, "remote-monitor coordinator");
+      return apply_topology_definition(topology, "remote-monitor coordinator", std::move(ctx));
     });
   }
 
