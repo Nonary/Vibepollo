@@ -140,6 +140,26 @@ namespace platf::steam::lifecycle {
                                        std::chrono::steady_clock::time_point now,
                                        std::chrono::steady_clock::time_point deadline);
 
+  enum class post_tracking_action {
+    cleanup,              // nothing keeps the app alive; run terminate()
+    keep_alive_placebo,   // already treated as a detached/status-driven app
+    keep_alive_running,   // the owned child process is still running
+    keep_alive_group,     // wait_all and the process group is still running
+    enter_auto_detach,    // exited within the auto_detach window; become placebo
+  };
+
+  // Pure decision made after the tracking block. exit_pending means the
+  // tracked game tree was confirmed gone and terminate() has not run yet, so
+  // it wins over every other check; a retry after lifecycle gate contention
+  // must still reach cleanup. process_running and group_running are only
+  // meaningful when exit_pending and placebo are false.
+  post_tracking_action next_post_tracking_action(bool exit_pending,
+                                                 bool placebo,
+                                                 bool process_running,
+                                                 bool group_running,
+                                                 bool auto_detach,
+                                                 std::chrono::steady_clock::duration since_launch);
+
   enum class signal_kind { terminate, kill };
 
   class process_controller {

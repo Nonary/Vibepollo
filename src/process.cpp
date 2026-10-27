@@ -1049,6 +1049,7 @@ namespace proc {
       _steam_process_controller(std::move(other._steam_process_controller)),
       _steam_tracking_active(other._steam_tracking_active),
       _steam_tracking_associated(other._steam_tracking_associated),
+      _steam_tracked_tree_exit_pending(other._steam_tracked_tree_exit_pending),
       _steam_tracking_deadline(other._steam_tracking_deadline),
       _steam_last_tracking_poll(other._steam_last_tracking_poll),
       _process(std::move(other._process)),
@@ -1095,6 +1096,7 @@ namespace proc {
       _steam_process_controller = std::move(other._steam_process_controller);
       _steam_tracking_active = other._steam_tracking_active;
       _steam_tracking_associated = other._steam_tracking_associated;
+      _steam_tracked_tree_exit_pending = other._steam_tracked_tree_exit_pending;
       _steam_tracking_deadline = other._steam_tracking_deadline;
       _steam_last_tracking_poll = other._steam_last_tracking_poll;
       _process = std::move(other._process);
@@ -2690,6 +2692,7 @@ namespace proc {
         _steam_tracker.clear();
         _steam_tracking_active = _steam_tracker.begin(provider_directory);
         _steam_tracking_associated = false;
+        _steam_tracked_tree_exit_pending = false;
         _steam_tracking_deadline = std::chrono::steady_clock::now() + 15s;
         _steam_last_tracking_poll = {};
         if (!_steam_tracking_active) {
@@ -2859,7 +2862,6 @@ namespace proc {
     }
 #endif
 
-    bool tracked_tree_exited = false;
     if (_steam_tracking_active) {
       const auto now = std::chrono::steady_clock::now();
       constexpr auto tracking_poll_interval = 100ms;
@@ -2897,14 +2899,16 @@ namespace proc {
             // tree has exited. Leave the tracking block so the normal cleanup
             // path below ends the session instead of falling into the
             // detached behavior reserved for games that were never associated.
+            // The decision stays pending until terminate() runs, because the
+            // lifecycle gate below may be held and force a retry.
             const auto provider_name = !_app.steam_id.empty() ? "Steam" : "Lutris";
             const auto provider_id = !_app.steam_id.empty() ? _app.steam_id : _app.lutris_id;
             BOOST_LOG(info) << provider_name << " app " << provider_id
                             << " tracked process tree exited (" << tracking_reason << "); ending session.";
             _steam_tracking_associated = false;
             _steam_tracking_active = false;
+            _steam_tracked_tree_exit_pending = true;
             placebo = false;
-            tracked_tree_exited = true;
             break;
           }
         case platf::steam::lifecycle::tracking_action::give_up_detached:
@@ -2917,32 +2921,45 @@ namespace proc {
       }
     }
 
-    if (tracked_tree_exited) {
-      // The game tree is confirmed gone. Skip the placebo, wait_all, launcher
-      // running and auto_detach checks so none of them can keep the stream
-      // alive, and go straight to cleanup.
-    } else if (placebo) {
-      return _app_id;
-    } else if (_process.running()) {
-      // Checking the owned child is cheap and collects its exact exit status.
-      // Only inspect the rest of the group after this child has exited.
-      return _app_id;
-    } else if (_app.wait_all && _process_group && platf::process_group_running((std::uintptr_t) _process_group.native_handle())) {
-      // A launcher may exit before the game processes in its group.
-      return _app_id;
-    } else if (_app.auto_detach && std::chrono::steady_clock::now() - _app_launch_time < 5s) {
-      BOOST_LOG(info) << "App exited with code ["sv << _process.native_exit_code() << "] within 5 seconds of launch. Treating the app as a detached command."sv;
-      BOOST_LOG(info) << "Adjust this behavior in the Applications tab or apps.json if this is not what you want."sv;
-      BOOST_LOG(info) << "Playnite launch path complete; treating app as placebo (status-driven).";
-      placebo = true;
+    // A confirmed tracked-tree exit stays pending until terminate() runs, so
+    // a retry after lifecycle gate contention cannot reach the placebo,
+    // wait_all, launcher-running or auto_detach checks.
+    const bool skip_detach_checks = _steam_tracked_tree_exit_pending || placebo;
+    const bool process_running = !skip_detach_checks && _process.running();
+    const bool group_running = !skip_detach_checks && !process_running && _app.wait_all && _process_group &&
+                               platf::process_group_running((std::uintptr_t) _process_group.native_handle());
+    switch (platf::steam::lifecycle::next_post_tracking_action(
+      _steam_tracked_tree_exit_pending,
+      placebo,
+      process_running,
+      group_running,
+      _app.auto_detach,
+      std::chrono::steady_clock::now() - _app_launch_time
+    )) {
+      case platf::steam::lifecycle::post_tracking_action::keep_alive_placebo:
+        return _app_id;
+      case platf::steam::lifecycle::post_tracking_action::keep_alive_running:
+        // Checking the owned child is cheap and collects its exact exit status.
+        // Only inspect the rest of the group after this child has exited.
+        return _app_id;
+      case platf::steam::lifecycle::post_tracking_action::keep_alive_group:
+        // A launcher may exit before the game processes in its group.
+        return _app_id;
+      case platf::steam::lifecycle::post_tracking_action::enter_auto_detach:
+        BOOST_LOG(info) << "App exited with code ["sv << _process.native_exit_code() << "] within 5 seconds of launch. Treating the app as a detached command."sv;
+        BOOST_LOG(info) << "Adjust this behavior in the Applications tab or apps.json if this is not what you want."sv;
+        BOOST_LOG(info) << "Playnite launch path complete; treating app as placebo (status-driven).";
+        placebo = true;
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-      if (_process.native_exit_code() != 0) {
-        system_tray::update_tray_launch_error(proc::proc.get_last_run_app_name(), _process.native_exit_code());
-      }
+        if (_process.native_exit_code() != 0) {
+          system_tray::update_tray_launch_error(proc::proc.get_last_run_app_name(), _process.native_exit_code());
+        }
 #endif
 
-      return _app_id;
+        return _app_id;
+      case platf::steam::lifecycle::post_tracking_action::cleanup:
+        break;
     }
 
     // Perform cleanup actions now if needed
@@ -2957,7 +2974,7 @@ namespace proc {
         BOOST_LOG(debug) << "[running] App exited but stream teardown is already in flight; deferring cleanup to the gate owner.";
         return 0;
       }
-      if (tracked_tree_exited) {
+      if (_steam_tracked_tree_exit_pending) {
         BOOST_LOG(info) << "[running] Tracked game process tree exited; calling terminate() for app '" << _app.name << "' (id=" << _app_id << ")";
       } else {
         BOOST_LOG(info) << "[running] _process.running() is false; calling terminate(). App exited with code ["sv << _process.native_exit_code() << "] for app '" << _app.name << "' (id=" << _app_id << ")";
@@ -3297,6 +3314,7 @@ namespace proc {
     _steam_tracker.clear();
     _steam_tracking_active = false;
     _steam_tracking_associated = false;
+    _steam_tracked_tree_exit_pending = false;
     _steam_tracking_deadline = {};
     _steam_last_tracking_poll = {};
 

@@ -361,6 +361,43 @@ TEST(SteamProcessTracker, TrackingActionTreatsUnavailableSnapshotAsInconclusive)
             lifecycle::tracking_action::keep_alive);
 }
 
+TEST(SteamProcessTracker, PostTrackingActionKeepsExitPendingThroughGateContentionRetry) {
+  using namespace std::chrono_literals;
+  // First poll detects the exit and sets pending, but cleanup is blocked by
+  // the lifecycle gate. The retry one second after launch must still clean up
+  // rather than enter auto_detach and leave the session active.
+  EXPECT_EQ(lifecycle::next_post_tracking_action(true, false, false, false, true, 1s),
+            lifecycle::post_tracking_action::cleanup);
+}
+
+TEST(SteamProcessTracker, PostTrackingActionExitPendingWinsOverEveryKeepAlive) {
+  using namespace std::chrono_literals;
+  EXPECT_EQ(lifecycle::next_post_tracking_action(true, true, true, true, true, 1s),
+            lifecycle::post_tracking_action::cleanup);
+  EXPECT_EQ(lifecycle::next_post_tracking_action(true, true, false, false, false, 1h),
+            lifecycle::post_tracking_action::cleanup);
+}
+
+TEST(SteamProcessTracker, PostTrackingActionAutoDetachUnchangedWithoutPendingExit) {
+  using namespace std::chrono_literals;
+  EXPECT_EQ(lifecycle::next_post_tracking_action(false, false, false, false, true, 1s),
+            lifecycle::post_tracking_action::enter_auto_detach);
+  EXPECT_EQ(lifecycle::next_post_tracking_action(false, false, false, false, true, 5s),
+            lifecycle::post_tracking_action::cleanup);
+  EXPECT_EQ(lifecycle::next_post_tracking_action(false, false, false, false, false, 1s),
+            lifecycle::post_tracking_action::cleanup);
+}
+
+TEST(SteamProcessTracker, PostTrackingActionKeepsAliveInExistingPrecedenceOrder) {
+  using namespace std::chrono_literals;
+  EXPECT_EQ(lifecycle::next_post_tracking_action(false, true, true, true, true, 1s),
+            lifecycle::post_tracking_action::keep_alive_placebo);
+  EXPECT_EQ(lifecycle::next_post_tracking_action(false, false, true, true, true, 1s),
+            lifecycle::post_tracking_action::keep_alive_running);
+  EXPECT_EQ(lifecycle::next_post_tracking_action(false, false, false, true, true, 1s),
+            lifecycle::post_tracking_action::keep_alive_group);
+}
+
 #ifdef _WIN32
 TEST(SteamProcessTracker, WindowsSnapshotIncludesCurrentProcessIdentity) {
   const auto processes = lifecycle::snapshot_processes();

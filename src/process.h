@@ -199,6 +199,8 @@ namespace proc {
     std::shared_ptr<platf::steam::lifecycle::process_controller> _steam_process_controller;
     bool _steam_tracking_active {false};
     bool _steam_tracking_associated {false};
+    // The tracked game tree exited but terminate() has not run yet; cleared only by terminate() or a new launch.
+    bool _steam_tracked_tree_exit_pending {false};
     std::chrono::steady_clock::time_point _steam_tracking_deadline {};
     std::chrono::steady_clock::time_point _steam_last_tracking_poll {};
 

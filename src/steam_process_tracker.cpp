@@ -628,6 +628,31 @@ tracking_action next_tracking_action(bool was_associated,
   return now < deadline ? tracking_action::keep_alive : tracking_action::give_up_detached;
 }
 
+post_tracking_action next_post_tracking_action(bool exit_pending,
+                                               bool placebo,
+                                               bool process_running,
+                                               bool group_running,
+                                               bool auto_detach,
+                                               std::chrono::steady_clock::duration since_launch) {
+  using namespace std::chrono_literals;
+  if (exit_pending) {
+    return post_tracking_action::cleanup;
+  }
+  if (placebo) {
+    return post_tracking_action::keep_alive_placebo;
+  }
+  if (process_running) {
+    return post_tracking_action::keep_alive_running;
+  }
+  if (group_running) {
+    return post_tracking_action::keep_alive_group;
+  }
+  if (auto_detach && since_launch < 5s) {
+    return post_tracking_action::enter_auto_detach;
+  }
+  return post_tracking_action::cleanup;
+}
+
 bool tracker::has_live_processes(const process_snapshot &current) const {
   if (tree_.empty()) {
     return false;
