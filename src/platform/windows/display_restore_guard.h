@@ -1,6 +1,6 @@
 #pragma once
 
-#include "display_snapshot_result.h"
+#include "src/display_restore_types.h"
 
 #include <cstdint>
 #include <functional>
@@ -11,20 +11,39 @@ namespace display_helper_integration {
   // their baseline protected without holding a display lock across helper IPC.
   class DisplayRestoreGuard {
   public:
-    bool protects_baseline() {
+    display_helper::BaselinePublisher baseline_publisher() {
       std::lock_guard lock(mutex_);
-      return failed_ || applying_;
-    }
-
-    display_helper::BaselinePublisher baseline_publisher(bool protected_layout = false) {
-      std::lock_guard lock(mutex_);
-      if (failed_ != protected_layout || applying_) return {};
+      if (failed_ || applying_) return {};
       return [this, generation = generation_](const std::function<void()> &publish) {
         std::lock_guard lock(mutex_);
         if (generation != generation_) return false;
         publish();
         return true;
       };
+    }
+
+    template<class Probe>
+    bool verify_repaired(Probe probe) {
+      std::uint64_t generation;
+      {
+        std::lock_guard lock(mutex_);
+        if (!failed_ || applying_) return false;
+        generation = generation_;
+      }
+      if (!probe()) return false;
+      std::lock_guard lock(mutex_);
+      if (generation != generation_) return false;
+      ++generation_;
+      failed_ = false;
+      return true;
+    }
+
+    void reset(const std::function<void()> &forget) {
+      std::lock_guard serialize(compose_mutex_);
+      std::lock_guard lock(mutex_);
+      ++generation_;
+      failed_ = false;
+      forget();
     }
 
     template<class Apply>

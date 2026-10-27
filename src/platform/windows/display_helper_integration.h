@@ -5,7 +5,7 @@
 #pragma once
 
 #include "src/config.h"
-#include "display_snapshot_result.h"
+#include "src/display_restore_types.h"
 #include "src/display_helper_builder.h"
 #include "src/platform/windows/display_helper_v2/timing.h"
 #include "src/rtsp.h"
@@ -173,7 +173,7 @@ namespace display_helper_integration {
   std::optional<display_device::EnumeratedDeviceList> enumerate_active_devices();
   std::vector<std::string> snapshot_capture_safe_devices();
   display_helper::BaselinePublisher coordinator_baseline_publisher();
-  void prune_disconnected_coordinator_baseline();
+  void recover_coordinator_baseline(bool allow_absence_probe = false);
 
   // Enumerate display devices and return JSON payload for API.
   std::string enumerate_devices_json(

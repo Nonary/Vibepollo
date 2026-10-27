@@ -11,6 +11,7 @@
 #include <optional>
 #include <set>
 #include <stdexcept>
+#include <type_traits>
 #include <string>
 #include <vector>
 
@@ -89,7 +90,7 @@ TEST(DisplayCoordinatorRestore, GeometrySuccessAndRefreshFailureAdmitsNextSnapsh
   display_helper_integration::DisplayRestoreGuard guard;
   ASSERT_FALSE(guard.compose([] { return false; }));
   EXPECT_TRUE(guard.compose([&] { return display_helper::restore_composed_topology(device, Layout {}, ignore_failure); }));
-  EXPECT_FALSE(guard.protects_baseline());
+  EXPECT_FALSE(!guard.baseline_publisher());
   EXPECT_TRUE(guard.snapshot(capture, ignore_skip));
 }
 
@@ -109,7 +110,7 @@ TEST(DisplayCoordinatorRestore, RefreshReadFailureOrExceptionDoesNotProtectRepai
     ASSERT_EQ(warnings.size(), 1u);
     EXPECT_NE(warnings.front().find("requested 240/4"), std::string::npos);
     EXPECT_NE(warnings.front().find(missing_modes ? "readback unavailable" : "readback 59997/1000"), std::string::npos);
-    EXPECT_FALSE(guard.protects_baseline());
+    EXPECT_FALSE(!guard.baseline_publisher());
     EXPECT_TRUE(guard.snapshot(capture, ignore_skip));
   }
 }
@@ -123,7 +124,7 @@ TEST(DisplayCoordinatorRestore, AnyGeometryFailureProtectsBaselineAndRejectsSnap
     device.origin_ok = std::string(stage) != "origin";
     display_helper_integration::DisplayRestoreGuard guard;
     EXPECT_FALSE(guard.compose([&] { return display_helper::restore_composed_topology(device, Layout {}, ignore_failure); }));
-    EXPECT_TRUE(guard.protects_baseline());
+    EXPECT_TRUE(!guard.baseline_publisher());
     EXPECT_FALSE(guard.snapshot(capture, ignore_skip));
   }
 }
@@ -172,7 +173,7 @@ TEST(DisplayRestoreGuard, FailedComposeNeverRecapturesSurvivingGeometry) {
     return display_helper::SnapshotResult::saved;
   }, ignore_skip));
   EXPECT_EQ(saves, 0);
-  EXPECT_TRUE(guard.protects_baseline());
+  EXPECT_TRUE(!guard.baseline_publisher());
 }
 
 TEST(DisplayRestoreGuard, ThrowingCaptureReleasesCaptureAdmission) {
@@ -209,7 +210,7 @@ TEST(DisplayRestoreGuard, GoldenExportCannotReplaceFailedComposeBaseline) {
   ASSERT_FALSE(guard.compose([] { return false; }));
   EXPECT_FALSE(guard.export_snapshot(send, ignore_skip));
   EXPECT_EQ(sends, 1);
-  EXPECT_TRUE(guard.protects_baseline());
+  EXPECT_TRUE(!guard.baseline_publisher());
 }
 
 TEST(DisplayRestoreGuard, PublisherRemainsAvailableDuringUnrelatedCapture) {
@@ -234,7 +235,7 @@ TEST(DisplayRestoreGuard, AcceptedSupersededSnapshotWarnsAndKeepsFailedProtectio
     return display_helper::SnapshotResult::saved;
   }, [&](const char *reason) { warning = reason; }));
   EXPECT_NE(warning.find("accepted snapshot superseded"), std::string::npos);
-  EXPECT_TRUE(guard.protects_baseline());
+  EXPECT_TRUE(!guard.baseline_publisher());
 }
 
 TEST(DisplayCoordinatorRestore, InventoryBaselinePreservesExactMetadataAndRejectsSessionVdd) {
@@ -261,4 +262,26 @@ TEST(DisplayCoordinatorRestore, InventoryBaselinePreservesExactMetadataAndReject
   EXPECT_TRUE(nodes->front().configured_mode.hdr);
   EXPECT_TRUE(nodes->front().primary);
   EXPECT_EQ(nodes->front().x, 3840);
+}
+
+TEST(DisplayRestoreGuard, RepairRequiresFailureAndCannotSupersedeNewCompose) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  int probes = 0;
+  EXPECT_FALSE(guard.verify_repaired([&] { ++probes; return true; }));
+  EXPECT_EQ(probes, 0);
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  EXPECT_FALSE(guard.baseline_publisher());
+  static_assert(!std::is_convertible_v<decltype(guard.verify_repaired([] { return true; })), display_helper::BaselinePublisher>);
+  EXPECT_FALSE(guard.verify_repaired([&] {
+    EXPECT_FALSE(guard.compose([] { return false; }));
+    return true;
+  }));
+  EXPECT_FALSE(guard.baseline_publisher());
+  EXPECT_TRUE(guard.verify_repaired([] { return true; }));
+  EXPECT_TRUE(guard.baseline_publisher());
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  EXPECT_FALSE(guard.verify_repaired([&] {
+    EXPECT_TRUE(guard.verify_repaired([] { return true; }));
+    return true;
+  }));
 }

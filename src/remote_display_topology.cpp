@@ -2,6 +2,7 @@
 #include "display_target_lease.h"
 
 #include <algorithm>
+#include <boost/algorithm/string/case_conv.hpp>
 #include <set>
 #include <unordered_set>
 
@@ -165,6 +166,38 @@ namespace remote_display_topology {
     return node;
   }
 
+  std::vector<node_t> without_absent_devices(const std::vector<node_t> &nodes, const std::vector<std::string> &missing) {
+    const std::unordered_set<std::string> absent(missing.begin(), missing.end());
+    auto connected = nodes;
+    std::erase_if(connected, [&](const auto &node) {
+      return (node.physical || node.preexisting) && absent.contains(node.device_id.empty() ? node.id : node.device_id);
+    });
+    return connected;
+  }
+
+  bool baseline_geometry_matches(const std::vector<node_t> &saved, const std::vector<node_t> &live, const std::vector<std::string> &missing) {
+    const auto key = [](const auto &node) { return boost::to_lower_copy(node.device_id.empty() ? node.id : node.device_id); };
+    std::unordered_set<std::string> absent;
+    for (const auto &id : missing) absent.insert(boost::to_lower_copy(id));
+    std::unordered_map<std::string, const node_t *> active;
+    std::size_t live_physical = 0, saved_physical = 0, matched = 0;
+    for (const auto &node : live) {
+      if (!node.active) continue;
+      if (!active.emplace(key(node), &node).second) return false;
+      if (node.physical) ++live_physical;
+    }
+    for (const auto &node : saved) {
+      if (absent.contains(key(node))) continue;
+      const auto found = active.find(key(node));
+      if (found == active.end()) return false;
+      const auto &current = *found->second;
+      if (!node.active || node.x != current.x || node.y != current.y || node.primary != current.primary) return false;
+      if (node.physical) ++saved_physical;
+      ++matched;
+    }
+    return matched != 0 && saved_physical == live_physical;
+  }
+
   void coordinator_t::set_physical_baseline(std::vector<node_t> nodes, const display_helper::BaselinePublisher &publish) {
     std::lock_guard lock(mutex_);
     const auto replace = [&] { physical_baseline_ = std::move(nodes); };
@@ -182,13 +215,14 @@ namespace remote_display_topology {
     if (publish) publish(replace);
   }
 
-  bool coordinator_t::prune_physical_baseline(const std::vector<std::string> &missing, const display_helper::BaselinePublisher &publish) {
+  std::vector<node_t> coordinator_t::physical_baseline() const {
     std::lock_guard lock(mutex_);
-    if (!publish || missing.empty()) return false;
-    const std::unordered_set<std::string> absent(missing.begin(), missing.end());
-    return publish([&] {
-      std::erase_if(physical_baseline_, [&](const auto &node) { return node.physical && absent.contains(node.id); });
-    });
+    return physical_baseline_;
+  }
+
+  void coordinator_t::reset_physical_baseline(const display_helper::BaselineReset &reset) {
+    std::lock_guard lock(mutex_);
+    if (reset) reset([&] { physical_baseline_.clear(); physical_restore_pending_ = false; });
   }
 
   std::vector<std::string> coordinator_t::physical_node_ids() const {

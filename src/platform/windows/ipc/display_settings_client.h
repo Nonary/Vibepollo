@@ -6,7 +6,7 @@
 
 #ifdef _WIN32
 
-  #include "src/platform/windows/display_snapshot_result.h"
+  #include "src/display_restore_types.h"
 
   #include <cstdint>
   #include <chrono>

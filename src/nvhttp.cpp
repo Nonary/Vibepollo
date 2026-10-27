@@ -84,7 +84,9 @@
   #include "platform/windows/display_target_borrow.h"
   #include "platform/windows/display_helper_request_policy.h"
   #include "platform/windows/display_helper_request_helpers.h"
-  #include "platform/windows/display_baseline_node.h"
+  #include "platform/windows/display_baseline_presence.h"
+#include <display_device/windows/win_api_layer.h>
+#include "platform/windows/display_baseline_node.h"
 #include "platform/windows/display_snapshot_policy.h"
   #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
@@ -331,7 +333,7 @@ namespace nvhttp {
     }
 
     void refresh_remote_monitor_baseline(const bool extend_active_stream) {
-      display_helper_integration::prune_disconnected_coordinator_baseline();
+      display_helper_integration::recover_coordinator_baseline(!extend_active_stream);
       const auto publish = display_helper_integration::coordinator_baseline_publisher();
       if (!publish) return;
       const auto devices = display_helper_integration::enumerate_active_devices();
@@ -383,6 +385,14 @@ namespace nvhttp {
     }
 
     bool apply_remote_monitor_composition(const std::vector<remote_display_topology::node_t> &nodes) {
+      display_device::WinApiLayer api;
+      std::vector<std::string> ids;
+      for (const auto &node : nodes) {
+        if (node.physical || node.preexisting) ids.push_back(node.device_id.empty() ? node.id : node.device_id);
+      }
+      const auto missing = display_helper_integration::disconnected_baseline_devices(api, ids);
+      if (!missing) return false;
+      const auto connected = remote_display_topology::without_absent_devices(nodes, *missing);
       display_helper_integration::DisplayTopologyDefinition topology;
       const auto physical = display_helper_integration::capture_physical_topology();
       if (!physical) return false;
@@ -393,7 +403,7 @@ namespace nvhttp {
           return std::any_of(group.begin(), group.end(), [&id](const auto &candidate) { return remote_device_id_equals(candidate, id); });
         });
       };
-      for (const auto &node : nodes) {
+      for (const auto &node : connected) {
         std::string device_id = node.device_id.empty() ? node.id : node.device_id;
         if (!node.physical && !node.preexisting) {
           const auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(node.id, {}, {}, false);
@@ -603,7 +613,7 @@ namespace nvhttp {
         );
         baseline.push_back(std::move(node));
       }
-      remote_display_topology::instance().set_physical_baseline(std::move(baseline));
+      remote_display_topology::instance().set_physical_baseline(std::move(baseline), [](const auto &replace) { replace(); return true; });
     }
 
     enum class linux_normal_identity_result_e {

@@ -289,7 +289,6 @@ TEST(DisplayBaselinePresence, ConnectedInactivePathWithoutDisplayNameKeepsBaseli
 TEST(DisplayBaselinePresence, FullyAbsentBaselineDeviceIsPrunable) {
   FakeWinApiLayer api;
   PathAndModeData all_data;
-  all_data.m_paths.push_back(make_path(2, false, true, {0, 0}, false));
   api.all_data_override = std::move(all_data);
 
   EXPECT_EQ(display_helper_integration::disconnected_baseline_devices(api, {"saved-display"}), (std::optional<std::vector<std::string>> {{"saved-display"}}));

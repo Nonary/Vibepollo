@@ -2267,7 +2267,7 @@ TEST(RemoteDisplayTopology, RefreshInterleavedWithFailedComposeKeepsSavedGeometr
   }});
   ASSERT_TRUE(coordinator.reapply_composed_topology());
   EXPECT_EQ(physical_x, 3840);
-  EXPECT_TRUE(guard.protects_baseline());
+  EXPECT_TRUE(!guard.baseline_publisher());
 }
 
 TEST(RemoteDisplayTopology, IdleInventoryDiscardsCaptureAcrossSuccessfulCompose) {
@@ -2280,7 +2280,7 @@ TEST(RemoteDisplayTopology, IdleInventoryDiscardsCaptureAcrossSuccessfulCompose)
   auto stale = saved;
   stale.x = 0;
   ASSERT_TRUE(guard.compose([] { return true; }));
-  EXPECT_FALSE(guard.protects_baseline());
+  EXPECT_FALSE(!guard.baseline_publisher());
   coordinator.refresh_idle_physical_baseline({stale}, publish);
   int physical_x = -1;
   coordinator.set_runtime_callbacks({.apply_composed_topology = [&](const auto &nodes) {
@@ -2295,31 +2295,42 @@ TEST(RemoteDisplayTopology, IdleInventoryDiscardsCaptureAcrossSuccessfulCompose)
   EXPECT_EQ(physical_x, 0);
 }
 
-TEST(RemoteDisplayTopology, PruningMissingDeviceUnblocksActivationWithoutRecapturingSurvivors) {
-  display_helper_integration::DisplayRestoreGuard guard;
-  remote_display_topology::coordinator_t coordinator;
-  remote_display_topology::node_t main {.id = "main", .physical = true, .active = true, .primary = true, .x = 3840};
-  main.baseline_refresh_rate = {240, 4};
-  coordinator.set_physical_baseline({main, {.id = "missing", .physical = true, .active = true}}, setup_baseline);
-  std::vector<remote_display_topology::node_t> applied;
-  coordinator.set_runtime_callbacks({
-    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
-    .apply_composed_topology = [&](const auto &nodes) {
-      applied = nodes;
-      return guard.compose([&] { return std::none_of(nodes.begin(), nodes.end(), [](const auto &node) { return node.id == "missing"; }); });
-    },
-    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) { return std::optional<std::string> {"VDD"}; },
-  });
-  ASSERT_FALSE(coordinator.reapply_composed_topology());
-  EXPECT_FALSE(static_cast<bool>(guard.baseline_publisher()));
-  ASSERT_TRUE(coordinator.prune_physical_baseline({"missing"}, guard.baseline_publisher(true)));
-  EXPECT_TRUE(guard.protects_baseline());
-  EXPECT_TRUE(coordinator.activate_or_resume("client", "Client", {1280, 720, 60}, 1).ready);
-  ASSERT_EQ(applied.front().id, "main");
-  EXPECT_EQ(applied.front().x, 3840);
-  EXPECT_TRUE(applied.front().primary);
-  EXPECT_EQ(applied.front().baseline_refresh_rate, main.baseline_refresh_rate);
-  EXPECT_FALSE(guard.protects_baseline());
+TEST(RemoteDisplayTopology, ReleaseAndShutdownFilterMissingDevicesWithoutForgettingGeometry) {
+  for (const bool shutdown : {false, true}) {
+    SCOPED_TRACE(shutdown);
+    display_helper_integration::DisplayRestoreGuard guard;
+    remote_display_topology::coordinator_t coordinator;
+    std::vector<remote_display_topology::node_t> saved {
+      {.id = "main", .physical = true, .active = true, .primary = true},
+      {.id = "missing", .physical = true, .active = true, .x = 3840},
+    };
+    coordinator.set_physical_baseline(saved, setup_baseline);
+    std::vector<std::string> absent;
+    std::vector<remote_display_topology::node_t> applied;
+    coordinator.set_runtime_callbacks({
+      .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+      .apply_composed_topology = [&](const auto &nodes) {
+        applied = remote_display_topology::without_absent_devices(nodes, absent);
+        return guard.compose([&] { return absent.empty() || std::none_of(applied.begin(), applied.end(), [](const auto &node) { return node.id == "missing"; }); });
+      },
+      .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) { return std::optional<std::string> {"VDD"}; },
+      .remove_owned_display = [](const auto &) { return true; },
+    });
+    ASSERT_TRUE(coordinator.activate_or_resume("client", "Client", {1280, 720, 60}, 1).ready);
+    absent = {"missing"};
+    if (shutdown) coordinator.shutdown(false);
+    else EXPECT_TRUE(coordinator.explicit_release("client", 1, "release"));
+    EXPECT_TRUE(coordinator.shutdown_complete());
+    EXPECT_TRUE(guard.baseline_publisher());
+    const auto retained = coordinator.physical_baseline();
+    ASSERT_EQ(retained.size(), 2u);
+    EXPECT_EQ(retained.back().x, 3840);
+    absent.clear();
+    ASSERT_TRUE(coordinator.reapply_composed_topology());
+    ASSERT_EQ(applied.size(), 2u);
+    EXPECT_EQ(applied.back().id, "missing");
+    EXPECT_EQ(applied.back().x, 3840);
+  }
 }
 
 TEST(RemoteDisplayTopology, EmptyPublisherCannotReplaceEitherBaseline) {
@@ -2328,4 +2339,60 @@ TEST(RemoteDisplayTopology, EmptyPublisherCannotReplaceEitherBaseline) {
   coordinator.set_physical_baseline({{.id = "bad", .physical = true}}, {});
   coordinator.refresh_idle_physical_baseline({{.id = "bad", .physical = true}}, {});
   EXPECT_EQ(coordinator.physical_node_ids(), (std::vector<std::string> {"saved"}));
+}
+
+TEST(RemoteDisplayTopology, RepairProofRequiresMatchingGeometryAndActiveMembership) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  const std::vector<remote_display_topology::node_t> saved {
+    {.id = "main", .physical = true, .active = true, .primary = true},
+    {.id = "other", .physical = true, .active = true, .x = 1920},
+  };
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  auto live = saved;
+  const auto probe = [&] { return remote_display_topology::baseline_geometry_matches(saved, live, {}); };
+  live.back().x = 0;
+  EXPECT_FALSE(guard.verify_repaired(probe));
+  live = saved; live.back().primary = true;
+  EXPECT_FALSE(guard.verify_repaired(probe));
+  live = saved; live.back().active = false;
+  EXPECT_FALSE(guard.verify_repaired(probe));
+  live = saved; live.push_back({.id = "unexpected", .physical = true, .active = true});
+  EXPECT_FALSE(guard.verify_repaired(probe));
+  EXPECT_FALSE(guard.baseline_publisher());
+  live = saved;
+  EXPECT_TRUE(guard.verify_repaired(probe));
+  EXPECT_TRUE(guard.baseline_publisher());
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  live.pop_back();
+  EXPECT_TRUE(guard.verify_repaired([&] { return remote_display_topology::baseline_geometry_matches(saved, live, {"other"}); }));
+}
+
+TEST(RemoteDisplayTopology, ResetForgetsBaselineAndInvalidatesOldPublications) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  remote_display_topology::coordinator_t coordinator;
+  const auto stale = guard.baseline_publisher();
+  coordinator.set_physical_baseline({{.id = "saved", .physical = true, .active = true}}, stale);
+  const auto reset = [&] { coordinator.reset_physical_baseline([&](const auto &forget) { guard.reset(forget); }); };
+  reset();
+  EXPECT_TRUE(coordinator.physical_baseline().empty());
+  EXPECT_FALSE(stale([] { ADD_FAILURE(); }));
+  coordinator.set_physical_baseline({{.id = "saved", .physical = true, .active = true}}, guard.baseline_publisher());
+  bool allow_apply = true;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [&](const auto &) { return guard.compose([&] { return allow_apply; }); },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) { return std::optional<std::string> {"VDD"}; },
+    .terminate_owned_display = [](const auto &) { return true; },
+  });
+  ASSERT_TRUE(coordinator.activate_or_resume("client", "Client", {1280, 720, 60}, 1).ready);
+  allow_apply = false;
+  ASSERT_TRUE(coordinator.explicit_release("client", 1, "terminal release"));
+  EXPECT_FALSE(coordinator.shutdown_complete());
+  EXPECT_FALSE(guard.baseline_publisher());
+  reset();
+  EXPECT_TRUE(coordinator.shutdown_complete());
+  EXPECT_TRUE(coordinator.physical_baseline().empty());
+  EXPECT_TRUE(guard.baseline_publisher());
+  coordinator.refresh_idle_physical_baseline({{.id = "fresh", .physical = true, .active = true}}, guard.baseline_publisher());
+  EXPECT_EQ(coordinator.physical_node_ids(), (std::vector<std::string> {"fresh"}));
 }

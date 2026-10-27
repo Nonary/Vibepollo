@@ -1,6 +1,7 @@
 #pragma once
 
 #include <display_device/windows/win_api_layer_interface.h>
+#include <display_device/windows/win_api_recovery.h>
 #include <boost/algorithm/string/predicate.hpp>
 #include <algorithm>
 #include <optional>
@@ -15,6 +16,7 @@ namespace display_helper_integration {
     if (baseline_ids.empty()) return std::vector<std::string> {};
     // Failed restore can leave connected targets inactive and without source
     // modes/names. Inspect target availability directly, not enumerated sources.
+    display_device::DisplayRecoveryBehaviorGuard recovery(display_device::DisplayRecoveryBehavior::Skip);
     const auto data = api.queryDisplayConfig(display_device::QueryType::All);
     if (!data) return std::nullopt;
     std::unordered_set<std::string> connected;
@@ -24,7 +26,6 @@ namespace display_helper_integration {
       if (id.empty()) return std::nullopt;  // Could be the saved monitor.
       connected.insert(boost::to_lower_copy(id));
     }
-    if (connected.empty()) return std::nullopt;
     std::vector<std::string> missing;
     for (const auto &id : baseline_ids) {
       if (!connected.contains(boost::to_lower_copy(id))) missing.push_back(id);

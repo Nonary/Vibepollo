@@ -2737,7 +2737,7 @@ namespace confighttp {
       }
       // Recheck ownership under the coordinator lock: a stream may have started
       // while the Devices page was enumerating displays.
-      remote_display_topology::instance().refresh_idle_physical_baseline(std::move(nodes));
+      remote_display_topology::instance().refresh_idle_physical_baseline(std::move(nodes), [](const auto &replace) { replace(); return true; });
 #endif
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "Remote display layout could not refresh physical monitor baseline: " << e.what();

@@ -10,6 +10,7 @@
   #include <algorithm>
   #include <atomic>
   #include <boost/algorithm/string/predicate.hpp>
+  #include <boost/algorithm/string/case_conv.hpp>
   #include <chrono>
   #include <cmath>
   #include <condition_variable>
@@ -25,6 +26,7 @@
   #include <string>
   #include <string_view>
   #include <thread>
+  #include <unordered_set>
   #include <vector>
 
   // libdisplaydevice
@@ -45,6 +47,7 @@
   #include "src/platform/windows/display_snapshot_restore.h"
   #include "src/platform/windows/display_snapshot_policy.h"
   #include "src/platform/windows/display_restore_guard.h"
+  #include "src/platform/windows/display_baseline_node.h"
   #include "src/platform/windows/display_baseline_presence.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
@@ -2908,6 +2911,7 @@ namespace display_helper_integration {
   }
 
   bool export_golden_restore() {
+    recover_coordinator_baseline();
     return composed_restore_guard.export_snapshot([&](const auto &superseded) {
       std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
       if (superseded() || !ensure_helper_started() || superseded()) {
@@ -2922,15 +2926,14 @@ namespace display_helper_integration {
   }
 
   bool reset_persistence() {
-    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
-    invalidate_apply_verification();
-    if (!ensure_helper_started()) {
-      BOOST_LOG(info) << "Display helper unavailable; cannot reset persistence.";
-      return false;
+    bool ok = false;
+    {
+      std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
+      invalidate_apply_verification();
+      if (ensure_helper_started()) ok = platf::display_helper_client::send_reset();
     }
-    BOOST_LOG(info) << "Display helper: sending RESET request.";
-    const bool ok = platf::display_helper_client::send_reset();
-    BOOST_LOG(info) << "Display helper: RESET dispatch result=" << (ok ? "true" : "false");
+    remote_display_topology::instance().reset_physical_baseline([](const auto &forget) { composed_restore_guard.reset(forget); });
+    BOOST_LOG(info) << "Display helper: local baseline reset; helper RESET dispatch result=" << (ok ? "true" : "false");
     return ok;
   }
 
@@ -2947,18 +2950,33 @@ namespace display_helper_integration {
     };
   }
 
-  void prune_disconnected_coordinator_baseline() {
-    const auto prune = composed_restore_guard.baseline_publisher(true);
-    if (!prune) return;
+  void recover_coordinator_baseline(bool allow_absence_probe) {
     try {
-      display_device::WinApiLayer api;
-      auto &coordinator = remote_display_topology::instance();
-      const auto missing = disconnected_baseline_devices(api, coordinator.physical_node_ids());
-      if (missing && coordinator.prune_physical_baseline(*missing, prune)) {
-        BOOST_LOG(info) << "Display helper: pruned " << missing->size() << " disconnected baseline device(s); surviving geometry remains protected.";
-      }
+      const bool repaired = composed_restore_guard.verify_repaired([&] {
+        const auto saved = remote_display_topology::instance().physical_baseline();
+        const auto devices = enumerate_active_devices();
+        if (!devices || saved.empty()) return false;
+        std::vector<remote_display_topology::node_t> live;
+        std::unordered_set<std::string> active_ids;
+        for (const auto &device : *devices) {
+          if (auto node = baseline_node(device)) live.push_back(std::move(*node));
+          active_ids.insert(boost::to_lower_copy(device.m_device_id));
+        }
+        std::vector<std::string> ids;
+        for (const auto &node : saved) ids.push_back(node.device_id.empty() ? node.id : node.device_id);
+        std::vector<std::string> missing;
+        if (std::any_of(ids.begin(), ids.end(), [&](const auto &id) { return !active_ids.contains(boost::to_lower_copy(id)); })) {
+          if (!allow_absence_probe) return false;
+          display_device::WinApiLayer api;
+          const auto absent = disconnected_baseline_devices(api, ids);
+          if (!absent) return false;
+          missing = *absent;
+        }
+        return remote_display_topology::baseline_geometry_matches(saved, live, missing);
+      });
+      if (repaired) BOOST_LOG(info) << "Display helper: live geometry matches the protected baseline; protection cleared.";
     } catch (...) {
-      BOOST_LOG(warning) << "Display helper: baseline connectivity unknown; retaining protected geometry.";
+      BOOST_LOG(warning) << "Display helper: baseline geometry query failed; retaining protection.";
     }
   }
 
@@ -2969,6 +2987,7 @@ namespace display_helper_integration {
       BOOST_LOG(warning) << "Display helper: skipping SNAPSHOT_CURRENT while normal-game release is pending.";
       return false;
     }
+    recover_coordinator_baseline(true);
     return composed_restore_guard.snapshot([&](const auto &superseded) {
       const auto snapshot_cancelled = [&] { return superseded() || cancellation_requested(cancellation_predicate); };
       std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
