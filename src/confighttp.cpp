@@ -52,6 +52,7 @@
 #include "confighttp.h"
 #include "crypto.h"
 #include "file_handler.h"
+#include "web_ui_preference.h"
 #include "globals.h"
 #include "http_auth.h"
 #include "httpcommon.h"
@@ -3634,6 +3635,41 @@ namespace confighttp {
     }
   }
 
+  /**
+   * @brief Save the tray's Classic/V2 choice, without applying or rewriting
+   *        unrelated pending host configuration (POST /api/web-ui-preference).
+   */
+  void postWebUiPreference(resp_https_t response, req_https_t request) {
+    if (!validateContentType(response, request, "application/json") ||
+        !authenticate(response, request)) {
+      return;
+    }
+    print_req(request);
+    try {
+      std::stringstream ss;
+      ss << request->content.rdbuf();
+      const auto payload = nlohmann::json::parse(ss);
+      if (!payload.is_object() || payload.size() != 1 ||
+          !payload.contains("preference") || !payload["preference"].is_string()) {
+        bad_request(response, request, "Expected a single preference string");
+        return;
+      }
+      const auto preference = payload["preference"].get<std::string>();
+      if (!web_ui_preference::valid(preference)) {
+        bad_request(response, request, "Preference must be legacy or v2");
+        return;
+      }
+      if (!web_ui_preference::host().write(preference)) {
+        service_unavailable(response, "Unable to persist the web UI preference");
+        return;
+      }
+      send_response(response, nlohmann::json {{"status", true}, {"preference", preference}});
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "Web UI preference update rejected: " << e.what();
+      bad_request(response, request, "Invalid web UI preference request");
+    }
+  }
+
   // Lightweight session status for UI messaging
   void getSessionStatus(resp_https_t response, req_https_t request) {
     if (!authenticate(response, request)) {
@@ -6394,6 +6430,8 @@ namespace confighttp {
     // Partial updates for config settings; merges with existing file and
     // removes keys when value is null or empty string.
     register_api_route("^/api/config$", "PATCH", patchConfig);
+    // Separate storage: switching Classic/V2 must not apply a deferred port or drop config comments.
+    register_api_route("^/api/web-ui-preference$", "POST", postWebUiPreference);
     // Capability cache lookup resolves the current output/adapter and can test
     // desktop duplication. Keep display-driver waits off the HTTPS event loop,
     // including while a paused application retains its virtual display.
