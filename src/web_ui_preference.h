@@ -9,6 +9,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "file_handler.h"
 #include "platform/common.h"
