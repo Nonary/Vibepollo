@@ -1215,9 +1215,24 @@ namespace rtsp_stream {
 #endif
 
       // Stop and join outside the lock
+      std::vector<uint32_t> launches_without_control;
       for (auto &slot : to_cleanup) {
         stream::session::stop(*slot);
         stream::session::join(*slot);
+        if (!all && !stream::session::control_peer_attached(*slot)) {
+          launches_without_control.push_back(stream::session::launch_session_id(*slot));
+        }
+      }
+
+      // A started session clears its launch when its control stream attaches, and
+      // finish_launch_startup() renewed the launch for that. If the session stopped
+      // first, clear just its launch so a retry from the same source is not refused
+      // as a duplicate. session_clear() takes the lifecycle gate, which some callers
+      // of clear() already hold, so run it on the io_context.
+      for (const auto launch_session_id : launches_without_control) {
+        asio::post(io_context, [this, launch_session_id]() {
+          session_clear(launch_session_id);
+        });
       }
     }
 
@@ -2702,7 +2717,7 @@ namespace rtsp_stream {
         if (!startup_failed) {
           started_session = stream_session;
         }
-        server->post([server, socket = std::move(socket), session = std::move(session), sequence_number, startup_failed, startup_status, startup_error = std::move(startup_error), started_session = std::move(started_session), virtual_display_guid_bytes = launch_session->virtual_display_guid_bytes, audio_codec_name = std::string(audio::dolby_codec_name(selected_audio_codec))]() mutable {
+        server->post([server, socket = std::move(socket), session = std::move(session), sequence_number, startup_failed, startup_status, startup_error = std::move(startup_error), started_session = std::move(started_session), launch_session_id = launch_session->id, virtual_display_guid_bytes = launch_session->virtual_display_guid_bytes, audio_codec_name = std::string(audio::dolby_codec_name(selected_audio_codec))]() mutable {
           OPTION_ITEM completion_option {};
           completion_option.option = const_cast<char *>("CSeq");
           auto completion_seqn = std::to_string(sequence_number);
@@ -2719,6 +2734,10 @@ namespace rtsp_stream {
               break;
             case pending_policy::announce_reply_e::stopped_before_reply:
               BOOST_LOG(warning) << "Streaming session stopped before its ANNOUNCE reply was sent; reporting the start as failed."sv;
+              // finish_launch_startup() renewed this launch for a control stream that
+              // will never attach. Clear it before replying so the client's retry from
+              // the same source is not refused as a duplicate.
+              server->session_clear(launch_session_id);
               respond(socket->sock, *session, &completion_option, 503, "Service Unavailable", sequence_number, {});
               break;
             case pending_policy::announce_reply_e::ok: {
