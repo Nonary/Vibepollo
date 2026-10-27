@@ -1,13 +1,17 @@
 #include "../../../../packaging/linux/managed_app_focus_hyprland.h"
 #include "../../../../packaging/linux/managed_app_focus_step.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cassert>
 #include <cerrno>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <string>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -85,7 +89,7 @@ namespace {
   // Shapes follow Hyprland 0.56 `j/clients` and `j/activewindow`. Titles are
   // omitted: selection must never depend on them.
   const char *clients = R"([
-    {"address":"0x5a01","mapped":true,"hidden":false,"pid":700,"xwayland":true,"fullscreen":0,"workspace":{"id":1,"name":"1"}},
+    {"address":"0x5a01","mapped":true,"hidden":false,"pid":700,"xwayland":true,"fullscreen":1,"workspace":{"id":1,"name":"1"}},
     {"address":"0x5a02","mapped":true,"hidden":false,"pid":701,"xwayland":true,"fullscreen":2,"workspace":{"id":1,"name":"1"}},
     {"address":"0x5a03","mapped":true,"hidden":false,"pid":900,"xwayland":false,"fullscreen":0,"workspace":{"id":1,"name":"1"}},
     {"address":"0x5a04","mapped":false,"hidden":false,"pid":700,"xwayland":true,"fullscreen":0,"workspace":{"id":1,"name":"1"}},
@@ -128,7 +132,8 @@ int main() {
   using managed_app_focus::hyprland::apply;
   using managed_app_focus::focus_step;
   {
-    // Observation alone lists the fullscreen game first and changes nothing.
+    // Observation alone lists the fullscreen game before a maximized launcher
+    // and changes nothing.
     fake_hyprland hyprland;
     const auto observed = apply(hyprland.transport(), {700, 701});
     assert(observed.value("focused", true) == false);
