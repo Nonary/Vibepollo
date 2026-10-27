@@ -59,6 +59,14 @@ namespace rtsp_stream::pending_policy {
   // until end_broadcast() finishes and start_broadcast() resets the flag, so
   // it must survive the teardown instead of being canceled with it.
   loop_clear_t rtsp_loop_clear(bool broadcast_shutdown_raised);
+
+  // Whether clear() should also clear the launch of a session it removed. A
+  // started session's launch is renewed until its control stream attaches and
+  // clears it, so a session that stopped first leaves its launch holding the
+  // client's source. Clearing every session without preserving pending launches
+  // has already canceled them all; otherwise only that session's launch goes,
+  // and launches queued for the next broadcast survive a broadcast shutdown.
+  bool clear_removed_session_launch(bool all_sessions, bool preserve_pending_launches, bool control_peer_attached);
   std::chrono::steady_clock::time_point launch_deadline_after_startup(std::chrono::steady_clock::time_point expires_at, std::chrono::steady_clock::time_point now, std::chrono::milliseconds ping_timeout);
 
   enum class announce_reply_e {
