@@ -4,7 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { useRoute } from 'vue-router';
 
 import { UiIcon } from '@/components/ui';
-import { apiPatch } from '@/api/client';
+import { apiPost } from '@/api/client';
 import { useSystemStore } from '@/stores/system';
 import UpdateNotice from './UpdateNotice.vue';
 
@@ -70,7 +70,7 @@ async function selectLegacyWebUi(event: MouseEvent): Promise<void> {
   if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
   try {
-    await apiPatch('/api/config', { web_ui_preference: 'legacy' });
+    await apiPost('/api/web-ui-preference', { preference: 'legacy' });
   } catch (error) {
     console.warn('Could not save the legacy web UI preference:', error);
   }
