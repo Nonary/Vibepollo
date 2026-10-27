@@ -399,9 +399,18 @@ test('bulk unpair requires a confirmation and calls the existing endpoint', asyn
   await expect.poll(() => calls).toBe(1);
 });
 
-test('V2 switch to Classic persists the host UI preference', async ({ page }) => {
-  const patches = await host(page, 'windows');
-  // Intercept only the Classic landing URL, not the V2 application entrypoint.
+test('V2 switch to Classic saves only the separate host UI preference', async ({ page }) => {
+  const configPatches = await host(page, 'windows', { port: 47989 });
+  const preferences: string[] = [];
+  // The preference API is intentionally independent of /api/config.
+  // A config port change awaiting restart must not be accidentally applied.
+  await localRoute(page, '**/api/web-ui-preference', async (route) => {
+    expect(route.request().method()).toBe('POST');
+    const payload = route.request().postDataJSON();
+    preferences.push(payload.preference);
+    await route.fulfill({ json: { status: true, preference: payload.preference } });
+  });
+  // Match only Classic's exact landing; /v2/ must load the real V2 shell.
   await page.route('http://127.0.0.1:5173/', async (route) => {
     await route.fulfill({
       status: 200,
@@ -413,7 +422,8 @@ test('V2 switch to Classic persists the host UI preference', async ({ page }) =>
   const link = page.locator('.sidebar__legacy');
   await expect(link).toHaveAttribute('href', '/');
   await link.click();
-  await expect.poll(() => patches.find((patch) => patch.web_ui_preference === 'legacy')).toBeTruthy();
+  await expect.poll(() => preferences).toEqual(['legacy']);
+  expect(configPatches).toEqual([]);
   await expect.poll(() => new URL(page.url()).pathname).toBe('/');
 });
 
