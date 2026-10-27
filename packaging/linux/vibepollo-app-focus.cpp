@@ -267,7 +267,7 @@ int main(int argc, char **argv) {
       auto result = apply(pids, activate);
       unavailable = unavailable || (activate.empty() && result.is_null());
       return result;
-    }, budget, managed_app_focus::budget::clock::now());
+    }, budget, managed_app_focus::budget::clock::now);
     if (bound_compositor && !pids.empty() && unavailable && !unavailable_reported) {
       report(LOG_WARNING, "the bound Hyprland IPC socket is unavailable");
       unavailable_reported = true;

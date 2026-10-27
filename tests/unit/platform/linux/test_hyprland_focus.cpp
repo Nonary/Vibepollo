@@ -155,7 +155,7 @@ int main() {
     hyprland.active = R"({"address":"0xbbbb","mapped":true,"hidden":false,"pid":700})";
     managed_app_focus::budget focus({1, 15, false}, managed_app_focus::budget::clock::now());
     const auto ipc = hyprland.transport();
-    assert(focus_step([&](const auto &activate) { return apply(ipc, {700}, activate); }, focus, managed_app_focus::budget::clock::now()));
+    assert(focus_step([&](const auto &activate) { return apply(ipc, {700}, activate); }, focus, managed_app_focus::budget::clock::now));
     assert(std::ranges::count(hyprland.requests, std::string {"/dispatch focuswindow address:0xaaaa"}) == 1);
   }
   {
@@ -165,7 +165,7 @@ int main() {
     const auto now = managed_app_focus::budget::clock::now();
     managed_app_focus::budget focus({1, 15, false}, now);
     const auto ipc = hyprland.transport();
-    assert(!focus_step([&](const auto &activate) { return apply(ipc, {700, 701}, activate); }, focus, now));
+    assert(!focus_step([&](const auto &activate) { return apply(ipc, {700, 701}, activate); }, focus, [now] { return now; }));
     assert(std::ranges::none_of(hyprland.requests, [](const auto &request) { return request.starts_with("/dispatch"); }));
     assert(focus.can_focus(now));
   }
