@@ -135,6 +135,26 @@ TEST(RtspPendingPolicy, BroadcastShutdownClearsSessionsButKeepsPendingLaunches) 
   EXPECT_EQ(rtsp_loop_clear(false), (clear_t {.all_sessions = false, .preserve_pending_launches = true}));
 }
 
+TEST(RtspPendingPolicy, ClearReleasesLaunchOfSessionStoppedBeforeControl) {
+  using rtsp_stream::pending_policy::clear_removed_session_launch;
+  using rtsp_stream::pending_policy::rtsp_loop_clear;
+
+  // A broadcast shutdown removes every session but keeps pending launches, so
+  // a session whose control stream never attached must have its own launch
+  // cleared, as an ordinary stopped session does.
+  const auto shutdown = rtsp_loop_clear(true);
+  EXPECT_TRUE(clear_removed_session_launch(shutdown.all_sessions, shutdown.preserve_pending_launches, false));
+  const auto stopped = rtsp_loop_clear(false);
+  EXPECT_TRUE(clear_removed_session_launch(stopped.all_sessions, stopped.preserve_pending_launches, false));
+
+  // A control stream that attached already cleared its launch.
+  EXPECT_FALSE(clear_removed_session_launch(shutdown.all_sessions, shutdown.preserve_pending_launches, true));
+  EXPECT_FALSE(clear_removed_session_launch(stopped.all_sessions, stopped.preserve_pending_launches, true));
+
+  // Terminating everything without preserving launches has canceled them all.
+  EXPECT_FALSE(clear_removed_session_launch(true, false, false));
+}
+
 TEST(RtspPendingPolicy, AnnounceFailsForSessionStoppedBeforeReply) {
   using rtsp_stream::pending_policy::announce_reply;
   using reply_e = rtsp_stream::pending_policy::announce_reply_e;
