@@ -67,6 +67,37 @@ TEST(RtspLaunchRegistry, ClaimedLaunchSurvivesSlowAnnounceUntilPlay) {
   EXPECT_TRUE(registry.empty());
 }
 
+TEST(RtspLaunchRegistry, StoppedBeforeControlLaunchIsClearedForSameSourceRetry) {
+  // A startup that succeeds near the original deadline renews the launch for
+  // PLAY and the control stream. If the session then stops before its control
+  // stream attaches, rtsp.cpp clears that launch by ID, as session_clear() does
+  // when a control stream attaches.
+  registry_t registry;
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_EQ(registry.add(plaintext(1, "10.0.0.2"), t0, ping_timeout, capacity), add_result_e::added);
+  ASSERT_EQ(registry.add(plaintext(2, "10.0.0.3"), t0 + 1s, ping_timeout, capacity), add_result_e::added);
+
+  ASSERT_TRUE(registry.claim_startup(1, "launch-1", t0 + 9500ms));
+  registry.finish_startup(1, "launch-1", true, t0 + 9900ms, ping_timeout);
+
+  // Until it is cleared, the renewed launch still holds its plaintext source,
+  // even after its original deadline.
+  EXPECT_EQ(registry.add(plaintext(3, "10.0.0.2"), t0 + 10500ms, ping_timeout, capacity), add_result_e::duplicate_plaintext_source);
+
+  const auto removed = registry.remove_if([](const fake_session_t &session) {
+    return session.id == 1;
+  });
+  ASSERT_EQ(removed.size(), 1u);
+  EXPECT_EQ(removed.front()->id, 1u);
+
+  // The client's retry from the same source is accepted, and the unrelated
+  // pending launch from another source survives.
+  EXPECT_EQ(registry.add(plaintext(3, "10.0.0.2"), t0 + 10500ms, ping_timeout, capacity), add_result_e::added);
+  EXPECT_TRUE(registry.contains_live(2, "launch-2", t0 + 10500ms));
+  EXPECT_TRUE(registry.contains_live(3, "launch-3", t0 + 10500ms));
+  EXPECT_EQ(registry.size(), 2u);
+}
+
 TEST(RtspLaunchRegistry, UnclaimedLaunchExpiresAtItsDeadline) {
   registry_t registry;
   const auto t0 = std::chrono::steady_clock::now();
