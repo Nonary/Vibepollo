@@ -100,18 +100,9 @@ namespace system_tray {
   }
 
   void tray_open_ui_cb([[maybe_unused]] struct tray_menu *item) {
-    // Read the persisted choice, including when a config PATCH was deferred
-    // because a stream is active.
-    std::string preference = config::sunshine.web_ui_preference;
-    try {
-      const auto vars = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
-      if (const auto choice = vars.find("web_ui_preference"); choice != vars.end() &&
-          (choice->second == "legacy" || choice->second == "v2")) {
-        preference = choice->second;
-      }
-    } catch (const std::exception &e) {
-      BOOST_LOG(warning) << "Could not read saved web UI preference: "sv << e.what();
-    }
+    // The isolated store serializes this read with the preference API's writes.
+    // Never copy config::sunshine strings concurrently with a full config reload.
+    const auto preference = web_ui_preference::host().read();
     BOOST_LOG(info) << "Opening "sv << (preference == "v2" ? "V2" : "legacy") << " UI from system tray"sv;
     launch_ui(preference == "v2" ? "/v2/" : "/");
   }
