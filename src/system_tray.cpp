@@ -51,7 +51,7 @@
   // local includes
   #include "config.h"
   #include "confighttp.h"
-  #include "file_handler.h"
+  #include "web_ui_preference.h"
   #include "logging.h"
   #include "network.h"
   #include "platform/common.h"
