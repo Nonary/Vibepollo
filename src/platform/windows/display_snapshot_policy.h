@@ -76,8 +76,8 @@ namespace display_helper_integration::snapshot_policy {
   // Both backends retain encoder-probe displays under the shared GUID. Only that
   // exact tracked identity is exempt: other temporary/session targets still block.
   template<class TrackedTargets>
-  void append_shared_display_exclusions(
-    std::vector<std::string> &exclusions,
+  void append_shared_capture_safe_devices(
+    std::vector<std::string> &capture_safe_devices,
     const TrackedTargets &targets,
     const std::array<std::uint8_t, 16> &shared_guid) {
     for (const auto &target : targets) {
@@ -85,27 +85,29 @@ namespace display_helper_integration::snapshot_policy {
         continue;
       }
       const auto id = detail::normalize_device_id(target.device_id);
-      if (std::none_of(exclusions.begin(), exclusions.end(), [&](const auto &existing) {
+      if (std::none_of(capture_safe_devices.begin(), capture_safe_devices.end(), [&](const auto &existing) {
             return detail::normalize_device_id(existing) == id;
           })) {
-        exclusions.push_back(target.device_id);
+        capture_safe_devices.push_back(target.device_id);
       }
     }
   }
 
   inline bool may_capture_beside(
     const display_device::EnumeratedDevice &device,
-    const std::vector<std::string> &exclusions) {
+    const std::vector<std::string> &capture_safe_devices) {
     if (!is_virtual(device) || !detail::is_active(device) ||
         detail::is_permanent_sunshine_vdd(device)) {
       return true;
     }
-    return detail::is_excluded(device, exclusions);
+    // Filtering a remembered session ID does not prove its physical layout is
+    // safe. Only explicitly retained neighbors may bypass the active-VDD gate.
+    return detail::is_excluded(device, capture_safe_devices);
   }
 
   inline bool blocks_capture(
     const display_device::EnumeratedDevice &device,
-    const std::vector<std::string> &exclusions) {
-    return !may_capture_beside(device, exclusions);
+    const std::vector<std::string> &capture_safe_devices) {
+    return !may_capture_beside(device, capture_safe_devices);
   }
 }  // namespace display_helper_integration::snapshot_policy

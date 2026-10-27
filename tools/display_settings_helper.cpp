@@ -980,7 +980,13 @@ namespace {
     // Save snapshot to file as JSON-like format.
     bool save_display_settings_snapshot_to_file(const std::filesystem::path &path) const {
       auto snap = snapshot();
-      const auto snapshot_exclusions = snapshot_exclusions_copy();
+      std::vector<std::string> snapshot_exclusions;
+      std::vector<std::string> capture_safe_devices;
+      {
+        std::lock_guard lock(snapshot_exclude_mutex_);
+        snapshot_exclusions = snapshot_exclude_devices_;
+        capture_safe_devices = snapshot_capture_safe_devices_;
+      }
       auto is_excluded = [&](const std::string &device_id) {
         if (snapshot_exclusions.empty()) {
           return false;
@@ -1014,7 +1020,7 @@ namespace {
             enumerated_devices.push_back(std::move(detail));
           }
           if (display_helper_integration::snapshot_policy::is_virtual(d)) {
-            if (display_helper_integration::snapshot_policy::blocks_capture(d, snapshot_exclusions)) {
+            if (display_helper_integration::snapshot_policy::blocks_capture(d, capture_safe_devices)) {
               virtual_devices.push_back(id.empty() ? "<unknown>" : id);
             }
             continue;
@@ -1656,7 +1662,7 @@ namespace {
       }
     }
 
-    void set_snapshot_exclusions(const std::vector<std::string> &ids) {
+    void set_snapshot_exclusions(const std::vector<std::string> &ids, const std::vector<std::string> &capture_safe_devices = {}) {
       std::lock_guard<std::mutex> lock(snapshot_exclude_mutex_);
       snapshot_exclude_devices_.clear();
       std::set<std::string> unique;
@@ -1667,6 +1673,7 @@ namespace {
         }
       }
       snapshot_exclude_devices_.assign(unique.begin(), unique.end());
+      snapshot_capture_safe_devices_ = capture_safe_devices;
     }
 
     std::vector<std::string> snapshot_exclusions_copy_public() const {
@@ -1719,6 +1726,7 @@ namespace {
     mutable std::unique_ptr<display_device::SettingsManager> m_sm;
     mutable std::mutex snapshot_exclude_mutex_;
     std::vector<std::string> snapshot_exclude_devices_;
+    std::vector<std::string> snapshot_capture_safe_devices_;
 
     static std::string normalize_device_id(std::string id) {
       id.erase(id.begin(), std::find_if(id.begin(), id.end(), [](unsigned char ch) {
@@ -5677,6 +5685,13 @@ namespace {
     }
   }
 
+  // Old array-only payloads and persisted IDs carry filtering policy only.
+  std::vector<std::string> parse_snapshot_capture_safe_payload(std::span<const uint8_t> payload) {
+    const auto j = nlohmann::json::parse(payload.begin(), payload.end(), nullptr, false);
+    if (!j.is_object() || !j.contains("capture_safe_devices")) return {};
+    return parse_snapshot_exclude_json_node(j["capture_safe_devices"]);
+  }
+
   struct RevertOptions {
     bool prefer_golden_if_current_missing {true};
     std::optional<bool> always_restore_from_golden;
@@ -5800,6 +5815,7 @@ namespace {
     std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> refresh_rate_overrides;
     std::optional<display_device::ActiveTopology> sunshine_topology;
     std::optional<std::vector<std::string>> snapshot_exclude_devices;
+    std::vector<std::string> snapshot_capture_safe_devices;
     std::string sanitized_json = json;
     try {
       auto j = nlohmann::json::parse(json);
@@ -5846,6 +5862,10 @@ namespace {
         if (j.contains("sunshine_snapshot_exclude_devices")) {
           snapshot_exclude_devices = parse_snapshot_exclude_json_node(j["sunshine_snapshot_exclude_devices"]);
           j.erase("sunshine_snapshot_exclude_devices");
+        }
+        if (j.contains("sunshine_snapshot_capture_safe_devices")) {
+          snapshot_capture_safe_devices = parse_snapshot_exclude_json_node(j["sunshine_snapshot_capture_safe_devices"]);
+          j.erase("sunshine_snapshot_capture_safe_devices");
         }
         if (j.contains("sunshine_refresh_settings_baseline")) {
           refresh_settings_baseline =
@@ -5905,7 +5925,7 @@ namespace {
     }
 
     if (snapshot_exclude_devices.has_value()) {
-      state.controller.set_snapshot_exclusions(*snapshot_exclude_devices);
+      state.controller.set_snapshot_exclusions(*snapshot_exclude_devices, snapshot_capture_safe_devices);
     }
 
     display_device::SingleDisplayConfiguration cfg {};
@@ -6118,7 +6138,7 @@ namespace {
     }
 
     if (auto exclusions = parse_snapshot_exclude_payload(payload)) {
-      state.controller.set_snapshot_exclusions(*exclusions);
+      state.controller.set_snapshot_exclusions(*exclusions, parse_snapshot_capture_safe_payload(payload));
     }
     if (type == MsgType::ExportGolden) {
       const bool saved = state.save_snapshot_with_retry(state.golden_path, "export-golden");

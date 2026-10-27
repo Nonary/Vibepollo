@@ -333,9 +333,9 @@ namespace nvhttp {
       if (display_helper_integration::coordinator_baseline_protected()) return;
       const auto devices = display_helper_integration::enumerate_active_devices();
       if (!devices || devices->empty()) return;
-      const auto exclusions = display_helper_integration::snapshot_excluded_devices();
+      const auto capture_safe_devices = display_helper_integration::snapshot_capture_safe_devices();
       if (!extend_active_stream && std::any_of(devices->begin(), devices->end(), [&](const auto &device) {
-            return display_helper_integration::snapshot_policy::blocks_capture(device, exclusions);
+            return display_helper_integration::snapshot_policy::blocks_capture(device, capture_safe_devices);
           })) return;
       const auto active_stream_output = extend_active_stream ? config::get_active_output_name() : std::string {};
       const bool active_stream_uses_virtual =

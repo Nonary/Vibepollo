@@ -305,6 +305,12 @@ namespace {
     return 0;
   }
 
+  std::vector<std::string> parse_snapshot_capture_safe_payload(std::span<const uint8_t> payload) {
+    const auto j = nlohmann::json::parse(payload.begin(), payload.end(), nullptr, false);
+    if (!j.is_object() || !j.contains("capture_safe_devices")) return {};
+    return parse_snapshot_exclude_json_node(j["capture_safe_devices"]);
+  }
+
   /**
    * @brief Load snapshot exclusions from vibeshine_state.json: the user-configured
    *        exclusion list merged with all Sunshine-managed virtual display ids so
@@ -415,6 +421,10 @@ namespace {
         if (j.contains("sunshine_snapshot_exclude_devices")) {
           out_request.snapshot_exclusions = parse_snapshot_exclude_json_node(j["sunshine_snapshot_exclude_devices"]);
           j.erase("sunshine_snapshot_exclude_devices");
+        }
+        if (j.contains("sunshine_snapshot_capture_safe_devices")) {
+          out_request.snapshot_capture_safe_devices = parse_snapshot_exclude_json_node(j["sunshine_snapshot_capture_safe_devices"]);
+          j.erase("sunshine_snapshot_capture_safe_devices");
         }
         if (j.contains("sunshine_topology") && j["sunshine_topology"].is_array()) {
           display_device::ActiveTopology topo;
@@ -1076,6 +1086,7 @@ int run_v2_helper(int argc, char *argv[]) {
           if (auto parsed = parse_snapshot_exclude_payload(payload)) {
             payload_struct.exclude_devices = std::move(*parsed);
             payload_struct.update_exclusions = true;
+            payload_struct.capture_safe_devices = parse_snapshot_capture_safe_payload(payload);
           }
           queue.push(display_helper::v2::ExportGoldenCommand {
             .payload = std::move(payload_struct),
@@ -1089,6 +1100,7 @@ int run_v2_helper(int argc, char *argv[]) {
           if (auto parsed = parse_snapshot_exclude_payload(payload)) {
             payload_struct.exclude_devices = std::move(*parsed);
             payload_struct.update_exclusions = true;
+            payload_struct.capture_safe_devices = parse_snapshot_capture_safe_payload(payload);
           }
           queue.push(display_helper::v2::SnapshotCurrentCommand {
             .payload = std::move(payload_struct),

@@ -427,9 +427,24 @@ namespace {
     return false;
   }
 
-  // User-configured exclusions plus every Sunshine-managed virtual display device id we have
-  // seen. Virtual displays must never end up in restore baselines: a baseline captured while
-  // one was active "restores" the physical monitors away (vibeshine#223).
+  std::vector<std::string> effective_snapshot_capture_safe_devices() {
+    std::vector<std::string> ids;
+    // Retained encoder-probe/shared displays use the shared GUID in both backends.
+    // Read cached ownership only: an All-paths query before capture can activate
+    // dummy plugs. Do not exempt unrelated tracked session displays.
+    const auto shared_guid = VDISPLAY::sharedVirtualDisplayGuid();
+    std::array<std::uint8_t, 16> shared_guid_bytes {};
+    static_assert(sizeof(shared_guid) == shared_guid_bytes.size());
+    std::memcpy(shared_guid_bytes.data(), &shared_guid, shared_guid_bytes.size());
+    display_helper_integration::snapshot_policy::append_shared_capture_safe_devices(
+      ids, VDISPLAY::tracked_display_cleanup_targets(), shared_guid_bytes);
+    return ids;
+  }
+
+  // Virtual displays must never end up in restore baselines: a baseline captured while
+  // one was active "restores" the physical monitors away (vibeshine#223). Every remembered
+  // session ID must be filtered, but may still block capture
+  // when cleanup failed and the physical layout has not been restored.
   std::vector<std::string> effective_snapshot_exclude_devices() {
     std::vector<std::string> ids = config::video.dd.snapshot_exclude_devices;
     for (auto &vd : statefile::load_virtual_display_devices()) {
@@ -440,21 +455,17 @@ namespace {
         ids.push_back(std::move(vd));
       }
     }
-    // Retained encoder-probe/shared displays use the shared GUID in both backends.
-    // Read cached ownership only: an All-paths query before capture can activate
-    // dummy plugs. Do not exempt unrelated tracked session displays.
-    const auto shared_guid = VDISPLAY::sharedVirtualDisplayGuid();
-    std::array<std::uint8_t, 16> shared_guid_bytes {};
-    static_assert(sizeof(shared_guid) == shared_guid_bytes.size());
-    std::memcpy(shared_guid_bytes.data(), &shared_guid, shared_guid_bytes.size());
-    display_helper_integration::snapshot_policy::append_shared_display_exclusions(
-      ids, VDISPLAY::tracked_display_cleanup_targets(), shared_guid_bytes);
+    const auto safe_devices = effective_snapshot_capture_safe_devices();
+    ids.insert(ids.end(), safe_devices.begin(), safe_devices.end());
     return ids;
   }
 
   std::string build_snapshot_exclude_payload() {
     try {
-      nlohmann::json j = effective_snapshot_exclude_devices();
+      nlohmann::json j = {
+        {"exclude_devices", effective_snapshot_exclude_devices()},
+        {"capture_safe_devices", effective_snapshot_capture_safe_devices()}
+      };
       return j.dump();
     } catch (...) {
       return std::string {};
@@ -2164,6 +2175,7 @@ namespace {
     // context and would otherwise capture virtual displays into its pre-apply baseline.
     try {
       j["sunshine_snapshot_exclude_devices"] = effective_snapshot_exclude_devices();
+      j["sunshine_snapshot_capture_safe_devices"] = effective_snapshot_capture_safe_devices();
     } catch (...) {
     }
 
@@ -3486,8 +3498,8 @@ namespace display_helper_integration {
     }
   }
 
-  std::vector<std::string> snapshot_excluded_devices() {
-    return effective_snapshot_exclude_devices();
+  std::vector<std::string> snapshot_capture_safe_devices() {
+    return effective_snapshot_capture_safe_devices();
   }
 
   std::string enumerate_devices_json(display_device::DeviceEnumerationDetail detail) {

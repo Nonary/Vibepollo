@@ -303,17 +303,17 @@ namespace display_helper::v2 {
      *        virtual displays and exclusions, reject incomplete physical paths,
      *        attach layout rotations, then save with retries.
      */
-    bool capture_filtered_and_save(SnapshotTier tier, const std::vector<std::string> &exclusions, const char *reason);
+    bool capture_filtered_and_save(SnapshotTier tier, const std::vector<std::string> &exclusions, const char *reason, const std::vector<std::string> &capture_safe_devices = {});
 
     /**
      * @brief Legacy refresh_current_snapshot_preserving_previous: capture/filter
      *        first; only rotate current->previous once the new capture is known
      *        good, so a failed capture never destroys the existing baseline.
      */
-    bool refresh_current_preserving_previous(const std::vector<std::string> &exclusions);
+    bool refresh_current_preserving_previous(const std::vector<std::string> &exclusions, const std::vector<std::string> &capture_safe_devices = {});
 
   private:
-    std::optional<std::pair<Snapshot, codec::layout_rotation_map_t>> capture_filtered(const std::vector<std::string> &exclusions, const char *reason);
+    std::optional<std::pair<Snapshot, codec::layout_rotation_map_t>> capture_filtered(const std::vector<std::string> &exclusions, const char *reason, const std::vector<std::string> &capture_safe_devices);
 
     SnapshotService &service_;
     SnapshotPersistence &persistence_;
@@ -540,6 +540,7 @@ namespace display_helper::v2 {
     std::size_t virtual_identity_discoveries_remaining_ = 0;
     std::size_t virtual_identity_repairs_remaining_ = 0;
     std::set<std::string> snapshot_blacklist_;
+    std::vector<std::string> snapshot_capture_safe_devices_;
     std::uint64_t current_connection_epoch_ = 0;
     recovery_status::policy recovery_status_policy_;
 

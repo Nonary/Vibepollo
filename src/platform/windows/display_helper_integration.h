@@ -170,7 +170,7 @@ namespace display_helper_integration {
 
   // Capture metadata from Active paths without waking inactive dummy plugs.
   std::optional<display_device::EnumeratedDeviceList> enumerate_active_devices();
-  std::vector<std::string> snapshot_excluded_devices();
+  std::vector<std::string> snapshot_capture_safe_devices();
   bool coordinator_baseline_protected();
 
   // Enumerate display devices and return JSON payload for API.

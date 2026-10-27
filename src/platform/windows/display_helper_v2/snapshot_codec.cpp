@@ -582,7 +582,8 @@ namespace display_helper::v2::codec {
     Snapshot snap,
     const EnumeratedDeviceList &devices,
     const std::vector<std::string> &exclusions,
-    std::string &reject_reason) {
+    std::string &reject_reason,
+    const std::vector<std::string> &capture_safe_devices) {
     reject_reason.clear();
 
     std::vector<std::string> exclusions_norm;
@@ -623,7 +624,7 @@ namespace display_helper::v2::codec {
         if (!id.empty()) {
           virtual_device_ids.insert(id);
         }
-        if (display_helper_integration::snapshot_policy::blocks_capture(d, exclusions)) {
+        if (display_helper_integration::snapshot_policy::blocks_capture(d, capture_safe_devices)) {
           blocking_virtual_devices.push_back(id.empty() ? "<unknown>" : id);
         }
         continue;

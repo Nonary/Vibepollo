@@ -60,6 +60,9 @@ namespace display_helper_integration {
           report_skip("snapshot superseded by compose");
           return false;
         }
+        // Disconnection admits a replacement attempt, but only its successful
+        // completion may release the saved geometry for this generation.
+        if (ok) failed_ = false;
         return ok;
       };
       try {
@@ -71,10 +74,6 @@ namespace display_helper_integration {
           if (!gone) {
             report_skip("failed compose; saved baseline devices still connected or connectivity unknown");
             return finish(false);
-          }
-          {
-            std::lock_guard lock(mutex_);
-            if (generation == generation_) failed_ = false;
           }
         }
         if (superseded()) return finish(false);

@@ -170,6 +170,42 @@ TEST(DisplayRestoreGuard, DisconnectedBaselineAdmitsRecapture) {
   EXPECT_TRUE(guard.snapshot(capture, [] { ADD_FAILURE(); return false; }, ignore_skip));
 }
 
+TEST(DisplayRestoreGuard, FailedReplacementCaptureKeepsProtectionAfterReconnect) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  EXPECT_FALSE(guard.snapshot([&](const auto &) {
+    EXPECT_TRUE(guard.protects_baseline());
+    return false;  // Helper unavailable or capture deadline expired.
+  }, [] { return true; }, ignore_skip));
+  EXPECT_TRUE(guard.protects_baseline());  // Remote Monitor activation must keep the saved geometry.
+  EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return true; }, connected, ignore_skip));
+  EXPECT_TRUE(guard.protects_baseline());
+  EXPECT_TRUE(guard.snapshot(capture, [] { return true; }, ignore_skip));
+  EXPECT_FALSE(guard.protects_baseline());
+}
+
+TEST(DisplayRestoreGuard, ThrowingReplacementCaptureKeepsProtectionAfterReconnect) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  EXPECT_THROW(guard.snapshot([](const auto &) -> bool {
+    throw std::runtime_error("capture failed");
+  }, [] { return true; }, ignore_skip), std::runtime_error);
+  EXPECT_TRUE(guard.protects_baseline());
+  EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return true; }, connected, ignore_skip));
+}
+
+TEST(DisplayRestoreGuard, SuccessfulReplacementCaptureCannotClearNewComposeFailure) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  EXPECT_FALSE(guard.snapshot([&](const auto &superseded) {
+    EXPECT_FALSE(guard.compose([] { return false; }));
+    EXPECT_TRUE(superseded());
+    return true;
+  }, [] { return true; }, ignore_skip));
+  EXPECT_TRUE(guard.protects_baseline());
+  EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return true; }, connected, ignore_skip));
+}
+
 TEST(DisplayRestoreGuard, ConcurrentComposeInvalidatesConnectivityEvidence) {
   display_helper_integration::DisplayRestoreGuard guard;
   ASSERT_FALSE(guard.compose([] { return false; }));
