@@ -112,11 +112,14 @@ namespace managed_app_focus::hyprland {
       struct stat attributes {};
       if (directory.fd < 0 || fstat(directory.fd, &attributes) || attributes.st_uid != geteuid()) return std::nullopt;
       std::vector<std::string> names;
-      if (DIR *entries = fdopendir(dup(directory.fd))) {
+      const int listing = dup(directory.fd);
+      if (DIR *entries = listing < 0 ? nullptr : fdopendir(listing)) {
         while (const auto *entry = readdir(entries)) {
           if (entry->d_name[0] != '.' && names.size() < 64) names.emplace_back(entry->d_name);
         }
         closedir(entries);
+      } else if (listing >= 0) {
+        close(listing);
       }
       std::ranges::sort(names);
       for (const auto &name : names) {
@@ -172,9 +175,10 @@ namespace managed_app_focus::hyprland {
     }
 
     // Hyprland has no window types but floats dialogs: fullscreen, then tiled.
+    // Mode 1 is maximized, which a launcher may be too.
     inline std::pair<bool, bool> rank(const nlohmann::json &window) {
       const auto *fullscreen = field(window, "fullscreen");
-      return {fullscreen && fullscreen->is_number_integer() && fullscreen->get<std::int64_t>() > 0, !flag(window, "floating")};
+      return {fullscreen && fullscreen->is_number_integer() && fullscreen->get<std::int64_t>() >= 2, !flag(window, "floating")};
     }
   }  // namespace detail
 
