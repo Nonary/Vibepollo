@@ -172,6 +172,7 @@ namespace display_helper_integration {
   std::optional<display_device::EnumeratedDeviceList> enumerate_active_devices();
   std::vector<std::string> snapshot_capture_safe_devices();
   bool coordinator_baseline_protected();
+  std::function<bool(const std::function<void()> &)> coordinator_baseline_publisher();
 
   // Enumerate display devices and return JSON payload for API.
   std::string enumerate_devices_json(

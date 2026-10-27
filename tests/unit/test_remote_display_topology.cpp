@@ -7,6 +7,7 @@
 #include <mutex>
 
 #include "src/remote_display_topology.h"
+#include "src/platform/windows/display_restore_guard.h"
 #include "src/platform/linux/private_display_resume_policy.h"
 #include "src/platform/linux/private_display_capacity.h"
 #include "src/platform/linux/private_display_cleanup_policy.h"
@@ -2245,4 +2246,50 @@ TEST(RemoteDisplayTopology, TerminalRemovalRetainsFailedPhysicalRestoreUntilShut
   EXPECT_EQ(applies, before + 1);  // Now genuinely idle: no additional restore.
   coordinator.refresh_idle_physical_baseline({{.id = "updated", .physical = true, .active = true}});
   EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"updated"});
+}
+
+TEST(RemoteDisplayTopology, RefreshInterleavedWithFailedComposeKeepsSavedGeometry) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  remote_display_topology::coordinator_t coordinator;
+  const remote_display_topology::node_t saved {.id = "saved", .physical = true, .active = true, .x = 3840};
+  coordinator.set_physical_baseline({saved});
+  const auto publish = guard.baseline_publisher();  // Before enumeration.
+  ASSERT_TRUE(publish);
+  auto partial = saved;
+  partial.x = 0;  // Enumeration observed an intermediate layout.
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  coordinator.set_physical_baseline({partial}, publish);
+  int physical_x = -1;
+  coordinator.set_runtime_callbacks({.apply_composed_topology = [&](const auto &nodes) {
+    physical_x = nodes.front().x;
+    return true;
+  }});
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_EQ(physical_x, 3840);
+  EXPECT_TRUE(guard.protects_baseline());
+}
+
+TEST(RemoteDisplayTopology, IdleInventoryDiscardsCaptureAcrossSuccessfulCompose) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  remote_display_topology::coordinator_t coordinator;
+  const remote_display_topology::node_t saved {.id = "saved", .physical = true, .active = true, .x = 3840};
+  coordinator.set_physical_baseline({saved});
+  const auto publish = guard.baseline_publisher();  // Devices-page pre-enumeration fence.
+  ASSERT_TRUE(publish);
+  auto stale = saved;
+  stale.x = 0;
+  ASSERT_TRUE(guard.compose([] { return true; }));
+  EXPECT_FALSE(guard.protects_baseline());
+  coordinator.refresh_idle_physical_baseline({stale}, publish);
+  int physical_x = -1;
+  coordinator.set_runtime_callbacks({.apply_composed_topology = [&](const auto &nodes) {
+    physical_x = nodes.front().x;
+    return true;
+  }});
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_EQ(physical_x, 3840);
+  // A fresh idle capture may still update the baseline normally.
+  coordinator.refresh_idle_physical_baseline({stale}, guard.baseline_publisher());
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_EQ(physical_x, 0);
 }

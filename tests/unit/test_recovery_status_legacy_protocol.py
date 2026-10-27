@@ -281,6 +281,38 @@ int main() {
 }
 '''
 
+
+# Exercise the legacy golden-export branch itself, with save/log boundaries mocked.
+golden_branch = block_after(legacy, "if (type == MsgType::ExportGolden)")
+golden_program = r'''
+#include <atomic>
+#include <cassert>
+#include <sstream>
+#define BOOST_LOG(level) std::ostringstream {}
+namespace golden_capture {
+using legacy::MsgType;
+struct State {
+  std::atomic<bool> restore_requested {true};
+  int golden_path = 0;
+  int saves = 0;
+  bool save_snapshot_with_retry(int, const char *) { ++saves; return true; }
+  void clear_golden_restore_status(const char *) {}
+};
+void handle(State &state, MsgType type) {
+''' + golden_branch + r'''
+}
+void test_pending_restore_keeps_golden() {
+  State state;
+  handle(state, MsgType::ExportGolden);
+  assert(state.saves == 0);
+  state.restore_requested.store(false);
+  handle(state, MsgType::ExportGolden);
+  assert(state.saves == 1);
+}
+}
+'''
+program = program.replace('int main() {', golden_program + '\nint main() {\n  golden_capture::test_pending_restore_keeps_golden();')
+
 with tempfile.TemporaryDirectory(prefix="recovery-status-protocol-") as temporary:
     source = pathlib.Path(temporary) / "recovery_status_protocol.cpp"
     binary = pathlib.Path(temporary) / "recovery_status_protocol"

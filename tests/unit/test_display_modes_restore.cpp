@@ -201,7 +201,7 @@ namespace {
     };
     const auto capture = [&](const auto &) {
       ++capture_count;
-      return true;
+      return display_helper::SnapshotResult::saved;
     };
     const auto report_skip = [](const char *) {};
     return guard.snapshot(capture, is_disconnected, report_skip);

@@ -2907,15 +2907,17 @@ namespace display_helper_integration {
   }
 
   bool export_golden_restore() {
-    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
-    if (!ensure_helper_started()) {
-      BOOST_LOG(info) << "Display helper unavailable; cannot export golden snapshot.";
-      return false;
-    }
-    BOOST_LOG(info) << "Display helper: sending EXPORT_GOLDEN request.";
-    const bool ok = platf::display_helper_client::send_export_golden(build_snapshot_exclude_payload());
-    BOOST_LOG(info) << "Display helper: EXPORT_GOLDEN dispatch result=" << (ok ? "true" : "false");
-    return ok;
+    return composed_restore_guard.export_snapshot([&](const auto &superseded) {
+      std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
+      if (superseded() || !ensure_helper_started() || superseded()) {
+        return false;
+      }
+      const bool ok = platf::display_helper_client::send_export_golden(build_snapshot_exclude_payload());
+      BOOST_LOG(info) << "Display helper: EXPORT_GOLDEN dispatch result=" << (ok ? "true" : "false");
+      return ok;
+    }, [](const char *reason) {
+      BOOST_LOG(warning) << "Display helper: skipping EXPORT_GOLDEN: " << reason << '.';
+    });
   }
 
   bool reset_persistence() {
@@ -2933,6 +2935,10 @@ namespace display_helper_integration {
 
   bool coordinator_baseline_protected() {
     return composed_restore_guard.protects_baseline();
+  }
+
+  std::function<bool(const std::function<void()> &)> coordinator_baseline_publisher() {
+    return composed_restore_guard.baseline_publisher();
   }
 
   bool snapshot_current_display_state(
@@ -2956,17 +2962,17 @@ namespace display_helper_integration {
       const auto snapshot_cancelled = [&] { return superseded() || cancellation_requested(cancellation_predicate); };
       std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::defer_lock);
       if (!lock_pending_apply_execution(execution_lock, snapshot_cancelled, operation_deadline)) {
-        return false;
+        return display_helper::SnapshotResult::failed;
       }
       if (cancellation_requested(snapshot_cancelled) ||
           operation_deadline_expired(operation_deadline)) {
-        return false;
+        return display_helper::SnapshotResult::failed;
       }
       if (restore_expected_with_live_helper(
             snapshot_cancelled,
             operation_deadline)) {
         BOOST_LOG(info) << "Display helper: skipping SNAPSHOT_CURRENT while an unconfirmed restore is pending.";
-        return false;
+        return display_helper::SnapshotResult::failed;
       }
 
       if (!ensure_helper_started(
@@ -2975,9 +2981,9 @@ namespace display_helper_integration {
             snapshot_cancelled,
             operation_deadline)) {
         BOOST_LOG(info) << "Display helper unavailable; cannot snapshot current display state.";
-        return false;
+        return display_helper::SnapshotResult::failed;
       }
-      if (snapshot_cancelled()) return false;
+      if (snapshot_cancelled()) return display_helper::SnapshotResult::failed;
       BOOST_LOG(info) << "Display helper: sending SNAPSHOT_CURRENT request.";
       const auto payload = build_snapshot_exclude_payload();
       // Wire behavior is selected from the helper that actually answered APPLY,
@@ -2989,7 +2995,7 @@ namespace display_helper_integration {
       const bool v2_helper =
         !bounded &&
         platf::display_helper_client::uses_v2_response_protocol();
-      const bool ok =
+      const auto result =
         bounded ?
           platf::display_helper_client::send_snapshot_current_within(
             payload,
@@ -3001,8 +3007,9 @@ namespace display_helper_integration {
              platf::display_helper_client::send_snapshot_current(payload));
       BOOST_LOG(info) << "Display helper: SNAPSHOT_CURRENT "
                       << (bounded ? "bounded operation" : (v2_helper ? "completion" : "dispatch"))
-                      << " result=" << (ok ? "true" : "false");
-      return ok;
+                      << " accepted=" << (result != display_helper::SnapshotResult::failed)
+                      << " saved=" << (result == display_helper::SnapshotResult::saved);
+      return result;
     }, disconnected, [](const char *reason) {
       BOOST_LOG(warning) << "Display helper: skipping SNAPSHOT_CURRENT: " << reason << '.';
     });

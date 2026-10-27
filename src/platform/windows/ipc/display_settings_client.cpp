@@ -1934,28 +1934,29 @@ namespace platf::display_helper_client {
     return send_serialized_within(session, MsgType::Disarm, payload, deadline, *wait_generation);
   }
 
-  bool send_snapshot_current(const std::string &json_payload) {
+  ::display_helper::SnapshotResult send_snapshot_current(const std::string &json_payload) {
     BOOST_LOG(debug) << "Display helper IPC: SNAPSHOT_CURRENT request queued";
     const auto wait_generation = apply_wait_generation().load(std::memory_order_acquire);
     const auto session = connected_session();
     if (!session) {
       BOOST_LOG(warning) << "Display helper IPC: SNAPSHOT_CURRENT aborted - no connection";
-      return false;
+      return ::display_helper::SnapshotResult::failed;
     }
     std::vector<uint8_t> payload(json_payload.begin(), json_payload.end());
-    return send_serialized(session, MsgType::SnapshotCurrent, payload, std::nullopt, wait_generation);
+    return send_serialized(session, MsgType::SnapshotCurrent, payload, std::nullopt, wait_generation) ?
+      ::display_helper::SnapshotResult::dispatched : ::display_helper::SnapshotResult::failed;
   }
 
-  bool send_snapshot_current_and_wait(const std::string &json_payload, int timeout_ms) {
+  ::display_helper::SnapshotResult send_snapshot_current_and_wait(const std::string &json_payload, int timeout_ms) {
     BOOST_LOG(debug) << "Display helper IPC: SNAPSHOT_CURRENT request queued with completion wait";
     if (timeout_ms <= 0) {
-      return false;
+      return ::display_helper::SnapshotResult::failed;
     }
     const auto wait_generation = apply_wait_generation().load(std::memory_order_acquire);
     const auto session = connected_session();
     if (!session || current_apply_response_protocol(session) != ApplyResponseProtocol::V2) {
       BOOST_LOG(warning) << "Display helper IPC: SNAPSHOT_CURRENT completion wait requires a confirmed v2 helper.";
-      return false;
+      return ::display_helper::SnapshotResult::failed;
     }
     const auto request_id = next_auxiliary_request_id().fetch_add(1, std::memory_order_relaxed);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
@@ -1965,7 +1966,7 @@ namespace platf::display_helper_client {
     };
     std::unique_lock<std::timed_mutex> response_lock;
     if (!lock_response_reader_until(session, response_lock, deadline, cancelled)) {
-      return false;
+      return ::display_helper::SnapshotResult::failed;
     }
 
     std::vector<uint8_t> payload;
@@ -1981,17 +1982,17 @@ namespace platf::display_helper_client {
       }
       if (!snapshot_json.is_object()) {
         BOOST_LOG(error) << "Display helper IPC: SNAPSHOT_CURRENT payload must be a JSON object or exclusion array.";
-        return false;
+        return ::display_helper::SnapshotResult::failed;
       }
       snapshot_json["sunshine_snapshot_id"] = request_id;
       const auto serialized = snapshot_json.dump();
       payload.assign(serialized.begin(), serialized.end());
     } catch (...) {
       BOOST_LOG(error) << "Display helper IPC: failed to add SNAPSHOT_CURRENT request token.";
-      return false;
+      return ::display_helper::SnapshotResult::failed;
     }
     if (!send_serialized(session, MsgType::SnapshotCurrent, payload, std::nullopt, wait_generation)) {
-      return false;
+      return ::display_helper::SnapshotResult::failed;
     }
     if (auto result = wait_for_snapshot_result_locked(
           session,
@@ -1999,19 +2000,19 @@ namespace platf::display_helper_client {
           request_id,
           cancelled
         )) {
-      return *result;
+      return *result ? ::display_helper::SnapshotResult::saved : ::display_helper::SnapshotResult::failed;
     }
 
     if (cancelled()) {
       BOOST_LOG(debug) << "Display helper IPC: snapshot wait superseded by a display control command.";
-      return false;
+      return ::display_helper::SnapshotResult::failed;
     }
 
     drop_connection_if_current(session, "missing SNAPSHOT_CURRENT result");
-    return false;
+    return ::display_helper::SnapshotResult::failed;
   }
 
-  bool send_snapshot_current_within(
+  ::display_helper::SnapshotResult send_snapshot_current_within(
     const std::string &json_payload,
     const std::chrono::steady_clock::time_point operation_deadline,
     std::function<bool()> cancellation_predicate) {
@@ -2028,7 +2029,7 @@ namespace platf::display_helper_client {
              std::chrono::steady_clock::now() >= stage_deadline;
     };
     if (operation_cancelled()) {
-      return false;
+      return ::display_helper::SnapshotResult::failed;
     }
 
     const auto wait_generation = apply_wait_generation().load(std::memory_order_acquire);
@@ -2039,7 +2040,7 @@ namespace platf::display_helper_client {
     );
     if (!session) {
       BOOST_LOG(warning) << "Display helper IPC: bounded SNAPSHOT_CURRENT aborted - no connection";
-      return false;
+      return ::display_helper::SnapshotResult::failed;
     }
     const auto protocol = current_apply_response_protocol(session);
     const auto cancelled = [session, wait_generation, operation_cancelled] {
@@ -2065,14 +2066,14 @@ namespace platf::display_helper_client {
         }
         if (!snapshot_json.is_object()) {
           BOOST_LOG(error) << "Display helper IPC: SNAPSHOT_CURRENT payload must be a JSON object or exclusion array.";
-          return false;
+          return ::display_helper::SnapshotResult::failed;
         }
         snapshot_json["sunshine_snapshot_id"] = *request_id;
         const auto serialized = snapshot_json.dump();
         payload.assign(serialized.begin(), serialized.end());
       } catch (...) {
         BOOST_LOG(error) << "Display helper IPC: failed to add bounded SNAPSHOT_CURRENT request token.";
-        return false;
+        return ::display_helper::SnapshotResult::failed;
       }
     } else {
       payload.assign(json_payload.begin(), json_payload.end());
@@ -2085,7 +2086,7 @@ namespace platf::display_helper_client {
           response_lock,
           stage_deadline,
           cancelled)) {
-      return false;
+      return ::display_helper::SnapshotResult::failed;
     }
     if (!send_serialized_within(
           session,
@@ -2097,10 +2098,10 @@ namespace platf::display_helper_client {
           nullptr,
           false,
           cancelled)) {
-      return false;
+      return ::display_helper::SnapshotResult::failed;
     }
     if (!request_id) {
-      return true;
+      return ::display_helper::SnapshotResult::dispatched;
     }
 
     const int remaining = remaining_timeout_ms(stage_deadline);
@@ -2111,7 +2112,7 @@ namespace platf::display_helper_client {
             *request_id,
             cancelled
           )) {
-        return *result;
+        return *result ? ::display_helper::SnapshotResult::saved : ::display_helper::SnapshotResult::failed;
       }
     }
     // Budget exhaustion is the normal way to reach this point, so it must not
@@ -2126,7 +2127,7 @@ namespace platf::display_helper_client {
         std::chrono::steady_clock::now() + std::chrono::milliseconds(kStaleConnectionRetireTimeoutMs)
       );
     }
-    return false;
+    return ::display_helper::SnapshotResult::failed;
   }
 
   bool send_stop() {

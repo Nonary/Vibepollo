@@ -57,7 +57,7 @@ namespace {
   const auto ignore_failure = [](const auto &, const auto &) {};
   const auto ignore_skip = [](const char *) {};
   const auto connected = [] { return false; };
-  const auto capture = [](const auto &) { return true; };
+  const auto capture = [](const auto &) { return display_helper::SnapshotResult::saved; };
 }
 
 TEST(DisplayCoordinatorRestore, ReactivatesThenRestoresPrimaryOriginsAndVerbatimRefresh) {
@@ -155,7 +155,7 @@ TEST(DisplayRestoreGuard, StableButUnrestoredLayoutRemainsBlockedUntilSuccessful
   ASSERT_FALSE(guard.compose([] { return false; }));
   int warnings = 0;
   for (int i = 0; i < 2; ++i) {
-    EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return true; }, connected,
+    EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return display_helper::SnapshotResult::saved; }, connected,
       [&](const char *reason) { ++warnings; EXPECT_NE(std::string(reason).find("failed compose"), std::string::npos); }));
   }
   EXPECT_EQ(warnings, 2);
@@ -175,10 +175,10 @@ TEST(DisplayRestoreGuard, FailedReplacementCaptureKeepsProtectionAfterReconnect)
   ASSERT_FALSE(guard.compose([] { return false; }));
   EXPECT_FALSE(guard.snapshot([&](const auto &) {
     EXPECT_TRUE(guard.protects_baseline());
-    return false;  // Helper unavailable or capture deadline expired.
+    return display_helper::SnapshotResult::failed;  // Helper unavailable or capture deadline expired.
   }, [] { return true; }, ignore_skip));
   EXPECT_TRUE(guard.protects_baseline());  // Remote Monitor activation must keep the saved geometry.
-  EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return true; }, connected, ignore_skip));
+  EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return display_helper::SnapshotResult::saved; }, connected, ignore_skip));
   EXPECT_TRUE(guard.protects_baseline());
   EXPECT_TRUE(guard.snapshot(capture, [] { return true; }, ignore_skip));
   EXPECT_FALSE(guard.protects_baseline());
@@ -187,11 +187,11 @@ TEST(DisplayRestoreGuard, FailedReplacementCaptureKeepsProtectionAfterReconnect)
 TEST(DisplayRestoreGuard, ThrowingReplacementCaptureKeepsProtectionAfterReconnect) {
   display_helper_integration::DisplayRestoreGuard guard;
   ASSERT_FALSE(guard.compose([] { return false; }));
-  EXPECT_THROW(guard.snapshot([](const auto &) -> bool {
+  EXPECT_THROW(guard.snapshot([](const auto &) -> display_helper::SnapshotResult {
     throw std::runtime_error("capture failed");
   }, [] { return true; }, ignore_skip), std::runtime_error);
   EXPECT_TRUE(guard.protects_baseline());
-  EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return true; }, connected, ignore_skip));
+  EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return display_helper::SnapshotResult::saved; }, connected, ignore_skip));
 }
 
 TEST(DisplayRestoreGuard, SuccessfulReplacementCaptureCannotClearNewComposeFailure) {
@@ -200,10 +200,10 @@ TEST(DisplayRestoreGuard, SuccessfulReplacementCaptureCannotClearNewComposeFailu
   EXPECT_FALSE(guard.snapshot([&](const auto &superseded) {
     EXPECT_FALSE(guard.compose([] { return false; }));
     EXPECT_TRUE(superseded());
-    return true;
+    return display_helper::SnapshotResult::saved;
   }, [] { return true; }, ignore_skip));
   EXPECT_TRUE(guard.protects_baseline());
-  EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return true; }, connected, ignore_skip));
+  EXPECT_FALSE(guard.snapshot([](const auto &) { ADD_FAILURE(); return display_helper::SnapshotResult::saved; }, connected, ignore_skip));
 }
 
 TEST(DisplayRestoreGuard, ConcurrentComposeInvalidatesConnectivityEvidence) {
@@ -222,7 +222,7 @@ TEST(DisplayRestoreGuard, HungSnapshotDoesNotBlockComposeAndCannotReportStaleSuc
   std::promise<void> release;
   auto released = release.get_future();
   auto snapshot = std::async(std::launch::async, [&] {
-    return guard.snapshot([&](const auto &) { entered.set_value(); released.wait(); return true; }, connected, ignore_skip);
+    return guard.snapshot([&](const auto &) { entered.set_value(); released.wait(); return display_helper::SnapshotResult::saved; }, connected, ignore_skip);
   });
   entered.get_future().wait();
   auto compose = std::async(std::launch::async, [&] { return guard.compose([] { return true; }); });
@@ -231,4 +231,33 @@ TEST(DisplayRestoreGuard, HungSnapshotDoesNotBlockComposeAndCannotReportStaleSuc
   EXPECT_EQ(status, std::future_status::ready);
   EXPECT_TRUE(compose.get());
   EXPECT_FALSE(snapshot.get());
+}
+
+TEST(DisplayRestoreGuard, DispatchWithoutSaveConfirmationKeepsProtection) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  bool queued = false;
+  EXPECT_TRUE(guard.snapshot([&](const auto &) {
+    queued = true;
+    return display_helper::SnapshotResult::dispatched;
+  }, [] { return true; }, ignore_skip));
+  ASSERT_TRUE(queued);
+  // The legacy helper later fails or skips the queued save; there is no ACK.
+  EXPECT_TRUE(guard.protects_baseline());
+  EXPECT_FALSE(guard.snapshot([](const auto &) {
+    ADD_FAILURE();
+    return display_helper::SnapshotResult::saved;
+  }, connected, ignore_skip));
+}
+
+TEST(DisplayRestoreGuard, GoldenExportCannotReplaceFailedComposeBaseline) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  int sends = 0;
+  const auto send = [&](const auto &) { ++sends; return true; };
+  EXPECT_TRUE(guard.export_snapshot(send, ignore_skip));
+  EXPECT_EQ(sends, 1);
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  EXPECT_FALSE(guard.export_snapshot(send, ignore_skip));
+  EXPECT_EQ(sends, 1);
+  EXPECT_TRUE(guard.protects_baseline());
 }

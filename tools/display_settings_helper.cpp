@@ -6141,6 +6141,10 @@ namespace {
       state.controller.set_snapshot_exclusions(*exclusions, parse_snapshot_capture_safe_payload(payload));
     }
     if (type == MsgType::ExportGolden) {
+      if (state.restore_requested.load(std::memory_order_acquire)) {
+        BOOST_LOG(info) << "Skipping golden snapshot export while restore is pending.";
+        return;
+      }
       const bool saved = state.save_snapshot_with_retry(state.golden_path, "export-golden");
       if (saved) {
         state.clear_golden_restore_status("snapshot exported");

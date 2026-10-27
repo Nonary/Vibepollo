@@ -2697,7 +2697,8 @@ namespace confighttp {
     try {
 #ifdef _WIN32
       // An inventory read must not replace a live stream's captured baseline.
-      if (display_helper_integration::coordinator_baseline_protected() ||
+      const auto publish = display_helper_integration::coordinator_baseline_publisher();
+      if (!publish ||
           remote_display_topology::instance().managed_client_identity_count() != 0) {
         return;
       }
@@ -2745,7 +2746,11 @@ namespace confighttp {
       }
       // Recheck ownership under the coordinator lock: a stream may have started
       // while the Devices page was enumerating displays.
+#ifdef _WIN32
+      remote_display_topology::instance().refresh_idle_physical_baseline(std::move(nodes), publish);
+#else
       remote_display_topology::instance().refresh_idle_physical_baseline(std::move(nodes));
+#endif
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "Remote display layout could not refresh physical monitor baseline: " << e.what();
     }

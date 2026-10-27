@@ -330,7 +330,8 @@ namespace nvhttp {
     }
 
     void refresh_remote_monitor_baseline(const bool extend_active_stream) {
-      if (display_helper_integration::coordinator_baseline_protected()) return;
+      const auto publish = display_helper_integration::coordinator_baseline_publisher();
+      if (!publish) return;
       const auto devices = display_helper_integration::enumerate_active_devices();
       if (!devices || devices->empty()) return;
       const auto capture_safe_devices = display_helper_integration::snapshot_capture_safe_devices();
@@ -393,7 +394,7 @@ namespace nvhttp {
         }
         baseline.push_back(std::move(node));
       }
-      remote_display_topology::instance().set_physical_baseline(std::move(baseline));
+      remote_display_topology::instance().set_physical_baseline(std::move(baseline), publish);
     }
 
     bool apply_remote_monitor_composition(const std::vector<remote_display_topology::node_t> &nodes) {
