@@ -12,7 +12,13 @@
 #include <utility>
 
 #include "file_handler.h"
-#include "platform/common.h"
+
+// Only the application-data directory accessor is needed by host().
+// Avoid bringing platform/common.h (and its Boost/WinSock static
+// initialization) into the isolated preference unit-test executable.
+namespace platf {
+  std::filesystem::path appdata();
+}
 
 namespace web_ui_preference {
   inline bool valid(const std::string_view choice) {
