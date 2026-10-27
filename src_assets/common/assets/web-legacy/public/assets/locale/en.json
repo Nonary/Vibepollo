@@ -532,8 +532,6 @@
     "coder_cabac": "cabac -- context adaptive binary arithmetic coding - higher quality",
     "coder_cavlc": "cavlc -- context adaptive variable-length coding - faster decode",
     "configuration": "Configuration",
-    "web_ui_preference": "Preferred Web UI",
-    "web_ui_preference_desc": "Web interface opened by the system tray. Choose V2 or Classic from the web interface to save this preference.",
     "controller": "Enable Gamepad Input",
     "controller_desc": "Allows guests to control the host system with a gamepad / controller",
     "credentials_file": "Credentials File",
