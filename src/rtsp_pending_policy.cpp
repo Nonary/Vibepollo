@@ -84,6 +84,10 @@ namespace rtsp_stream::pending_policy {
     };
   }
 
+  bool clear_removed_session_launch(const bool all_sessions, const bool preserve_pending_launches, const bool control_peer_attached) {
+    return !control_peer_attached && (!all_sessions || preserve_pending_launches);
+  }
+
   std::chrono::steady_clock::time_point launch_deadline_after_startup(
     const std::chrono::steady_clock::time_point expires_at,
     const std::chrono::steady_clock::time_point now,

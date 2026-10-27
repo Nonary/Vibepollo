@@ -1219,16 +1219,17 @@ namespace rtsp_stream {
       for (auto &slot : to_cleanup) {
         stream::session::stop(*slot);
         stream::session::join(*slot);
-        if (!all && !stream::session::control_peer_attached(*slot)) {
+        if (pending_policy::clear_removed_session_launch(all, preserve_pending_launch, stream::session::control_peer_attached(*slot))) {
           launches_without_control.push_back(stream::session::launch_session_id(*slot));
         }
       }
 
       // A started session clears its launch when its control stream attaches, and
       // finish_launch_startup() renewed the launch for that. If the session stopped
-      // first, clear just its launch so a retry from the same source is not refused
-      // as a duplicate. session_clear() takes the lifecycle gate, which some callers
-      // of clear() already hold, so run it on the io_context.
+      // first, including in a broadcast shutdown, clear just its launch so a retry
+      // from the same source is not refused as a duplicate, while launches queued
+      // for the next broadcast survive. session_clear() takes the lifecycle gate,
+      // which some callers of clear() already hold, so run it on the io_context.
       for (const auto launch_session_id : launches_without_control) {
         asio::post(io_context, [this, launch_session_id]() {
           session_clear(launch_session_id);
