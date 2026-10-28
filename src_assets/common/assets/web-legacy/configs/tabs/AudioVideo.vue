@@ -283,6 +283,12 @@ function selectVirtualDisplayLayout(v: unknown) {
           v-model="config.install_steam_audio_drivers"
           class="mb-3"
         />
+
+        <ConfigFieldRenderer
+          setting-key="auto_disable_steam_audio"
+          v-model="config.auto_disable_steam_audio"
+          class="mb-3"
+        />
       </template>
     </PlatformLayout>
 

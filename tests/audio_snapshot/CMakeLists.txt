@@ -7,7 +7,8 @@ find_path(AUDIO_SNAPSHOT_JSON_INCLUDE_DIR nlohmann/json.hpp REQUIRED)
 get_filename_component(REPOSITORY "${CMAKE_CURRENT_LIST_DIR}/../.." ABSOLUTE)
 add_executable(audio_snapshot_tests
     "${REPOSITORY}/tests/unit/test_audio_context.cpp"
-    "${REPOSITORY}/src/audio_context.cpp")
+    "${REPOSITORY}/src/audio_context.cpp"
+    "${REPOSITORY}/src/audio_steam_toggle_policy.cpp")
 target_include_directories(audio_snapshot_tests PRIVATE "${REPOSITORY}" "${AUDIO_SNAPSHOT_JSON_INCLUDE_DIR}")
 target_link_libraries(audio_snapshot_tests PRIVATE Threads::Threads)
 target_compile_definitions(audio_snapshot_tests PRIVATE SUNSHINE_ENABLE_WEBRTC)

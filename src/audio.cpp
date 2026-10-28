@@ -40,6 +40,7 @@ namespace audio {
           if (message == "There will be no audio") BOOST_LOG(warning) << message;
           else BOOST_LOG(info) << message;
         },
+        [] { return config::audio.auto_disable_steam_audio; },
 #if defined(_WIN32) || defined(__linux__)
         true,
 #else

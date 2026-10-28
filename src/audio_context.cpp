@@ -5,6 +5,7 @@
 #include "audio_context.h"
 
 #include "audio_lifecycle_policy.h"
+#include "audio_steam_toggle_policy.h"
 
 namespace audio {
   context_manager_t::context_manager_t(context_environment_t environment):
@@ -52,6 +53,61 @@ namespace audio {
     return ctx.restore_sink ? ctx.control->set_sink(sink) : 0;
   }
 
+  bool context_manager_t::steam_audio_auto_toggle_enabled() const {
+    return environment_.steam_audio_auto_toggle && environment_.steam_audio_auto_toggle();
+  }
+
+  void context_manager_t::on_steam_toggle_connect(audio_ctx_t &ctx) {
+    if (!ctx.control) {
+      return;
+    }
+
+    const auto toggle = steam_toggle::evaluate_toggle(
+      steam_toggle_state_,
+      steam_toggle::session_event_e::CONNECT,
+      steam_audio_auto_toggle_enabled()
+    );
+    if (toggle.should_snapshot) {
+      // Record what the host used before we touch anything, so the terminal
+      // end can put the user's own endpoints back instead of guessing.
+      ctx.control->snapshot_default_devices();
+    }
+    if (toggle.action != steam_toggle::toggle_action_e::enable) {
+      return;
+    }
+    if (ctx.control->enable_steam_audio_devices() == 0) {
+      ctx.restore_steam_devices = true;
+      return;
+    }
+
+    // The device boundary refused. Roll the state machine back so a later
+    // disconnect does not try to hide endpoints we never enabled.
+    (void) steam_toggle::evaluate_toggle(
+      steam_toggle_state_,
+      steam_toggle::session_event_e::DISCONNECT,
+      steam_audio_auto_toggle_enabled()
+    );
+  }
+
+  void context_manager_t::on_steam_toggle_disconnect(audio_ctx_t &ctx) {
+    if (!ctx.restore_steam_devices) {
+      return;
+    }
+    ctx.restore_steam_devices = false;
+    if (!ctx.control) {
+      return;
+    }
+
+    const auto toggle = steam_toggle::evaluate_toggle(
+      steam_toggle_state_,
+      steam_toggle::session_event_e::DISCONNECT,
+      steam_audio_auto_toggle_enabled()
+    );
+    if (toggle.action == steam_toggle::toggle_action_e::disable) {
+      ctx.control->disable_steam_audio_devices();
+    }
+  }
+
   int context_manager_t::start(audio_ctx_t &ctx) {
     ctx.sink_flag = std::make_unique<std::atomic_bool>(false);
     if (environment_.retain_for_app) {
@@ -61,18 +117,24 @@ namespace audio {
         ctx.control = std::move(retained.control);
         ctx.sink = std::move(retained.sink);
         ctx.restore_sink = retained.restore_sink;
+        ctx.restore_steam_devices = retained.restore_steam_devices;
         ctx.sink_flag->store(true, std::memory_order_release);
         log("Audio retained for resumable app; reclaimed on reconnect.");
         return 0;
       }
     }
     ctx.restore_sink = false;
+    ctx.restore_steam_devices = false;
     ctx.control = environment_.create_control();
     if (ctx.control) {
+      on_steam_toggle_connect(ctx);
       if (auto sink = ctx.control->sink_info()) {
         ctx.sink = std::move(*sink);
         return 0;
       }
+      // No usable sink means no stream; do not leave the host with Steam
+      // endpoints enabled that nothing will ever clean up.
+      on_steam_toggle_disconnect(ctx);
       ctx.control.reset();
     }
     log("There will be no audio");
@@ -80,28 +142,34 @@ namespace audio {
   }
 
   void context_manager_t::restore(audio_ctx_t &ctx) {
-    if (!ctx.restore_sink || !ctx.control) {
+    if (!ctx.control || (!ctx.restore_sink && !ctx.restore_steam_devices)) {
       return;
     }
-    const auto sink = ctx.sink.host.empty() ? environment_.configured_sink() : ctx.sink.host;
-    if (!sink.empty()) {
-      ctx.control->restore_sink(sink);
+    if (ctx.restore_sink) {
+      const auto sink = ctx.sink.host.empty() ? environment_.configured_sink() : ctx.sink.host;
+      if (!sink.empty()) {
+        ctx.control->restore_sink(sink);
+      }
+      ctx.control->reset_default_device(sink);
     }
-    ctx.control->reset_default_device(sink);
+    on_steam_toggle_disconnect(ctx);
   }
 
   void context_manager_t::stop(audio_ctx_t &ctx) {
-    if (!ctx.restore_sink) {
+    if (!ctx.restore_sink && !ctx.restore_steam_devices) {
       return;
     }
-    if (environment_.retain_for_app && lifecycle::final_owner_release_action(ctx.restore_sink, environment_.app_active(), state_.terminal_pending()) == lifecycle::release_action_e::retain) {
-      retained_t value {std::move(ctx.control), std::move(ctx.sink), ctx.restore_sink};
+    if (environment_.retain_for_app &&
+        lifecycle::final_owner_release_action(ctx.restore_sink || ctx.restore_steam_devices, environment_.app_active(), state_.terminal_pending()) == lifecycle::release_action_e::retain) {
+      retained_t value {std::move(ctx.control), std::move(ctx.sink), ctx.restore_sink, ctx.restore_steam_devices};
       if (state_.retain(value, environment_.app_active())) {
         log("Audio retained for resumable app after final transport owner ended.");
         return;
       }
       ctx.control = std::move(value.control);
       ctx.sink = std::move(value.sink);
+      ctx.restore_sink = value.restore_sink;
+      ctx.restore_steam_devices = value.restore_steam_devices;
     }
     log("Restoring audio state after terminal app end.");
     restore(ctx);
@@ -125,6 +193,7 @@ namespace audio {
     ctx.control = std::move(retained->control);
     ctx.sink = std::move(retained->sink);
     ctx.restore_sink = retained->restore_sink;
+    ctx.restore_steam_devices = retained->restore_steam_devices;
     auto completion = util::fail_guard([this] {
       state_.complete_terminal_restore();
     });

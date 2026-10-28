@@ -4,6 +4,7 @@
  */
 #pragma once
 #include "audio_lifecycle_state.h"
+#include "audio_steam_toggle_policy.h"
 #include "platform/audio.h"
 #include "thread_safe.h"
 
@@ -16,6 +17,7 @@ namespace audio {
     std::unique_ptr<std::atomic_bool> sink_flag;
     std::unique_ptr<platf::audio_control_t> control;
     bool restore_sink {false};
+    bool restore_steam_devices {false};
     platf::sink_t sink;
   };
 
@@ -28,6 +30,9 @@ namespace audio {
     std::function<bool()> app_active;
     std::function<std::string()> configured_sink;
     std::function<void(std::string_view)> log;
+    // Opt-in Steam Streaming device handling. Empty or false means the
+    // endpoints are left exactly as the host has them.
+    std::function<bool()> steam_audio_auto_toggle;
     bool retain_for_app {true};
   };
 
@@ -53,16 +58,21 @@ namespace audio {
       std::unique_ptr<platf::audio_control_t> control;
       platf::sink_t sink;
       bool restore_sink {false};
+      bool restore_steam_devices {false};
     };
 
     int start(audio_ctx_t &ctx);
     void stop(audio_ctx_t &ctx);
     void restore(audio_ctx_t &ctx);
+    void on_steam_toggle_connect(audio_ctx_t &ctx);
+    void on_steam_toggle_disconnect(audio_ctx_t &ctx);
+    bool steam_audio_auto_toggle_enabled() const;
     void log(std::string_view message);
 
     context_environment_t environment_;
     lifecycle::state_t<retained_t> state_;
     safe::shared_t<audio_ctx_t> shared_;
+    steam_toggle::session_toggle_state_t steam_toggle_state_;
   };
 
   // Both transports use this boundary for blocking joins. A failed join keeps

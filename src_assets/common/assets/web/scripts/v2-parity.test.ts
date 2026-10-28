@@ -179,6 +179,7 @@ test('Linux keeps common virtual-display policy and hides Windows display intern
     'always_send_scancodes',
     'native_pen_touch',
     'install_steam_audio_drivers',
+    'auto_disable_steam_audio',
   ]);
 
   for (const field of fields.filter((candidate) => commonKeys.has(candidate.key))) {

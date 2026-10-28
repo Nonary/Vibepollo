@@ -274,6 +274,7 @@ namespace config {
     bool keep_default;
     bool auto_capture;
     bool sink_capture_only;  ///< Capture the selected Windows audio sink without changing default outputs.
+    bool auto_disable_steam_audio;  ///< Auto-disable Steam Streaming audio devices after session ends.
   };
 
   constexpr int ENCRYPTION_MODE_NEVER = 0;  // Never use video encryption, even if the client supports it
