@@ -112,7 +112,7 @@ function ConvertFrom-DriverInstallSafetyInventoryResult {
     if ($markerLines.Count -ne 1) { throw 'Driver safety inventory returned a missing or ambiguous result. Driver unchanged.' }
 
     $encodedJson = $markerLines[0].Substring($markerPrefix.Length)
-    if ($encodedJson -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'Driver safety inventory returned malformed data. Driver unchanged.' }
+    if ($encodedJson -cnotmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'Driver safety inventory returned malformed data. Driver unchanged.' }
 
     try {
         $json = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encodedJson))
@@ -1204,7 +1204,7 @@ try {
     if ($markers.Count -ne 1) { throw 'Missing or ambiguous retained display inventory; automatic repair deferred.' }
     try {
         $encoded = $markers[0].Substring($prefix.Length)
-        if ($encoded -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'Malformed inventory encoding.' }
+        if ($encoded -cnotmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'Malformed inventory encoding.' }
         $inventory = ConvertFrom-Json -InputObject ([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded))) -ErrorAction Stop
         foreach ($name in @('Nodes', 'SignedDrivers', 'Packages')) {
             $property = $inventory.PSObject.Properties[$name]
