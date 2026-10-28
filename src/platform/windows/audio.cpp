@@ -1096,6 +1096,107 @@ namespace platf::audio {
       return 0;
     }
 
+    audio_control_t::match_fields_list_t match_steam_microphone() {
+      return {
+        {match_field_e::adapter_friendly_name, L"Steam Streaming Microphone"}
+      };
+    }
+
+    void snapshot_default_devices() override {
+      if (snapshot_taken_) {
+        return;
+      }
+      const auto matched_speakers = find_device_id(match_steam_speakers(), DEVICE_STATEMASK_ALL);
+      const auto matched_mic = find_capture_device_id(match_steam_microphone(), DEVICE_STATEMASK_ALL);
+
+      const auto render_enum = current_default_device_ids();
+      for (size_t i = 0; i < render_enum.size(); ++i) {
+        if (!render_enum[i].empty() && (!matched_speakers || render_enum[i] != matched_speakers->second)) {
+          snapshot_render_ids_[i] = render_enum[i];
+        }
+      }
+      const auto capture_enum = capture_default_device_ids();
+      for (size_t i = 0; i < capture_enum.size(); ++i) {
+        if (!capture_enum[i].empty() && (!matched_mic || capture_enum[i] != matched_mic->second)) {
+          snapshot_capture_ids_[i] = capture_enum[i];
+        }
+      }
+      snapshot_taken_ = true;
+      BOOST_LOG(info) << "Snapshotted audio defaults for Steam toggle restore"sv;
+    }
+
+    int enable_steam_audio_devices() override {
+      auto matched_speakers = find_device_id(match_steam_speakers(), DEVICE_STATEMASK_ALL);
+      if (!matched_speakers) {
+        BOOST_LOG(error) << "Steam Streaming Speakers not found; cannot enable"sv;
+        return -1;
+      }
+      auto speakers_id = matched_speakers->second;
+
+      if (FAILED(policy->SetEndpointVisibility(speakers_id.c_str(), TRUE))) {
+        BOOST_LOG(warning) << "Failed to make Steam Streaming Speakers visible"sv;
+      }
+
+      if (auto matched_mic = find_capture_device_id(match_steam_microphone(), DEVICE_STATEMASK_ALL)) {
+        auto mic_id = matched_mic->second;
+        if (FAILED(policy->SetEndpointVisibility(mic_id.c_str(), TRUE))) {
+          BOOST_LOG(warning) << "Failed to make Steam Streaming Microphone visible"sv;
+        }
+        for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+          const auto role = static_cast<ERole>(x);
+          if (is_default_capture_device(mic_id, role)) {
+            continue;
+          }
+          const auto status = policy->SetDefaultEndpoint(mic_id.c_str(), role);
+          if (FAILED(status)) {
+            BOOST_LOG(warning) << "Couldn't set Steam Streaming Microphone for role ["sv
+                               << static_cast<int>(role) << "]: 0x"sv
+                               << util::hex(status).to_string_view();
+          }
+        }
+      } else {
+        BOOST_LOG(warning) << "Steam Streaming Microphone not found"sv;
+      }
+
+      BOOST_LOG(info) << "Enabled Steam Streaming audio devices"sv;
+      return 0;
+    }
+
+    int disable_steam_audio_devices() override {
+      if (auto matched_speakers = find_device_id(match_steam_speakers(), DEVICE_STATEMASK_ALL)) {
+        auto speakers_id = matched_speakers->second;
+        for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+          const auto role = static_cast<ERole>(x);
+          const auto &snapshot = snapshot_render_ids_[role_index(role)];
+          if (!snapshot.empty() && is_default_device(speakers_id, role)) {
+            policy->SetDefaultEndpoint(snapshot.c_str(), role);
+          }
+        }
+        if (FAILED(policy->SetEndpointVisibility(speakers_id.c_str(), FALSE))) {
+          BOOST_LOG(warning) << "Failed to hide Steam Streaming Speakers"sv;
+        }
+      }
+      if (auto matched_mic = find_capture_device_id(match_steam_microphone(), DEVICE_STATEMASK_ALL)) {
+        auto mic_id = matched_mic->second;
+        for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+          const auto role = static_cast<ERole>(x);
+          const auto &snapshot = snapshot_capture_ids_[role_index(role)];
+          if (!snapshot.empty() && is_default_capture_device(mic_id, role)) {
+            policy->SetDefaultEndpoint(snapshot.c_str(), role);
+          }
+        }
+        if (FAILED(policy->SetEndpointVisibility(mic_id.c_str(), FALSE))) {
+          BOOST_LOG(warning) << "Failed to hide Steam Streaming Microphone"sv;
+        }
+      }
+
+      snapshot_render_ids_.fill({});
+      snapshot_capture_ids_.fill({});
+      snapshot_taken_ = false;
+      BOOST_LOG(info) << "Disabled Steam Streaming audio devices and restored defaults"sv;
+      return 0;
+    }
+
     int set_sink(const std::string &sink) override {
       auto device_id = set_format(sink);
       if (!device_id) {
@@ -1418,79 +1519,146 @@ namespace platf::audio {
     }
 
     /**
-     * @brief Search for currently present audio device_id using multiple match fields.
-     * @param match_list Pairs of match fields and values
-     * @return Optional pair of matched field and device_id
+     * @brief Search for an audio endpoint device_id using multiple match fields.
+     * @param data_flow Endpoint direction (eRender or eCapture).
+     * @param match_list Pairs of match fields and values.
+     * @param state_mask Endpoint state mask (defaults to DEVICE_STATE_ACTIVE).
+     * @return Optional pair of matched field and device_id.
      */
-    std::optional<matched_field_t> find_device_id(const match_fields_list_t &match_list) {
+    std::optional<matched_field_t> find_endpoint_id(
+      EDataFlow data_flow,
+      const match_fields_list_t &match_list,
+      DWORD state_mask = DEVICE_STATE_ACTIVE
+    ) {
       if (match_list.empty()) {
         return std::nullopt;
       }
 
       collection_t collection;
-      auto status = device_enum->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &collection);
+      auto status = device_enum->EnumAudioEndpoints(data_flow, state_mask, &collection);
       if (FAILED(status)) {
-        BOOST_LOG(error) << "Couldn't enumerate: [0x"sv << util::hex(status).to_string_view() << ']';
+        BOOST_LOG(error) << "Couldn't enumerate audio endpoints: [0x"sv << util::hex(status).to_string_view() << ']';
         return std::nullopt;
       }
 
       UINT count = 0;
       collection->GetCount(&count);
-
       std::vector<std::wstring> matched(match_list.size());
-      for (auto x = 0; x < count; ++x) {
-        audio::device_t device;
-        collection->Item(x, &device);
+      std::vector<int> matched_rank(match_list.size(), 0);
 
+      auto state_rank = [](DWORD state) -> int {
+        if (state == DEVICE_STATE_ACTIVE) {
+          return 3;
+        }
+        if (state == DEVICE_STATE_DISABLED) {
+          return 2;
+        }
+        return 1;
+      };
+
+      for (UINT x = 0; x < count; ++x) {
+        audio::device_t device;
+        if (FAILED(collection->Item(x, &device)) || !device) {
+          continue;
+        }
         audio::wstring_t wstring_id;
-        device->GetId(&wstring_id);
+        if (FAILED(device->GetId(&wstring_id)) || !wstring_id) {
+          continue;
+        }
         std::wstring device_id = wstring_id.get();
 
-        audio::prop_t prop;
-        device->OpenPropertyStore(STGM_READ, &prop);
+        DWORD state = DEVICE_STATE_ACTIVE;
+        device->GetState(&state);
+        const int rank = state_rank(state);
 
+        audio::prop_t prop;
+        if (FAILED(device->OpenPropertyStore(STGM_READ, &prop)) || !prop) {
+          continue;
+        }
         prop_var_t adapter_friendly_name;
         prop_var_t device_friendly_name;
         prop_var_t device_desc;
-
         prop->GetValue(PKEY_Device_FriendlyName, &device_friendly_name.prop);
         prop->GetValue(PKEY_DeviceInterface_FriendlyName, &adapter_friendly_name.prop);
         prop->GetValue(PKEY_Device_DeviceDesc, &device_desc.prop);
 
-        for (size_t i = 0; i < match_list.size(); i++) {
-          if (matched[i].empty()) {
-            const wchar_t *match_value = nullptr;
-            switch (match_list[i].first) {
-              case match_field_e::device_id:
-                match_value = device_id.c_str();
-                break;
-
-              case match_field_e::device_friendly_name:
-                match_value = device_friendly_name.prop.pwszVal;
-                break;
-
-              case match_field_e::adapter_friendly_name:
-                match_value = adapter_friendly_name.prop.pwszVal;
-                break;
-
-              case match_field_e::device_description:
-                match_value = device_desc.prop.pwszVal;
-                break;
-            }
-            if (match_value && std::wcscmp(match_value, match_list[i].second.c_str()) == 0) {
-              matched[i] = device_id;
-            }
+        for (size_t i = 0; i < match_list.size(); ++i) {
+          if (matched_rank[i] >= rank) {
+            continue;
+          }
+          const wchar_t *match_value = nullptr;
+          switch (match_list[i].first) {
+            case match_field_e::device_id: match_value = device_id.c_str(); break;
+            case match_field_e::device_friendly_name: match_value = device_friendly_name.prop.pwszVal; break;
+            case match_field_e::adapter_friendly_name: match_value = adapter_friendly_name.prop.pwszVal; break;
+            case match_field_e::device_description: match_value = device_desc.prop.pwszVal; break;
+          }
+          if (match_value && std::wcscmp(match_value, match_list[i].second.c_str()) == 0) {
+            matched[i] = device_id;
+            matched_rank[i] = rank;
           }
         }
       }
-
-      for (size_t i = 0; i < match_list.size(); i++) {
+      for (size_t i = 0; i < match_list.size(); ++i) {
         if (!matched[i].empty()) {
           return matched_field_t(match_list[i].first, matched[i]);
         }
       }
-
       return std::nullopt;
+    }
+
+    /**
+     * @brief Search for a capture (microphone) device_id using multiple match fields.
+     * Like find_device_id but enumerates eCapture endpoints.
+     */
+    std::optional<matched_field_t> find_capture_device_id(
+      const match_fields_list_t &match_list,
+      DWORD state_mask = DEVICE_STATE_ACTIVE
+    ) {
+      return find_endpoint_id(eCapture, match_list, state_mask);
+    }
+
+    role_device_ids_t capture_default_device_ids() {
+      role_device_ids_t device_ids;
+      for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+        const auto role = static_cast<ERole>(x);
+        audio::device_t device;
+        auto status = device_enum->GetDefaultAudioEndpoint(eCapture, role, &device);
+        if (FAILED(status) || !device) {
+          continue;
+        }
+        audio::wstring_t id;
+        if (SUCCEEDED(device->GetId(&id)) && id) {
+          device_ids[role_index(role)] = id.get();
+        }
+      }
+      return device_ids;
+    }
+
+    bool is_default_capture_device(const std::wstring &device_id, ERole role) {
+      audio::device_t device;
+      auto status = device_enum->GetDefaultAudioEndpoint(eCapture, role, &device);
+      if (FAILED(status) || !device) {
+        return false;
+      }
+      audio::wstring_t id;
+      if (FAILED(device->GetId(&id)) || !id) {
+        return false;
+      }
+      return device_id == id.get();
+    }
+
+    /**
+     * @brief Search for currently present audio device_id using multiple match fields.
+     * @param match_list Pairs of match fields and values
+     * @param state_mask Endpoint state mask (defaults to DEVICE_STATE_ACTIVE)
+     * @return Optional pair of matched field and device_id
+     */
+    std::optional<matched_field_t> find_device_id(
+      const match_fields_list_t &match_list,
+      DWORD state_mask = DEVICE_STATE_ACTIVE
+    ) {
+      return find_endpoint_id(eRender, match_list, state_mask);
     }
 
     /**
@@ -3302,6 +3470,9 @@ namespace platf::audio {
     policy_t policy;
     audio::device_enum_t device_enum;
     role_device_ids_t captured_default_device_ids;
+    role_device_ids_t snapshot_render_ids_ {};
+    role_device_ids_t snapshot_capture_ids_ {};
+    bool snapshot_taken_ {false};
     pending_role_restore_handoff_t pending_role_restore_handoff;
     std::string assigned_sink;
     std::wstring capture_device_id;
@@ -3331,7 +3502,7 @@ namespace platf {
 
     // Install Steam Streaming Speakers if needed. We do this during audio_control() to ensure
     // the sink information returned includes the new Steam Streaming Speakers device.
-    if (config::audio.install_steam_drivers && !control->find_device_id(control->match_steam_speakers())) {
+    if (config::audio.install_steam_drivers && !control->find_device_id(control->match_steam_speakers(), DEVICE_STATEMASK_ALL)) {
       // This is best effort. Don't fail if it doesn't work.
       control->install_steam_audio_drivers();
     }
@@ -3356,6 +3527,9 @@ namespace platf {
       // touching the default device.
       audio_ctrl.recover_interrupted_visibility_transition();
       audio_ctrl.reset_default_device_no_wait();
+      if (config::audio.auto_disable_steam_audio) {
+        audio_ctrl.disable_steam_audio_devices();
+      }
     }
 
     return co_init;

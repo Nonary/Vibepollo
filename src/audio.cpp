@@ -14,6 +14,7 @@
 #include "audio_lifecycle_policy.h"
 #include "audio_lifecycle_state.h"
 #include "audio_policy.h"
+#include "audio_steam_toggle_policy.h"
 #include "config.h"
 #include "globals.h"
 #include "logging.h"
@@ -37,25 +38,41 @@ namespace audio {
     std::unique_ptr<platf::audio_control_t> control;
     platf::sink_t sink;
     bool restore_sink {false};
+    bool restore_steam_devices {false};
   };
 
   lifecycle::state_t<retained_audio_t> audio_state;
+  steam_toggle::session_toggle_state_t steam_toggle_state;
 
   void restore_audio_control(audio_ctx_t &ctx) {
-    if (!ctx.restore_sink || !ctx.control) {
+    if (!ctx.control || (!ctx.restore_sink && !ctx.restore_steam_devices)) {
       return;
     }
 
     const std::string &sink = ctx.sink.host.empty() ? config::audio.sink : ctx.sink.host;
-    if (!sink.empty()) {
-      ctx.control->restore_sink(sink);
+    if (ctx.restore_sink) {
+      if (!sink.empty()) {
+        ctx.control->restore_sink(sink);
+      }
+      ctx.control->reset_default_device(sink);
     }
-    ctx.control->reset_default_device(sink);
+
+    if (ctx.restore_steam_devices) {
+      const auto toggle_result = steam_toggle::evaluate_toggle(
+        steam_toggle_state,
+        steam_toggle::session_event_e::DISCONNECT,
+        config::audio.auto_disable_steam_audio
+      );
+      if (toggle_result.action == steam_toggle::toggle_action_e::disable) {
+        ctx.control->disable_steam_audio_devices();
+      }
+      ctx.restore_steam_devices = false;
+    }
   }
 
   bool retain_audio_control(audio_ctx_t &ctx) {
     if (lifecycle::final_owner_release_action(
-          ctx.restore_sink,
+          ctx.restore_sink || ctx.restore_steam_devices,
           proc::proc.current_app_id() > 0,
           audio_state.terminal_pending()
         ) != lifecycle::release_action_e::retain) {
@@ -66,6 +83,7 @@ namespace audio {
       std::move(ctx.control),
       std::move(ctx.sink),
       ctx.restore_sink,
+      ctx.restore_steam_devices,
     };
     if (audio_state.retain(value, proc::proc.current_app_id() > 0)) {
       return true;
@@ -94,6 +112,7 @@ namespace audio {
     ctx.control = std::move(value.control);
     ctx.sink = std::move(value.sink);
     ctx.restore_sink = value.restore_sink;
+    ctx.restore_steam_devices = value.restore_steam_devices;
     // The retained control is still assigned to the streaming sink. Mark the
     // handoff as already assigned so reconnect does not write the default roles
     // again before opening its microphone.
@@ -111,7 +130,8 @@ namespace audio {
     ctx.control = std::move(retained->control);
     ctx.sink = std::move(retained->sink);
     ctx.restore_sink = retained->restore_sink;
-    if (ctx.restore_sink) {
+    ctx.restore_steam_devices = retained->restore_steam_devices;
+    if (ctx.restore_sink || ctx.restore_steam_devices) {
       BOOST_LOG(info) << "Restoring retained audio state after terminal app end."sv;
     }
     auto restore_completion = util::fail_guard([&]() {
@@ -457,14 +477,50 @@ namespace audio {
 
     // The default sink has not been replaced yet.
     ctx.restore_sink = false;
+    ctx.restore_steam_devices = false;
 
     if (!(ctx.control = platf::audio_control())) {
       return 0;
     }
 
+#if defined(_WIN32) || defined(__linux__)
+    const auto toggle_result = steam_toggle::evaluate_toggle(
+      steam_toggle_state,
+      steam_toggle::session_event_e::CONNECT,
+      config::audio.auto_disable_steam_audio
+    );
+    if (toggle_result.should_snapshot) {
+      ctx.control->snapshot_default_devices();
+    }
+    if (toggle_result.action == steam_toggle::toggle_action_e::enable) {
+      if (ctx.control->enable_steam_audio_devices() == 0) {
+        ctx.restore_steam_devices = true;
+      } else {
+        (void) steam_toggle::evaluate_toggle(
+          steam_toggle_state,
+          steam_toggle::session_event_e::DISCONNECT,
+          config::audio.auto_disable_steam_audio
+        );
+      }
+    }
+#endif
+
     auto sink = ctx.control->sink_info();
     if (!sink) {
       // Let the calling code know it failed
+#if defined(_WIN32) || defined(__linux__)
+      if (ctx.restore_steam_devices) {
+        const auto rollback_result = steam_toggle::evaluate_toggle(
+          steam_toggle_state,
+          steam_toggle::session_event_e::DISCONNECT,
+          config::audio.auto_disable_steam_audio
+        );
+        if (rollback_result.action == steam_toggle::toggle_action_e::disable) {
+          ctx.control->disable_steam_audio_devices();
+        }
+        ctx.restore_steam_devices = false;
+      }
+#endif
       ctx.control.reset();
       return 0;
     }
@@ -476,7 +532,7 @@ namespace audio {
   }
 
   void stop_audio_control(audio_ctx_t &ctx) {
-    if (!ctx.restore_sink) {
+    if (!ctx.restore_sink && !ctx.restore_steam_devices) {
       return;
     }
 

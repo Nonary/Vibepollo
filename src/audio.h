@@ -72,6 +72,7 @@ namespace audio {
     std::unique_ptr<platf::audio_control_t> control;
 
     bool restore_sink;
+    bool restore_steam_devices {false};
     platf::sink_t sink;
   };
 

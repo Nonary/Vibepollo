@@ -995,6 +995,32 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### auto_disable_steam_audio
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Automatically enables the Steam Streaming Speakers and Steam Streaming Microphone devices when a streaming
+            session starts, sets Steam Streaming Microphone as the default capture device, and disables (hides) both
+            devices while restoring the pre-session default audio endpoints when the session ends.
+            @note{This option is only supported on Windows.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            disabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            auto_disable_steam_audio = enabled
+            @endcode</td>
+    </tr>
+</table>
+
 ### stream_audio
 
 <table>

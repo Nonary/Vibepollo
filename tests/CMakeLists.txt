@@ -618,6 +618,8 @@ sunshine_register_component(NAME test_component_http_pairing_policy TEST_SOURCE 
 sunshine_register_component(NAME test_component_video_policy TEST_SOURCE unit/test_video.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/video_policy.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
+sunshine_register_component(NAME test_component_steam_audio_toggle_policy TEST_SOURCE unit/test_steam_audio_toggle_policy.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/audio_steam_toggle_policy.cpp")
 sunshine_register_component(NAME test_component_wgc_monitor_selection TEST_SOURCE unit/test_wgc_monitor_selection.cpp)
 sunshine_register_component(NAME test_component_screen_saver_state TEST_SOURCE unit/test_screen_saver_state.cpp
     LINK_LIBRARIES nlohmann_json::nlohmann_json)

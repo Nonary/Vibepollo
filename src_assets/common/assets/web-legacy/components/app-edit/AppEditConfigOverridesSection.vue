@@ -939,6 +939,7 @@ const ALLOWED_OVERRIDE_KEYS = new Set<string>([
   'audio_sink_capture_only',
   'virtual_sink',
   'stream_audio',
+  'auto_disable_steam_audio',
   'adapter_name',
   'dd_configuration_option',
   'dd_resolution_option',

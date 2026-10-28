@@ -980,6 +980,7 @@ namespace config {
     true,  // keep_sink_default
     true,  // auto_capture
     false,  // audio_sink_capture_only
+    false,  // auto_disable_steam_audio
   };
 
   stream_t stream {
@@ -2109,6 +2110,7 @@ namespace config {
     bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
     bool_f(vars, "keep_sink_default", audio.keep_default);
     bool_f(vars, "auto_capture_sink", audio.auto_capture);
+    bool_f(vars, "auto_disable_steam_audio", audio.auto_disable_steam_audio);
 
     string_restricted_f(vars, "origin_web_ui_allowed", nvhttp.origin_web_ui_allowed, {"pc"sv, "lan"sv, "wan"sv});
     // reflect origin ACL update immediately in HTTP layer
@@ -2667,6 +2669,7 @@ namespace config {
         "audio_sink_capture_only",
         "virtual_sink",
         "stream_audio",
+        "auto_disable_steam_audio",
         "adapter_name",
         "adapter_pnp_id",
         "dd_configuration_option",

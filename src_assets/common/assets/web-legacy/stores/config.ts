@@ -129,6 +129,7 @@ const defaultGroups = [
       audio_sink_capture_only: 'disabled',
       virtual_sink: '',
       install_steam_audio_drivers: 'enabled',
+      auto_disable_steam_audio: 'disabled',
       stream_audio: 'enabled',
       keep_sink_default: 'enabled',
       auto_capture_sink: 'enabled',
