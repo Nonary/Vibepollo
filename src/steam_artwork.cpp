@@ -590,12 +590,12 @@ namespace {
     return total;
   }
 
-  std::optional<std::vector<std::uint8_t>> fetch_remote(const std::string &url) {
+  platf::steam::artwork::remote_fetch_result_t fetch_remote(const std::string &url) {
     CURL *curl = curl_easy_init();
-    if (!curl) return std::nullopt;
+    if (!curl) return {};
     if (!http::configure_curl_tls(curl)) {
       curl_easy_cleanup(curl);
-      return std::nullopt;
+      return {};
     }
     curl_buffer_t buffer;
     curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
@@ -615,16 +615,17 @@ namespace {
     long status = 0;
     curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
     curl_easy_cleanup(curl);
-    if (result != CURLE_OK || buffer.overflow || status < 200 || status >= 300 || buffer.bytes.empty()) {
-      return std::nullopt;
+    if (result == CURLE_OK && !buffer.overflow && status == 404) {
+      return {platf::steam::artwork::remote_fetch_status::not_found};
     }
-    return std::move(buffer.bytes);
+    if (result != CURLE_OK || buffer.overflow || status < 200 || status >= 300 || buffer.bytes.empty()) return {};
+    return {platf::steam::artwork::remote_fetch_status::success, std::move(buffer.bytes)};
   }
 #else
-  std::optional<std::vector<std::uint8_t>> fetch_remote(const std::string &) {
+  platf::steam::artwork::remote_fetch_result_t fetch_remote(const std::string &) {
     // Component tests inject a fetcher; builds without the application HTTP
     // stack remain offline by construction.
-    return std::nullopt;
+    return {};
   }
 #endif
 
@@ -647,28 +648,32 @@ namespace {
   fs::path obtain_remote_portrait(std::uint32_t app_id, const fs::path &local_source, const fs::path &appdata,
                                   const platf::steam::artwork::remote_fetcher_t &injected_fetcher) {
     if (app_id == 0) return {};
-    const auto cache = platf::steam::artwork::remote_cache_path(appdata, app_id);
+    const auto hashed = hashed_portrait_url(app_id, local_source);
+    const auto base_cache = platf::steam::artwork::remote_cache_path(appdata, app_id);
+    // Never reuse an app-ID-only cache for a content-hashed source: it may
+    // have been populated by a different hash under an earlier build.
+    const auto cache = hashed.empty() ? base_cache : fs::path {
+      base_cache.string() + "." + local_source.parent_path().filename().string() + "." + local_source.stem().string()
+    };
     const auto failure = cache.string() + ".failed";
     std::error_code ec;
     fs::create_directories(cache.parent_path(), ec);
-    // Steam's CDN asset is immutable for the app ID in practice. Treat the
-    // validated file as a stable source and fetch only when it is absent or
-    // unusable; the 30-second catalog poll therefore never redownloads it.
+    // Hash-scoped paths also scope failures; a new source can retry immediately.
     if (regular(cache) && full_portrait(cache)) return cache;
     if (recent_failure_marker(failure)) return {};
 
     const auto fetcher = injected_fetcher ? injected_fetcher : fetch_remote;
-    auto bytes = fetcher(platf::steam::artwork::remote_portrait_url(app_id));
-    if (!bytes || bytes->empty()) {
-      if (const auto hashed = hashed_portrait_url(app_id, local_source); !hashed.empty()) bytes = fetcher(hashed);
+    auto result = fetcher(platf::steam::artwork::remote_portrait_url(app_id));
+    if (result.status == platf::steam::artwork::remote_fetch_status::not_found && !hashed.empty()) {
+      result = fetcher(hashed);
     }
-    if (!bytes || bytes->empty() || bytes->size() > max_remote_bytes) {
+    if (result.status != platf::steam::artwork::remote_fetch_status::success || result.bytes.empty() || result.bytes.size() > max_remote_bytes) {
       mark_remote_failure(failure);
       return {};
     }
 
     const auto temporary = cache.string() + ".download." + unique_suffix();
-    if (!write_output(temporary, *bytes)) {
+    if (!write_output(temporary, result.bytes)) {
       mark_remote_failure(failure);
       return {};
     }
