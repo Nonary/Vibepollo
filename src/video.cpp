@@ -469,7 +469,7 @@ namespace video {
 
 #endif
 
-    probe_target_t resolve_probe_target() {
+    probe_target_t resolve_probe_target(const bool materialize_capture_output = true) {
 #ifdef _WIN32
       const auto active_output = config::get_active_output_name();
       const auto mapped_output = display_device::map_output_name(active_output);
@@ -504,6 +504,21 @@ namespace video {
       }
       if (pending_virtual_display_adapter_hint) {
         const auto pending_adapter = adapter_id_from_luid(*pending_virtual_display_adapter_hint);
+        // A cache lookup needs only the expected adapter identity. Materializing
+        // a capture output here creates a D3D device even on a positive cache
+        // hit, repeatedly waking the GPU while clients poll /serverinfo.
+        // Actual probes still select a capture target and must observe this
+        // adapter before they can own a successful capability entry.
+        if (!materialize_capture_output) {
+          return probe_target_t {
+            .required_adapter = pending_adapter,
+            .adapter_identity = probe_adapter_identity_t {
+              .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
+              .source = "pending-virtual-display-adapter-cache-lookup",
+              .resolved = true,
+            },
+          };
+        }
         std::optional<LUID> observed_adapter;
         std::string_view observed_source;
         if (current_wgc_identity) {
@@ -583,6 +598,16 @@ namespace video {
         );
         if (configured_adapter) {
           const auto configured_adapter_id = adapter_id_from_luid(*configured_adapter.luid);
+          if (!materialize_capture_output) {
+            return probe_target_t {
+              .required_adapter = configured_adapter_id,
+              .adapter_identity = probe_adapter_identity_t {
+                .identity = luid_cache_identity(*configured_adapter.luid),
+                .source = "configured-adapter-cache-lookup",
+                .resolved = true,
+              },
+            };
+          }
           const bool preferred_output_matches_adapter =
             mapped_output_matches_adapter(*configured_adapter.luid);
           const bool wgc_mismatches_configured_adapter =
@@ -694,6 +719,7 @@ namespace video {
         },
       };
 #else
+      (void) materialize_capture_output;
       const auto active_output = display_device::map_output_name(config::get_active_output_name());
       return probe_target_t {
         .display_name =
@@ -757,7 +783,7 @@ namespace video {
       oss << "|amf_quarantined=" << (native_amf_lifecycle_gate.is_quarantined() ? 1 : 0);
       const auto adapter_identity = probe_target ?
                                       probe_target->adapter_identity :
-                                      resolve_probe_target().adapter_identity;
+                                      resolve_probe_target(false).adapter_identity;
       return probe_cache_key_t {
         .encoder_configuration = oss.str(),
         .adapter_identity = adapter_identity.identity,

@@ -1873,6 +1873,10 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
             "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${SUNSHINE_TEST_GXX}")
     add_test(NAME regression_cancel_after_app_exit
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_cancel_after_app_exit.py")
+    add_test(NAME regression_encoder_probe_lookup_behavior
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_encoder_probe_lookup_behavior.py"
+            --compiler "${SUNSHINE_TEST_GXX}")
+    set_tests_properties(regression_encoder_probe_lookup_behavior PROPERTIES LABELS "component" TIMEOUT 120)
     add_test(NAME regression_remote_input_reconnect
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_remote_input_reconnect.py"
             --compiler "${SUNSHINE_TEST_GXX}"
