@@ -114,6 +114,12 @@ namespace {
 
     int set_capture_sink(const std::string &) override;
 
+    void snapshot_default_devices() override;
+
+    int enable_steam_audio_devices() override;
+
+    int disable_steam_audio_devices() override;
+
     bool is_sink_available(const std::string &) override {
       return true;
     }
@@ -143,6 +149,9 @@ namespace {
     std::vector<job_t> jobs;
     std::vector<std::jthread> retired;
     bool app_active {}, scheduler_failure {};
+    // Steam audio auto-toggle seam shared by the fixture's device control.
+    bool auto_toggle {};
+    int snapshots {}, enables {}, disables {}, enable_result {};
     std::string virtual_sink {"stream"};
     std::function<void()> observe_factory;
     audio::context_manager_t manager;
@@ -165,6 +174,9 @@ namespace {
             return std::string {};
           },
           {},
+          [this] {
+            return auto_toggle;
+          },
           retain,
         }} {}
 
@@ -270,6 +282,20 @@ namespace {
 
   int device_control_t::set_capture_sink(const std::string &) {
     ++fixture_.os.pinned;
+    return 0;
+  }
+
+  void device_control_t::snapshot_default_devices() {
+    ++fixture_.snapshots;
+  }
+
+  int device_control_t::enable_steam_audio_devices() {
+    ++fixture_.enables;
+    return fixture_.enable_result;
+  }
+
+  int device_control_t::disable_steam_audio_devices() {
+    ++fixture_.disables;
     return 0;
   }
 
@@ -669,6 +695,64 @@ namespace {
       capture.assign();
     }
     require(f.os.read() == original && f.os.destroyed == 1, "non-retaining platform kept audio after capture");
+  }
+
+  void steam_toggle_connect_and_terminal_end() {
+    fixture_t f(false);
+    f.auto_toggle = true;
+    {
+      capture_t capture(f);
+      capture.assign();
+      require(f.snapshots == 1, "connect did not snapshot the host defaults before enabling");
+      require(f.enables == 1, "connect did not enable the Steam audio devices");
+      require(f.disables == 0, "connect disabled the Steam audio devices");
+    }
+    require(f.disables == 1, "terminal end did not disable the Steam audio devices");
+  }
+
+  void steam_toggle_disabled_config_touches_nothing() {
+    fixture_t f;
+    f.app_active = true;
+    {
+      capture_t capture(f);
+      capture.assign();
+    }
+    f.terminal();
+    require(f.snapshots == 0 && f.enables == 0 && f.disables == 0, "disabled config still drove the Steam audio devices");
+  }
+
+  void steam_toggle_retained_handoff() {
+    fixture_t f;
+    f.auto_toggle = true;
+    f.app_active = true;
+    f.manager.app_started();
+    {
+      capture_t capture(f);
+      capture.assign();
+      require(f.enables == 1, "connect did not enable the Steam audio devices");
+    }
+    require(f.disables == 0, "resumable handoff disabled the Steam audio devices");
+    {
+      // Reconnect reclaims the retained control; the devices are already on.
+      capture_t capture(f);
+      require(f.enables == 1, "reconnect enabled the Steam audio devices twice");
+      require(f.snapshots == 1, "reconnect re-snapshotted the defaults");
+    }
+    require(f.disables == 0, "second handoff disabled the Steam audio devices");
+    f.terminal();
+    require(f.disables == 1, "terminal app end did not disable the Steam audio devices");
+  }
+
+  void steam_toggle_enable_failure_rolls_back() {
+    fixture_t f(false);
+    f.auto_toggle = true;
+    f.enable_result = -1;
+    {
+      capture_t capture(f);
+      capture.assign();
+      require(f.enables == 1, "connect skipped the enable attempt");
+    }
+    require(f.disables == 0, "failed enable still scheduled a disable");
   }
 
   void start_hold_failure() {
@@ -1376,6 +1460,10 @@ int main(int argc, char **argv) {
     {"context.start_hold_failure", start_hold_failure},
     {"context.start_hold_success", start_hold_success},
     {"context.non_retaining_platform", non_retaining_platform},
+    {"context.steam_toggle_connect", steam_toggle_connect_and_terminal_end},
+    {"context.steam_toggle_disabled_config", steam_toggle_disabled_config_touches_nothing},
+    {"context.steam_toggle_retained_handoff", steam_toggle_retained_handoff},
+    {"context.steam_toggle_enable_failure", steam_toggle_enable_failure_rolls_back},
     {"transition.config_prehold", config_effective_before_revert},
     {"transition.revert_predicate", config_revert_predicate},
     {"transition.capture_failure", capture_failure_non_vetoing},

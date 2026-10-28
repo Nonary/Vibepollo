@@ -594,6 +594,7 @@ find_package(Threads REQUIRED)
 sunshine_add_test_target(NAME test_component_audio_snapshot CATEGORY component
     TEST_SOURCES "${CMAKE_CURRENT_LIST_DIR}/unit/test_audio_context.cpp"
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/audio_context.cpp"
+                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/audio_steam_toggle_policy.cpp"
     DEFINITIONS SUNSHINE_ENABLE_WEBRTC
     LINK_LIBRARIES Threads::Threads nlohmann_json::nlohmann_json)
 if(TARGET test_component_audio_snapshot)

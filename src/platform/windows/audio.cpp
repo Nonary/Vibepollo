@@ -443,6 +443,19 @@ namespace platf::audio {
     return device;
   }
 
+  /**
+   * @brief Default endpoint for a capture role.
+   * Unlike default_device() a missing capture device is ordinary, so no error
+   * is logged; callers treat std::nullptr as "there is no such endpoint".
+   */
+  device_t default_capture_device(device_enum_t &device_enum, ERole role = eConsole) {
+    device_t device;
+    if (FAILED(device_enum->GetDefaultAudioEndpoint(eCapture, role, &device))) {
+      return nullptr;
+    }
+    return device;
+  }
+
   using role_policy_t = ::audio::role_control_t<ERole, static_cast<std::size_t>(ERole_enum_count)>;
   using role_device_ids_t = role_policy_t::ids_t;
   using pending_role_restore_t = role_policy_t::pending_t;
@@ -1121,6 +1134,183 @@ namespace platf::audio {
       return roles_.restore();
     }
 
+    /**
+     * @brief Record the host's current render and capture defaults.
+     *
+     * Only endpoints that are not a Steam device are kept: restoring a role
+     * that the feature itself moved must never put it back on Steam.
+     */
+    void snapshot_default_devices() override {
+      if (snapshot_taken_) {
+        return;
+      }
+
+      const auto matched_speakers = find_device_id(match_steam_speakers());
+      const auto matched_mic = find_capture_device_id(match_steam_microphone());
+
+      const auto render_ids = current_default_device_ids();
+      for (std::size_t i = 0; i < render_ids.size(); ++i) {
+        if (!render_ids[i].empty() && (!matched_speakers || render_ids[i] != matched_speakers->second)) {
+          snapshot_render_ids_[i] = render_ids[i];
+        }
+      }
+
+      const auto capture_ids = capture_default_device_ids();
+      for (std::size_t i = 0; i < capture_ids.size(); ++i) {
+        if (!capture_ids[i].empty() && (!matched_mic || capture_ids[i] != matched_mic->second)) {
+          snapshot_capture_ids_[i] = capture_ids[i];
+        }
+      }
+
+      snapshot_taken_ = true;
+      BOOST_LOG(info) << "Snapshotted the host's default audio endpoints before enabling Steam audio devices"sv;
+    }
+
+    /**
+     * @brief Show the Steam endpoints and route capture through the Steam microphone.
+     *
+     * Render defaults stay under the normal sink selection path, so host audio
+     * preferences keep working. Only capture roles are rewritten here.
+     */
+    int enable_steam_audio_devices() override {
+      const auto matched_speakers =
+        find_endpoint_id(eRender, match_steam_speakers(), DEVICE_STATEMASK_ALL);
+      if (!matched_speakers) {
+        BOOST_LOG(error) << "Steam Streaming Speakers were not found; leaving audio devices untouched"sv;
+        return -1;
+      }
+
+      const auto speakers_id = matched_speakers->second;
+      if (FAILED(policy->SetEndpointVisibility(speakers_id.c_str(), TRUE))) {
+        BOOST_LOG(warning) << "Failed to make Steam Streaming Speakers visible"sv;
+      }
+
+      const auto matched_mic = find_capture_device_id(match_steam_microphone());
+      if (!matched_mic) {
+        BOOST_LOG(warning) << "Steam Streaming Microphone was not found"sv;
+      }
+      else {
+        const auto mic_id = matched_mic->second;
+        if (FAILED(policy->SetEndpointVisibility(mic_id.c_str(), TRUE))) {
+          BOOST_LOG(warning) << "Failed to make Steam Streaming Microphone visible"sv;
+        }
+
+        // SetDefaultEndpoint() is direction-scoped, so this only moves the
+        // capture defaults and never the render defaults above.
+        for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+          const auto role = static_cast<ERole>(x);
+          if (is_default_capture_device(mic_id, role)) {
+            continue;
+          }
+          const auto status = policy->SetDefaultEndpoint(mic_id.c_str(), role);
+          if (FAILED(status)) {
+            BOOST_LOG(warning) << "Couldn't set Steam Streaming Microphone for role ["sv
+                               << static_cast<int>(role) << "]: 0x"sv
+                               << util::hex(status).to_string_view();
+          }
+        }
+      }
+
+      // Both endpoints are visible again, so the recovery marker no longer
+      // describes the host's state.
+      clear_visibility_marker();
+
+      BOOST_LOG(info) << "Enabled Steam Streaming audio devices for the streaming session"sv;
+      return 0;
+    }
+
+    /**
+     * @brief Hide the Steam endpoints and put the snapshotted defaults back.
+     *
+     * A role is only rewritten while it still points at a Steam device, so a
+     * device the user picked during the session is left alone.
+     */
+    int disable_steam_audio_devices() override {
+      // The endpoints are commonly already hidden here, so search every state.
+      const auto matched_speakers = find_endpoint_id(eRender, match_steam_speakers(), DEVICE_STATEMASK_ALL);
+      if (!matched_speakers) {
+        BOOST_LOG(warning) << "Steam Streaming Speakers were not found; leaving device visibility untouched"sv;
+        return -1;
+      }
+
+      // Endpoint visibility survives the process and every reboot. Record that
+      // Vibepollo owns the hidden state before hiding, so a crash between this
+      // hide and the next session can be healed instead of leaving both
+      // endpoints hidden with no record that they must be restored.
+      if (!write_visibility_marker(matched_speakers->second)) {
+        BOOST_LOG(warning) << "Couldn't record the Steam audio visibility transition; leaving the endpoints visible"sv;
+        return -1;
+      }
+
+      {
+        const auto &speakers_id = matched_speakers->second;
+        for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+          const auto role = static_cast<ERole>(x);
+          const auto &snapshot = snapshot_render_ids_[role_index(role)];
+          if (!snapshot.empty() && is_default_device(speakers_id, role)) {
+            const auto status = policy->SetDefaultEndpoint(snapshot.c_str(), role);
+            if (FAILED(status)) {
+              BOOST_LOG(warning) << "Couldn't restore default render endpoint for role ["sv
+                                 << static_cast<int>(role) << "]: 0x"sv
+                                 << util::hex(status).to_string_view();
+            }
+          }
+        }
+        if (FAILED(policy->SetEndpointVisibility(speakers_id.c_str(), FALSE))) {
+          BOOST_LOG(warning) << "Failed to hide Steam Streaming Speakers"sv;
+        }
+      }
+
+      if (const auto matched_mic = find_capture_device_id(match_steam_microphone())) {
+        const auto &mic_id = matched_mic->second;
+        for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+          const auto role = static_cast<ERole>(x);
+          const auto &snapshot = snapshot_capture_ids_[role_index(role)];
+          if (!snapshot.empty() && is_default_capture_device(mic_id, role)) {
+            const auto status = policy->SetDefaultEndpoint(snapshot.c_str(), role);
+            if (FAILED(status)) {
+              BOOST_LOG(warning) << "Couldn't restore default capture endpoint for role ["sv
+                                 << static_cast<int>(role) << "]: 0x"sv
+                                 << util::hex(status).to_string_view();
+            }
+          }
+        }
+        if (FAILED(policy->SetEndpointVisibility(mic_id.c_str(), FALSE))) {
+          BOOST_LOG(warning) << "Failed to hide Steam Streaming Microphone"sv;
+        }
+      }
+
+      snapshot_render_ids_.fill(std::wstring {});
+      snapshot_capture_ids_.fill(std::wstring {});
+      snapshot_taken_ = false;
+      BOOST_LOG(info) << "Disabled Steam Streaming audio devices and restored the host's endpoints"sv;
+      return 0;
+    }
+
+    /**
+     * @brief Show both Steam endpoints again without touching default routing.
+     *
+     * Used when Vibepollo owns a hidden endpoint but nothing will re-show it:
+     * the previous run died after hiding, or the option was turned off. Upstream
+     * marker healing only covers the speakers, so the microphone is handled here
+     * as well.
+     */
+    void restore_steam_device_visibility() {
+      if (const auto matched_speakers = find_endpoint_id(eRender, match_steam_speakers(), DEVICE_STATEMASK_ALL)) {
+        if (FAILED(policy->SetEndpointVisibility(matched_speakers->second.c_str(), TRUE))) {
+          BOOST_LOG(warning) << "Couldn't restore Steam Streaming Speakers visibility"sv;
+        }
+      }
+      if (const auto matched_mic = find_capture_device_id(match_steam_microphone())) {
+        if (FAILED(policy->SetEndpointVisibility(matched_mic->second.c_str(), TRUE))) {
+          BOOST_LOG(warning) << "Couldn't restore Steam Streaming Microphone visibility"sv;
+        }
+      }
+
+      clear_visibility_marker();
+      BOOST_LOG(info) << "Restored Steam audio endpoint visibility"sv;
+    }
+
     enum class match_field_e {
       device_id,  ///< Match device_id
       device_friendly_name,  ///< Match endpoint friendly name
@@ -1134,6 +1324,12 @@ namespace platf::audio {
     audio_control_t::match_fields_list_t match_steam_speakers() {
       return {
         {match_field_e::adapter_friendly_name, L"Steam Streaming Speakers"}
+      };
+    }
+
+    audio_control_t::match_fields_list_t match_steam_microphone() {
+      return {
+        {match_field_e::adapter_friendly_name, L"Steam Streaming Microphone"}
       };
     }
 
@@ -1193,6 +1389,23 @@ namespace platf::audio {
       for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
         const auto role = static_cast<ERole>(x);
         auto device = default_device(device_enum, role);
+        if (!device) {
+          continue;
+        }
+
+        audio::wstring_t id;
+        if (SUCCEEDED(device->GetId(&id)) && id) {
+          device_ids[role_index(role)] = id.get();
+        }
+      }
+      return device_ids;
+    }
+
+    role_device_ids_t capture_default_device_ids() {
+      role_device_ids_t device_ids;
+      for (int x = 0; x < static_cast<int>(ERole_enum_count); ++x) {
+        const auto role = static_cast<ERole>(x);
+        auto device = default_capture_device(device_enum, role);
         if (!device) {
           continue;
         }
@@ -1269,36 +1482,59 @@ namespace platf::audio {
     }
 
     /**
-     * @brief Search for currently present audio device_id using multiple match fields.
+     * @brief Search an endpoint direction for a device_id using multiple match fields.
+     * @param data_flow Endpoint direction (eRender or eCapture)
      * @param match_list Pairs of match fields and values
+     * @param state_mask Endpoint states to consider; DEVICE_STATEMASK_ALL also
+     *        finds endpoints that are currently hidden from the user.
      * @return Optional pair of matched field and device_id
      */
-    std::optional<matched_field_t> find_device_id(const match_fields_list_t &match_list) {
+    std::optional<matched_field_t> find_endpoint_id(
+      EDataFlow data_flow,
+      const match_fields_list_t &match_list,
+      DWORD state_mask = DEVICE_STATE_ACTIVE
+    ) {
       if (match_list.empty()) {
         return std::nullopt;
       }
 
       collection_t collection;
-      auto status = device_enum->EnumAudioEndpoints(eRender, DEVICE_STATE_ACTIVE, &collection);
+      auto status = device_enum->EnumAudioEndpoints(data_flow, state_mask, &collection);
       if (FAILED(status)) {
-        BOOST_LOG(error) << "Couldn't enumerate: [0x"sv << util::hex(status).to_string_view() << ']';
+        BOOST_LOG(error) << "Couldn't enumerate audio endpoints: [0x"sv << util::hex(status).to_string_view() << ']';
         return std::nullopt;
       }
 
       UINT count = 0;
       collection->GetCount(&count);
 
+      // An active duplicate beats a hidden or disabled sibling. Hiding an
+      // endpoint leaves stale registrations behind, so when the caller asks to
+      // see everything the live one must win.
       std::vector<std::wstring> matched(match_list.size());
+      std::vector<int> matched_rank(match_list.size(), 0);
       for (auto x = 0; x < count; ++x) {
         audio::device_t device;
-        collection->Item(x, &device);
+        if (FAILED(collection->Item(x, &device)) || !device) {
+          continue;
+        }
 
         audio::wstring_t wstring_id;
-        device->GetId(&wstring_id);
+        if (FAILED(device->GetId(&wstring_id)) || !wstring_id) {
+          continue;
+        }
         std::wstring device_id = wstring_id.get();
 
+        DWORD state = DEVICE_STATE_ACTIVE;
+        if (state_mask != DEVICE_STATE_ACTIVE && FAILED(device->GetState(&state))) {
+          state = DEVICE_STATE_DISABLED;
+        }
+        const int rank = state == DEVICE_STATE_ACTIVE ? 2 : (state == DEVICE_STATE_UNPLUGGED ? 0 : 1);
+
         audio::prop_t prop;
-        device->OpenPropertyStore(STGM_READ, &prop);
+        if (FAILED(device->OpenPropertyStore(STGM_READ, &prop)) || !prop) {
+          continue;
+        }
 
         prop_var_t adapter_friendly_name;
         prop_var_t device_friendly_name;
@@ -1309,28 +1545,30 @@ namespace platf::audio {
         prop->GetValue(PKEY_Device_DeviceDesc, &device_desc.prop);
 
         for (size_t i = 0; i < match_list.size(); i++) {
-          if (matched[i].empty()) {
-            const wchar_t *match_value = nullptr;
-            switch (match_list[i].first) {
-              case match_field_e::device_id:
-                match_value = device_id.c_str();
-                break;
+          if (matched_rank[i] && matched_rank[i] >= rank) {
+            continue;
+          }
+          const wchar_t *match_value = nullptr;
+          switch (match_list[i].first) {
+            case match_field_e::device_id:
+              match_value = device_id.c_str();
+              break;
 
-              case match_field_e::device_friendly_name:
-                match_value = device_friendly_name.prop.pwszVal;
-                break;
+            case match_field_e::device_friendly_name:
+              match_value = device_friendly_name.prop.pwszVal;
+              break;
 
-              case match_field_e::adapter_friendly_name:
-                match_value = adapter_friendly_name.prop.pwszVal;
-                break;
+            case match_field_e::adapter_friendly_name:
+              match_value = adapter_friendly_name.prop.pwszVal;
+              break;
 
-              case match_field_e::device_description:
-                match_value = device_desc.prop.pwszVal;
-                break;
-            }
-            if (match_value && std::wcscmp(match_value, match_list[i].second.c_str()) == 0) {
-              matched[i] = device_id;
-            }
+            case match_field_e::device_description:
+              match_value = device_desc.prop.pwszVal;
+              break;
+          }
+          if (match_value && std::wcscmp(match_value, match_list[i].second.c_str()) == 0) {
+            matched[i] = device_id;
+            matched_rank[i] = rank;
           }
         }
       }
@@ -1342,6 +1580,24 @@ namespace platf::audio {
       }
 
       return std::nullopt;
+    }
+
+    /**
+     * @brief Search for currently present audio device_id using multiple match fields.
+     * @param match_list Pairs of match fields and values
+     * @return Optional pair of matched field and device_id
+     */
+    std::optional<matched_field_t> find_device_id(const match_fields_list_t &match_list) {
+      return find_endpoint_id(eRender, match_list);
+    }
+
+    /**
+     * @brief Search for a capture endpoint, including hidden or disabled ones.
+     * Steam Streaming Microphone stays hidden while no stream runs, so an
+     * eCapture + DEVICE_STATE_ACTIVE lookup would never see it.
+     */
+    std::optional<matched_field_t> find_capture_device_id(const match_fields_list_t &match_list) {
+      return find_endpoint_id(eCapture, match_list, DEVICE_STATEMASK_ALL);
     }
 
     /**
@@ -1484,6 +1740,20 @@ namespace platf::audio {
 
     bool is_default_device(const std::wstring &device_id, ERole role = eConsole) {
       auto current_default_dev = default_device(device_enum, role);
+      if (!current_default_dev) {
+        return false;
+      }
+
+      audio::wstring_t current_default_id;
+      if (FAILED(current_default_dev->GetId(&current_default_id)) || !current_default_id) {
+        return false;
+      }
+
+      return device_id == current_default_id.get();
+    }
+
+    bool is_default_capture_device(const std::wstring &device_id, ERole role = eConsole) {
+      auto current_default_dev = default_capture_device(device_enum, role);
       if (!current_default_dev) {
         return false;
       }
@@ -2993,6 +3263,13 @@ namespace platf::audio {
     role_policy_t roles_;
     std::string assigned_sink;
     std::wstring capture_device_id;
+
+    // Host defaults captured before the Steam endpoints were enabled, plus the
+    // matching capture-side snapshot. Per audio role (eConsole, eMultimedia,
+    // eCommunications).
+    role_device_ids_t snapshot_render_ids_;
+    role_device_ids_t snapshot_capture_ids_;
+    bool snapshot_taken_ {false};
   };
 }  // namespace platf::audio
 
@@ -3041,8 +3318,21 @@ namespace platf {
       // Recover an endpoint left hidden by an interrupted visibility
       // transition (crash, watchdog kill, or shutdown mid-fallback) before
       // touching the default device.
+      const bool owned_hidden_state = audio::visibility_marker_present();
       audio_ctrl.recover_interrupted_visibility_transition();
       audio_ctrl.reset_default_device_no_wait();
+
+      if (config::audio.auto_disable_steam_audio) {
+        // The previous run may have ended without a terminal disconnect
+        // (crash, kill, or shutdown ordering). Re-hide both endpoints now so
+        // they do not sit in the Windows device list until the next stream.
+        audio_ctrl.disable_steam_audio_devices();
+      } else if (owned_hidden_state) {
+        // We hid the endpoints last run and the option is off now, so nothing
+        // will show them again: clear both, including the microphone that
+        // upstream's marker healing does not cover.
+        audio_ctrl.restore_steam_device_visibility();
+      }
     }
 
     return co_init;

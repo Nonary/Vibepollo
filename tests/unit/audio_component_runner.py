@@ -17,7 +17,8 @@ def run(repository, compiler, sanitize, group):
             flags += ["-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
         subprocess.run([compiler, *flags, "-I", str(repository),
                         str(repository / "tests/unit/test_audio_context.cpp"),
-                        str(repository / "src/audio_context.cpp"), "-o", str(binary)],
+                        str(repository / "src/audio_context.cpp"),
+                        str(repository / "src/audio_steam_toggle_policy.cpp"), "-o", str(binary)],
                        check=True, timeout=120)
         subprocess.run([str(binary), group], check=True, timeout=30)
         if group == "context.":

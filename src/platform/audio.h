@@ -58,6 +58,34 @@ namespace platf {
      */
     virtual bool is_sink_available(const std::string &sink) = 0;
 
+    /**
+     * @brief Snapshot the current default render and capture endpoints for later restore.
+     * Used by the Steam audio auto-toggle feature to remember what to restore to.
+     * Platforms without Steam audio devices leave this as a no-op.
+     */
+    virtual void snapshot_default_devices() {}
+
+    /**
+     * @brief Make the Steam Streaming Speakers and Microphone visible and route
+     *        capture through the Steam Streaming Microphone.
+     * Render default routing is left to sink selection so host audio settings
+     * are respected. Platforms without Steam audio devices return -1.
+     * @returns 0 on success, non-zero on failure.
+     */
+    virtual int enable_steam_audio_devices() {
+      return -1;
+    }
+
+    /**
+     * @brief Hide the Steam Streaming Speakers and Microphone and restore the
+     *        snapshotted defaults for any role they still own.
+     * Platforms without Steam audio devices return -1.
+     * @returns 0 on success, non-zero on failure.
+     */
+    virtual int disable_steam_audio_devices() {
+      return -1;
+    }
+
     virtual std::optional<sink_t> sink_info() = 0;
 
     /**
