@@ -1,0 +1,12 @@
+--- a/src/audio_context.h
++++ b/src/audio_context.h
+@@ -66,8 +66,8 @@
+   // the hold; a completed join releases it before shared display cleanup.
+   template<class Join>
+   void join_capture_and_release(std::shared_ptr<void> &hold, Join &&join) {
+-    std::forward<Join>(join)();
+     hold.reset();
++    std::forward<Join>(join)();
+   }
+ 
+   enum class join_stage_e {

@@ -39,6 +39,8 @@ static void verify_reports(inputtino::PS5Joypad &pad) {
           "gadget firmware feature read failed");
   require((firmware[44] | (firmware[45] << 8)) >= 0x0390,
           "gadget firmware requests an update in libScePad");
+  require((firmware[44] | (firmware[45] << 8)) >= 0x0630,
+          "gadget firmware is below the reviewed Steam update threshold");
   int reports = 0;
   bool pressed = false, released = false;
   pad.set_pressed_buttons(inputtino::Joypad::A);

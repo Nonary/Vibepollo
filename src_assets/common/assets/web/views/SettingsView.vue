@@ -5,12 +5,14 @@ import { useRoute, useRouter, onBeforeRouteLeave } from 'vue-router';
 import { useSystemStore, type HostMetadata } from '@/stores/system';
 import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
 import NetworkPortDetails from '@/components/settings/NetworkPortDetails.vue';
-import { acknowledgeSettings, configBoolean, settingError } from '@/utils/settings';
-import WindowsDisplayStatus from '@/components/settings/WindowsDisplayStatus.vue';
 import {
-  applyDummyPlugVsyncChange,
-  dummyPlugVsyncState,
-} from '@/utils/displayHealth';
+  acknowledgeSettings,
+  configBoolean,
+  linuxVirtualCaptureWarning,
+  settingError,
+} from '@/utils/settings';
+import WindowsDisplayStatus from '@/components/settings/WindowsDisplayStatus.vue';
+import { applyDummyPlugVsyncChange, dummyPlugVsyncState } from '@/utils/displayHealth';
 
 import { ApiError, apiGet, apiPatch, apiPost } from '@/api/client';
 import DisplayModeOverrides from '@/components/settings/DisplayModeOverrides.vue';
@@ -52,6 +54,7 @@ const system = useSystemStore();
 const route = useRoute();
 const router = useRouter();
 const confirmation = ref<'restart' | 'reset' | null>(null);
+const displayMaintenanceAvailable = ref<boolean | null>(null);
 const resetting = ref(false);
 const form = ref<HTMLFormElement | null>(null);
 
@@ -117,6 +120,9 @@ const activeCategory = ref(
     : settingsCategories[0].id,
 );
 const hostMetadata = ref<MetadataResponse>({});
+const machineHostTrayUnavailable = computed(
+  () => hostMetadata.value.platform === 'linux' && hostMetadata.value.linux?.machine_host === true,
+);
 const values = reactive<Record<string, unknown>>({});
 const original = ref<Record<string, unknown>>({});
 const displayDevices = ref<DisplayDevice[]>([]);
@@ -295,6 +301,15 @@ const dirtyKeys = computed(() => {
   );
 });
 
+// Old editors allowed zero even though the host ignores it. Preserve that
+// unchanged saved value without letting a hidden control block unrelated saves.
+const legacyFecZero = computed(
+  () =>
+    Number(original.value.fec_percentage) === 0 &&
+    Number(values.fec_percentage) === 0 &&
+    !dirtyKeys.value.includes('fec_percentage'),
+);
+
 const isDirty = computed(() => dirtyKeys.value.length > 0);
 const saveAllowed = computed(
   () =>
@@ -310,6 +325,23 @@ const category = computed(
 );
 
 const isSearching = computed(() => search.value.trim().length > 0);
+const everydayLibraryDestinations = computed(() =>
+  settingsDestinations
+    .filter(
+      (destination) =>
+        matchesPlatform(destination, hostPlatform.value) &&
+        destination.keys.some((key) => ['steam', 'playnite', 'lutris'].includes(key)),
+    )
+    .map((destination) =>
+      destination.keys.includes('playnite')
+        ? {
+            ...destination,
+            labelKey: 'playnite.title',
+            to: '/integrations#integration-playnite',
+          }
+        : destination,
+    ),
+);
 
 const categoryDescription = computed(() =>
   isSearching.value
@@ -325,7 +357,9 @@ const filteredGroups = computed(() => {
   return categories.flatMap((settingsCategory) =>
     settingsCategory.groups
       .filter(
-        (group) => matchesPlatform(group, hostPlatform.value) && (query || groupIsVisible(group)),
+        (group) => matchesPlatform(group, hostPlatform.value) &&
+          (group.id !== 'video_rtx_hdr' || hostPlatform.value !== 'linux' || hostMetadata.value.rtx_hdr_supported === true) &&
+          (query || groupIsVisible(group)),
       )
       .map<DisplaySettingsGroup>((group) => ({
         ...group,
@@ -529,6 +563,12 @@ function fieldLabel(field: SettingsField): string {
 }
 
 function fieldDescription(field: SettingsField): string {
+  if (field.key === 'system_tray' && machineHostTrayUnavailable.value)
+    return t('config.system_tray_desc_machine_host');
+  if (activeCategory.value === 'everyday' && !isSearching.value) {
+    const everydayKey = `ui.settings.everyday_help.${field.key}`;
+    if (messageExists(everydayKey)) return t(everydayKey);
+  }
   const linuxKey = `ui.settings.linux.fields.${field.key}`;
   if (isLinuxHost.value && messageExists(linuxKey)) return t(linuxKey);
   if (field.descriptionKey) return t(field.descriptionKey);
@@ -578,7 +618,19 @@ function optionsFor(field: SettingsField): SettingsOption[] {
   let options = optionsForPlatform(field, platform);
 
   if (current && !options.some((option) => option.value === current)) {
-    return [...options, localizedOption(current, 'ui.settings.options.current')];
+    const unsupportedWindowsProvider =
+      field.key === 'frame_limiter_provider' &&
+      platform.includes('windows') &&
+      ['proton', 'mangohudproton'].includes(current.toLowerCase().replace(/[-_ ]/g, ''));
+    return [
+      ...options,
+      localizedOption(
+        current,
+        unsupportedWindowsProvider
+          ? 'ui.settings.options.unsupported_saved'
+          : 'ui.settings.options.current',
+      ),
+    ];
   }
   return options;
 }
@@ -604,7 +656,10 @@ function dependencyHint(field: SettingsField): string {
 }
 
 function fieldWarningIsVisible(field: SettingsField): boolean {
+  if (field.key === 'fec_percentage' && legacyFecZero.value) return true;
   if (!field.warningKey) return false;
+  if (field.key === 'capture')
+    return linuxVirtualCaptureWarning(hostPlatform.value, values.capture);
   return field.kind === 'boolean' ? isTrue(values[field.key]) : Number(values[field.key]) > 0;
 }
 
@@ -726,6 +781,20 @@ function normalizeConfiguredValues(configured: Record<string, unknown>): Record<
   return normalized;
 }
 
+async function loadDisplayMaintenanceStatus(): Promise<void> {
+  if (!isWindowsHost.value) {
+    displayMaintenanceAvailable.value = true;
+    return;
+  }
+  displayMaintenanceAvailable.value = null;
+  try {
+    const status = await apiGet<{ maintenance_available?: boolean }>('/api/display/golden_status');
+    displayMaintenanceAvailable.value = status.maintenance_available !== false;
+  } catch {
+    displayMaintenanceAvailable.value = null;
+  }
+}
+
 async function load(): Promise<void> {
   loading.value = true;
   error.value = '';
@@ -771,6 +840,7 @@ async function load(): Promise<void> {
     original.value = cloneSettings(normalized);
     syncDummyPlugTracking(normalized);
     configLoaded.value = true;
+    await loadDisplayMaintenanceStatus();
   } catch {
     error.value = t('ui.settings.errors.load');
   } finally {
@@ -812,7 +882,10 @@ async function refreshDisplayStatus(): Promise<void> {
 }
 
 function fieldDependencyLocked(field: SettingsField): boolean {
-  return field.key === 'frame_limiter_disable_vsync' && dummyPlugVsync.value.locked;
+  return (
+    (field.key === 'frame_limiter_disable_vsync' && dummyPlugVsync.value.locked) ||
+    (field.key === 'system_tray' && machineHostTrayUnavailable.value)
+  );
 }
 
 async function save(): Promise<void> {
@@ -837,6 +910,7 @@ async function save(): Promise<void> {
     if (result.status === false) throw new Error('save-rejected');
     original.value = acknowledgeSettings(original.value, submitted);
     syncDummyPlugTracking(original.value);
+    await loadDisplayMaintenanceStatus();
     restartAvailable.value ||= Boolean(result.restartRequired);
     notice.value = restartAvailable.value
       ? t('ui.settings.notices.saved_restart')
@@ -877,7 +951,7 @@ async function restart(): Promise<void> {
 }
 
 async function resetDisplayPersistence(): Promise<void> {
-  if (resetting.value) return;
+  if (resetting.value || !displayMaintenanceAvailable.value) return;
   resetting.value = true;
   error.value = '';
   notice.value = '';
@@ -1133,7 +1207,13 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                   v-for="field in group.fields"
                   :key="field.key"
                   :label="fieldLabel(field)"
-                  :control-id="`setting-${field.key}`"
+                  :control-id="
+                    ['display-recovery', 'mode-remapping', 'command-preparations'].includes(
+                      field.kind,
+                    )
+                      ? undefined
+                      : `setting-${field.key}`
+                  "
                   :stacked="field.stacked || field.kind === 'display-recovery'"
                   :disabled="fieldIsInactive(field) || fieldDependencyLocked(field)"
                   :restart-required="field.restartRequired"
@@ -1149,7 +1229,11 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                       v-if="fieldWarningIsVisible(field)"
                       :id="`setting-${field.key}-warning`"
                       class="settings-row__warning"
-                      >{{ t(field.warningKey ?? '') }}</span
+                      >{{
+                        field.key === 'fec_percentage' && legacyFecZero
+                          ? t('ui.settings.legacy_fec_zero')
+                          : t(field.warningKey ?? '')
+                      }}</span
                     >
                     <span v-if="dependencyHint(field)" :id="`setting-${field.key}-dependency`">{{
                       dependencyHint(field)
@@ -1167,9 +1251,11 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                       :id="`setting-${field.key}`"
                       type="checkbox"
                       :checked="
-                        field.key === 'frame_limiter_disable_vsync'
-                          ? dummyPlugVsync.effectiveVsyncDisabled
-                          : isTrue(values[field.key])
+                        field.key === 'system_tray' && machineHostTrayUnavailable
+                          ? false
+                          : field.key === 'frame_limiter_disable_vsync'
+                            ? dummyPlugVsync.effectiveVsyncDisabled
+                            : isTrue(values[field.key])
                       "
                       :disabled="fieldIsInactive(field) || fieldDependencyLocked(field)"
                       :aria-labelledby="`setting-${field.key}-label`"
@@ -1228,9 +1314,11 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 
                   <DisplayRecoverySettings
                     v-else-if="field.kind === 'display-recovery'"
+                    :maintenance-available="displayMaintenanceAvailable"
                     :hotkey="values.dd_snapshot_restore_hotkey"
                     :modifiers="values.dd_snapshot_restore_hotkey_modifiers"
                     :prefer-golden="values.dd_always_restore_from_golden"
+                    @maintenance-status="displayMaintenanceAvailable = $event"
                     @update:hotkey="values.dd_snapshot_restore_hotkey = $event"
                     @update:modifiers="values.dd_snapshot_restore_hotkey_modifiers = $event"
                     @update:prefer-golden="values.dd_always_restore_from_golden = $event"
@@ -1273,7 +1361,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                     :id="`setting-${field.key}`"
                     :class="['vs-input', { monospace: field.monospace }]"
                     :type="field.kind === 'number' ? 'number' : 'text'"
-                    :min="field.min"
+                    :min="field.key === 'fec_percentage' && legacyFecZero ? undefined : field.min"
                     :max="field.max"
                     :step="field.step"
                     :value="
@@ -1386,12 +1474,22 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                 </div>
               </div>
               <RouterLink v-if="group.link" class="settings-more" :to="group.link">{{
-                t('ui.settings.more_options')
+                t(group.linkLabelKey ?? 'ui.settings.more_options')
               }}</RouterLink>
-              <p v-if="group.id === 'everyday_audio'" class="settings-more">
-                {{ t(isLinuxHost ? 'ui.settings.linux.audio' : 'ui.settings.audio_summary') }}
-              </p>
             </component>
+            <nav
+              v-if="group.id === 'everyday_integrations'"
+              class="settings-destinations settings-library-nav"
+              :aria-label="t('ui.settings.game_libraries')"
+            >
+              <strong>{{ t('ui.settings.game_library_links') }}</strong>
+              <RouterLink
+                v-for="destination in everydayLibraryDestinations"
+                :key="destination.to"
+                :to="destination.to"
+                >{{ t(destination.labelKey) }} →</RouterLink
+              >
+            </nav>
           </section>
 
           <div
@@ -1410,11 +1508,20 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
           <div>
             <h2 id="display-recovery-title">{{ t('ui.settings.display_recovery.title') }}</h2>
             <p>{{ t('ui.settings.display_recovery.description') }}</p>
+            <p v-if="!displayMaintenanceAvailable" role="status">
+              {{
+                t(
+                  displayMaintenanceAvailable === false
+                    ? 'troubleshooting.dd_maintenance_disabled'
+                    : 'troubleshooting.dd_maintenance_unavailable',
+                )
+              }}
+            </p>
           </div>
           <button
             class="button button--danger-text"
             type="button"
-            :disabled="resetting"
+            :disabled="resetting || !displayMaintenanceAvailable"
             @click="confirmation = 'reset'"
           >
             {{ t('ui.settings.display_recovery.action') }}
@@ -1838,6 +1945,14 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
 .settings-content :deep(.vs-setting-row__control) {
   flex-wrap: wrap;
 }
+.settings-destinations.settings-library-nav {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--vs-space-16);
+  margin-top: var(--vs-space-12);
+}
+
 .settings-destinations {
   display: grid;
   gap: var(--vs-space-12);

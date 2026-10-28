@@ -2,7 +2,7 @@
 
 set -euo pipefail
 umask 0077
-export LC_ALL=C
+export LC_ALL=C.UTF-8
 
 readonly settings_file=/etc/vibepollo/machine.conf
 readonly legacy_settings_file=/etc/vibepollo/prelogin.conf
@@ -26,8 +26,8 @@ readonly maximum_raw_command_bytes=16384
 readonly maximum_normalized_command_bytes=65535
 readonly maximum_command_manifest_bytes=1048576
 
-desktop_user=''; desktop_uid=''; desktop_gid=''; desktop_home=''
-session_id=''; session_generation=''; session_user=''; session_uid=''; session_gid=''; session_home=''; session_runtime=''; session_display=''; session_xdisplay=''; session_xauthority=''; session_groups=''; session_role=''
+desktop_user=''; desktop_uid=''; desktop_gid=''; desktop_home=''; desktop_backend=kwin
+session_id=''; session_generation=''; session_user=''; session_uid=''; session_gid=''; session_home=''; session_runtime=''; session_display=''; session_xdisplay=''; session_xauthority=''; session_groups=''; session_role=''; session_backend=kwin; session_compositor=''
 authorization_role=''; authorization_directory=''; authorization_command=''
 declare -A application_environment=()
 
@@ -61,16 +61,21 @@ resolve_desktop_identity() {
 }
 
 read_desktop_user() {
-  local source=$1 attributes key value line selected=''
+  local source=$1 attributes key value line selected='' backend_seen=0
   [[ -f "$source" && ! -L "$source" ]] || return 1
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$source") || return 1
-  [[ "$attributes" == 'root:root:600:regular file' ]] || { fail "$source must be root:root mode 0600"; return 1; }
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$source") || return 1
+  [[ "$attributes" == 'root:root:600' ]] || { fail "$source must be root:root mode 0600"; return 1; }
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ -n "$line" && "$line" != \#* ]] || continue; key=${line%%=*}; value=${line#*=}
     case "$key" in
       desktop_user) [[ -z "$selected" ]] || { fail 'multiple desktop users selected'; return 1; }; selected=$value ;;
+      desktop_backend)
+        ((backend_seen == 0)) && [[ "$value" == kwin || "$value" == hyprland-kms ]] ||
+          { fail 'invalid desktop backend'; return 1; }
+        backend_seen=1
+        ;;
       # Accept only a valid obsolete UUID while configure-auto atomically
-      # rewrites the policy to its canonical desktop-user-only form.
+      # rewrites the policy to its canonical desktop-user/backend form.
       allowed_client_uuid)
         value=${value^^}
         [[ "$value" =~ ^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$ ]] ||
@@ -83,19 +88,32 @@ read_desktop_user() {
 }
 
 
+read_desktop_backend() {
+  local source=$1 line
+  read_desktop_user "$source" >/dev/null || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in desktop_backend=*) /usr/bin/printf '%s\n' "${line#*=}"; return ;; esac
+  done <"$source"
+  /usr/bin/printf 'kwin\n'
+}
+
 load_settings() {
   local selected
   selected=$(read_desktop_user "$settings_file") || { fail "missing settings: $settings_file"; return 1; }
+  desktop_backend=$(read_desktop_backend "$settings_file") || return 1
   resolve_desktop_identity "$selected"
 }
 
 write_settings() {
-  local requested_user=$1 temporary
+  local requested_user=$1 temporary selected_backend=kwin
+  if [[ -e "$settings_file" || -L "$settings_file" ]]; then
+    selected_backend=$(read_desktop_backend "$settings_file") || return 1
+  fi
   require_root configure || return 1
   resolve_desktop_identity "$requested_user" || return 1
   /usr/bin/install -d -o root -g root -m 0755 /etc/vibepollo || return 1
   temporary=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .machine.XXXXXX) || return 1
-  /usr/bin/printf 'desktop_user=%s\n' "$desktop_user" >"$temporary" || return 1
+  /usr/bin/printf 'desktop_user=%s\ndesktop_backend=%s\n' "$desktop_user" "$selected_backend" >"$temporary" || return 1
   /usr/bin/chown root:root "$temporary" || return 1
   /usr/bin/chmod 0600 "$temporary" || return 1
   /usr/bin/mv -fT -- "$temporary" "$settings_file"
@@ -341,8 +359,8 @@ migrate_legacy_command_manifest() {
 ensure_command_manifest() {
   local attributes
   if [[ -f "$command_manifest" && ! -L "$command_manifest" ]]; then
-    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$command_manifest") || return 1
-    [[ "$attributes" == "root:${service_user}:640:regular file" ]] || { fail 'administrator command manifest is unsafe'; return 1; }
+    attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$command_manifest") || return 1
+    [[ "$attributes" == "root:${service_user}:640" ]] || { fail 'administrator command manifest is unsafe'; return 1; }
     manifest_is_v2 && return 0
     migrate_legacy_command_manifest
     return
@@ -361,8 +379,8 @@ profile_is_safe() {
 profile_tree_is_sanitized() {
   local root=$1 attributes unsafe
   [[ -d "$root" && ! -L "$root" ]] || return 1
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$root") || return 1
-  [[ "$attributes" == "${service_user}:${service_user}:700:directory" ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$root") || return 1
+  [[ "$attributes" == "${service_user}:${service_user}:700" ]] || return 1
   unsafe=$(/usr/bin/find "$root" -xdev -mindepth 1 \
     \( ! -type d ! -type f -o \
        -type d \( ! -user "$service_user" -o ! -group "$service_user" -o ! -perm 0700 \) -o \
@@ -376,8 +394,8 @@ rewrite_machine_cover_paths() {
   local marker_line source_user entry account_name account_home
   [[ $(/usr/bin/id -un) == "$service_user" ]] || fail 'cover migration requires the service account'
   [[ -f "$profile_marker" && ! -L "$profile_marker" ]] || fail 'machine-profile marker is unsafe'
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$profile_marker") || return 1
-  [[ "$attributes" == "${service_user}:${service_user}:600:regular file" ]] ||
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$profile_marker") || return 1
+  [[ "$attributes" == "${service_user}:${service_user}:600" ]] ||
     fail 'machine-profile marker ownership is unsafe'
   IFS= read -r marker_line <"$profile_marker" || return 1
   [[ "$marker_line" =~ ^source_user=([a-z_][a-z0-9_-]*)$ ]] || fail 'machine-profile marker is invalid'
@@ -392,8 +410,8 @@ rewrite_machine_cover_paths() {
     return 0
   fi
   [[ -f "$apps" && ! -L "$apps" ]] || fail 'machine application catalog is unsafe'
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$apps") || return 1
-  [[ "$attributes" == "${service_user}:${service_user}:600:regular file" ]] ||
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$apps") || return 1
+  [[ "$attributes" == "${service_user}:${service_user}:600" ]] ||
     fail 'machine application catalog ownership is unsafe'
   size=$(/usr/bin/stat -c '%s' -- "$apps") || return 1
   [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0 && size <= 16777216)) ||
@@ -484,8 +502,8 @@ remove_root_staging() {
   local staging=$1 attributes
   [[ "$staging" =~ ^/var/lib/\.vibepollo-profile\.[A-Za-z0-9]+$ &&
      -d "$staging" && ! -L "$staging" ]] || return 1
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$staging") || return 1
-  [[ "$attributes" == 'root:root:700:directory' ]] || return 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$staging") || return 1
+  [[ "$attributes" == 'root:root:700' ]] || return 1
   /usr/bin/rm -rf --one-file-system -- "$staging"
 }
 
@@ -493,8 +511,9 @@ publish_migrated_profile() (
   local staging incoming attributes unsafe
   staging=$(/usr/bin/mktemp -d --tmpdir=/var/lib .vibepollo-profile.XXXXXX) || exit 1
   trap '[[ -z ${staging:-} ]] || remove_root_staging "$staging"' EXIT HUP INT TERM
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$staging") || exit 1
-  [[ "$attributes" == 'root:root:700:directory' ]] || exit 1
+  [[ -d "$staging" && ! -L "$staging" ]] || exit 1
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$staging") || exit 1
+  [[ "$attributes" == 'root:root:700' ]] || exit 1
 
   # The confined importer opens the profile beneath the account's home with
   # openat2(RESOLVE_BENEATH|NO_SYMLINKS|NO_XDEV), permanently drops to that
@@ -529,8 +548,8 @@ publish_migrated_profile() (
 
   if [[ -e "$machine_profile" || -L "$machine_profile" ]]; then
     [[ -d "$machine_profile" && ! -L "$machine_profile" ]] || exit 1
-    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$machine_profile") || exit 1
-    [[ "$attributes" =~ ^(root:root|${service_user}:${service_user}):700:directory$ ]] || exit 1
+    attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$machine_profile") || exit 1
+    [[ "$attributes" =~ ^(root:root|${service_user}:${service_user}):700$ ]] || exit 1
     [[ -z $(/usr/bin/find "$machine_profile" -mindepth 1 -print -quit) ]] || exit 1
     /usr/bin/rmdir -- "$machine_profile" || exit 1
   fi
@@ -550,7 +569,8 @@ migrate_profile() {
     return
   fi
   [[ ! -e "$profile_marker" && ! -L "$profile_marker" ]] || { fail 'unsafe machine-profile marker'; return 1; }
-  [[ $(/usr/bin/stat -c '%U:%G:%a:%F' -- /var/lib) == 'root:root:755:directory' ]] ||
+  [[ -d /var/lib && ! -L /var/lib ]] || { fail '/var/lib is not a safe migration parent'; return 1; }
+  [[ $(/usr/bin/stat -c '%U:%G:%a' -- /var/lib) == 'root:root:755' ]] ||
     { fail '/var/lib is not a safe migration parent'; return 1; }
   publish_migrated_profile || { fail 'profile staging or atomic publication failed'; return 1; }
   /usr/bin/printf 'vibepollo-machine-host: migrated the selected desktop profile into the machine profile\n'
@@ -611,21 +631,25 @@ prepare_upgrade_profile() {
   ensure_command_manifest || return 1
 }
 
-user_exec() {
+user_exec() (
+  # find saves/restores its initial cwd. A service-account child cannot
+  # restore the invoking administrator's private home after dropping UID.
+  # Isolate the cwd change so callers keep their own relative-path semantics.
+  cd / || return 1
   local user=$1 uid gid; shift; uid=$(/usr/bin/id -u -- "$user"); gid=$(/usr/bin/id -g -- "$user")
   /usr/bin/setpriv --reuid "$uid" --regid "$gid" --init-groups --no-new-privs -- "$@"
-}
+)
 
 load_session() {
   local attributes key value line entry account_name account_uid account_gid account_home
   local -A seen=()
   [[ -f "$session_file" && ! -L "$session_file" ]] || fail 'missing session environment'
-  attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$session_file")
-  [[ "$attributes" == "root:${service_user}:640:regular file" ]] || fail 'untrusted session environment'
+  attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$session_file")
+  [[ "$attributes" == "root:${service_user}:640" ]] || fail 'untrusted session environment'
   while IFS= read -r line || [[ -n "$line" ]]; do
     [[ "$line" == *=* ]] || fail 'malformed session environment'
     key=${line%%=*}; value=${line#*=}
-    [[ "$key" =~ ^(session|generation|user|uid|gid|home|runtime|display|xdisplay|xauthority|groups|role)$ ]] || fail "unknown session key: $key"
+    [[ "$key" =~ ^(session|generation|user|uid|gid|home|runtime|display|xdisplay|xauthority|groups|role|backend|compositor)$ ]] || fail "unknown session key: $key"
     [[ -z ${seen[$key]:-} ]] || fail "duplicate session key: $key"
     seen[$key]=1
     case "$key" in
@@ -641,9 +665,16 @@ load_session() {
       xauthority) session_xauthority=$value ;;
       groups) session_groups=$value ;;
       role) session_role=$value ;;
+      backend) session_backend=$value ;;
+      compositor) session_compositor=$value ;;
     esac
   done <"$session_file"
-  ((${#seen[@]} == 12)) || fail 'incomplete session environment'
+  if [[ -z ${seen[backend]:-} && -z ${seen[compositor]:-} ]]; then
+    session_backend=kwin; session_compositor=''
+  else
+    [[ -n ${seen[backend]:-} && -n ${seen[compositor]:-} ]] || fail 'incomplete backend record'
+  fi
+  ((${#seen[@]} == 12 || ${#seen[@]} == 14)) || fail 'incomplete session environment'
   valid_user "$session_user"
   [[ "$session_id" =~ ^[A-Za-z0-9_.-]+$ && "$session_generation" =~ ^[1-9][0-9]*$ &&
      "$session_uid" =~ ^[1-9][0-9]*$ && "$session_gid" =~ ^[1-9][0-9]*$ &&
@@ -654,11 +685,15 @@ load_session() {
   IFS=: read -r account_name _ account_uid account_gid _ account_home _ <<<"$entry"
   [[ "$account_name" == "$session_user" && "$account_uid" == "$session_uid" &&
      "$account_gid" == "$session_gid" && "$account_home" == "$session_home" ]] || fail 'session account does not match the trusted record'
-  if [[ "$session_role" == desktop ]]; then
+  [[ "$session_backend" == kwin && -z "$session_compositor" ||
+     "$session_backend" == hyprland-kms && "$session_role" == desktop &&
+     "$session_compositor" =~ ^[0-9a-f]{32}-[1-9][0-9]*-[1-9][0-9]*$ && "$session_compositor" != 00000000000000000000000000000000-* ]] ||
+    fail 'invalid backend record'
+  if [[ "$session_role" == desktop && "$session_backend" == kwin ]]; then
     [[ "$session_xdisplay" =~ ^:[0-9]+(\.[0-9]+)?$ && "$session_xauthority" == "$session_runtime"/* &&
        "$session_xauthority" != */../* && "$session_xauthority" != */.. ]] || fail 'desktop X11 record is invalid'
   else
-    [[ -z "$session_xdisplay" && -z "$session_xauthority" ]] || fail 'greeter record must not contain X11 credentials'
+    [[ -z "$session_xdisplay" && -z "$session_xauthority" ]] || fail 'Wayland-only record must not contain X11 credentials'
   fi
 }
 
@@ -685,8 +720,8 @@ find_host_readiness_log() {
     ((count == 1)) || return 1
     [[ "${candidate##*/}" =~ ^vibepollo-[0-9]{8}-[0-9]{6}-[0-9]{3}\.log$ &&
        -f "$candidate" && ! -L "$candidate" ]] || return 1
-    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$candidate") || return 1
-    [[ "$attributes" == "${expected_owner}:600:regular file" ]] || return 1
+    attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$candidate") || return 1
+    [[ "$attributes" == "${expected_owner}:600" ]] || return 1
     host_log=$candidate
   done
   ((count == 1))
@@ -775,6 +810,20 @@ finally:
 PY
 }
 
+hyprland_host_overrides() {
+  # This supported slice captures existing physical scanout through KMS. The
+  # service UID cannot open a desktop user's Wayland socket for wlr capture.
+  /usr/bin/printf '%s\n' 'capture=kms' 'virtual_display_mode=disabled'
+}
+
+build_machine_host_environment() {
+  environment=("HOME=$machine_profile" "USER=$service_user" "LOGNAME=$service_user" "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin" "LANG=C.UTF-8" "SHELL=/bin/sh" \
+    "XDG_CONFIG_HOME=/var/lib" "XDG_RUNTIME_DIR=/run/vibepollo/host" "VIBEPOLLO_MACHINE_HOST=1" \
+    "VIBEPOLLO_SESSION_TYPE=wayland" "VIBEPOLLO_SESSION_BACKEND=$session_backend" \
+    "VIBEPOLLO_SESSION_ROLE=$session_role" "VIBEPOLLO_SESSION_USER=$session_user" "VIBEPOLLO_SESSION_UID=$session_uid" "VIBEPOLLO_SESSION_GID=$session_gid" "VIBEPOLLO_SESSION_GROUPS=$session_groups" \
+    "VIBEPOLLO_SESSION_ID=$session_id" "VIBEPOLLO_SESSION_GENERATION=$session_generation" "VIBEPOLLO_SESSION_HOME=$session_home")
+}
+
 run_host() {
   local host_capabilities host_log='' host_log_directory=$machine_profile/logs
   local host_log_prefix candidate readiness_attempt state status readiness_failed=0
@@ -783,17 +832,14 @@ run_host() {
   # stop and reap the real host when an unrelated supervisor command fails.
   host_pid='' host_reaped=0 host_stop_sent=0 shutting_down=0 host_cleanup_python=''
   local -A previous_host_logs=()
-  # Linux private displays are capture-ready through the Vibeshine DRM/KMS
-  # path.  Leaving desktop sessions to inherit a compositor capture setting
-  # makes a newly reserved output disappear during KWin's topology refresh,
-  # producing a connected session with no video.  Keep this aligned with the
-  # machine-wide Linux capture policy for every selected session role.
-  local -a overrides=('system_tray=disabled' 'capture=kms') environment
+  # Capture selection belongs to the host configuration. Automatic capture
+  # prefers KMS for managed virtual displays; explicit backends remain allowed.
+  local -a overrides=('system_tray=disabled') environment
   [[ $(/usr/bin/id -un) == "$service_user" ]] || fail "run requires $service_user"
   load_session
   capability_free_exec "$machine_host" prepare-profile
   [[ -f "$machine_host_executable" && ! -L "$machine_host_executable" &&
-     $(/usr/bin/stat -c '%U:%G:%a:%F' -- "$machine_host_executable") == "root:${service_user}:750:regular file" ]] ||
+     $(/usr/bin/stat -c '%U:%G:%a' -- "$machine_host_executable") == "root:${service_user}:750" ]] ||
     fail 'private machine-host executable is unsafe'
   host_capabilities=$(/usr/bin/getcap -n -- "$machine_host_executable") ||
     fail 'could not inspect private machine-host capabilities'
@@ -803,13 +849,13 @@ run_host() {
   # controller generations and boots, with up to 10 MiB per launch.
   host_log_prefix=$machine_profile/vibepollo.log
   [[ -d /run/vibepollo/host && ! -L /run/vibepollo/host &&
-     $(/usr/bin/stat -c '%U:%G:%a:%F' -- /run/vibepollo/host) == "${service_user}:${service_user}:700:directory" ]] ||
+     $(/usr/bin/stat -c '%U:%G:%a' -- /run/vibepollo/host) == "${service_user}:${service_user}:700" ]] ||
     fail 'host runtime directory is unsafe'
   if [[ ! -e "$host_log_directory" && ! -L "$host_log_directory" ]]; then
     /usr/bin/mkdir -m 700 -- "$host_log_directory"
   fi
   [[ -d "$host_log_directory" && ! -L "$host_log_directory" &&
-     $(/usr/bin/stat -c '%U:%G:%a:%F' -- "$host_log_directory") == "${service_user}:${service_user}:700:directory" ]] ||
+     $(/usr/bin/stat -c '%U:%G:%a' -- "$host_log_directory") == "${service_user}:${service_user}:700" ]] ||
     fail 'host readiness log directory is unsafe'
   # Retained logs may already contain readiness messages. Snapshot their names
   # before launch so only a newly created session log can make this host ready.
@@ -818,6 +864,10 @@ run_host() {
     previous_host_logs["$candidate"]=1
   done
   overrides+=("log_path=$host_log_prefix")
+  if [[ "$session_backend" == hyprland-kms ]]; then
+    local override
+    while IFS= read -r override; do overrides+=("$override"); done < <(hyprland_host_overrides)
+  fi
   if [[ "$session_role" == greeter ]]; then
     # The greeter has no interactive fallback, so pin the proven NVENC path on
     # NVIDIA hosts. Other GPUs keep automatic encoder selection (VAAPI/software).
@@ -826,11 +876,6 @@ run_host() {
     # can open a browser on the greeter itself, and pairing a new Moonlight
     # client needs the PIN entered there. The Web UI login still gates it.
     overrides+=('min_log_level=info' 'virtual_display_mode=shared' 'virtual_display_layout=exclusive' 'dd_config_revert_on_disconnect=enabled' 'dd_config_revert_delay=0' 'origin_web_ui_allowed=lan' 'session_history_enabled=disabled' 'frame_limiter_enable=false' 'file_apps=/usr/share/vibepollo/prelogin/apps.json'); fi
-  environment=("HOME=$machine_profile" "USER=$service_user" "LOGNAME=$service_user" "PATH=/usr/local/sbin:/usr/local/bin:/usr/bin" "LANG=C.UTF-8" "SHELL=/bin/sh" \
-    "XDG_CONFIG_HOME=/var/lib" "XDG_RUNTIME_DIR=/run/vibepollo/host" "VIBEPOLLO_MACHINE_HOST=1" \
-    "VIBEPOLLO_SESSION_TYPE=wayland" \
-    "VIBEPOLLO_SESSION_ROLE=$session_role" "VIBEPOLLO_SESSION_USER=$session_user" "VIBEPOLLO_SESSION_UID=$session_uid" "VIBEPOLLO_SESSION_GID=$session_gid" "VIBEPOLLO_SESSION_GROUPS=$session_groups" \
-    "VIBEPOLLO_SESSION_ID=$session_id" "VIBEPOLLO_SESSION_GENERATION=$session_generation" "VIBEPOLLO_SESSION_HOME=$session_home")
   request_host_shutdown() {
     shutting_down=1
     # A signal can arrive before the background child's PID is assigned. Keep
@@ -871,6 +916,7 @@ run_host() {
   # remain connected while the host drains capture and encoding; their early
   # death cancels applications through the broker before that drain finishes.
   trap request_host_shutdown TERM INT HUP
+  build_machine_host_environment
   capability_clean_exec /usr/bin/env -i "${environment[@]}" \
     "$machine_host_executable" "$machine_profile/vibepollo.conf" "${overrides[@]}" &
   host_pid=$!
@@ -945,7 +991,22 @@ control_group_is_empty() {
      "$control_group" != */.. && "$control_group" != *$'\n'* ]] || return 1
   cgroup_path=/sys/fs/cgroup$control_group
   if [[ ! -e "$cgroup_path" && ! -L "$cgroup_path" ]]; then
-    return 0
+    # Shell existence tests also fail on denied lookup. Only ENOENT
+    # proves absence; errors or a path that reappeared stay blocked.
+    [ -x /usr/bin/python3 ] || return 1
+    timeout --signal=KILL 5 /usr/bin/python3 -I - "$cgroup_path" <<'PY'
+import os
+import sys
+
+try:
+    os.lstat(sys.argv[1])
+except FileNotFoundError:
+    sys.exit(0)
+except OSError:
+    pass
+sys.exit(1)
+PY
+    return $?
   fi
   [[ -d "$cgroup_path" && ! -L "$cgroup_path" &&
      -f "$cgroup_path/cgroup.events" && ! -L "$cgroup_path/cgroup.events" ]] || return 1
@@ -1046,8 +1107,8 @@ quiesce_machine_for_reset() {
     fail 'reset requires a running systemd system manager'
   [[ -f "$session_controller" && ! -L "$session_controller" ]] ||
     fail 'reset requires the installed machine-session controller'
-  controller_attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- "$session_controller") || return 1
-  [[ "$controller_attributes" == 'root:root:755:regular file' ]] ||
+  controller_attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$session_controller") || return 1
+  [[ "$controller_attributes" == 'root:root:755' ]] ||
     fail 'the installed machine-session controller is unsafe'
 
   for unit in vibepollo-session-exec.socket vibepollo.service \
@@ -1098,8 +1159,9 @@ remove_machine_profile() {
     return
   fi
   if [[ -d "$machine_profile" ]]; then
-    attributes=$(/usr/bin/stat -c '%U:%G:%a:%F' -- /var/lib) || return 1
-    [[ "$attributes" == 'root:root:755:directory' ]] ||
+    [[ -d /var/lib && ! -L /var/lib ]] || fail 'refusing to remove machine state beneath an unsafe /var/lib'
+    attributes=$(/usr/bin/stat -c '%U:%G:%a' -- /var/lib) || return 1
+    [[ "$attributes" == 'root:root:755' ]] ||
       fail 'refusing to remove machine state beneath an unsafe /var/lib'
     if /usr/bin/mountpoint -q -- "$machine_profile"; then
       fail 'refusing to recursively remove a mounted machine-state directory'

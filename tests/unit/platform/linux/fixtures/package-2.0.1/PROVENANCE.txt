@@ -1,0 +1,5 @@
+Historical full Arch .INSTALL fixtures, copied verbatim from tag 2.0.1.
+Tests extract selector/fence consumer functions only; never execute full hooks.
+
+vibepollo: commit 66e169c325dab73e4e780fe34ac3c613af4cdf52, path packaging/linux/Arch/vibepollo.install, blob d0d9ee3bcb060be22e2c5f30e11593b3c057e925
+vibeshine: commit f078104b2b9224f080e503271dcea2a96fb573c1, path packaging/linux/Arch/vibeshine.install, blob 5ae65e93d2efdf15d79bb6a1c455ef3fcc989943

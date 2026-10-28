@@ -127,6 +127,21 @@ namespace Playnite.SDK.Models
 namespace Playnite.SDK.Plugins { public class LibraryPlugin { public Guid Id; public string Name; } }
 namespace SunshinePlaynite
 {
+    internal static class WaveformLaunchBridge
+    {
+        public static int Calls;
+        public static bool Result = true;
+        public static string Mapping, Directory;
+        public static bool Steam;
+        public static bool Prepare(string dll, string mapping, string directory, bool steam)
+        {
+            Calls++;
+            Mapping = mapping;
+            Directory = directory;
+            Steam = steam;
+            return Result;
+        }
+    }
     internal sealed class ConnectorLog : IDisposable
     {
         public ConnectorLog(Playnite.SDK.ILogger logger, bool enabled) { }

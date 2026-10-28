@@ -8,6 +8,7 @@
 namespace display_helper_integration::request_policy {
   enum class ConfigurationOption {
     Disabled,
+    VerifyOnly,
     EnsureActive,
     EnsureOnlyDisplay,
   };
@@ -21,6 +22,7 @@ namespace display_helper_integration::request_policy {
   };
 
   enum class DevicePreparation {
+    VerifyOnly,
     EnsureActive,
     EnsurePrimary,
     EnsureOnlyDisplay,
@@ -60,5 +62,18 @@ namespace display_helper_integration::request_policy {
     const std::function<void()> &disarm_restore,
     const std::function<bool()> &restore_in_progress
   );
+  // Retain live peer outputs while restoring missing physical baseline members.
+  [[nodiscard]] std::vector<std::vector<std::string>> merge_extended_topology(
+    std::vector<std::vector<std::string>> current,
+    const std::vector<std::vector<std::string>> &baseline,
+    const std::string &target_device_id
+  );
+  // The active topology must contain physical outputs only. A returned output
+  // absent from the creation baseline requires a fresh SettingsManager cache.
+  [[nodiscard]] bool physical_topology_extends_baseline(
+    const std::vector<std::vector<std::string>> &baseline,
+    const std::vector<std::vector<std::string>> &active_physical_topology
+  );
+
   [[nodiscard]] Result evaluate(const Input &input);
 }  // namespace display_helper_integration::request_policy

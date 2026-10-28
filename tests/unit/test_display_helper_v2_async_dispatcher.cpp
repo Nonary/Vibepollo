@@ -6,6 +6,7 @@
 
 #include "../tests_common.h"
 
+#include "src/platform/windows/display_helper_borrow_gate.h"
 #include "src/platform/windows/display_helper_v2/async_dispatcher.h"
 #include "src/platform/windows/display_helper_v2/golden_health.h"
 #include "src/platform/windows/display_helper_v2/operations.h"
@@ -14,6 +15,10 @@
 #include <future>
 #include <mutex>
 #include <numeric>
+#include <thread>
+
+display_helper::borrow::gate_t::scope_t enter_display_helper_borrow_gate_from_peer(
+  display_helper::borrow::gate_t &gate);
 
 namespace {
   class FakeClock final : public display_helper::v2::IClock {
@@ -123,6 +128,69 @@ namespace {
     int enable_calls = 0;
   };
 }  // namespace
+
+TEST(DisplayHelperV2AsyncDispatcher, BorrowGateTracksNestedAndMovedScopesAcrossTranslationUnits) {
+  display_helper::borrow::gate_t gate;
+  auto outer = gate.try_enter();
+  ASSERT_TRUE(outer);
+  EXPECT_EQ(gate.active(), 1u);
+
+  std::promise<bool> peer_counted;
+  std::promise<void> release_peer;
+  auto release_peer_future = release_peer.get_future().share();
+  std::thread peer([&] {
+    auto scope = enter_display_helper_borrow_gate_from_peer(gate);
+    peer_counted.set_value(scope && gate.active() == 2u);
+    release_peer_future.wait();
+    scope.reset();
+  });
+  const bool peer_was_counted = peer_counted.get_future().get();
+  const auto active_with_peer = gate.active();
+  release_peer.set_value();
+  peer.join();
+  EXPECT_TRUE(peer_was_counted);
+  EXPECT_EQ(active_with_peer, 2u);
+  EXPECT_EQ(gate.active(), 1u);
+
+  auto inner = enter_display_helper_borrow_gate_from_peer(gate);
+  ASSERT_TRUE(inner);
+  EXPECT_EQ(gate.active(), 1u);
+  inner.reset();
+  EXPECT_EQ(gate.active(), 1u);
+
+  std::thread releaser([scope = std::move(outer)]() mutable { scope.reset(); });
+  releaser.join();
+  EXPECT_EQ(gate.active(), 0u);
+
+  auto next = gate.try_enter();
+  EXPECT_TRUE(next);
+}
+
+TEST(DisplayHelperV2AsyncDispatcher, RepeatedIdleShutdownCompletes) {
+  FakeClock clock;
+  FakeDisplaySettings display;
+  display_helper::v2::SnapshotService snapshot_service(display);
+  display_helper::v2::InMemorySnapshotStorage storage;
+  display_helper::v2::InMemoryTextStorage golden_status_storage;
+  display_helper::v2::GoldenHealth golden_health(golden_status_storage, {});
+  display_helper::v2::RestoreState restore_state;
+  display_helper::v2::ApplyOperation apply_op(display, clock, [] { return true; });
+  display_helper::v2::VerificationOperation verify_op(display, clock);
+  display_helper::v2::RecoveryOperation recovery_op(display, storage, golden_health, restore_state, clock);
+  display_helper::v2::RecoveryValidationOperation recovery_validate(snapshot_service, clock);
+  FakeVirtualDisplayDriver virtual_display;
+
+  // Race destruction with both workers entering their idle waits. CTest bounds
+  // this component so a shutdown regression fails instead of hanging the lane.
+  for (int iteration = 0; iteration < 1000; ++iteration) {
+    display_helper::v2::AsyncDispatcher dispatcher(
+      apply_op, verify_op, recovery_op, recovery_validate, virtual_display, clock);
+    if (iteration % 2 == 0) {
+      std::this_thread::yield();
+    }
+  }
+  EXPECT_EQ(display.apply_calls, 0);
+}
 
 TEST(DisplayHelperV2AsyncDispatcher, AppliesAfterVirtualDisplayResetSequence) {
   FakeClock clock;

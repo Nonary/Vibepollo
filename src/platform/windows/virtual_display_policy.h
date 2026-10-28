@@ -4,9 +4,11 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <span>
 #include <string_view>
+#include <utility>
 
 namespace VDISPLAY::policy {
   inline constexpr std::string_view ensure_display_stable_id = "sunshine-ensure";
@@ -28,6 +30,73 @@ namespace VDISPLAY::policy {
   constexpr bool should_prepare_display_for_new_session(const bool no_active_sessions) noexcept {
     return no_active_sessions;
   }
+
+  constexpr bool should_rearm_retained_game_output_recovery(
+    const bool no_active_sessions,
+    const bool retained_output_ready,
+    const bool secondary_game_client,
+    const bool active_app,
+    const std::uint64_t normal_identity_token,
+    const std::string_view normal_identity_owner
+  ) noexcept {
+    return no_active_sessions &&
+           retained_output_ready &&
+           !secondary_game_client &&
+           active_app &&
+           normal_identity_token != 0 &&
+           !normal_identity_owner.empty();
+  }
+
+  // A paused stream cancels crash recovery while no capture owns the display.
+  // Retained-display Resume stages a fresh worker with its session snapshot,
+  // then publishes it only after RTSP accepts the pending capture owner. This
+  // keeps failed Resume requests idle and closes the cancel/rearm handoff race.
+  enum class retained_resume_reuse_path_e : std::uint8_t {
+    prepared_existing_display,
+    capture_ready_output,
+  };
+
+  class retained_resume_recovery_rearm_t {
+  public:
+    retained_resume_recovery_rearm_t() = default;
+    retained_resume_recovery_rearm_t(const retained_resume_recovery_rearm_t &) = delete;
+    retained_resume_recovery_rearm_t &operator=(const retained_resume_recovery_rearm_t &) = delete;
+    retained_resume_recovery_rearm_t(retained_resume_recovery_rearm_t &&) = default;
+    retained_resume_recovery_rearm_t &operator=(retained_resume_recovery_rearm_t &&) = default;
+
+    void stage(const retained_resume_reuse_path_e path, std::function<void()> action) {
+      path_ = path;
+      action_ = std::move(action);
+    }
+
+    [[nodiscard]] bool pending() const noexcept {
+      return static_cast<bool>(action_);
+    }
+
+    [[nodiscard]] std::optional<retained_resume_reuse_path_e> path() const noexcept {
+      return path_;
+    }
+
+    template <typename Admission>
+    bool admit_and_commit(Admission &&admission) {
+      if (!std::invoke(std::forward<Admission>(admission))) {
+        action_ = {};
+        path_.reset();
+        return false;
+      }
+      auto action = std::move(action_);
+      action_ = {};
+      path_.reset();
+      if (action) {
+        action();
+      }
+      return true;
+    }
+
+  private:
+    std::optional<retained_resume_reuse_path_e> path_;
+    std::function<void()> action_;
+  };
 
   // Composed multi-client topologies own each stable VDD independently. A
   // peer-preserving create may neither remove other identities up front nor

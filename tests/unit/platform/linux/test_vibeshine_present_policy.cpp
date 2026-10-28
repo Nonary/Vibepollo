@@ -8,6 +8,73 @@
 #include <vibeshine_drm_change.h>
 #include <vibeshine_drm_vrr.h>
 
+TEST(VibeshinePresentPolicy, PreservesFlipTimeAcrossDelayedWorkerAndLaterVblanks) {
+  vibeshine_drm_present_timing timing {};
+  vibeshine_drm_present_timing_arm(&timing);
+  constexpr __u64 flip_ns = 1'000'000'000;
+  EXPECT_TRUE(vibeshine_drm_present_timing_complete(&timing, true, flip_ns));
+  EXPECT_FALSE(vibeshine_drm_present_timing_complete(&timing, true, flip_ns + 8'333'333));
+  EXPECT_EQ(vibeshine_drm_present_timing_finish(&timing, flip_ns + 65'000'000), flip_ns);
+}
+
+TEST(VibeshinePresentPolicy, IgnoresVblanksBeforeTheExactFlipCompletes) {
+  vibeshine_drm_present_timing timing {};
+  vibeshine_drm_present_timing_arm(&timing);
+  EXPECT_FALSE(vibeshine_drm_present_timing_complete(&timing, false, 100));
+  EXPECT_FALSE(vibeshine_drm_present_timing_complete(&timing, true, 0));
+  EXPECT_EQ(timing.timestamp_ns, 0u);
+  EXPECT_TRUE(timing.pending);
+  EXPECT_TRUE(vibeshine_drm_present_timing_complete(&timing, true, 200));
+  EXPECT_EQ(vibeshine_drm_present_timing_finish(&timing, 300), 200u);
+}
+
+TEST(VibeshinePresentPolicy, DetachesTimedOutFlipBeforeLateCompletion) {
+  vibeshine_drm_present_timing timing {};
+  vibeshine_drm_present_timing_arm(&timing);
+  EXPECT_EQ(vibeshine_drm_present_timing_finish(&timing, 300), 300u);
+  EXPECT_FALSE(timing.pending);
+  EXPECT_FALSE(vibeshine_drm_present_timing_complete(&timing, true, 400));
+  EXPECT_EQ(timing.timestamp_ns, 0u);
+}
+
+TEST(VibeshinePresentPolicy, ImmediateCommitUsesCompletionTimeNotWorkerTime) {
+  vibeshine_drm_present_timing timing {};
+  vibeshine_drm_present_timing_arm(&timing);
+  ASSERT_TRUE(vibeshine_drm_present_timing_complete(&timing, true, 100));
+  EXPECT_EQ(vibeshine_drm_present_timing_finish(&timing, 300), 100u);
+}
+
+TEST(VibeshinePresentPolicy, ResetsTimingForEachCommitAndKeepsCrtcsIndependent) {
+  vibeshine_drm_present_timing first {};
+  vibeshine_drm_present_timing second {};
+  vibeshine_drm_present_timing_arm(&first);
+  vibeshine_drm_present_timing_arm(&second);
+  ASSERT_TRUE(vibeshine_drm_present_timing_complete(&first, true, 100));
+  EXPECT_EQ(second.timestamp_ns, 0u);
+  EXPECT_TRUE(second.pending);
+  ASSERT_TRUE(vibeshine_drm_present_timing_complete(&second, true, 200));
+  EXPECT_EQ(vibeshine_drm_present_timing_finish(&first, 300), 100u);
+  EXPECT_EQ(vibeshine_drm_present_timing_finish(&second, 300), 200u);
+  vibeshine_drm_present_timing_arm(&first);
+  EXPECT_EQ(first.timestamp_ns, 0u);
+  ASSERT_TRUE(vibeshine_drm_present_timing_complete(&first, true, 400));
+  EXPECT_EQ(vibeshine_drm_present_timing_finish(&first, 500), 400u);
+}
+
+TEST(VibeshinePresentPolicy, VariableWorkerDelayDoesNotChangeSourceFrameSpacing) {
+  vibeshine_drm_present_timing first {};
+  vibeshine_drm_present_timing second {};
+  constexpr __u64 first_flip_ns = 1'000'000'000;
+  constexpr __u64 period_ns = 8'333'333;
+  vibeshine_drm_present_timing_arm(&first);
+  vibeshine_drm_present_timing_arm(&second);
+  ASSERT_TRUE(vibeshine_drm_present_timing_complete(&first, true, first_flip_ns));
+  ASSERT_TRUE(vibeshine_drm_present_timing_complete(&second, true, first_flip_ns + period_ns));
+  const auto first_source = vibeshine_drm_present_timing_finish(&first, first_flip_ns + 1'000'000);
+  const auto second_source = vibeshine_drm_present_timing_finish(&second, first_flip_ns + period_ns + 20'000'000);
+  EXPECT_EQ(second_source - first_source, period_ns);
+}
+
 TEST(VibeshinePresentPolicy, ValidatesEveryRequestField) {
   vibeshine_drm_wait_present request {};
   request.abi_version = VIBESHINE_DRM_PRESENT_ABI_VERSION;

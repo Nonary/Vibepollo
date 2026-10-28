@@ -1,4 +1,5 @@
 #include "remote_display_topology.h"
+#include "display_target_lease.h"
 
 #include <algorithm>
 #include <set>
@@ -29,6 +30,36 @@ namespace remote_display_topology {
     nlohmann::json empty_layout() { return {{"version", layout_version}, {"placements", nlohmann::json::object()}}; }
   }
 
+  void coordinator_t::place_relative(node_t &node, const node_t &anchor, const nlohmann::json &placement) {
+    const auto anchor_width = layout_width(anchor);
+    const auto anchor_height = layout_height(anchor);
+    const auto width = layout_width(node);
+    const auto height = layout_height(node);
+    const auto gap = placement.value("gap_px", 0);
+    const auto edge = placement.value("edge", "right");
+    const auto alignment = placement.value("alignment", "center");
+    if (edge == "left") {
+      node.x = anchor.x - width - gap;
+    }
+    if (edge == "right") {
+      node.x = anchor.x + anchor_width + gap;
+    }
+    if (edge == "above") {
+      node.y = anchor.y - height - gap;
+    }
+    if (edge == "below") {
+      node.y = anchor.y + anchor_height + gap;
+    }
+    if (edge == "left" || edge == "right") {
+      node.y = alignment == "start" ? anchor.y : alignment == "end" ? anchor.y + anchor_height - height :
+                                                                      anchor.y + (anchor_height - height) / 2;
+    }
+    if (edge == "above" || edge == "below") {
+      node.x = alignment == "start" ? anchor.x : alignment == "end" ? anchor.x + anchor_width - width :
+                                                                      anchor.x + (anchor_width - width) / 2;
+    }
+  }
+
   bool layout_schema_valid(const nlohmann::json &layout, std::string &error) {
     if (!layout.is_object() || !layout.contains("version") || !layout["version"].is_number_integer() || layout["version"].get<int>() != static_cast<int>(layout_version) || !layout.contains("placements") || !layout["placements"].is_object()) {
       error = "Layout must be version 1 with an object of placements.";
@@ -45,8 +76,12 @@ namespace remote_display_topology {
         error = "Placement primary must be a boolean.";
         return false;
       }
+      if (placement.contains("preserve") && !placement["preserve"].is_boolean()) {
+        error = "Placement preserve must be a boolean.";
+        return false;
+      }
       const auto gap = placement["gap_px"].get<int>();
-      if ((placement["anchor_kind"].get<std::string>() != "physical" && placement["anchor_kind"].get<std::string>() != "client") || placement["anchor_id"].get<std::string>().empty() || !edges.contains(placement["edge"].get<std::string>()) || !alignments.contains(placement["alignment"].get<std::string>()) || gap < 0 || gap > max_gap_px) {
+      if ((placement["anchor_kind"].get<std::string>() != "physical" && placement["anchor_kind"].get<std::string>() != "client") || (!placement.value("preserve", false) && placement["anchor_id"].get<std::string>().empty()) || !edges.contains(placement["edge"].get<std::string>()) || !alignments.contains(placement["alignment"].get<std::string>()) || gap < 0 || gap > max_gap_px) {
         error = "Placement has an unsupported anchor, edge, alignment, or gap.";
         return false;
       }
@@ -70,6 +105,7 @@ namespace remote_display_topology {
         error = "Every placement must name a paired client.";
         return false;
       }
+      if (placement.value("preserve", false)) continue;
       const auto anchor_kind = placement["anchor_kind"].get<std::string>();
       const auto anchor_id = placement["anchor_id"].get<std::string>();
       if (placement.value("primary", false) && ++primary_count > 1) {
@@ -104,8 +140,46 @@ namespace remote_display_topology {
   coordinator_t &instance() { static coordinator_t coordinator; return coordinator; }
 
   void coordinator_t::set_runtime_callbacks(runtime_callbacks_t callbacks) { std::lock_guard lock(mutex_); callbacks_ = std::move(callbacks); }
+  std::size_t coordinator_t::client_identity_capacity_locked() const {
+    return std::min(max_client_identities, callbacks_.client_identity_capacity ? callbacks_.client_identity_capacity() : default_client_identities);
+  }
   void coordinator_t::set_layout(nlohmann::json layout) { std::lock_guard lock(mutex_); layout_ = normalize_layout(layout); }
-  void coordinator_t::set_physical_baseline(std::vector<node_t> nodes) { std::lock_guard lock(mutex_); physical_baseline_ = std::move(nodes); }
+  std::optional<node_t> coordinator_t::saved_stream_placement(const node_t &target, const std::vector<node_t> &active_nodes) const {
+    std::lock_guard lock(mutex_);
+    const auto placement = layout_["placements"].find(target.id);
+    if (placement == layout_["placements"].end()) {
+      return std::nullopt;
+    }
+    if (placement->value("preserve", false)) return target;
+    const auto anchor_id = placement->value("anchor_id", "");
+    const auto physical = placement->value("anchor_kind", "") == "physical";
+    const auto anchor = std::find_if(active_nodes.begin(), active_nodes.end(), [&](const node_t &candidate) {
+      return candidate.active && candidate.id == anchor_id && candidate.physical == physical;
+    });
+    if (anchor == active_nodes.end()) {
+      return std::nullopt;
+    }
+    auto node = target;
+    node.primary = placement->value("primary", false);
+    place_relative(node, *anchor, *placement);
+    return node;
+  }
+
+  void coordinator_t::set_physical_baseline(std::vector<node_t> nodes) {
+    std::lock_guard lock(mutex_);
+    physical_baseline_ = std::move(nodes);
+  }
+
+  void coordinator_t::refresh_idle_physical_baseline(std::vector<node_t> nodes) {
+    std::lock_guard lock(mutex_);
+    if (nodes.empty() || physical_restore_pending_ || std::any_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+          return entry.second.normal_game || entry.second.remote_monitor;
+        })) {
+      return;
+    }
+    physical_baseline_ = std::move(nodes);
+  }
+
   std::vector<std::string> coordinator_t::physical_node_ids() const {
     std::lock_guard lock(mutex_);
     std::vector<std::string> ids;
@@ -128,6 +202,14 @@ namespace remote_display_topology {
       return entry.second.normal_game || entry.second.remote_monitor;
     }));
   }
+  bool coordinator_t::has_live_managed_client_identity() const {
+    std::lock_guard lock(mutex_);
+    return std::any_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+      const auto &state = entry.second;
+      return state.remote_monitor ||
+             (state.normal_game && (!state.normal_release_pending || !state.normal_capture_references.empty()));
+    });
+  }
   std::vector<std::string> coordinator_t::managed_client_identity_ids() const {
     std::lock_guard lock(mutex_);
     std::vector<std::string> ids;
@@ -146,17 +228,41 @@ namespace remote_display_topology {
     std::sort(ids.begin(), ids.end());
     return ids;
   }
+  std::vector<std::string> coordinator_t::idle_normal_game_recovery_client_ids(const bool capture_runtime_owned) const {
+    std::lock_guard lock(mutex_);
+    std::vector<std::string> ids;
+    if (capture_runtime_owned) {
+      return ids;
+    }
+    for (const auto &[uuid, state] : clients_) {
+      if (state.normal_game && !state.remote_monitor && state.normal_capture_references.empty()) {
+        ids.push_back(uuid);
+      }
+    }
+    std::sort(ids.begin(), ids.end());
+    return ids;
+  }
   bool coordinator_t::generic_virtual_display_cleanup_allowed() const {
     std::lock_guard lock(mutex_);
-    return std::none_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+    return !display_target::leases().protected_output() && std::none_of(clients_.begin(), clients_.end(), [](const auto &entry) {
       return entry.second.normal_game || entry.second.remote_monitor;
+    });
+  }
+  bool coordinator_t::physical_display_restore_allowed() const {
+    std::lock_guard lock(mutex_);
+    return !display_target::leases().protected_output() && std::none_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+      const auto &state = entry.second;
+      return state.remote_monitor || !state.normal_capture_references.empty();
     });
   }
   void coordinator_t::set_plaintext_rtsp_warning_provider(std::function<std::string(const std::string &)> provider) { std::lock_guard lock(mutex_); plaintext_rtsp_warning_provider_ = std::move(provider); }
 
   normal_game_reservation_t coordinator_t::reserve_normal_game_identity(const std::string &client_uuid, const std::string &label, mode_t mode) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return {};
     std::lock_guard lock(mutex_);
-    if (client_uuid.empty() || (!clients_.contains(client_uuid) && clients_.size() >= max_client_identities)) return {};
+    if (display_mutation_deferred_locked()) return {};
+    if (client_uuid.empty() || (!clients_.contains(client_uuid) && clients_.size() >= client_identity_capacity_locked())) return {};
     auto [state_it, inserted] = clients_.try_emplace(client_uuid);
     auto &state = state_it->second;
     if (inserted) state.placement_order = ++next_placement_order_;
@@ -171,7 +277,12 @@ namespace remote_display_topology {
   }
 
   bool coordinator_t::reapply_composed_topology() {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     std::lock_guard lock(mutex_);
+    if (display_mutation_deferred_locked()) {
+      return false;
+    }
     if (!callbacks_.apply_composed_topology) {
       return false;
     }
@@ -191,9 +302,15 @@ namespace remote_display_topology {
   }
 
   bool coordinator_t::rollback_normal_game_identity(const std::string &client_uuid, const std::uint64_t token) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return false;
     std::lock_guard lock(mutex_);
     const auto it = clients_.find(client_uuid);
     if (it == clients_.end() || !it->second.normal_game || it->second.normal_game_token != token) {
+      return false;
+    }
+    if (display_mutation_deferred_locked()) {
+      it->second.normal_release_pending = true;
       return false;
     }
     if (!it->second.normal_capture_references.empty()) {
@@ -217,10 +334,65 @@ namespace remote_display_topology {
     if (it == clients_.end() || !it->second.normal_game || token == 0 || it->second.normal_game_token != token) return;
     auto &state = it->second;
     state.normal_release_pending = true;
-    if (!state.normal_capture_references.empty()) {
+    if (display_mutation_deferred_locked()) {
       return;
     }
     release_normal_game_identity_locked(client_uuid, state);
+  }
+
+  bool coordinator_t::display_mutation_deferred_locked() const {
+    return display_target::leases().protected_output() || shutdown_pending_ || std::any_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+      return entry.second.normal_release_pending && !entry.second.normal_capture_references.empty();
+    });
+  }
+
+  void coordinator_t::finalize_shutdown_locked() {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return ;
+    if (display_target::leases().protected_output()) { shutdown_pending_ = true; return; }
+    std::vector<std::string> managed_ids;
+    for (const auto &[uuid, state] : clients_) {
+      if (state.normal_game || state.remote_monitor) managed_ids.push_back(uuid);
+    }
+    std::sort(managed_ids.begin(), managed_ids.end());
+
+    // With no managed display there is nothing to restore or remove. Applying
+    // the physical baseline on idle shutdown can mutate otherwise correct
+    // Windows monitor origins (including a baseline refreshed by the UI).
+    if (managed_ids.empty() && !physical_restore_pending_) {
+      clients_.clear();
+      shutdown_pending_ = false;
+      return;
+    }
+
+    // A pending restore cannot complete without its platform callback.
+    if (physical_restore_pending_ && !callbacks_.apply_composed_topology) {
+      shutdown_pending_ = true;
+      return;
+    }
+
+    auto retained_clients = std::move(clients_);
+    clients_.clear();
+    if (callbacks_.apply_composed_topology) {
+      std::vector<std::string> ignored;
+      if (!callbacks_.apply_composed_topology(compose_locked(ignored))) {
+        clients_ = std::move(retained_clients);
+        shutdown_pending_ = true;
+        return;
+      }
+    }
+
+    physical_restore_pending_ = false;
+
+    for (const auto &uuid : managed_ids) {
+      const bool removed = !callbacks_.remove_owned_display || callbacks_.remove_owned_display(uuid);
+      if (!removed) {
+        if (const auto retained = retained_clients.find(uuid); retained != retained_clients.end()) {
+          clients_.emplace(uuid, std::move(retained->second));
+        }
+      }
+    }
+    shutdown_pending_ = !clients_.empty();
   }
 
   struct coordinator_t::capture_reference_t {
@@ -265,15 +437,35 @@ namespace remote_display_topology {
 
   void coordinator_t::release_drained_normal_game_identities() {
     std::lock_guard lock(mutex_);
+    const bool capture_still_live = std::any_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+      return !entry.second.normal_capture_references.empty();
+    });
+    if (shutdown_pending_) {
+      if (capture_still_live) return;
+      finalize_shutdown_locked();
+      return;
+    }
+    if (capture_still_live && display_mutation_deferred_locked()) return;
     for (auto it = clients_.begin(); it != clients_.end();) {
       auto current = it++;
       if (current->second.normal_release_pending && current->second.normal_capture_references.empty()) {
         release_normal_game_identity_locked(current->first, current->second);
       }
     }
+    for (auto it = clients_.begin(); it != clients_.end();) {
+      auto current = it++;
+      if (!current->second.monitor_release_pending) continue;
+      const auto reason = current->second.monitor_release_reason;
+      release_locked(current->first, current->second, reason);
+      if (!current->second.normal_game && !current->second.remote_monitor) {
+        clients_.erase(current);
+      }
+    }
   }
 
   void coordinator_t::release_normal_game_identity_locked(const std::string &client_uuid, client_state_t &state) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return ;
     const auto requested_mode = state.normal_requested_mode;
     const auto token = state.normal_game_token;
     state.normal_game = false;
@@ -313,16 +505,35 @@ namespace remote_display_topology {
   }
 
   void coordinator_t::release_all_normal_game_identities() {
-    std::vector<std::pair<std::string, std::uint64_t>> owners;
-    {
-      std::lock_guard lock(mutex_);
-      for (const auto &[uuid, state] : clients_) {
-        if (state.normal_game) owners.emplace_back(uuid, state.normal_game_token);
+    std::lock_guard lock(mutex_);
+    for (auto &[_, state] : clients_) {
+      if (state.normal_game) state.normal_release_pending = true;
+    }
+    if (display_mutation_deferred_locked()) return;
+    for (auto it = clients_.begin(); it != clients_.end();) {
+      auto current = it++;
+      if (current->second.normal_game && current->second.normal_release_pending) {
+        release_normal_game_identity_locked(current->first, current->second);
       }
     }
-    for (const auto &[uuid, token] : owners) {
-      release_normal_game_identity(uuid, token);
+  }
+
+  void coordinator_t::release_idle_normal_game_identities(const bool app_running, const bool capture_runtime_owned) {
+    if (!app_running && !capture_runtime_owned) {
+      release_all_normal_game_identities();
+    } else {
+      release_drained_normal_game_identities();
     }
+  }
+
+  void coordinator_t::complete_restored_normal_game_cleanup() {
+    std::lock_guard lock(mutex_);
+    if (display_target::leases().protected_output()) return;
+    std::erase_if(clients_, [](const auto &entry) {
+      const auto &state = entry.second;
+      return state.normal_game && state.normal_release_pending &&
+             state.normal_capture_references.empty() && !state.remote_monitor;
+    });
   }
 
   activation_result_t coordinator_t::activate_remote_monitor(const std::string &client_uuid, const std::string &label, mode_t mode) {
@@ -332,21 +543,47 @@ namespace remote_display_topology {
 
   activation_result_t coordinator_t::resume_remote_monitor(const std::string &client_uuid) {
     std::lock_guard lock(mutex_);
+    if (display_mutation_deferred_locked()) {
+      return {false, false, "Remote display changes are waiting for active capture to drain."};
+    }
     const auto it = clients_.find(client_uuid);
     if (it == clients_.end() || !it->second.remote_monitor) return {false, false, "Remote Monitor is not owned by this paired client."};
+    if (it->second.monitor_release_pending) return {false, false, "The previous Remote Monitor release is still being finalized."};
     return activate_locked(client_uuid, it->second);
   }
 
   monitor_runtime_state_t coordinator_t::activate_or_resume(const std::string &client_uuid, const std::string &label, mode_t mode, uint64_t generation) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) return {false, false, true, {}, "Existing target borrowers hold display leases."};
     std::lock_guard lock(mutex_);
-    if (!clients_.contains(client_uuid) && clients_.size() >= max_client_identities) {
-      return {false, false, true, {}, "Remote display capacity is four paired-client identities."};
+    auto &observed_generation = observed_monitor_generations_[client_uuid];
+    if (generation < observed_generation) {
+      return {false, false, true, {}, "A newer Remote Monitor generation was already observed."};
+    }
+    observed_generation = generation;
+    if (display_mutation_deferred_locked()) {
+      return {false, false, true, {}, "Remote display changes are waiting for active capture to drain."};
+    }
+    if (const auto released = released_monitor_generations_.find(client_uuid); released != released_monitor_generations_.end()) {
+      if (generation <= released->second) {
+        return {false, false, true, {}, "This Remote Monitor generation was already released."};
+      }
+    }
+    if (!clients_.contains(client_uuid) && clients_.size() >= client_identity_capacity_locked()) {
+      return {false, false, true, {}, "Remote display capacity is " + std::to_string(client_identity_capacity_locked()) + " paired-client identities."};
     }
     auto [state_it, inserted] = clients_.try_emplace(client_uuid);
     auto &state = state_it->second;
     if (inserted) state.placement_order = ++next_placement_order_;
+    if (state.monitor_release_pending) {
+      if (generation <= state.generation) {
+        return {false, false, true, {}, "The previous Remote Monitor release is still being finalized."};
+      }
+      state.monitor_release_pending = false;
+      state.monitor_release_reason.clear();
+    }
     if (generation < state.generation) {
-      return {true, state.lifecycle == lifecycle_e::ready, state.lifecycle == lifecycle_e::retryable, state.exact_output, state.warning, state.effective_mode.hdr};
+      return {false, false, true, {}, "A newer Remote Monitor generation is already active."};
     }
     state.generation = generation;
     state.label = label;
@@ -360,21 +597,23 @@ namespace remote_display_topology {
   monitor_runtime_state_t coordinator_t::snapshot(const std::string &client_uuid, uint64_t generation) const {
     std::lock_guard lock(mutex_);
     const auto it = clients_.find(client_uuid);
-    if (it == clients_.end() || generation != it->second.generation) return {};
+    if (it == clients_.end() || generation != it->second.generation || !it->second.remote_monitor) return {};
     const auto &state = it->second;
     return {true, state.lifecycle == lifecycle_e::ready, state.lifecycle == lifecycle_e::retryable, state.exact_output, state.warning, state.effective_mode.hdr};
   }
 
   bool coordinator_t::is_ready(const std::string &client_uuid, uint64_t generation) const { return snapshot(client_uuid, generation).ready; }
 
-  void coordinator_t::explicit_release(const std::string &client_uuid, uint64_t generation, const std::string &reason) {
+  bool coordinator_t::explicit_release(const std::string &client_uuid, uint64_t generation, const std::string &reason) {
     std::lock_guard lock(mutex_);
     const auto it = clients_.find(client_uuid);
-    if (it == clients_.end() || generation != it->second.generation) return;
+    if (it == clients_.end() || generation != it->second.generation) return true;
     release_locked(client_uuid, it->second, reason);
+    const bool released = !it->second.remote_monitor;
     if (!it->second.normal_game && !it->second.remote_monitor) {
       clients_.erase(it);
     }
+    return released;
   }
 
   void coordinator_t::transport_lost(const std::string &client_uuid, uint64_t generation) {
@@ -448,33 +687,46 @@ namespace remote_display_topology {
     disconnect_monitor(client_uuid);
   }
 
+  bool coordinator_t::shutdown_complete() const {
+    std::lock_guard lock(mutex_);
+    return !shutdown_pending_ && !physical_restore_pending_ && clients_.empty();
+  }
+
   void coordinator_t::shutdown(const bool preserve_owned_displays) {
     std::lock_guard lock(mutex_);
     if (preserve_owned_displays) {
       // A supervised host hands the still-connected machine display to its
       // successor.  Process teardown must not issue KScreen or hotplug work.
       clients_.clear();
+      observed_monitor_generations_.clear();
+      released_monitor_generations_.clear();
+      physical_restore_pending_ = false;
+      shutdown_pending_ = false;
       return;
     }
-    std::vector<std::string> managed_ids;
-    for (const auto &[uuid, state] : clients_) {
-      if (state.normal_game || state.remote_monitor) managed_ids.push_back(uuid);
-    }
-    std::sort(managed_ids.begin(), managed_ids.end());
-    clients_.clear();
-    if (callbacks_.apply_composed_topology) {
-      std::vector<std::string> ignored;
-      (void) callbacks_.apply_composed_topology(compose_locked(ignored));
-    }
-    for (const auto &uuid : managed_ids) {
-      if (callbacks_.remove_owned_display) {
-        (void) callbacks_.remove_owned_display(uuid);
+    const bool capture_still_live = std::any_of(clients_.begin(), clients_.end(), [](const auto &entry) {
+      return !entry.second.normal_capture_references.empty();
+    });
+    if (capture_still_live) {
+      shutdown_pending_ = true;
+      for (auto &[_, state] : clients_) {
+        if (state.normal_game) state.normal_release_pending = true;
       }
+      return;
     }
+    shutdown_pending_ = true;
+    finalize_shutdown_locked();
   }
 
   void coordinator_t::release_locked(const std::string &client_uuid, client_state_t &state, const std::string &reason) {
+    auto target_mutation = display_target::leases().begin_mutation();
+    if (!target_mutation) { state.monitor_release_pending = true; state.monitor_release_reason = reason; return; }
     if (!state.remote_monitor) return;
+    if (display_mutation_deferred_locked()) {
+      state.monitor_release_pending = true;
+      state.monitor_release_reason = reason;
+      return;
+    }
     const auto monitor_mode = state.monitor_requested_mode;
     const auto previous_lease = state.lease_held;
     const auto previous_lifecycle = state.lifecycle;
@@ -494,37 +746,65 @@ namespace remote_display_topology {
     state.lifecycle = lifecycle_e::released;
     state.warning = reason;
 
-    // Recompose only the remaining explicit owners.  This intentionally does
-    // not restore a saved/global topology or remove any peer identity.
+    // The retiring normal role still owns this connector until its final
+    // capture reference drains. Drop monitor ownership now, but defer every
+    // topology/native display mutation to the normal-role finalizer.
+    if (state.normal_release_pending && !state.normal_capture_references.empty()) {
+      return;
+    }
+
+    // Recompose only the remaining explicit owners. Terminal monitor removal
+    // is independent of this best-effort topology handoff: a failed restore
+    // must not keep the caller's screen connected.
     if (callbacks_.apply_composed_topology) {
       std::vector<std::string> ignored;
-      if (!callbacks_.apply_composed_topology(compose_locked(ignored))) {
+      const bool applied = callbacks_.apply_composed_topology(compose_locked(ignored));
+      if (!applied) {
+        physical_restore_pending_ = true;
+      }
+      if (!applied && !callbacks_.terminate_owned_display) {
         state.remote_monitor = true;
         state.monitor_requested_mode = monitor_mode;
         state.lease_held = previous_lease;
         state.lifecycle = previous_lifecycle;
         state.warning = previous_warning;
+        state.monitor_release_pending = true;
+        state.monitor_release_reason = reason;
         resolve_effective_mode_locked(client_uuid, state);
         return;
       }
-    } else if (remove_display) {
+    } else if (remove_display && !callbacks_.terminate_owned_display) {
       state.remote_monitor = true;
       state.monitor_requested_mode = monitor_mode;
       state.lease_held = previous_lease;
       state.lifecycle = previous_lifecycle;
       state.warning = previous_warning;
+      state.monitor_release_pending = true;
+      state.monitor_release_reason = reason;
       resolve_effective_mode_locked(client_uuid, state);
       return;
     }
-    if (remove_display && callbacks_.remove_owned_display && !callbacks_.remove_owned_display(client_uuid)) {
+    const auto &remove = callbacks_.terminate_owned_display ? callbacks_.terminate_owned_display : callbacks_.remove_owned_display;
+    if (remove_display && remove && !remove(client_uuid)) {
       state.remote_monitor = true;
       state.monitor_requested_mode = monitor_mode;
       state.lease_held = previous_lease;
       state.lifecycle = previous_lifecycle;
       state.warning = previous_warning;
+      state.monitor_release_pending = true;
+      state.monitor_release_reason = reason;
       resolve_effective_mode_locked(client_uuid, state);
-      std::vector<std::string> ignored;
-      (void) callbacks_.apply_composed_topology(compose_locked(ignored));
+      if (!callbacks_.terminate_owned_display && callbacks_.apply_composed_topology) {
+        std::vector<std::string> ignored;
+        (void) callbacks_.apply_composed_topology(compose_locked(ignored));
+      }
+      return;
+    }
+    state.monitor_release_pending = false;
+    state.monitor_release_reason.clear();
+    if (state.generation != 0) {
+      auto &released_generation = released_monitor_generations_[client_uuid];
+      released_generation = std::max(released_generation, state.generation);
     }
   }
 
@@ -592,7 +872,7 @@ namespace remote_display_topology {
       }
 
       const auto placement_it = layout_["placements"].find(uuid);
-      if (placement_it == layout_["placements"].end()) {
+      if (placement_it == layout_["placements"].end() || placement_it->value("preserve", false)) {
         append_right({});
         visiting.erase(uuid);
         return;
@@ -616,20 +896,8 @@ namespace remote_display_topology {
         return;
       }
 
-      const auto anchor_width = layout_width(*anchor);
-      const auto anchor_height = layout_height(*anchor);
-      const auto width = layout_width(node);
-      const auto height = layout_height(node);
-      const auto gap = placement.value("gap_px", 0);
-      const auto edge = placement.value("edge", "right");
-      const auto alignment = placement.value("alignment", "center");
-      if (edge == "left") node.x = anchor->x - width - gap;
-      if (edge == "right") node.x = anchor->x + anchor_width + gap;
-      if (edge == "above") node.y = anchor->y - height - gap;
-      if (edge == "below") node.y = anchor->y + anchor_height + gap;
-      if (edge == "left" || edge == "right") node.y = alignment == "start" ? anchor->y : alignment == "end" ? anchor->y + anchor_height - height : anchor->y + (anchor_height - height) / 2;
-      if (edge == "above" || edge == "below") node.x = alignment == "start" ? anchor->x : alignment == "end" ? anchor->x + anchor_width - width : anchor->x + (anchor_width - width) / 2;
-      rightmost = std::max(rightmost, node.x + width);
+      place_relative(node, *anchor, placement);
+      rightmost = std::max(rightmost, node.x + layout_width(node));
       nodes.push_back(std::move(node));
       emitted.insert(uuid);
       visiting.erase(uuid);
@@ -643,7 +911,7 @@ namespace remote_display_topology {
     std::lock_guard lock(mutex_);
     std::vector<std::string> warnings;
     const auto nodes = compose_locked(warnings);
-    nlohmann::json result {{"status", true}, {"version", layout_version}, {"layout", layout_}, {"capacity", {{"max", max_client_identities}, {"used", clients_.size()}}}, {"warnings", warnings}, {"nodes", nlohmann::json::array()}, {"clients", paired_clients}};
+    nlohmann::json result {{"status", true}, {"version", layout_version}, {"layout", layout_}, {"capacity", {{"max", client_identity_capacity_locked()}, {"used", clients_.size()}}}, {"warnings", warnings}, {"nodes", nlohmann::json::array()}, {"clients", paired_clients}};
     for (const auto &node : nodes) {
       const auto mode = effective_mode(node);
       result["nodes"].push_back({{"id", node.id}, {"label", node.label}, {"kind", node.physical ? "physical" : "client"}, {"active", node.active}, {"primary", node.primary}, {"desired_position", {{"x", node.x}, {"y", node.y}}}, {"current_position", {{"x", node.x}, {"y", node.y}}}, {"mode", {{"width", mode.width}, {"height", mode.height}, {"refresh_hz", mode.refresh_hz}, {"hdr", mode.hdr}}}});

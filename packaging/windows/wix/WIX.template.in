@@ -30,11 +30,17 @@
              previous version instead of leaving neither installed.
              ProductVersion is ordinal-encoded (see windows_wix.cmake) so
              prerelease channels are ordered numerically. Stable respins share
-             the stable ordinal and are ordered by their sortable ProductCodes,
-             so downgrades only happen when genuinely requested. -->
+             the stable ordinal. MSI does not order ProductCode GUIDs: this
+             unbounded Upgrade row explicitly includes equal numeric versions.
+             Sortable ProductCodes are only a bootstrapper presentation hint. -->
         <MajorUpgrade
             Schedule="afterInstallInitialize"
             AllowDowngrades="yes"/>
+
+        <!-- Populated only for PR validation builds. FindRelatedProducts runs
+             before LaunchConditions, which rejects replacement before the
+             install transaction or RemoveExistingProducts can run. -->
+        @CPACK_WIX_VALIDATION_CONDITION@
 
         <!-- Read from the payload by the bootstrapper
              (PayloadSupportsTransactionalReplacement): this package replaces

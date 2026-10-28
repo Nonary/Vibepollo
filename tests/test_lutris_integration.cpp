@@ -151,6 +151,46 @@ TEST(LutrisLaunch, BuildsValidatedUri) {
   EXPECT_FALSE(platf::lutris::launch(0));
 }
 
+TEST(LutrisLaunch, ParsesOnlyCanonicalSessionCommands) {
+  const auto arguments = platf::lutris::session_launch_arguments(
+    "/usr/libexec/vibeshine/vibepollo-session-exec lutris 16");
+  ASSERT_TRUE(arguments);
+  EXPECT_EQ(*arguments, (std::vector<std::string> {"lutris", "16"}));
+  EXPECT_EQ(*platf::lutris::session_launch_arguments(
+    "/usr/libexec/vibeshine/vibepollo-session-exec lutris 16", true),
+    (std::vector<std::string> {"lutris-wayland-hdr", "16"}));
+  for (const auto *command : {
+         "lutris lutris:rungameid/16",
+         "/usr/libexec/vibeshine/vibepollo-session-exec lutris ",
+         "/usr/libexec/vibeshine/vibepollo-session-exec lutris 0",
+         "/usr/libexec/vibeshine/vibepollo-session-exec lutris -1",
+         "/usr/libexec/vibeshine/vibepollo-session-exec lutris +16",
+         "/usr/libexec/vibeshine/vibepollo-session-exec lutris 016",
+         "/usr/libexec/vibeshine/vibepollo-session-exec lutris 9223372036854775808",
+         "/usr/libexec/vibeshine/vibepollo-session-exec lutris 16 extra",
+         "/usr/libexec/vibeshine/vibepollo-session-exec lutris 16;id",
+       }) {
+    EXPECT_FALSE(platf::lutris::session_launch_arguments(command)) << command;
+  }
+}
+
+#if defined(__linux__)
+TEST(LutrisLaunch, MachineHostUsesTheExistingNumericBrokerOperation) {
+  scoped_environment machine {"VIBEPOLLO_MACHINE_HOST", "1"};
+  EXPECT_EQ(platf::lutris::launch_command(16),
+    "/usr/libexec/vibeshine/vibepollo-session-exec lutris 16");
+  EXPECT_TRUE(platf::lutris::launch_command(0).empty());
+  EXPECT_TRUE(platf::lutris::launch_command(-1).empty());
+  EXPECT_EQ(*platf::lutris::session_launch_arguments(platf::lutris::launch_command(INT64_MAX)),
+    (std::vector<std::string> {"lutris", "9223372036854775807"}));
+}
+
+TEST(LutrisLaunch, StandaloneHostRetainsTheNativeCommand) {
+  scoped_environment machine {"VIBEPOLLO_MACHINE_HOST", ""};
+  EXPECT_EQ(platf::lutris::launch_command(16), "lutris lutris:rungameid/16");
+}
+#endif
+
 TEST(LutrisDiscovery, SessionArtworkChangesTriggerSynchronization) {
   platf::lutris::game_t game;
   game.id = 7;

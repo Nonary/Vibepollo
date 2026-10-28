@@ -62,7 +62,7 @@ namespace platf::dxgi::present_timing {
     std::int64_t stale_ {0};
     DWORD foreground_pid_ {0};
     std::int64_t next_foreground_poll_ {0};
-    std::uint64_t source_ {0};
+    source_identity_t source_identity_;
     std::vector<std::int64_t> presents_;
     std::uint64_t frames_ {0};
     std::uint64_t matched_ {0};

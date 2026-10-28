@@ -83,6 +83,9 @@ namespace display_device::policy {
     int width {};
     int height {};
     int fps {};
+    // An adapter may supply exact streamed FPS when its session stores millihertz.
+    // Data-only callers that omit this field retain the existing integer-Hz API.
+    std::uint32_t stream_fps_millihz {};
     bool enable_sops {};
     bool enable_hdr {};
     bool prefer_sdr_10bit {};

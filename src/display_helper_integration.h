@@ -1,6 +1,6 @@
 /**
  * @file src/display_helper_integration.h
- * @brief Cross-platform wrapper for display helper integration. On Windows, routes to the IPC helper; on other platforms, no-ops.
+ * @brief Cross-platform display helper integration, including Linux session-helper restoration.
  */
 #pragma once
 
@@ -45,6 +45,7 @@ namespace display_helper_integration {
   }
 
   inline bool revert(bool = false) {
+    // Match Windows: success means the helper restore request was accepted.
     return platf::linux_display::backend().revert();
   }
 

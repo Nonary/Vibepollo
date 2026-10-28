@@ -7,6 +7,7 @@
 // standard includes
 #include "config.h"
 #include "framegen_policy.h"
+#include "hdr_stream_policy.h"
 #include "remote_session.h"
 
 #include <array>
@@ -44,6 +45,10 @@ namespace rtsp_stream {
     // until the active capture has acquired its own reference. Deliberately
     // omitted from retained app/display-recovery snapshots.
     std::shared_ptr<void> display_power_guard;
+    // Pre-display role snapshot, shared by pending launch and active capture.
+    // Native app metadata can retain the original until app termination;
+    // display-request/recovery snapshots deliberately omit this owner.
+    std::shared_ptr<void> audio_context_guard;
     struct resolution_override_t {
       int width;
       int height;
@@ -52,6 +57,10 @@ namespace rtsp_stream {
     uint32_t id;
     remote_session::role_e role {remote_session::role_e::game};
     std::uint64_t role_generation {};
+    // Bound to this pending launch and then to the admitted stream generation.
+    std::string monitor_profile_uuid;
+    std::optional<display_target::descriptor_t> exact_monitor_target;
+    std::shared_ptr<void> exact_target_hold;
     // The exact topology-owned capture target for Remote Monitor. Empty means
     // no target was verified and must never fall back to a physical display.
     std::optional<std::string> remote_capture_output;
@@ -77,6 +86,8 @@ namespace rtsp_stream {
     int height;
     int fps;
     int gcmap;
+    bool gcpersist = false;
+    input::guide_button_config_t guide_button;
     int playstation_gamepad_mask {};
 
     struct app_metadata_t {
@@ -106,15 +117,19 @@ namespace rtsp_stream {
     // Moonlight's VRR request passed its launch-time VSync, display-refresh,
     // and adaptive-headroom checks. The renderer may still fall back later.
     bool client_vrr_requested = false;
+    bool requested_resolution_only = false;
+    std::string virtual_display_catalog_error;
     bool client_display_mode_override;
     // Exact refresh requested by a per-client display-mode override, expressed
     // in millihertz. The existing fps field remains the legacy stream cadence.
     std::uint32_t client_display_refresh_millihz = 0;
+    std::uint32_t exact_requested_refresh_millihz = 0;
     bool client_requests_virtual_display;
     // A transport joining another client's running game cannot change host-wide stream settings.
     bool secondary_game_client = false;
     // Present only when the client explicitly selected a virtual or physical display.
     std::optional<bool> client_virtual_display_override;
+    bool client_display_warning_requested = false;  ///< Ephemeral intent captured from request-time display snapshots.
     bool virtual_display;
     uint32_t scale_factor = 100;
     bool normal_vdd_capacity_rejected = false;
@@ -134,8 +149,13 @@ namespace rtsp_stream {
     std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
     std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
     std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;
+    bool virtual_display_preparation_override = false;  ///< Lift inherited VerifyOnly for a virtual target only.
+    std::optional<bool> display_preparation_client_virtual_override;  ///< Client choice before resumed app policy is seeded.
     std::optional<std::string> output_name_override;
     bool display_config_preapplied = false;
+    // Preserve startup-owned displays and deferred setup across app replacement,
+    // even when the lock screen prevented APPLY from completing.
+    bool display_config_preapply_attempted = false;
     std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
     std::string virtual_display_device_id;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
@@ -169,17 +189,6 @@ namespace rtsp_stream {
 
     std::string client_cert;
 
-#ifdef _WIN32
-    enum class display_helper_gate_status_e : uint8_t {
-      proceed,  ///< Verified/ready (or no-op)
-      proceed_gaveup,  ///< Unknown/unavailable/timeout
-      abort_failed  ///< Verified failure (capture proceeds anyway; logged)
-    };
-
-    /// Soft gate: capture start waits (bounded) for the display helper's apply
-    /// verification so the first frames aren't grabbed mid-modeset.
-    std::shared_future<display_helper_gate_status_e> display_helper_gate;
-#endif
 
     /**
      * @brief Build an isolated copy for the background RTSP startup worker.
@@ -240,6 +249,10 @@ namespace rtsp_stream {
   inline bool rtx_hdr_conversion_requested(const launch_session_t &session, const config::video_t &video_config) {
     return effective_hdr_requested(session) &&
            rtx_hdr_enabled(video_config);
+  }
+
+  inline bool hdr_capture_required(const launch_session_t &session, const config::video_t &video_config) {
+    return video::hdr_stream_policy::requires_hdr_source(effective_hdr_requested(session), rtx_hdr_enabled(video_config));
   }
 
   /**
@@ -337,8 +350,9 @@ namespace rtsp_stream {
   void launch_session_clear(uint32_t launch_session_id);
   /**
    * @brief Whether an RTSP launch or asynchronous session startup is pending.
+   * @param expire_pending False requests a conservative snapshot without expiry callbacks.
    */
-  bool has_pending_launch_or_startup();
+  bool has_pending_launch_or_startup(bool expire_pending = true);
 
   /**
    * @brief Publish whether an HDR stream launch is pending before the RTSP session is active.
@@ -382,13 +396,16 @@ namespace rtsp_stream {
    * @brief Get the client UUIDs for all active sessions.
    */
   std::list<std::string> get_all_session_client_uuids();
+  // Read-only observation: never clear, stop or join sessions.
+  bool has_running_video_for_client(std::string_view client_uuid);
 
   /**
    * @brief Stop any active sessions for a given client UUID.
    * @return True if one or more sessions were stopped.
    */
   bool disconnect_client_sessions(const std::string &client_uuid);
-  client_disconnect_result_t disconnect_client_sessions_with_result(const std::string &client_uuid);
+  // Preserve abrupt cancellation for administrative callers unless requested.
+  client_disconnect_result_t disconnect_client_sessions_with_result(const std::string &client_uuid, bool graceful = false);
 
   /**
    * @brief Runs the RTSP server loop.

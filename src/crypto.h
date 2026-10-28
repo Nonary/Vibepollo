@@ -114,8 +114,10 @@ namespace crypto {
     bool enable_legacy_ordering;
     bool allow_client_commands;
     bool always_use_virtual_display;
+    bool requested_resolution_only = false;
     // Per-client opt-in to serve HDR requests as 10-bit SDR.
     bool prefer_10bit_sdr = false;
+    bool allow_sleep = false; // Separate administrator opt-in, never inferred from PERM.
     std::optional<std::int64_t> last_seen;
     std::unordered_map<std::string, std::string> config_overrides;
   };

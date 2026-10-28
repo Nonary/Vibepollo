@@ -185,6 +185,9 @@ namespace platf::playnite {
 
   std::unique_ptr<platf::dxgi::INamedPipe> IpcClient::connect_to_plugin() {
     platf::dxgi::AnonymousPipeFactory factory;
+    // Playnite may identify the SYSTEM service without SeImpersonatePrivilege.
+    // Apply to both control and data connections, never to unrelated helper IPC.
+    factory.set_client_identification_only();
     const char *ctl = control_name_.empty() ? kControlPipeName : control_name_.c_str();
     BOOST_LOG(debug) << "Playnite IPC: connecting to control pipe '" << ctl << "'";
     auto pipe = factory.create_client(ctl);

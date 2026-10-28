@@ -27,6 +27,8 @@
 #include "system_tray.h"
 #include "utility.h"
 #include "version_compare.h"
+#include "update_release.h"
+#include <mutex>
 
 using namespace std::literals;
 
@@ -40,8 +42,8 @@ namespace update {
     return total;
   }
 
-  bool download_github_release_data(const std::string &owner, const std::string &repo, std::string &out_json) {
-    std::string url = "https://api.github.com/repos/" + owner + "/" + repo + "/releases";
+  static bool download_json(const std::string &url, std::string &out_json) {
+    out_json.clear();
     CURL *curl = curl_easy_init();
     if (!curl) {
       BOOST_LOG(error) << "CURL init failed for GitHub API"sv;
@@ -58,6 +60,15 @@ namespace update {
       BOOST_LOG(warning) << "GitHub release check is using libcurl defaults for TLS";
     }
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+#if LIBCURL_VERSION_NUM >= 0x075500
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "https");
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS_STR, "https");
+#else
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);
+    curl_easy_setopt(curl, CURLOPT_REDIR_PROTOCOLS, CURLPROTO_HTTPS);
+#endif
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 20L);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_to_string);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &out_json);
     char errbuf[CURL_ERROR_SIZE] = {0};
@@ -93,145 +104,111 @@ namespace update {
     return true;
   }
 
-  // (removed) previous date-based comparison helper
+  bool download_github_release_data(const std::string &owner, const std::string &repo, std::string &out_json) {
+    // Commit the list only after every page succeeds. A rate-limited partial list
+    // must never be used to announce an update or reuse an earlier candidate.
+    nlohmann::json releases = nlohmann::json::array();
+    for (int page = 1; page <= 10; ++page) {
+      std::string data;
+      if (!download_json("https://api.github.com/repos/" + owner + "/" + repo + "/releases?per_page=100&page=" + std::to_string(page), data)) return false;
+      auto batch = nlohmann::json::parse(data, nullptr, false);
+      if (!batch.is_array()) return false;
+      for (const auto &release : batch) releases.push_back(release);
+      if (batch.size() < 100) {
+        out_json = releases.dump();
+        return true;
+      }
+    }
+    return false; // Bounded pagination exhausted: retry rather than infer a winner.
+  }
+
+  bool download_nightly_metadata(const std::string &tag, std::string &out_json) {
+    if (!release_selection::daily_tag(tag)) return false;
+    // Kept for API compatibility; availability checks never fetch assets.
+    std::string data;
+    if (!download_json("https://api.github.com/repos/" SUNSHINE_REPO_OWNER "/" SUNSHINE_REPO_NAME "/releases/tags/" + tag, data)) return false;
+    const auto release = nlohmann::json::parse(data, nullptr, false);
+    const auto metadata = release_selection::api_metadata(release);
+    if (metadata.is_null()) return false;
+    out_json = metadata.dump();
+    return true;
+  }
 
   static void notify_new_version(const std::string &version, bool prerelease) {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-    if (version.empty()) {
+    if (version.empty() || (prerelease && !config::sunshine.notify_pre_releases)) {
       return;
     }
-    // Checks run on every stream start and on the periodic timer, so an update
-    // that stays pending would re-post the same toast each time and stack
-    // copies in the Action Center. Suppress duplicates for the lifetime of the
-    // process: the earlier toast remains pending in the Action Center, and a
-    // restart (which clears the Action Center's pending toasts) re-posts once.
-    static std::string s_notified_version;
-    static bool s_notified_prerelease = false;
-    if (version == s_notified_version && prerelease == s_notified_prerelease) {
-      BOOST_LOG(debug) << "Update notification suppressed: already notified for "sv << version;
-      return;
+    // Persist delivered identities: dismissing an OS toast consumes it, including
+    // across process restarts and stable/prerelease channel changes.
+    std::string url;
+    {
+      std::lock_guard<std::mutex> lock(state.notification_mutex);
+      if (version == state.last_notified_version || std::find(state.notified_versions.begin(), state.notified_versions.end(), version) != state.notified_versions.end()) {
+        BOOST_LOG(debug) << "Update notification suppressed: already notified for "sv << version;
+        return;
+      }
+      state.last_notified_version = version;
+      state.last_notified_is_prerelease = prerelease;
+      state.last_notified_url = prerelease ? state.latest_prerelease.url : state.latest_release.url;
+      state.notified_versions.push_back(version);
+      url = state.last_notified_url;
     }
-    std::string title = prerelease ? "New update available (Pre-release)" : "New update available (Stable)";
-    std::string body = "Version " + version;
-    state.last_notified_version = version;
-    state.last_notified_is_prerelease = prerelease;
-    state.last_notified_url = prerelease ? state.latest_prerelease.url : state.latest_release.url;
-    // On click, open the release page directly
-    system_tray::tray_notify(title.c_str(), body.c_str(), []() {
-      open_last_notified_release_page();
-    });
-    s_notified_version = version;
-    s_notified_prerelease = prerelease;
+    const std::string title = prerelease ? "New update available (Pre-release)" : "New update available (Stable)";
+    // The C tray backend has no per-notification context, and Windows routes
+    // older toast clicks through its latest global callback. Keep the exact
+    // release link in the text; the Web UI provides its clickable counterpart.
+    const std::string body = "Version " + version + (url.empty() ? "" : "\n" + url);
+    system_tray::tray_notify(title.c_str(), body.c_str());
+    // Do not hold the notification lock while acquiring nvhttp's client lock.
+    nvhttp::save_state();
 #endif
   }
 
   static void perform_check() {
-    state.check_in_progress = true;
     auto fg = util::fail_guard([]() {
       state.check_in_progress = false;
     });
     try {
-      const bool allow_prerelease_updates =
-        config::sunshine.notify_pre_releases || version_compare::is_prerelease_channel(PROJECT_VERSION);
+      state.last_check_time = std::chrono::steady_clock::now();
       // Fetch releases list once and compute latest stable/prerelease
       BOOST_LOG(info) << "Update check: querying GitHub releases from repo "sv
                       << SUNSHINE_REPO_OWNER << '/' << SUNSHINE_REPO_NAME;
       std::string releases_json;
-      if (download_github_release_data(SUNSHINE_REPO_OWNER, SUNSHINE_REPO_NAME, releases_json)) {
-        auto j = nlohmann::json::parse(releases_json);
-        // Reset release info
-        state.latest_release = release_info_t {};
-        state.latest_prerelease = release_info_t {};
-
-        // Track best by semver
-        release_info_t best_stable;
-        release_info_t best_pre;
-
-        for (auto &rel : j) {
-          const bool is_prerelease = rel.value("prerelease", false);
-          const bool is_draft = rel.value("draft", false);
-          if (is_draft) {
-            continue;
-          }
-
-          // Parse assets for this release
-          std::vector<asset_info_t> assets;
-          if (rel.contains("assets") && rel["assets"].is_array()) {
-            for (auto &asset : rel["assets"]) {
-              asset_info_t ai;
-              ai.name = asset.value("name", "");
-              ai.download_url = asset.value("browser_download_url", "");
-              ai.size = asset.value("size", 0);
-              ai.content_type = asset.value("content_type", "");
-              std::string digest = asset.value("digest", "");
-              if (digest.starts_with("sha256:")) {
-                ai.sha256 = digest.substr(7);
-              }
-              if (!ai.name.empty() && !ai.download_url.empty()) {
-                assets.push_back(ai);
-              }
-            }
-          }
-
-          const std::string tag = rel.value("tag_name", "");
-          if (!is_prerelease) {
-            if (best_stable.version.empty() || version_compare::compare_semver(best_stable.version, tag) < 0) {
-              best_stable.version = tag;
-              best_stable.url = rel.value("html_url", "");
-              best_stable.name = rel.value("name", "");
-              best_stable.body = rel.value("body", "");
-              best_stable.published_at = rel.value("published_at", "");
-              best_stable.is_prerelease = false;
-              best_stable.assets = assets;
-            }
-          } else if (allow_prerelease_updates) {
-            if (best_pre.version.empty() || version_compare::compare_semver(best_pre.version, tag) < 0) {
-              best_pre.version = tag;
-              best_pre.url = rel.value("html_url", "");
-              best_pre.name = rel.value("name", "");
-              best_pre.body = rel.value("body", "");
-              best_pre.published_at = rel.value("published_at", "");
-              best_pre.is_prerelease = true;
-              best_pre.assets = assets;
-            }
-          }
+      if (!download_github_release_data(SUNSHINE_REPO_OWNER, SUNSHINE_REPO_NAME, releases_json)) return;
+      auto j = nlohmann::json::parse(releases_json);
+      if (!j.is_array()) return;
+      const auto stable = release_selection::select(j, PROJECT_VERSION, false);
+      const auto any = release_selection::select(j, PROJECT_VERSION, config::sunshine.notify_pre_releases);
+      auto info = [](const nlohmann::json &rel) {
+        release_info_t result {};
+        if (rel.is_null()) return result;
+        result.version = rel.value("tag_name", "");
+        result.url = "https://github.com/" SUNSHINE_REPO_OWNER "/" SUNSHINE_REPO_NAME "/releases/tag/" + result.version;
+        auto text = [](const nlohmann::json &object, const char *key) {
+          return object.contains(key) && object[key].is_string() ? object[key].get<std::string>() : std::string {};
+        };
+        result.name = text(rel, "name");
+        result.body = text(rel, "body");
+        result.published_at = text(rel, "published_at");
+        result.is_prerelease = rel.value("prerelease", false);
+        for (const auto &asset : rel["assets"]) {
+          if (!asset.is_object()) continue;
+          asset_info_t item {};
+          item.name = text(asset, "name");
+          item.download_url = text(asset, "browser_download_url");
+          item.size = asset.value("size", 0LL);
+          item.content_type = text(asset, "content_type");
+          result.assets.push_back(std::move(item));
         }
-
-        state.latest_release = best_stable;
-        state.latest_prerelease = best_pre;
-        if (!state.latest_release.version.empty()) {
-          BOOST_LOG(info) << "Update check: latest stable tag="sv << state.latest_release.version;
-        }
-        if (!state.latest_prerelease.version.empty()) {
-          BOOST_LOG(info) << "Update check: latest prerelease tag="sv << state.latest_prerelease.version;
-        }
-      }
+        return result;
+      };
+      state.latest_release = info(stable);
+      state.latest_prerelease = (!any.is_null() && any.value("prerelease", false)) ? info(any) : release_info_t {};
       state.last_check_time = std::chrono::steady_clock::now();
 
-      const std::string installed_version_tag = PROJECT_VERSION;
-      const std::string latest_stable_tag = state.latest_release.version;
-      const std::string latest_pre_tag = state.latest_prerelease.version;
-      bool stable_available = !latest_stable_tag.empty() &&
-                              (version_compare::compare_semver(installed_version_tag, latest_stable_tag) < 0);
-      bool prerelease_available = allow_prerelease_updates &&
-                                  !latest_pre_tag.empty() &&
-                                  (version_compare::compare_semver(installed_version_tag, latest_pre_tag) < 0) &&
-                                  (!latest_stable_tag.empty() ?
-                                     (version_compare::compare_semver(latest_stable_tag, latest_pre_tag) < 0) :
-                                     true);
-
-      if (prerelease_available) {
-        BOOST_LOG(info) << "Update check: prerelease available tag="sv << state.latest_prerelease.version
-                        << ", installed="sv << installed_version_tag;
-        notify_new_version(state.latest_prerelease.version, true);
-      } else if (stable_available) {
-        BOOST_LOG(info) << "Update check: stable available tag="sv << state.latest_release.version
-                        << ", installed="sv << installed_version_tag;
-        notify_new_version(state.latest_release.version, false);
-      } else {
-        BOOST_LOG(info) << "Update check (tag-based): up-to-date. installed="sv << installed_version_tag
-                        << ", stable="sv << latest_stable_tag
-                        << ", prerelease="sv << latest_pre_tag;
+      if (!any.is_null()) {
+        notify_new_version(any.value("tag_name", ""), any.value("prerelease", false));
       }
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "Update check failed: "sv << e.what();
@@ -239,11 +216,12 @@ namespace update {
   }
 
   void trigger_check(bool force) {
-    const bool in_progress = state.check_in_progress.load();
-    if (in_progress) {
+    bool expected = false;
+    if (!state.check_in_progress.compare_exchange_strong(expected, true)) {
       BOOST_LOG(info) << "Update check trigger skipped: another check is in progress (force="sv << (force ? "true"sv : "false"sv) << ')';
       return;
     }
+    auto trigger_guard = util::fail_guard([]() { state.check_in_progress = false; });
     if (!force && config::sunshine.update_check_interval_seconds == 0) {
       BOOST_LOG(info) << "Update check trigger skipped: checks are disabled by config (interval=0)"sv;
       return;
@@ -260,6 +238,7 @@ namespace update {
     std::thread([]() {
       perform_check();
     }).detach();
+    trigger_guard.disable();
   }
 
   // update command removed
@@ -281,7 +260,8 @@ namespace update {
 
   void open_last_notified_release_page() {
     try {
-      const std::string &url = state.last_notified_url;
+      std::string url;
+      { std::lock_guard<std::mutex> lock(state.notification_mutex); url = state.last_notified_url; }
       if (!url.empty()) {
         platf::open_url(url);
       }

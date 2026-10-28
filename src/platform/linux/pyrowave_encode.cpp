@@ -6,11 +6,18 @@
 #include "src/platform/common.h"
 #include "src/pyrowave_host.h"
 #include "src/pyrowave_protocol.h"
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+  #include "rtx_hdr_runtime.h"
+#endif
 
 #include <cstring>
 #include <limits>
 
 namespace pyrowave::host {
+  void shutdown() {
+    linux_gpu::core_t::shutdown();
+  }
+
   namespace {
     linux_gpu::config_t core_config(const session_params_t &p) {
       linux_gpu::config_t c;
@@ -19,6 +26,11 @@ namespace pyrowave::host {
       c.yuv444 = p.yuv444;
       c.ten_bit = p.colorspace.bit_depth > 8;
       c.hdr = video::colorspace_is_hdr(p.colorspace);
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      if (p.rtx_hdr) {
+        c.truehdr_runtime = SUNSHINE_TRUEHDR_RUNTIME_DIR;
+      }
+#endif
       if (auto *matrix = video::color_vectors_from_colorspace(p.colorspace, true)) {
         std::memcpy(c.matrix.data(), matrix, sizeof(float) * 12);
       }
@@ -31,8 +43,7 @@ namespace pyrowave::host {
       encoder_impl_t(const session_params_t &p, std::shared_ptr<platf::display_t> d):
           params(p),
           display(std::move(d)),
-          budget(p.framerate, p.bitrate_kbps, policy::max_bitstream_bytes(p.packetsize, p.framing == policy::framing_e::length_prefixed, p.critical_fec),
-                 p.critical_fec && p.framing == policy::framing_e::records) {}
+          budget(p.framerate, p.bitrate_kbps, bitstream_capacity(p), p.critical_fec && p.framing == policy::framing_e::records, wire_budget(p)) {}
 
       void set_bitrate(int bitrate) override {
         budget.set_bitrate(bitrate);
@@ -49,6 +60,24 @@ namespace pyrowave::host {
           return 1;
         }
         linux_gpu::source_t source;
+        source.hdr10 = display->is_hdr();
+        if (params.rtx_hdr) {
+          if (source.hdr10) {
+            BOOST_LOG(error) << "PyroWave RTX HDR requires an SDR capture source";
+            return -1;
+          }
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+          if (!foreground) {
+            foreground = std::make_unique<platf::rtx_hdr::foreground_t>();
+          }
+          const auto settings = platf::rtx_hdr::frame_settings();
+          source.truehdr_enabled = settings->enabled && foreground->matches();
+          source.sdr_brightness = settings->sdr_brightness;
+          source.truehdr_settings = settings->values;
+#else
+          return -1;
+#endif
+        }
         std::string capture_device;
         if (auto *img = dynamic_cast<egl::img_descriptor_t *>(&image)) {
           if (!img->sequence || img->sd.fds[0] < 0) {
@@ -106,7 +135,7 @@ namespace pyrowave::host {
             return -1;
           }
           auto &p = packets.front();
-          auto stats = policy::write_record_frame(std::span<const std::uint8_t>(scratch.data() + p.offset, p.size), policy::shard_payload_bytes(params.packetsize), out, policy::max_frame_bytes(params.packetsize, params.critical_fec));
+          auto stats = policy::write_record_frame(std::span<const std::uint8_t>(scratch.data() + p.offset, p.size), policy::shard_payload_bytes(params.packetsize), out, budget.bytes_per_frame());
           if (!stats) {
             return -1;
           }
@@ -131,6 +160,9 @@ namespace pyrowave::host {
       std::shared_ptr<platf::display_t> display;
       policy::budget_t budget;
       std::unique_ptr<linux_gpu::core_t> core;
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      std::unique_ptr<platf::rtx_hdr::foreground_t> foreground;
+#endif
       std::vector<std::uint8_t> scratch;
       std::vector<linux_gpu::packet_t> packets;
     };

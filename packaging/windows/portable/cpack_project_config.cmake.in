@@ -1,0 +1,26 @@
+# Loaded once per CPack generator; installer identity is still owned by WiX.
+if(CPACK_GENERATOR STREQUAL "WIX")
+    include("@SUNSHINE_INSTALLER_CPACK_PROJECT_CONFIG@")
+elseif(CPACK_GENERATOR STREQUAL "ZIP")
+    if(NOT "@SUNSHINE_ASSETS_DIR@" STREQUAL "assets")
+        message(FATAL_ERROR "Portable Windows packages require SUNSHINE_ASSETS_DIR=assets.")
+    endif()
+    if("@BUILD_VERSION@" STREQUAL "" OR "@PROJECT_VERSION_FULL@" MATCHES "^0[.]0[.]0($|[-+])" OR
+            "@PROJECT_VERSION_FULL@" STREQUAL "")
+        message(FATAL_ERROR "Portable Windows packages require an explicit BUILD_VERSION.")
+    endif()
+    set(CPACK_PACKAGE_VERSION "@PROJECT_VERSION_FULL@")
+    set(CPACK_PACKAGE_FILE_NAME "@CPACK_PACKAGE_NAME@-Windows-@CMAKE_SYSTEM_PROCESSOR@-@PROJECT_VERSION_FULL@-portable")
+    set(CPACK_MONOLITHIC_INSTALL ON)
+    set(CPACK_ARCHIVE_COMPONENT_INSTALL OFF)
+    set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+    list(APPEND CPACK_PRE_BUILD_SCRIPTS "@CMAKE_BINARY_DIR@/portable_pre_build.cmake")
+
+    # Do not reuse a profile or credentials left in CPack's transient ZIP tree.
+    if(DEFINED CPACK_PACKAGE_DIRECTORY AND DEFINED CPACK_SYSTEM_NAME)
+        set(_portable_stage "${CPACK_PACKAGE_DIRECTORY}/_CPack_Packages/${CPACK_SYSTEM_NAME}/ZIP")
+        if(EXISTS "${_portable_stage}")
+            file(REMOVE_RECURSE "${_portable_stage}")
+        endif()
+    endif()
+endif()

@@ -1,6 +1,8 @@
 #include "src/lutris_sync_policy.h"
 
 #include <gtest/gtest.h>
+#include <cstdlib>
+#include <optional>
 
 namespace {
   platf::lutris::game_t game(std::int64_t id, std::string name, std::string runner = "wine") {
@@ -12,6 +14,28 @@ namespace {
     return result;
   }
 }
+
+#if defined(__linux__)
+TEST(LutrisSync, MachineHostUpgradesManagedCommandsAndPreservesManualAppsAndHooks) {
+  const auto *current = std::getenv("VIBEPOLLO_MACHINE_HOST");
+  const auto previous = current ? std::optional<std::string> {current} : std::nullopt;
+  setenv("VIBEPOLLO_MACHINE_HOST", "1", 1);
+  nlohmann::json root = {{"apps", nlohmann::json::array({
+    {{"name", "Old managed"}, {"lutris-id", "16"}, {"lutris-managed", "auto"},
+      {"cmd", "lutris lutris:rungameid/16"},
+      {"prep-cmd", nlohmann::json::array({{{"do", "user hook"}, {"undo", ""}}})}},
+    {{"name", "Manual"}, {"lutris-id", "17"}, {"cmd", "custom launcher"}},
+  })}};
+  const bool changed = platf::lutris::sync::policy::reconcile(root, {game(16, "Managed"), game(17, "Manual")});
+  if (previous) setenv("VIBEPOLLO_MACHINE_HOST", previous->c_str(), 1);
+  else unsetenv("VIBEPOLLO_MACHINE_HOST");
+  ASSERT_TRUE(changed);
+  ASSERT_EQ(root["apps"].size(), 2U);
+  EXPECT_EQ(root["apps"][0]["cmd"], "/usr/libexec/vibeshine/vibepollo-session-exec lutris 16");
+  EXPECT_EQ(root["apps"][0]["prep-cmd"][0]["do"], "user hook");
+  EXPECT_EQ(root["apps"][1]["cmd"], "custom launcher");
+}
+#endif
 
 TEST(LutrisSync, ImportsNonSteamAndTracksProviderMetadata) {
   nlohmann::json root = {{"apps", nlohmann::json::array()}};
@@ -45,4 +69,20 @@ TEST(LutrisSync, ExclusionsRemoveOnlyManagedEntries) {
   EXPECT_TRUE(platf::lutris::sync::policy::reconcile(root, {}, false, exclusions));
   ASSERT_EQ(root["apps"].size(), 1U);
   EXPECT_EQ(root["apps"][0]["name"], "Manual");
+}
+
+TEST(LutrisSync, ManualEntriesRetainCommandsAndReservedSyntaxSelectsOnlyTheFixedOperation) {
+  const std::string reserved = "/usr/libexec/vibeshine/vibepollo-session-exec lutris 16";
+  const std::string custom = "lutris lutris:rungameid/17 --custom";
+  nlohmann::json root = {{"apps", nlohmann::json::array({
+    {{"name", "Manual fixed operation"}, {"lutris-id", "16"}, {"cmd", reserved}},
+    {{"name", "Manual custom command"}, {"lutris-id", "17"}, {"cmd", custom}},
+  })}};
+  EXPECT_FALSE(platf::lutris::sync::policy::reconcile(root, {game(16, "First"), game(17, "Second")}));
+  EXPECT_EQ(root["apps"][0]["cmd"], reserved);
+  EXPECT_EQ(root["apps"][1]["cmd"], custom);
+  const auto fixed = platf::lutris::session_launch_arguments(root["apps"][0]["cmd"].get<std::string>());
+  ASSERT_TRUE(fixed);
+  EXPECT_EQ(*fixed, (std::vector<std::string> {"lutris", "16"}));
+  EXPECT_FALSE(platf::lutris::session_launch_arguments(root["apps"][1]["cmd"].get<std::string>()));
 }

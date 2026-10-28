@@ -9,10 +9,22 @@ on:
         description: Nonzero package version for this validation build
         required: true
         type: string
+      build_tests:
+        description: Compile and execute the full Windows test suite without daily signing
+        type: boolean
+        default: false
       use_self_hosted:
         description: Use the local Windows release runner
         type: boolean
         default: false
+      qualify_nightly_installer:
+        description: Fresh unsigned nightly package with mandatory tests and exact gamepad signing
+        type: boolean
+        default: false
+      release_tag:
+        description: Existing nightly release page being corrected; does not create or move a tag
+        type: string
+        default: ''
 
 concurrency:
   group: windows-validation-${{ github.ref }}
@@ -26,9 +38,17 @@ jobs:
     uses: ./.github/workflows/ci-windows.yml
     with:
       use_self_hosted: ${{ inputs.use_self_hosted }}
-      build_only: true
-      build_tests: false
+      build_only: ${{ !inputs.qualify_nightly_installer }}
+      build_tests: ${{ inputs.qualify_nightly_installer || inputs.build_tests }}
+      daily_unsigned: ${{ inputs.qualify_nightly_installer }}
       release_commit: ${{ github.sha }}
       release_version: ${{ inputs.release_version }}
+      release_tag: ${{ inputs.release_tag }}
+      require_truehdr_runtime: ${{ inputs.qualify_nightly_installer }}
       symbol_product_name: Vibepollo
       symbol_release_prefix: polo
+      release_artifact_retention_days: 14
+    secrets:
+      truehdr_runtime_token: ${{ inputs.qualify_nightly_installer && secrets.TRUEHDR_RUNTIME_TOKEN || '' }}
+      daily_gamepad_pfx_base64: ${{ inputs.qualify_nightly_installer && secrets.NIGHTLY_GAMEPAD_PFX_BASE64 || '' }}
+      daily_gamepad_pfx_password: ${{ inputs.qualify_nightly_installer && secrets.NIGHTLY_GAMEPAD_PFX_PASSWORD || '' }}

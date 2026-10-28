@@ -1,5 +1,5 @@
 <template>
-  <n-drawer v-model:show="visibleModel" :width="680" placement="right">
+  <n-drawer v-model:show="visibleModel" width="min(680px, 100vw)" placement="right">
     <n-drawer-content
       :title="
         isGroupMode

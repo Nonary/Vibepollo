@@ -27,6 +27,17 @@ const platform = computed(() =>
       class="mb-3"
     />
 
+    <ConfigFieldRenderer
+      v-if="platform === 'windows' || platform === 'linux'"
+      setting-key="dualsense_haptics_gain"
+      v-model="config.dualsense_haptics_gain"
+      kind="number"
+      :min="0"
+      :max="4"
+      :step="0.1"
+      class="mb-3"
+    />
+
     <template v-if="config.controller === 'enabled'">
       <template
         v-if="
@@ -97,6 +108,16 @@ const platform = computed(() =>
 
     <div v-if="config.controller === 'enabled'" class="mb-4">
       <ConfigFieldRenderer setting-key="back_button_timeout" v-model="config.back_button_timeout" />
+      <ConfigFieldRenderer
+        setting-key="guide_button_key"
+        v-model="config.guide_button_key"
+        class="mt-3"
+      />
+      <ConfigFieldRenderer
+        setting-key="guide_button_controller"
+        v-model="config.guide_button_controller"
+        class="mt-3"
+      />
     </div>
 
     <ConfigFieldRenderer

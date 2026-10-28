@@ -11,8 +11,33 @@
   #include <functional>
   #include <optional>
   #include <string>
+  #include "src/platform/windows/display_helper_borrow_protocol.h"
 
 namespace platf::display_helper_client {
+  // Independent exact-version handshake; no old APPLY/DISARM capability is
+  // accepted. Unknown completion is returned explicitly for the native fence.
+  std::optional<::display_helper::borrow::result_t> acquire_borrow_quiescence(
+    const ::display_helper::borrow::request_t &request,
+    std::chrono::steady_clock::time_point deadline,
+    const std::function<bool()> &cancelled,
+    bool &completion_unknown);
+  bool release_borrow_quiescence(
+    const ::display_helper::borrow::token_t &token,
+    std::chrono::steady_clock::time_point deadline);
+
+  enum class RecoveryStatus : std::uint8_t {
+    Unknown = 0,
+    Active = 1,
+    Failed = 2,
+    Restored = 3,
+  };
+  struct RecoveryStatusResult {
+    std::uint64_t ticket {0};
+    std::uint64_t connection_generation {0};
+    RecoveryStatus status {RecoveryStatus::Unknown};
+    std::uint64_t event_revision {0};
+    bool parked {false};
+  };
   // Send APPLY with JSON payload (SingleDisplayConfiguration). Every request
   // carries a backward-compatible token: v2 echoes it for a later verification
   // acknowledgement, while legacy helpers reply in their original untagged
@@ -46,12 +71,20 @@ namespace platf::display_helper_client {
   // unknown/legacy connection must use dispatch-only snapshot semantics.
   bool uses_v2_response_protocol();
 
+  // Reactivate the currently verified session's exact target without sending
+  // its full topology or reset state. Requires an acknowledged v2 session.
+  bool send_owned_reactivation(
+    const std::string &device_id,
+    std::function<bool()> cancelled,
+    int timeout_ms = 2500
+  );
+
   // Change only one display's refresh rate. This does not alter session snapshots,
   // topology, resolution, HDR, or the helper's restore state.
   bool send_refresh_rate(const std::string &device_id, std::uint32_t numerator, std::uint32_t denominator);
 
   // Send REVERT with optional JSON payload.
-  bool send_revert(const std::string &json_payload = {});
+  bool send_revert(const std::string &json_payload = {}, std::uint64_t *connection_generation_out = nullptr);
 
   // Bounded stream-start REVERT. Control ownership, connection setup, and
   // frame dispatch all share operation_deadline.
@@ -59,6 +92,19 @@ namespace platf::display_helper_client {
     const std::string &json_payload,
     std::chrono::steady_clock::time_point operation_deadline,
     std::function<bool()> cancellation_predicate = {});
+
+  // Ask the already-connected helper for the outcome of one exact restore
+  // ticket. With park=true, a Failed reply also confirms the helper has parked
+  // that ticket and will not retry it while the caller performs guarded cleanup.
+  // This observer never starts or reconnects the helper.
+  // receive_only waits for an event update without sending a request; it cannot
+  // be combined with park, which requires a fresh explicit acknowledgement.
+  std::optional<RecoveryStatusResult> query_recovery_status(
+    std::uint64_t ticket,
+    std::uint64_t expected_connection_generation,
+    bool park,
+    std::chrono::milliseconds timeout,
+    bool receive_only = false);
 
   // Update helper log level to match Sunshine's minimum log level (v2 engine only).
   bool send_log_level(int min_log_level);
@@ -101,7 +147,9 @@ namespace platf::display_helper_client {
 
   // Lightweight liveness probe; returns true if a Ping frame was sent.
   // This does not wait for a reply; it only validates a healthy send path.
-  bool send_ping();
+  // The watchdog may also attest a live stream owner. An ordinary liveness
+  // probe carries no ownership assertion and cannot cancel pending recovery.
+  bool send_ping(std::optional<bool> stream_owner_active = std::nullopt);
 
   // Cancellation-aware liveness probe. Both connection and send work are
   // bounded by timeout_ms and the predicate is observed between lock waits.

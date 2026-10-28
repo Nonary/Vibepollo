@@ -1,0 +1,12 @@
+--- a/src/webrtc_capture_owner.h
++++ b/src/webrtc_capture_owner.h
+@@ -40,8 +40,7 @@
+   // Partial-start recovery of the other runtime state remains the caller's job.
+   template<class StartThreads>
+   void start_capture_with_audio_hold(CaptureThreadOwner &owner, std::shared_ptr<void> &pending_hold, StartThreads &&start_threads) {
+-    auto hold = std::move(pending_hold);
++    owner.audio_context_guard = std::move(pending_hold);
+     std::forward<StartThreads>(start_threads)();
+-    owner.audio_context_guard = std::move(hold);
+   }
+ }  // namespace webrtc_stream

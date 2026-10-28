@@ -69,12 +69,21 @@ selecting `RelWithDebInfo` alone does not reset them. `--skip-build` uses the
 existing artifacts and does not repair or rebuild them.
 
 `--version` overrides the `BUILD_VERSION` environment variable, then the existing
-`build/CMakeCache.txt` version, then an exact Git tag on a clean HEAD checkout
-(an optional `v` prefix is removed from tags). An untagged or modified fresh checkout needs an explicit
-version. Positive-major release versions and numbered alpha/beta/rc/stable
-versions are accepted; the script never invents `0.0.0` or a version from an
-older ancestor tag. The example version above is illustrative, not a pinned
-script default.
+`build/CMakeCache.txt` version, then the nearest reachable release tag (an optional
+`v` prefix is removed). Without `--version`, normal builds append
+`-dirty-<12-character HEAD SHA>` when commits are ahead of that tag or the checkout
+has staged, unstaged, untracked, or submodule changes. For example,
+`1.19.0-beta.5-dirty-012345abcdef` identifies a local build. The SHA identifies
+the base commit, not the contents of uncommitted changes. A cached/environment
+version that differs from the tag, or has no reachable release tag, also receives
+the suffix. An old automatic suffix is replaced rather than accumulated and is
+removed on a matching clean release tag. An explicit `--version` is used unchanged.
+`--skip-build` retains the configured artifact version instead of relabeling old
+binaries from the current checkout. A checkout without release tags or a cached/
+environment version still needs `--version`. Positive-major release versions,
+numbered alpha/beta/rc/stable versions, and these dirty suffixes are accepted;
+the script never invents `0.0.0`. The example version above is illustrative,
+not a pinned script default.
 
 `--cc` and `--cxx` select compiler executables. Otherwise `CC`/`CXX`, existing
 cache settings, and finally CMake defaults apply, in that order. Use a compiler

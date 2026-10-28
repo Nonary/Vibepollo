@@ -1,0 +1,12 @@
+--- a/src/audio_context.h
++++ b/src/audio_context.h
+@@ -40,7 +40,8 @@
+     audio_ctx_ref_t acquire();
+     std::shared_ptr<void> before_display_change(bool audio_enabled);
+     std::shared_ptr<void> before_display_change(bool audio_enabled, bool input_only) {
+-      return input_only ? std::shared_ptr<void> {} : before_display_change(audio_enabled);
++      (void) input_only;
++      return before_display_change(audio_enabled);
+     }
+     int assign(audio_ctx_t &ctx, const std::string &sink, bool capture_only);
+     void app_started();

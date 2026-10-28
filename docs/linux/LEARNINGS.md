@@ -37,6 +37,20 @@ and wakes again after logind's resume notification. Subsequent launches issue
 a bounded wake against the existing lease. Retained virtual outputs, paused
 applications and input-only clients do not own the lease; teardown releases it
 after capture/display cleanup. Greeters can wake without a PowerDevil service.
+
+A retained private topology still needs a narrower hold. On 2026-10-22 a
+resumable Desktop stream ended at 04:31:14.5 and left Virtual-1 as the only lit
+output (HDMI disabled, restore pending). Exactly 600 s later KWin began the
+default idle screen-off: logind's `dpms animation` delay inhibitor was created
+at 04:41:14.505 and never released. KWin 6.8 implements DPMS as an output
+configuration transaction with test commits on every GPU. NVIDIA's RC watchdog
+reported a locked GPU at 04:41:30, followed by Xid 119 GSP RPC timeouts and
+KWin blocked in the RM lock. Earlier idle gaps that night never reached
+screen-off and survived. Once an applied private layout leaves no physical
+output lit, the private display therefore owns a separate `display-retain`
+worker until the pre-stream topology is restored. It inhibits only
+ChangeScreenSettings (dimming/screen-off), never suspend, and never issues a
+DPMS command; a lit physical screen keeps normal idle behavior.
 If the session/system bus itself disconnects, the next acquisition replaces
 the dead worker without dropping existing owners. An unreapable DPMS child
 terminates the lease instead of spawning repeated stuck children.
@@ -196,11 +210,29 @@ Vibepollo restart, is required in that case.
 
 ## The KWin GPU bridge must not modify KWin
 
-KWin 6 pairs each KMS device with a render GPU by comparing libdrm PCI bus
-identity. The virtual display lives on a faux bus, so without help KWin
-renders it in software and copies every frame on the CPU. The bridge is an
-`LD_PRELOAD` library that reports the NVIDIA bus identity for the virtual
-device, which makes KWin scan out NVIDIA-tiled buffers directly.
+The virtual display lives on a faux bus and has no render node. The bridge
+opens a real NVIDIA render node for only that virtual device's GBM allocator,
+while KWin keeps the original KMS fd and applies its own primary-selection policy.
+GBM/EGL can identify the actual renderer and KWin uses its normal per-output
+import path. Do not spoof the virtual device's PCI identity in libdrm: that
+gives every in-process graphics consumer an inconsistent duplicate NVIDIA
+device and can break an unrelated Virtio console on multi-GPU hosts.
+
+NVIDIA virtual-output allocation is automatic, using the lowest stable PCI
+address when multiple NVIDIA renderers exist. `VIBESHINE_KWIN_RENDER_PCI`
+overrides that default; an invalid or unmatched explicit choice fails closed.
+The encoder's `adapter_name` is independent and must not be used to override
+the seat primary. See the dependency's `linux/kwin-gpu-bridge.md` for the
+desktop/login configuration and runtime verification boundaries. Accelerating
+the faux renderer can affect KWin's own GPU ordering; the bridge does not promise
+an unchanged primary GPU.
+
+Both bridge-specific KWin drop-ins disable SHM udmabuf import before process
+initialization, so KWin does not mistake NVIDIA EGL behind faux KMS for a
+renderer that can sample udmabuf. SHM retains CPU upload; normal DMA-BUF import
+remains enabled. Imported PRIME frames created without explicit modifiers must
+be exported as unknown layout and never CPU-mapped as linear merely because
+plain AddFB2 supplied a zero modifier. Native dumb linear buffers stay linear.
 
 The distro `kwin_wayland` carries `cap_sys_nice` so it can take realtime
 scheduling. That puts the dynamic loader into secure-execution mode, which

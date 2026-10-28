@@ -66,6 +66,7 @@ const deleteError = ref('');
 const purgePlayniteOpen = ref(false);
 const purgePlayniteBusy = ref(false);
 const purgePlayniteError = ref('');
+const purgePlayniteRemoved = ref<number | null>(null);
 let queryTimer: number | undefined;
 let observer: IntersectionObserver | undefined;
 
@@ -139,7 +140,7 @@ function isPlayniteEntry(app: AppRecord): boolean {
 }
 
 const purgeablePlayniteEntries = computed(() =>
-  apps.value.filter((app) => isPlayniteEntry(app) && Boolean(appUuid(app))),
+  apps.value.filter((app) => isPlayniteEntry(app) && app['remote-monitor-profile'] !== true && Boolean(appUuid(app))),
 );
 
 function providerLabel(app: AppRecord): string {
@@ -462,6 +463,7 @@ async function confirmDelete(): Promise<void> {
 function requestPurgePlaynite(): void {
   if (!isWindows.value || purgePlayniteBusy.value || !purgeablePlayniteEntries.value.length) return;
   purgePlayniteError.value = '';
+  purgePlayniteRemoved.value = null;
   purgePlayniteOpen.value = true;
 }
 
@@ -475,11 +477,16 @@ async function confirmPurgePlaynite(): Promise<void> {
   purgePlayniteBusy.value = true;
   purgePlayniteError.value = '';
   try {
+    let removed = 0;
     for (const app of targets) {
-      const result = await deleteApp(appUuid(app));
-      if (result.status === false) throw new Error(t('ui.library.purgePlaynite.failed'));
+      const result = await deleteApp(appUuid(app), { providerMaintenance: true });
+      if (result.status === false || !Number.isInteger(result.removed) || result.removed! < 0) {
+        throw new Error(t('ui.library.purgePlaynite.failed'));
+      }
+      removed += result.removed!;
     }
     purgePlayniteOpen.value = false;
+    purgePlayniteRemoved.value = removed;
     await load();
   } catch (cause) {
     purgePlayniteError.value = serviceError(cause, 'ui.library.purgePlaynite.failed');
@@ -597,6 +604,11 @@ function libraryRequest(
       </template>
     </PageHeader>
 
+    <InlineAlert
+      v-if="purgePlayniteRemoved !== null"
+      tone="success"
+      :title="t('playnite.apps_purged', { count: purgePlayniteRemoved })"
+    />
     <InlineAlert
       v-if="error"
       tone="danger"

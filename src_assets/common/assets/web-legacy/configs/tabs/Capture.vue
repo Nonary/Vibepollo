@@ -29,6 +29,7 @@ const showAll = () => !props.currentTab;
 const platform = computed(() =>
   (metadata.value?.platform || config.value?.platform || '').toString().toLowerCase(),
 );
+const rtxHdrSupported = computed(() => (metadata.value as any)?.rtx_hdr_supported === true);
 
 const gpuList = computed(() => {
   const raw = (metadata.value as any)?.gpus;
@@ -438,10 +439,13 @@ const shouldShowSoftware = computed(() => showAll() || props.currentTab === 'sw'
   <div class="config-page space-y-6">
     <div class="space-y-4">
       <ConfigFieldRenderer setting-key="capture" v-model="config.capture" />
+      <NAlert v-if="platform === 'linux' && config.capture && config.capture !== 'kms'" type="warning">
+        {{ t('config.capture_virtual_warning') }}
+      </NAlert>
       <ConfigFieldRenderer setting-key="encoder" v-model="config.encoder" />
 
       <section
-        v-if="platform === 'windows' && hasNvidia"
+        v-if="['windows', 'linux'].includes(platform) && hasNvidia && (platform !== 'linux' || rtxHdrSupported)"
         class="space-y-4 rounded-xl border border-dark/35 p-4 dark:border-light/25"
       >
         <div class="space-y-1">

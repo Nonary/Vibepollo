@@ -11,6 +11,7 @@
 #extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
 #extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 #extension GL_EXT_shader_8bit_storage : require
+#extension GL_GOOGLE_include_directive : require
 
 #include "constants.h"
 
@@ -317,7 +318,8 @@ void main()
     uint global_sign_offset = global_planes_offset + subgroupClusteredAdd(required_plane_bytes, 16);
     global_planes_offset += local_planes_offset;
 
-    uint total_sign_bytes = (subgroupShuffle(total_sign_bits, gl_SubgroupInvocationID | 15u) + 7) / 8;
+    uint total_block_sign_bits = subgroupShuffle(total_sign_bits, gl_SubgroupInvocationID | 15u);
+    uint total_sign_bytes = (total_block_sign_bits + 7) / 8;
 
     // Followed by N code words which map to the local ballot of active 16x16 regions.
     if (active_code_word)
@@ -362,6 +364,12 @@ void main()
     for (uint i = index & 15u; i < total_sign_bytes / 4; i += 16)
     {
         uint sign_word = shared_sign_bank[linear_block_32x32_index][i];
+        // The decoder consumes only significant coefficient sign bits. The
+        // remaining bits in the final word are unspecified shared memory and
+        // must not make identical coefficient records appear to have changed.
+        uint valid_bits = total_block_sign_bits - 32 * i;
+        if (valid_bits < 32)
+            sign_word &= (1u << valid_bits) - 1u;
         uint offset_8b = global_sign_offset + 4 * i;
         bitstream_data_8b.data[offset_8b + 0] = uint8_t(sign_word >> 0);
         bitstream_data_8b.data[offset_8b + 1] = uint8_t(sign_word >> 8);
@@ -374,6 +382,20 @@ void main()
     {
         uint sign_word = shared_sign_bank[linear_block_32x32_index][i / 4];
         uint offset_8b = global_sign_offset + i;
-        bitstream_data_8b.data[offset_8b] = uint8_t(sign_word >> (8 * (i & 3u)));
+        uint sign_byte = (sign_word >> (8 * (i & 3u))) & 0xffu;
+        uint valid_bits = total_block_sign_bits - 8 * i;
+        if (valid_bits < 8)
+            sign_byte &= (1u << valid_bits) - 1u;
+        bitstream_data_8b.data[offset_8b] = uint8_t(sign_byte);
+    }
+
+    // Word alignment is part of the transmitted record but not the decoded
+    // coefficients. Clear at most three tail bytes without a CPU record walk.
+    if (payload_total_words != 0)
+    {
+        uint payload_end = 4 * (global_payload_offset + payload_total_words);
+        for (uint offset = global_sign_offset + total_sign_bytes + (index & 15u);
+             offset < payload_end; offset += 16)
+            bitstream_data_8b.data[offset] = uint8_t(0);
     }
 }

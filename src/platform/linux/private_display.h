@@ -5,6 +5,7 @@
 #pragma once
 
 #include "src/remote_display_topology.h"
+#include "src/display_target_lease.h"
 
 #include <chrono>
 #include <display_device/types.h>
@@ -73,21 +74,35 @@ namespace platf::linux_private_display {
   /** Release only this client's connector reservation; topology apply performs the disable. */
   bool remote_remove_owned_display(const std::string &client_uuid);
 
+  std::optional<display_target::observation_t> observe_exact_target(const display_target::descriptor_t &target);
+
   /** Inspect stable ownership while constructing the Remote Monitor baseline. */
   bool is_private_output(const std::string &output_name);
   /** Identify an output backed by the managed kernel driver. */
   bool is_kernel_output(const std::string &output_name);
   std::optional<std::string> output_for_client(const std::string &client_uuid);
 
-  /** Restore the pre-stream topology and release all private-output reservations. */
+  /** Queue topology restoration through the session helper; true means accepted. */
   bool revert();
 
-  /** Forget cached topology/reservations after restoring the current session. */
+  /** Queue restoration and forget cached state only after successful completion. */
   bool reset_persistence();
+
+  struct termination_result_t {
+    bool topology_restored {false};
+    bool virtual_displays_removed {false};
+    bool physical_display_recovered {false};
+  };
+
+  /** Synchronously restore when possible and disconnect every managed kernel output, overriding owners. */
+  termination_result_t terminate_all();
 
   /** Generation-fenced delayed restore with a lifecycle-specific diagnostic reason. */
   void schedule_revert(std::chrono::milliseconds delay, std::string reason);
   void cancel_scheduled_revert();
+
+  /** Drain standalone restoration or cancel pending machine-host work before teardown. */
+  void shutdown_restore_worker(bool drain);
 
   /** Runtime capability/readiness and Web UI display enumeration. */
   bool capable();
@@ -97,6 +112,8 @@ namespace platf::linux_private_display {
   bool kernel_hdr_pool_available();
   bool kernel_pool_available();
   std::vector<std::string> private_output_names();
+  /** Count configured outputs actually provisioned by the managed kernel pool. */
+  std::size_t client_output_capacity();
   std::optional<display_device::EnumeratedDeviceList> enumerate_devices(
     display_device::DeviceEnumerationDetail detail
   );

@@ -7,6 +7,7 @@
 
 // standard includes
 #include <chrono>
+#include <functional>
 #include <cstdint>
 #include <list>
 #include <mutex>
@@ -22,6 +23,7 @@
 
 // local includes
 #include "crypto.h"
+#include "nvhttp_server.h"
 #include "rtsp.h"
 #include "thread_safe.h"
 
@@ -90,19 +92,11 @@ namespace nvhttp {
   // the exact transport generation that created it.
   void notify_remote_input_transport_lost(std::string_view client_uuid, std::uint64_t generation);
   void notify_remote_monitor_released(std::string_view client_uuid, std::uint64_t generation);
-
-  class SunshineHTTPS: public SimpleWeb::HTTPS {
-  public:
-    SunshineHTTPS(boost::asio::io_context &io_context, boost::asio::ssl::context &ctx):
-        SimpleWeb::HTTPS(io_context, ctx) {
-    }
-
-    virtual ~SunshineHTTPS() {
-      // Gracefully shutdown the TLS connection
-      SimpleWeb::error_code ec;
-      shutdown(ec);
-    }
-  };
+  void reconcile_remote_monitor_owners();
+  // Conservative ownership observation for automatic display recovery. Call
+  // under stream_lifecycle_mutex() so a fresh remote-role launch cannot enter
+  // between this check and a guarded display mutation.
+  bool has_remote_role_owner();
 
   enum class PAIR_PHASE {
     NONE,  ///< Sunshine is not in a pairing phase
@@ -266,7 +260,8 @@ namespace nvhttp {
     const std::string &virtual_display_layout,
     std::optional<std::unordered_map<std::string, std::string>> config_overrides,
     bool prefer_10bit_sdr,
-    std::optional<std::string> hdr_profile
+    std::optional<std::string> hdr_profile,
+    std::optional<bool> requested_resolution_only = std::nullopt
   );
 
   /**
@@ -311,10 +306,19 @@ namespace nvhttp {
    */
   std::mutex &stream_lifecycle_mutex();
 
+#ifdef _WIN32
+  /** End all transports, pending launches and the app, then restore displays.
+   * Revalidate the pinned local helper after draining in-flight starts.
+   */
+  void terminate_all_streams_from_host(const std::function<bool()> &authorized);
+#endif
+
   /**
    * @brief Persist a per-client HDR color profile selection (Windows only).
    * @return True if the client was found and updated.
    */
+  bool set_client_sleep_allowed(std::string_view uuid, bool allowed);
+
   bool set_client_hdr_profile(const std::string &uuid, const std::string &hdr_profile);
 
   /**

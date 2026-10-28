@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <iterator>
+#include <display_device/mode_verification.h>
 
 namespace display_helper::v2::topology {
   namespace {
@@ -87,20 +88,7 @@ namespace display_helper::v2::topology {
 
   bool equal_display_modes(const display_device::DeviceDisplayModeMap &lhs,
                            const display_device::DeviceDisplayModeMap &rhs) {
-    if (lhs.size() != rhs.size()) {
-      return false;
-    }
-    for (const auto &[id, lhs_mode] : lhs) {
-      const auto rhs_it = rhs.find(id);
-      if (rhs_it == rhs.end() ||
-          lhs_mode.m_resolution.m_width != rhs_it->second.m_resolution.m_width ||
-          lhs_mode.m_resolution.m_height != rhs_it->second.m_resolution.m_height ||
-          lhs_mode.m_refresh_rate.m_numerator != rhs_it->second.m_refresh_rate.m_numerator ||
-          lhs_mode.m_refresh_rate.m_denominator != rhs_it->second.m_refresh_rate.m_denominator) {
-        return false;
-      }
-    }
-    return true;
+    return display_device::equalDisplayModes(lhs, rhs);
   }
 
   bool equal_origins(const std::map<std::string, display_device::Point> &lhs,

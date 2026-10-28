@@ -5,9 +5,11 @@
 #include "src/platform/windows/virtual_display_policy.h"
 
 #include <chrono>
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <memory>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -16,6 +18,25 @@
 #include <windows.h>
 
 namespace VDISPLAY {
+  // Snapshot/duplicate already-open control resources after host writers have
+  // drained. Never opens a device, creates a target or changes its lease.
+  std::optional<std::shared_ptr<void>> retain_borrow_native_resources();
+
+  struct FramePushTarget {
+    std::uint64_t lease_id {};
+    std::uint64_t display_id {};
+    std::uint64_t display_generation {};
+    std::uint32_t width {};
+    std::uint32_t height {};
+    std::uint32_t format {};
+    std::uint32_t color_space {};
+    std::uint32_t adapter_luid_low_part {};
+    std::int32_t adapter_luid_high_part {};
+    std::array<std::uint8_t, 32> owner_capability {};
+    std::wstring control_device_path {};
+  };
+  std::optional<FramePushTarget> frame_push_target_for_output(const std::string &output_identifier);
+
   inline constexpr const char *VIRTUAL_DISPLAY_SELECTION = "sunshine:virtual_display";
   inline constexpr const char *SUDOVDA_VIRTUAL_DISPLAY_SELECTION = "sunshine:sudovda_virtual_display";
 
@@ -25,7 +46,6 @@ namespace VDISPLAY {
     bool attempted = false;
     bool success = false;
     HRESULT association_status = E_NOTIMPL;
-    HRESULT default_status = E_NOTIMPL;
   };
 
   // Windows HDR calibration profiles are Advanced Color associations. These helpers use
@@ -39,6 +59,13 @@ namespace VDISPLAY {
     const std::wstring &monitor_device_path,
     const std::wstring &profile_name,
     bool system_wide
+  );
+  bool associate_hdr_profile(
+    const std::wstring &monitor_device_path,
+    const std::wstring &profile_name,
+    bool system_wide,
+    const std::function<bool(LSTATUS *)> &legacy_association,
+    LSTATUS *out_status = nullptr
   );
   advanced_color_profile_result_t remove_advanced_color_profile(
     const std::wstring &monitor_device_path,
@@ -120,6 +147,11 @@ namespace VDISPLAY {
    */
   bool configuredRenderAdapterMatchesVirtualDisplay(const GUID &guid, std::string_view context);
   void ensureVirtualDisplayRegistryDefaults();
+  bool supportsRequestedResolutionCatalog();
+  bool hasOwnedSunshineVirtualDisplays();
+  bool allowsSharedCatalogCapture();
+  // nullopt is an unverified state; false requires a session-boundary create.
+  std::optional<bool> virtualDisplayCatalogMatches(const GUID &guid, uint32_t width, uint32_t height, bool requested_only);
 
   struct VirtualDisplayCreationResult {
     std::optional<std::wstring> display_name;
@@ -144,6 +176,7 @@ namespace VDISPLAY {
     uint32_t height;
     uint32_t fps;
     uint32_t base_fps_millihz = 0;
+    bool requested_resolution_only = false;
     bool framegen_refresh_active = false;
     int framegen_refresh_multiplier = 1;
     // Unset preserves Windows' HDR setting, including during recovery.
@@ -180,7 +213,8 @@ namespace VDISPLAY {
     std::optional<bool> hdr_requested = std::nullopt,
     bool allow_pending_enumeration = false,
     bool replace_existing = true,
-    bool preserve_peer_displays = false
+    bool preserve_peer_displays = false,
+    bool requested_resolution_only = false
   );
 
   // Apply an HDR color profile to a physical output (best-effort).
@@ -221,6 +255,9 @@ namespace VDISPLAY {
   );
   std::optional<std::string> resolveAnyVirtualDisplayDeviceId();
   bool is_virtual_display_output(const std::string &output_identifier);
+  bool is_sunshine_virtual_display_output(const std::string &output_identifier);
+  bool driver_supports_frame_push_capture();
+  std::optional<bool> is_any_managed_virtual_display_output(const std::string &output_identifier);
   bool is_virtual_display_selection(const std::string &output_identifier);
 
   uint64_t client_uuid_to_virtual_display_id(const GUID &client_guid);
@@ -243,6 +280,24 @@ namespace VDISPLAY {
     int height;
   };
 
+  enum class ensure_display_backend_e : std::uint8_t {
+    none,
+    sunshine,
+    sudovda,
+  };
+
+  struct TrackedDisplayCleanupTarget {
+    std::array<std::uint8_t, 16> guid_bytes {};
+    std::string device_id;
+    ensure_display_backend_e backend = ensure_display_backend_e::none;
+  };
+
+  // Snapshot exact in-process managed identities with their resolved driver
+  // lease device IDs. Targets without a resolved identity are omitted.
+  std::vector<TrackedDisplayCleanupTarget> tracked_display_cleanup_targets();
+  bool tracked_display_cleanup_target_matches(const TrackedDisplayCleanupTarget &target);
+  bool remove_tracked_display_cleanup_target(const TrackedDisplayCleanupTarget &target);
+
   bool isVirtualDisplayDriverInstalled();
   std::vector<VirtualDisplayInfo> enumerateVirtualDisplays();
 
@@ -256,12 +311,6 @@ namespace VDISPLAY {
     request_retained,
     target_enumerated,
     target_ready,
-  };
-
-  enum class ensure_display_backend_e : std::uint8_t {
-    none,
-    sunshine,
-    sudovda,
   };
 
   struct ensure_display_result {

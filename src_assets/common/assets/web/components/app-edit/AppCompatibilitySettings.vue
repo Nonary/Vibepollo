@@ -183,7 +183,9 @@ function scaleChanged(event: Event): void {
 
 <style scoped>
 .app-compatibility {
-  min-width: 0;
+  min-inline-size: 0;
+  container-type: inline-size;
+  overflow-wrap: anywhere;
 }
 .app-compatibility > p,
 .state-heading p {
@@ -196,6 +198,14 @@ function scaleChanged(event: Event): void {
   gap: 1rem;
   flex-wrap: wrap;
   margin-top: 1.5rem;
+}
+.state-heading > div {
+  min-inline-size: 0;
+  flex: 1 1 12rem;
+}
+.state-heading > .vs-button {
+  max-inline-size: 100%;
+  white-space: normal;
 }
 .state-command {
   display: grid;

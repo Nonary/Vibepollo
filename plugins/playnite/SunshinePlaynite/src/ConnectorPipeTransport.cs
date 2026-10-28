@@ -76,29 +76,31 @@ namespace SunshinePlaynite
 
         public static string ValidateClient(NamedPipeServerStream pipe, IDictionary<string, object> hello)
         {
-            if (!string.Equals(GetString(hello, "type"), "hello", StringComparison.Ordinal))
-                throw new UnauthorizedAccessException("Invalid client hello message");
+            return ConnectorClientAuthentication.Validate(hello, () =>
+            {
+                uint actualPid;
+                if (!GetNamedPipeClientProcessId(pipe.SafePipeHandle, out actualPid))
+                    throw new UnauthorizedAccessException("Could not resolve the pipe client PID");
+                return actualPid;
+            }, GetProcessExecutableName, () => IsLocalSystemClient(pipe));
+        }
 
-            var role = GetString(hello, "role");
-            if (!string.Equals(role, "sunshine", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(role, "launcher", StringComparison.OrdinalIgnoreCase))
-                throw new UnauthorizedAccessException("Invalid client role");
-
-            uint actualPid;
-            var claimedPid = GetInt(hello, "pid");
-            if (!claimedPid.HasValue || claimedPid.Value <= 0 ||
-                !GetNamedPipeClientProcessId(pipe.SafePipeHandle, out actualPid) ||
-                actualPid != (uint)claimedPid.Value)
-                throw new UnauthorizedAccessException("Client PID validation failed");
-
-            var executable = GetProcessExecutableName(actualPid);
-            var validExecutable = string.Equals(role, "launcher", StringComparison.OrdinalIgnoreCase)
-                ? string.Equals(executable, "playnite-launcher.exe", StringComparison.OrdinalIgnoreCase)
-                : string.Equals(executable, "sunshine.exe", StringComparison.OrdinalIgnoreCase);
-            if (!validExecutable)
-                throw new UnauthorizedAccessException("Client executable does not match its declared role");
-
-            return role;
+        private static bool IsLocalSystemClient(NamedPipeServerStream pipe)
+        {
+            var isLocalSystem = false;
+            // The hello has already been read: Windows identifies its actual sender.
+            // RunAsClient reverts impersonation even if inspection throws.
+            pipe.RunAsClient(() =>
+            {
+                // Never fall back to Playnite's own process identity.
+                using (var identity = WindowsIdentity.GetCurrent(true))
+                {
+                    isLocalSystem = identity != null && identity.User != null &&
+                        identity.ImpersonationLevel >= TokenImpersonationLevel.Identification &&
+                        identity.User.IsWellKnown(WellKnownSidType.LocalSystemSid);
+                }
+            });
+            return isLocalSystem;
         }
 
         public static void WriteHandshake(Stream control, string pipeName)
@@ -135,21 +137,6 @@ namespace SunshinePlaynite
             {
                 CloseHandle(process);
             }
-        }
-
-        private static string GetString(IDictionary<string, object> value, string key)
-        {
-            object item;
-            return value != null && value.TryGetValue(key, out item) && item != null
-                ? Convert.ToString(item)
-                : string.Empty;
-        }
-
-        private static int? GetInt(IDictionary<string, object> value, string key)
-        {
-            object item;
-            if (value == null || !value.TryGetValue(key, out item) || item == null) return null;
-            try { return Convert.ToInt32(item); } catch { return null; }
         }
 
         [DllImport("kernel32.dll", SetLastError = true)]

@@ -1,4 +1,40 @@
 # windows specific target definitions
+add_executable(vibepollo_dualsense_haptics "${CMAKE_SOURCE_DIR}/tools/dualsense_haptics/launcher.cpp")
+add_library(vibepollo_dualsense_audio SHARED "${CMAKE_SOURCE_DIR}/tools/dualsense_haptics/audio_hook.cpp")
+foreach(_haptics_target IN ITEMS vibepollo_dualsense_haptics vibepollo_dualsense_audio)
+    target_compile_features(${_haptics_target} PRIVATE cxx_std_20)
+    target_compile_definitions(${_haptics_target} PRIVATE UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00 NOMINMAX)
+    set_target_properties(${_haptics_target} PROPERTIES PREFIX "" RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tools")
+    target_link_options(${_haptics_target} PRIVATE -static)
+endforeach()
+target_link_options(vibepollo_dualsense_haptics PRIVATE -municode)
+target_link_libraries(vibepollo_dualsense_haptics PRIVATE setupapi)
+target_link_libraries(vibepollo_dualsense_audio PRIVATE minhook::minhook ole32 propsys uuid shell32)
+add_dependencies(sunshine vibepollo_dualsense_haptics vibepollo_dualsense_audio)
+if(DEFINED _MINHOOK_DLL)
+    add_custom_command(TARGET vibepollo_dualsense_audio POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_MINHOOK_DLL}" "$<TARGET_FILE_DIR:vibepollo_dualsense_audio>")
+endif()
+if(BUILD_TESTS AND CMAKE_SYSTEM_PROCESSOR MATCHES "AMD64|amd64|x86_64")
+    add_executable(test_windows_dualsense_launcher "${CMAKE_SOURCE_DIR}/tools/dualsense_haptics/launcher_probe.cpp")
+    target_compile_features(test_windows_dualsense_launcher PRIVATE cxx_std_20)
+    target_compile_definitions(test_windows_dualsense_launcher PRIVATE UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00 NOMINMAX)
+    target_link_options(test_windows_dualsense_launcher PRIVATE -municode -static)
+    target_link_libraries(test_windows_dualsense_launcher PRIVATE ole32 uuid)
+    set_target_properties(test_windows_dualsense_launcher PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tools")
+    add_dependencies(test_windows_dualsense_launcher vibepollo_dualsense_audio)
+    add_test(NAME windows_dualsense_launcher COMMAND test_windows_dualsense_launcher)
+    set_tests_properties(windows_dualsense_launcher PROPERTIES TIMEOUT 60)
+    add_executable(test_windows_dualsense_audio "${CMAKE_SOURCE_DIR}/tools/dualsense_haptics/probe.cpp")
+    target_compile_features(test_windows_dualsense_audio PRIVATE cxx_std_20)
+    target_compile_definitions(test_windows_dualsense_audio PRIVATE UNICODE _UNICODE WINVER=0x0A00 _WIN32_WINNT=0x0A00 NOMINMAX)
+    target_link_options(test_windows_dualsense_audio PRIVATE -municode -static)
+    target_link_libraries(test_windows_dualsense_audio PRIVATE ole32 uuid)
+    set_target_properties(test_windows_dualsense_audio PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tools")
+    add_dependencies(test_windows_dualsense_audio vibepollo_dualsense_audio)
+    add_test(NAME windows_dualsense_audio COMMAND test_windows_dualsense_audio)
+    set_tests_properties(windows_dualsense_audio PROPERTIES TIMEOUT 60)
+endif()
 set_target_properties(sunshine PROPERTIES LINK_SEARCH_START_STATIC 1)
 set(CMAKE_FIND_LIBRARY_SUFFIXES ".dll")
 
@@ -75,6 +111,7 @@ add_custom_command(
 )
 add_custom_target(build_playnite_plugin DEPENDS ${SUNSHINE_PLAYNITE_PLUGIN_OUTPUT_FILES})
 add_dependencies(sunshine build_playnite_plugin)
+add_dependencies(sunshine sunshine_end_stream_hotkey)
 
 # Ensure the Windows display helper is built and staged under the Sunshine tools
 # directory so the runtime launcher can find it reliably.
@@ -112,12 +149,14 @@ add_custom_command(
 add_custom_target(build_uninstall_ui ALL DEPENDS "${SUNSHINE_UNINSTALL_UI_EXE}")
 
 set(SUNSHINE_WINDOWS_PACKAGED_TARGETS sunshine)
+list(APPEND SUNSHINE_WINDOWS_PACKAGED_TARGETS vibepollo_dualsense_haptics vibepollo_dualsense_audio)
 foreach(_packaged_target IN ITEMS
         dxgi-info
         audio-info
         sunshinesvc
         playnite-launcher
         sunshine_wgc_capture
+        sunshine_end_stream_hotkey
         sunshine_display_helper)
     if(TARGET "${_packaged_target}")
         list(APPEND SUNSHINE_WINDOWS_PACKAGED_TARGETS "${_packaged_target}")
@@ -129,6 +168,15 @@ add_custom_target(package_msi
     COMMAND "${CMAKE_CPACK_COMMAND}" -G WIX -C "$<IF:$<CONFIG:>,${CMAKE_BUILD_TYPE},$<CONFIG>>"
     DEPENDS ${SUNSHINE_WINDOWS_PACKAGED_TARGETS} build_playnite_plugin build_uninstall_ui web_ui
     COMMENT "Building MSI installer via CPack (WiX)"
+)
+
+# Build a standalone ZIP with an as-caller physical-desktop launcher.
+add_custom_target(package_portable
+    COMMAND "${CMAKE_CPACK_COMMAND}" -G ZIP --config "${CMAKE_BINARY_DIR}/CPackConfig.cmake"
+        -C "$<IF:$<CONFIG:>,${CMAKE_BUILD_TYPE},$<CONFIG>>"
+    DEPENDS ${SUNSHINE_WINDOWS_PACKAGED_TARGETS} build_playnite_plugin build_uninstall_ui web_ui
+    COMMENT "Building portable Windows ZIP via CPack"
+    VERBATIM
 )
 
 # This target never signs: it always builds an unsigned installer. Release

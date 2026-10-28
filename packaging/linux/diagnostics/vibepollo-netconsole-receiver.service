@@ -1,0 +1,12 @@
+[Unit]
+Description=Durable netconsole receiver for host shutdown diagnostics
+
+[Service]
+EnvironmentFile=%h/.config/vibepollo-netconsole.conf
+ExecStart=/usr/bin/systemd-inhibit --what=idle --mode=block --who=shutdown-diagnostics --why=Preserve-host-shutdown-logs %h/.local/libexec/vibepollo-netconsole-receiver --source ${NETCONSOLE_SOURCE} --inhibit-desktop-sleep
+Restart=on-failure
+RestartSec=5
+UMask=0077
+
+[Install]
+WantedBy=default.target

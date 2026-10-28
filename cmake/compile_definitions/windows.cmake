@@ -158,6 +158,7 @@ foreach(_sunshine_versioned_tool IN ITEMS
         sunshinesvc
         playnite-launcher
         sunshine_wgc_capture
+        sunshine_end_stream_hotkey
         sunshine_display_helper)
     if(TARGET "${_sunshine_versioned_tool}")
         sunshine_add_windows_versioninfo("${_sunshine_versioned_tool}")
@@ -174,6 +175,8 @@ list(APPEND SUNSHINE_DEFINITIONS VIGEMBUS_PACKAGED_VERSION="${VIGEMBUS_PACKAGED_
 # MSVC-built shim (vibeshine_truehdr.dll, see tools/truehdr_shim) at runtime, so this is
 # always compiled in on Windows; it no-ops gracefully when the shim/runtime is absent.
 list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_ENABLE_NV_TRUEHDR=1)
+
+list(APPEND PLATFORM_LIBRARIES windowsapp)
 
 set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/publish.cpp"
@@ -222,6 +225,7 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/virtual_display_cleanup.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/hotkey_manager.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/hotkey_manager.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/end_stream_hotkey.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_ipc.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/playnite_protocol.h"
@@ -246,6 +250,7 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/input.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/display_base.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/display_output_monitor.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/nv_truehdr.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/nv_truehdr.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/rtx_hdr_policy.h"
@@ -284,10 +289,15 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/utf_utils.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/dualsense_haptics.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/dualsense_usbip_protocol.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/dualsense_usbip_transport.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/dualsense_usbip_gamepad.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad_policy.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/vhf_gamepad_policy.cpp"
         "${SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR}/client/client.cpp"
+        "${SUNSHINE_LIBVIRTUALGAMEPAD_SOURCE_DIR}/driver/src/dualsense.cpp"
         "${SUNSHINE_LIBVIRTUALGAMEPAD_INCLUDE_DIR}/libvirtualgamepad/client.h"
         "${SUNSHINE_LIBVIRTUALGAMEPAD_INCLUDE_DIR}/libvirtualgamepad/protocol.h"
         "${CMAKE_SOURCE_DIR}/third-party/ViGEmClient/src/ViGEmClient.cpp"
@@ -305,6 +315,22 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/amf/amf_d3d11.cpp"
         ${NVPREFS_FILES})
 
+if(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE)
+    list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE=1)
+    list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_io.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_io.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_windows_io.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_windows_io.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_transport.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_transport.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_d3d11.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_d3d11.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/display_frame_push.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/display_frame_push.h"
+            "${CMAKE_SOURCE_DIR}/src/platform/windows/frame_push_capture_policy.h")
+endif()
+
 set(OPENSSL_LIBRARIES
         libssl.a
         libcrypto.a)
@@ -313,6 +339,7 @@ list(PREPEND PLATFORM_LIBRARIES
         ${CURL_STATIC_LIBRARIES}
         advapi32
         avrt
+        cfgmgr32
         d3d11
         D3DCompiler
         dwmapi
@@ -324,7 +351,9 @@ list(PREPEND PLATFORM_LIBRARIES
         libwinpthread.a
         minhook::minhook
         ntdll
+        ole32
         pdh
+        powrprof
         setupapi
         shlwapi
         shell32
@@ -349,4 +378,13 @@ if(SUNSHINE_ENABLE_PYROWAVE)
             "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d11_core.h"
             "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d11_core.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_encode.cpp")
+    if(SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12)
+        list(APPEND SUNSHINE_DEFINITIONS SUNSHINE_EXPERIMENTAL_PYROWAVE_D3D12=1)
+        list(APPEND PLATFORM_LIBRARIES d3d12)
+        list(APPEND PLATFORM_TARGET_FILES
+                "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d12_conversion.h"
+                "${CMAKE_SOURCE_DIR}/src/platform/windows/pyrowave_d3d12_conversion.cpp")
+    endif()
 endif()
+
+list(APPEND PLATFORM_TARGET_FILES "${CMAKE_SOURCE_DIR}/src/platform/windows/managed_app_focus.cpp")

@@ -923,6 +923,8 @@ const ALLOWED_OVERRIDE_KEYS = new Set<string>([
   'motion_as_ds4',
   'touchpad_as_ds4',
   'back_button_timeout',
+  'guide_button_key',
+  'guide_button_controller',
   'keyboard',
   'key_repeat_delay',
   'key_repeat_frequency',

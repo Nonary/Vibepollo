@@ -127,6 +127,7 @@ namespace display_helper::v2 {
     /// display creation resets them.
     std::vector<std::pair<std::string, std::pair<unsigned int, unsigned int>>> refresh_rate_overrides;
     bool hdr_blank = false;
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max();
     bool prefer_golden_first = false;
     /// When false, a broken Sunshine connection must not autonomously restore
     /// (stream is intentionally pause-retained).
@@ -137,6 +138,13 @@ namespace display_helper::v2 {
     /// Internal v1-style repair lane. The state machine sets this only on a
     /// copy after a completed full Apply; wire parsing never enables it.
     bool settings_only_repair = false;
+    /// Wire requests name the verified APPLY they intend to reactivate. Only
+    /// the state machine may set reactivation_only on its retained session copy.
+    std::optional<std::uint64_t> reactivation_of;
+    bool reactivation_only = false;
+    /// The host preserved newly active physical outputs in its staging base.
+    /// Clear only SettingsManager's cached transaction, never restore snapshots.
+    bool refresh_settings_baseline = false;
     /// Preserve the original preflight-resolved verification scope without
     /// querying or planning topology again during a settings-only repair.
     std::optional<ResolvedConfigurationTarget> repair_target;
@@ -149,6 +157,13 @@ namespace display_helper::v2 {
     /// This keeps a late completion from a superseded transaction from opening
     /// a newer stream's capture gate.
     std::uint64_t request_id = 0;
+    /// Exact topology captured before the first Exclusive mutation. It is
+    /// carried through the bounded retry so a failed gate can restore the
+    /// topology that was active before APPLY.
+    std::optional<ActiveTopology> exclusive_pre_apply_topology;
+    /// Internal serialized operation that restores exclusive_pre_apply_topology
+    /// after the bounded verification retry fails.
+    bool exclusive_topology_rollback_only = false;
   };
 
   struct SnapshotCommandPayload {
@@ -179,6 +194,22 @@ namespace display_helper::v2 {
     /// True when triggered by a broken connection / heartbeat loss rather than an
     /// explicit client REVERT; honors the restore-on-disconnect policy.
     bool from_disconnect = false;
+    /// Host-issued monotonic recovery ticket carried by the restore request.
+    std::uint64_t restore_ticket = 0;
+  };
+
+  enum class RecoveryStatus : std::uint8_t {
+    Unknown = 0,
+    Active = 1,
+    Failed = 2,
+    Restored = 3,
+  };
+
+  struct RecoveryStatusCommand {
+    std::uint64_t ticket = 0;
+    std::uint64_t generation = 0;
+    std::uint64_t connection_epoch = 0;
+    bool park = false;
   };
 
   struct DisarmCommand {
@@ -237,6 +268,8 @@ namespace display_helper::v2 {
     bool durable_recovery_armed = false;
     bool durable_recovery_attempted = false;
     bool staged_state_prepared = false;
+    std::optional<ActiveTopology> exclusive_pre_apply_topology;
+    bool exclusive_rollback_only = false;
     std::uint64_t generation = 0;
   };
 
@@ -246,6 +279,7 @@ namespace display_helper::v2 {
   enum class VerificationPurpose {
     Initial,
     TransientDisconnect,
+    TransientDisconnectFinal,
     BaselineTopologyReturn,
     BaselineTopologyRepair,
   };
@@ -312,6 +346,7 @@ namespace display_helper::v2 {
     ResetCommand,
     PingCommand,
     StopCommand,
+    RecoveryStatusCommand,
     ApplyCompleted,
     VerificationCompleted,
     ResetCompleted,

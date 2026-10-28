@@ -7,8 +7,8 @@ local_package="$workdir/vibepollo.pkg.tar.zst"
 printf 'vibepollo_quiesce_or_abort() { return 1; }\n' > "$workdir/.INSTALL"
 bsdtar -cf "$local_package" -C "$workdir" .INSTALL
 stage_upgrade_guard "$local_package"
-grep -Fxq 'AbortOnFail' "$workdir/hooks/00-vibepollo-quiesce.hook"
-grep -Fxq "Exec = $workdir/preflight" "$workdir/hooks/00-vibepollo-quiesce.hook"
+grep -Fxq 'AbortOnFail' "$workdir/hooks/00-vibepollo-incoming-quiesce.hook"
+grep -Fxq "Exec = $workdir/preflight" "$workdir/hooks/00-vibepollo-incoming-quiesce.hook"
 if "$workdir/preflight"; then exit 1; fi
 calls="$workdir/calls"
 source_root="$workdir/usr/src"
@@ -27,6 +27,7 @@ package_name=vibepollo
 directory_owner=vibepollo
 ownership_error=0
 repository_metadata_available=1
+pacman-conf() { [[ "$*" = HookDir ]] && printf '%s\n' /etc/pacman.d/hooks; }
 pacman() {
   printf '%s\n' "$*" >> "$calls"
   if [[ "$1" == -Si ]]; then ((repository_metadata_available)); return; fi
@@ -56,7 +57,7 @@ pacman() {
 parse_args --yes
 install_from_package
 ! grep -Eq -- '^-S' "$calls"
-grep -Fx -- "-U --noconfirm --ask=4 --hookdir $workdir/hooks -- $local_package" "$calls"
+grep -Fx -- "-U --noconfirm --ask=4 --hookdir /etc/pacman.d/hooks --hookdir $workdir/hooks -- $local_package" "$calls"
 [[ $(wc -l < "$calls") == 2 ]]
 : > "$calls"
 package_name=unrelated
@@ -67,7 +68,7 @@ if (install_from_package); then exit 1; fi
 package_name=vibepollo
 pacman_confirm=(); replacement_confirm=()
 install_from_package
-grep -Fx -- "-U --hookdir $workdir/hooks -- $local_package" "$calls"
+grep -Fx -- "-U --hookdir /etc/pacman.d/hooks --hookdir $workdir/hooks -- $local_package" "$calls"
 printf 'Native installer validates package identity and confines conflict answers to replacement.\n'
 
 directory="$source_root/vibeshine-drm-1.19.0"
@@ -81,7 +82,7 @@ printf 'literal wildcard\n' > "$directory/unsafe*.h"
 install_from_package
 expected='--overwrite usr/src/vibeshine-drm-1.19.0/vibeshine_drm_vrr.h'
 ! grep -Eq -- '^-S' "$calls"
-grep -Fx -- "-U $expected --hookdir $workdir/hooks -- $local_package" "$calls"
+grep -Fx -- "-U $expected --hookdir /etc/pacman.d/hooks --hookdir $workdir/hooks -- $local_package" "$calls"
 [[ ${#driver_overwrite[@]} == 2 ]]
 backups=("$backup_root"/vibeshine-driver-backup.*/vibeshine-drm-1.19.0/vibeshine_drm_vrr.h)
 [[ ${#backups[@]} == 1 ]]
@@ -116,14 +117,14 @@ configure_pacman_repo() { :; }
 parse_args --yes
 : > "$calls"
 install_from_repo
-grep -Fx -- "-S --noconfirm --ask=4 $expected --cachedir $workdir/cache --hookdir $workdir/hooks vibepollo" "$calls"
+grep -Fx -- "-S --noconfirm --ask=4 $expected --cachedir $workdir/cache --hookdir /etc/pacman.d/hooks --hookdir $workdir/hooks vibepollo" "$calls"
 ! grep -Eq -- '^-S[^ ]*[yu]' "$calls"
 download_release_package() { printf 'download-release\n' >> "$calls"; }
 repository_metadata_available=0
 : > "$calls"
 install_from_repo
 grep -Fx -- 'download-release' "$calls"
-grep -Fx -- "-U --noconfirm --ask=4 $expected --hookdir $workdir/hooks -- $local_package" "$calls"
+grep -Fx -- "-U --noconfirm --ask=4 $expected --hookdir /etc/pacman.d/hooks --hookdir $workdir/hooks -- $local_package" "$calls"
 ! grep -Eq -- '^-S[^ ]*[yu]' "$calls"
 repository_metadata_available=1
 
@@ -297,8 +298,8 @@ for package_hook in \
     declare -F vibepollo_select_upgrade_kill_mode >/dev/null
     vibepollo_legacy_host="$workdir/supervisor-fixture"
     helper_safe=1
-    host_quiescent=1
-    vibepollo_privileged_helper_is_safe() { ((helper_safe)); }
+    host_quiescent=0
+    vibepollo_privileged_helper_is_safe() { [[ -f "$1" && ! -L "$1" ]] && ((helper_safe)); }
     vibepollo_unit_is_quiescent() { [[ "$1" == vibepollo.service ]] && ((host_quiescent)); }
 
     printf '%s\n' '  trap request_host_shutdown TERM INT HUP' > "$vibepollo_legacy_host"
@@ -323,9 +324,16 @@ for package_hook in \
     [[ "$vibepollo_upgrade_kill_mode" == process ]]
 
     printf '%s\n' "  trap 'forward_host_signal TERM' TERM" > "$vibepollo_legacy_host"
-    if vibepollo_select_upgrade_kill_mode; then exit 1; fi
+    vibepollo_select_upgrade_kill_mode
+    [[ "$vibepollo_upgrade_kill_mode" == mixed ]]
     printf '%s\n' 'unrecognized supervisor' > "$vibepollo_legacy_host"
-    if vibepollo_select_upgrade_kill_mode; then exit 1; fi
+    vibepollo_select_upgrade_kill_mode
+    [[ "$vibepollo_upgrade_kill_mode" == mixed ]]
+    host_quiescent=1
+    helper_safe=0
+    vibepollo_select_upgrade_kill_mode
+    [[ "$vibepollo_upgrade_kill_mode" == control-group ]]
+    helper_safe=1
 
     vibepollo_legacy_host="$workdir/absent-supervisor"
     host_quiescent=0
@@ -354,6 +362,20 @@ for hook_case in \
           -e "s|/run/vibepollo/|$workdir/absent-runtime/|g")"
     declare -F "$quiesce_function" >/dev/null
     vibepollo_controller="$workdir/absent-controller"
+    vibepollo_legacy_handoff="$workdir/absent-runtime/legacy-handoff"
+    vibepollo_legacy_handoff_directory="$workdir/absent-runtime/handoff"
+    vibepollo_legacy_restore_directory="$workdir/absent-runtime/restore"
+    vibepollo_legacy_transition_lock="$workdir/absent-runtime/transition"
+    vibepollo_legacy_prelogin_marker="$workdir/absent-runtime/prelogin"
+    vq() { "$@"; }
+    vibepollo_package_preserved_preflight_is_safe() { return 1; }
+    vibepollo_package_open_owned_host_for_stop() { return 0; }
+    vibepollo_host_is_stable_or_quiescent() { return 0; }
+    vibepollo_restore_template_is_masked() { return 0; }
+    vibepollo_disable_legacy_handoff() { return 0; }
+    vibepollo_control_socket_is_masked() { return 0; }
+    vibepollo_broker_socket_is_masked() { return 0; }
+    vibepollo_control_socket="$workdir/absent-runtime/vkms-control.sock"
     vibepollo_broker_socket="$workdir/absent-runtime/session-broker.sock"
     vibepollo_session_record="$workdir/absent-runtime/session.env"
     vibepollo_legacy_acl="$workdir/absent-runtime/session.acl"
@@ -374,12 +396,40 @@ for hook_case in \
       ((host_verified)) || return 1
       printf 'stop brokers\n' >> "$hook_calls"
     }
+    vibepollo_stop_restore_instances() {
+      ((host_verified)) || return 1
+      printf 'stop restore instances\n' >> "$hook_calls"
+    }
+    vibepollo_brokers_are_quiescent() { return 0; }
+    vibepollo_restore_instances_are_quiescent() { return 0; }
     vibepollo_unit_is_masked() { return 0; }
+    vibepollo_host_unit_is_masked() { return 0; }
+    vibepollo_select_upgrade_kill_mode() { return 0; }
+    vibepollo_preun_select_upgrade_kill_mode() { return 0; }
+    vibepollo_prepare_host_upgrade_fence() { return 0; }
+    vibepollo_activate_host_upgrade_fence() { return 0; }
+    vibepollo_freeze_controller() { return 0; }
+    vibepollo_controller_remains_frozen() { return 0; }
+    vibepollo_thaw_controller() { return 0; }
+    vibepollo_package_mask() { return 0; }
+    vibepollo_package_mark_late() { return 0; }
+    vibepollo_package_no_jobs() { return 0; }
+    vibepollo_control_instances_are_quiescent() { return 0; }
     vibepollo_unit_is_disabled() { return 0; }
     vibepollo_remove_pam_hook() { return 0; }
+    vibepollo_cleanup_legacy_transition_state() { return 0; }
+    vibepollo_run_optional_legacy_command() { return 0; }
+    vibepollo_runtime_root_is_safe_or_absent() { return 0; }
+    vibepollo_remove_legacy_prelogin_marker() { return 0; }
+    vibepollo_legacy_acl_is_safe() { return 0; }
+    vibepollo_remove_empty_legacy_directory() { return 0; }
     vibepollo_preun_stop_exact_unit() { vibepollo_stop_exact_unit "$@"; }
     vibepollo_preun_unit_is_quiescent() { vibepollo_unit_is_quiescent "$@"; }
     vibepollo_preun_stop_brokers() { vibepollo_stop_brokers; }
+    vibepollo_preun_stop_restore_instances() { vibepollo_stop_restore_instances; }
+    vibepollo_preun_brokers_are_quiescent() { return 0; }
+    vibepollo_preun_restore_instances_are_quiescent() { return 0; }
+    vibepollo_preun_control_instances_are_quiescent() { return 0; }
     vibepollo_preun_unit_is_masked() { return 0; }
     vibepollo_preun_unit_is_disabled() { return 0; }
     vibepollo_preun_remove_pam() { return 0; }
@@ -388,6 +438,7 @@ for hook_case in \
     if "$quiesce_function"; then exit 1; fi
     grep -Fxq 'stop vibepollo.service' "$hook_calls"
     ! grep -Fxq 'stop brokers' "$hook_calls"
+    ! grep -Fxq 'stop restore instances' "$hook_calls"
 
     host_quiescent=1
     "$quiesce_function"
@@ -398,45 +449,38 @@ done
 printf 'Removal and repair refuse broker teardown until the GPU host has drained.\n'
 
 # A pre-replacement failure must not stop the GPU host before broker admission
-# was touched. Once that shutdown begins, retain the runtime restart fence and
-# recover the installed unit enablement for the next boot.
+# was touched. Late failure must prove host drain before thawing/stopping its
+# controller; the dedicated recovery fixtures verify actual mask ownership.
 for hook in packaging/linux/vibeshine-preinst.in packaging/linux/Arch/vibepollo.install packaging/linux/copr/Sunshine.spec; do
   (
     eval "$(sed -n '/^vibepollo_abort_quiesce() {$/,/^}$/p' "$repo/$hook")"
     actions=''
-    systemctl() { actions="$actions $*"; }
-    timeout() { shift 2; "$@"; }
-    stat() { printf '%s\n' '1:2:0:0:0:1'; }
-    chmod() { actions="$actions CHMOD:$*"; }
-    vibepollo_legacy_handoff="$workdir/handoff-fixture"
-    : > "$vibepollo_legacy_handoff"
-    vibepollo_pre_handoff_identity='1:2:0:0:755:1'
+    vibepollo_package_restore_early() { actions="$actions RESTORE:owned"; }
+    vibepollo_package_recover_failed_transaction() { actions="$actions RELEASE:verified"; }
+    vibepollo_thaw_controller() { actions="$actions THAW:verified"; }
     vibepollo_stop_exact_unit() { actions="$actions STOP:$1"; }
-    vibepollo_unit_is_quiescent() { return 1; }
+    vibepollo_unit_is_quiescent() { [[ "$1" != vibepollo.service || "$host_quiescent" == 1 ]]; }
     vibepollo_controller_was_frozen=1
     vibepollo_shutdown_started=0
+    vibepollo_package_prior_phase=early
     vibepollo_quiesce_step='early fixture failure'
+    host_quiescent=0
     vibepollo_abort_quiesce 2>/dev/null
-    [[ "$actions" == *'thaw vibepollo-session-controller.service'* ]]
-    [[ "$actions" == *'CHMOD:0755 --'* ]]
-    [[ "$actions" == *'CHMOD:0755 --'*'thaw vibepollo-session-controller.service'* ]]
-    [[ "$actions" != *'STOP:'* && "$actions" != *'unmask'* ]]
+    [[ "$actions" == ' RESTORE:owned' ]]
     actions=''
-    vibepollo_controller_was_frozen=0
     vibepollo_shutdown_started=1
-    vibepollo_pre_controller_enabled=enabled
-    vibepollo_pre_host_enabled=disabled
-    vibepollo_pre_prelogin_enabled=disabled
-    vibepollo_pre_prepare_enabled=disabled
+    if vibepollo_abort_quiesce 2>/dev/null; then exit 1; fi
+    [[ -z "$actions" ]]
+    actions=''
+    host_quiescent=1
     vibepollo_broker_socket="$workdir/absent-broker-socket"
     vibepollo_control_socket="$workdir/absent-control-socket"
     vibepollo_abort_quiesce 2>/dev/null
-    [[ "$actions" == *'STOP:vibepollo-session-controller.service'* ]]
-    [[ "$actions" == *'STOP:vibepollo.service'* ]]
+    [[ "$actions" == ' THAW:verified STOP:vibepollo-session-controller.service RELEASE:verified' ]]
     [[ "$actions" != *'enable '* && "$actions" != *'disable '* && "$actions" != *'unmask'* ]]
   )
 done
-printf 'Failed pre-upgrade quiesce preserves the early host, prior enablement, and late restart fences.\n'
+printf 'Failed quiesce restores only owned barriers; late recovery preserves host-before-controller drain order.\n'
 # Socket units have no MainPID property. All package formats must accept a
 # stopped four-property socket while still rejecting a malformed service.
 for package_hook in packaging/linux/vibeshine-preinst.in \
@@ -498,3 +542,133 @@ printf 'RPM removal accepts stopped sockets without MainPID.\n'
   [[ -L "$fixture/etc/systemd/system/graphical.target.wants/vibepollo.service" ]]
 )
 printf 'Arch upgrade retires only matching boot links while runtime masks remain.\n'
+# Recover an already-installed pre-fix package without changing packaged files
+# or making its administrator run a separate locale/configure workaround.
+(
+  recovery_root="$workdir/recovery"
+  mkdir -p "$recovery_root/systemd"
+  recovery_helper="$recovery_root/machine-host"
+  recovery_controller="$recovery_root/controller"
+  recovery_trace="$recovery_root/trace"
+  export recovery_trace recovery_prepare_result=0 recovery_cleanup_result=0
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '[[ "$PWD" == / && "$LC_ALL" == C && "$1" == configure-auto ]] || exit 90' \
+    'printf "prepare\n" >> "$recovery_trace"' \
+    'exit "$recovery_prepare_result"' > "$recovery_helper"
+  printf '%s\n' '#!/usr/bin/env bash' \
+    '[[ "$PWD" == / && "$LC_ALL" == C && "$1" == cleanup ]] || exit 91' \
+    'printf "cleanup\n" >> "$recovery_trace"' \
+    'exit "$recovery_cleanup_result"' > "$recovery_controller"
+  chmod 755 "$recovery_helper" "$recovery_controller"
+  recovery_unsafe_owner=0
+  stat() {
+    local format=$2 path=${!#} metadata
+    case "$format" in
+      '%u:%g:%a:%h')
+        metadata=$(command stat -c '%a:%h' -- "$path") || return 1
+        printf '%s:0:%s\n' "$recovery_unsafe_owner" "$metadata"
+        ;;
+      '%u:%g:%a')
+        # The real system ancestry is root-owned; the fixture lives in /tmp.
+        if [[ "$path" == /tmp ]]; then metadata=755
+        else metadata=$(command stat -c '%a' -- "$path") || return 1; fi
+        printf '0:0:%s\n' "$metadata"
+        ;;
+      *) return 1 ;;
+    esac
+  }
+  timeout() { [[ "$1:$2" == '--signal=KILL:40' ]] || return 1; shift 2; "$@"; }
+  recovery_start_result=0
+  systemctl() {
+    printf 'systemctl %s\n' "$*" >> "$recovery_trace"
+    [[ "$1" != start ]] || return "$recovery_start_result"
+  }
+  printf 'original-pairings\n' > "$recovery_root/pairings"
+  original_cwd=$PWD
+  for attempt in 1 2; do
+    : > "$recovery_trace"
+    repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"
+    [[ "$PWD" == "$original_cwd" ]]
+    [[ $(< "$recovery_root/pairings") == original-pairings ]]
+    [[ $(< "$recovery_trace") == $'systemctl daemon-reload\nsystemctl stop vibepollo-session-controller.service\ncleanup\nprepare\nsystemctl enable vibepollo-session-controller.service\nsystemctl start vibepollo-session-controller.service' ]]
+    dropin="$recovery_root/systemd/vibepollo-session-controller.service.d/99-vibepollo-machine-locale.conf"
+    [[ $(< "$dropin") == $'[Service]\nEnvironment=LC_ALL=C' ]]
+    [[ $(command stat -c %a -- "$dropin") == 644 ]]
+    if [[ "$attempt" == 1 ]]; then chmod 700 "${dropin%/*}"; fi
+    [[ $(command stat -c %a -- "${dropin%/*}") == 700 ]]
+  done
+
+  # A cleanup or setup failure cannot continue to activation or success.
+  recovery_cleanup_result=1; : > "$recovery_trace"
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  ! grep -qE '^prepare|^systemctl (enable|start)' "$recovery_trace"
+  recovery_cleanup_result=0; recovery_prepare_result=1; : > "$recovery_trace"
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  ! grep -qE '^systemctl (enable|start)' "$recovery_trace"
+  recovery_prepare_result=0; recovery_start_result=1
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  recovery_start_result=0
+
+  # Existing service policy is never followed through links or writable dirs.
+  rm "$dropin"; ln -s "$recovery_root/pairings" "$dropin"
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  [[ $(< "$recovery_root/pairings") == original-pairings ]]
+  rm "$dropin"
+  chmod 777 "$recovery_root/systemd"
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  chmod 755 "$recovery_root/systemd"
+  mv "$recovery_root/systemd" "$recovery_root/systemd.real"
+  ln -s "$recovery_root/systemd.real" "$recovery_root/systemd"
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  rm "$recovery_root/systemd"
+  mv "$recovery_root/systemd.real" "$recovery_root/systemd"
+  recovery_unsafe_owner=1000
+  if (repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"); then exit 1; fi
+  recovery_unsafe_owner=0
+
+  # Fixed packages need no service override, but still retry profile setup.
+  printf '\nexport LC_ALL=C\n' >> "$recovery_controller"
+  repair_machine_setup "$recovery_helper" "$recovery_controller" "$recovery_root/systemd"
+  [[ ! -e "$dropin" ]]
+)
+printf 'Installer automatically recovers old locale/cwd setup and refuses unsafe or failed recovery.\n'
+
+# Package hooks inherit a safe cwd even with relative --package arguments.
+(
+  package_directory="$workdir/relative-package"
+  mkdir "$package_directory"
+  touch "$package_directory/vibepollo.pkg.tar.zst"
+  cd "$package_directory"
+  local_package=vibepollo.pkg.tar.zst
+  prepare_driver_replacement() { :; }
+  stage_upgrade_guard() { :; }
+  pacman() {
+    case "$1" in
+      -Qp) printf 'vibepollo 1.0-1\n' ;;
+      -U) [[ "$PWD" == / && "${!#}" == "$package_directory/vibepollo.pkg.tar.zst" && "$LC_ALL" == C ]] ;;
+      *) return 1 ;;
+    esac
+  }
+  install_from_package
+  [[ "$PWD" == "$package_directory" ]]
+)
+printf 'Relative packages resolve before old package hooks run from a safe working directory.\n'
+
+# The normal CLI must run recovery before it reports a successful install.
+(
+  main_trace="$workdir/main-trace"
+  for step in parse_args require_root require_pacman run_checks install_kernel_headers \
+    check_session_restart install_vibepollo check_private_host_security install_virtual_driver install_dualsense_driver \
+    open_firewall check_driver_state check_services; do
+    eval "$step() { :; }"
+  done
+  repair_machine_setup() { printf 'repair\n' >> "$main_trace"; return "$main_repair_result"; }
+  print_summary() { printf 'summary\n' >> "$main_trace"; }
+  main_repair_result=0; : > "$main_trace"
+  main
+  [[ $(< "$main_trace") == $'repair\nsummary' ]]
+  main_repair_result=1; : > "$main_trace"
+  if (set -e; main); then exit 1; fi
+  [[ $(< "$main_trace") == repair ]]
+)
+printf 'Normal install cannot report success before automatic recovery completes.\n'

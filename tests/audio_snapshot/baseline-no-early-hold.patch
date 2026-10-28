@@ -1,0 +1,16 @@
+--- a/src/audio_context.cpp
++++ b/src/audio_context.cpp
+@@ -31,11 +31,8 @@
+     if (!audio_enabled) {
+       return {};
+     }
+-    auto ref = acquire();
+-    if (!ref || !ref->control) {
+-      return {};
+-    }
+-    return std::make_shared<audio_ctx_ref_t>(std::move(ref));
++    // Pre-fix launch path at 69e163f33179 did not acquire audio before display preparation.
++    return {};
+   }
+ 
+   int context_manager_t::assign(audio_ctx_t &ctx, const std::string &sink, bool capture_only) {

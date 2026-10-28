@@ -44,7 +44,9 @@ namespace http {
   extern net::net_e origin_web_ui_allowed;
 
 #ifdef _WIN32
-  extern std::string shared_virtual_display_guid;
+  std::string shared_virtual_display_guid_snapshot();
+  // False preserves the existing owner while exact borrowers/probes drain.
+  bool set_shared_virtual_display_guid(std::string value);
 #endif
 
   // Update origin ACL from current config

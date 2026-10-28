@@ -1,3 +1,4 @@
+#include "file_clock.h"
 #include "lutris_integration.h"
 
 #if defined(__linux__)
@@ -8,6 +9,7 @@
 #include <array>
 #include <cctype>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstdlib>
 #include <memory>
@@ -97,7 +99,7 @@ namespace platf::lutris {
       hash_bytes(hash, error ? "missing" : std::to_string(size));
       error.clear();
       const auto modified = std::filesystem::last_write_time(path, error);
-      hash_bytes(hash, error ? "unstatable" : std::to_string(modified.time_since_epoch().count()));
+      hash_bytes(hash, error ? "unstatable" : file_clock::count_string(modified.time_since_epoch().count()));
     }
 
 #if defined(__linux__)
@@ -257,6 +259,30 @@ namespace platf::lutris {
 
   std::string launch_uri(std::int64_t id) {
     return id > 0 ? "lutris:rungameid/" + std::to_string(id) : std::string {};
+  }
+
+  std::string launch_command(std::int64_t id) {
+    if (id <= 0) return {};
+#if defined(__linux__)
+    if (machine_host_mode()) {
+      return "/usr/libexec/vibeshine/vibepollo-session-exec lutris " + std::to_string(id);
+    }
+#endif
+    return "lutris " + launch_uri(id);
+  }
+
+  std::optional<std::vector<std::string>> session_launch_arguments(
+    std::string_view command, bool wayland_hdr_compatibility) {
+    constexpr std::string_view prefix = "/usr/libexec/vibeshine/vibepollo-session-exec lutris ";
+    if (!command.starts_with(prefix)) return std::nullopt;
+    const auto token = command.substr(prefix.size());
+    std::int64_t id = 0;
+    const auto parsed = std::from_chars(token.data(), token.data() + token.size(), id);
+    if (parsed.ec != std::errc {} || parsed.ptr != token.data() + token.size() ||
+        id <= 0 || token != std::to_string(id)) {
+      return std::nullopt;
+    }
+    return std::vector<std::string> {wayland_hdr_compatibility ? "lutris-wayland-hdr" : "lutris", std::to_string(id)};
   }
 
   bool executable_available() {

@@ -1,5 +1,6 @@
 #include "state_storage.h"
 #include "state_storage_policy.h"
+#include "state_storage_migration.h"
 
 #include "config.h"
 #include "crypto.h"
@@ -130,28 +131,23 @@ namespace statefile {
         (path == vibeshine_state_path() && share_state_file()));
     }
 
+    std::optional<std::string> primary_certificate_identity(const std::string &pem) {
+      auto parsed = crypto::x509(pem);
+      if (!parsed) return std::nullopt;
+      return crypto::pem(parsed);
+    }
+
     bool valid_primary_snapshot(const pt::ptree &tree, bool allow_bootstrap) {
-      if (!nvhttp::state_policy::valid_primary_tree(tree, allow_bootstrap)) return false;
-      std::set<std::string> identities;
-      const auto certificate = [&identities](const std::string &pem) {
-        auto parsed = crypto::x509(pem);
-        return parsed && identities.insert(crypto::pem(parsed)).second;
-      };
-      if (const auto devices = tree.get_child_optional("root.named_devices")) {
-        for (const auto &[key, device] : *devices) {
-          if (!certificate(device.get<std::string>("cert"))) return false;
-        }
-      }
-      if (const auto devices = tree.get_child_optional("root.devices")) {
-        for (const auto &[key, device] : *devices) {
-          if (const auto certs = device.get_child_optional("certs")) {
-            for (const auto &[cert_key, cert] : *certs) {
-              if (!certificate(cert.get_value<std::string>())) return false;
-            }
-          }
-        }
-      }
-      return true;
+      auto normalized = tree;
+      return policy::normalize_legacy_pairing_state(normalized, primary_certificate_identity) &&
+             nvhttp::state_policy::valid_primary_tree(normalized, allow_bootstrap);
+    }
+
+    std::string primary_snapshot_diagnostic(const pt::ptree &tree) {
+      auto normalized = tree;
+      std::string reason;
+      (void) policy::normalize_legacy_pairing_state(normalized, primary_certificate_identity, &reason);
+      return reason;
     }
 
     bool is_auxiliary_state(const std::string &path) {
@@ -165,17 +161,30 @@ namespace statefile {
           return file_handler::write_file(target.c_str(), contents) == 0;
         });
       if (result == policy::load_result_e::failed) {
-        BOOST_LOG(error) << "statefile: refusing to replace unavailable auxiliary state " << path;
+        BOOST_LOG(error) << "statefile: refusing to replace unavailable auxiliary state " << path
+                         << "; preserve this file and its .bak. If both are empty or zero-filled, --auxiliary-recovery can prepare an explicit reset candidate; it cannot recover lost tokens or metadata. Do not replace pairing state or credentials.";
       }
       return result;
     }
 
     policy_load_result_e load_tree_for_update(const fs::path &path, pt::ptree &out) {
       if (is_primary_state_path(path.string())) {
-        return policy::load_primary_state_for_update(sunshine_state_path(), out, read_state_file,
-          [](const std::string &target, const std::string &contents) {
-            return file_handler::write_file(target.c_str(), contents) == 0;
-          }, valid_primary_snapshot, nvhttp::state_policy::valid_primary_json);
+        const auto &primary_path = sunshine_state_path();
+        std::string failure_reason;
+        const auto result = policy::load_primary_state_for_update(primary_path, out, read_state_file, [](const std::string &target, const std::string &contents) {
+          return file_handler::write_file(target.c_str(), contents) == 0;
+        },
+                                                                  valid_primary_snapshot,
+                                                                  [](const std::string &contents) {
+                                                                    return nvhttp::state_policy::valid_primary_json_with_certificates(contents, primary_certificate_identity);
+                                                                  },
+                                                                  &failure_reason,
+                                                                  primary_snapshot_diagnostic);
+        if (result == policy::load_result_e::failed) {
+          BOOST_LOG(error) << "statefile: could not select pairing state " << primary_path
+                           << " or recovery copy " << primary_path + ".bak" << ": " << failure_reason;
+        }
+        return result;
       }
       if (is_auxiliary_state(path.string())) {
         return load_auxiliary_state(path.string(), out);
@@ -951,57 +960,27 @@ namespace statefile {
         return;
       }
 
-      bool old_modified = false;
-      bool new_modified = false;
-
-      if (old_load_result == policy::load_result_e::loaded) {
-        auto old_root_it = old_tree.find("root");
-        if (old_root_it != old_tree.not_found()) {
-          auto &old_root = old_root_it->second;
-
-          auto move_child = [&](const std::string &key) {
-            auto child_it = old_root.find(key);
-            if (child_it == old_root.not_found()) {
-              return;
-            }
-            auto &new_root = ensure_root(new_tree);
-            if (new_root.find(key) == new_root.not_found()) {
-              new_root.put_child(key, child_it->second);
-              new_modified = true;
-            }
-            old_root.erase(old_root.to_iterator(child_it));
-            old_modified = true;
-          };
-
-          move_child("api_tokens");
-          move_child("session_tokens");
-
-          if (auto last = old_root.get_optional<std::string>("last_notified_version")) {
-            auto &new_root = ensure_root(new_tree);
-            if (!new_root.get_optional<std::string>("last_notified_version")) {
-              new_root.put("last_notified_version", *last);
-              new_modified = true;
-            }
-            old_root.erase("last_notified_version");
-            old_modified = true;
+      (void) migration::migrate_recent_keys(
+        old_tree, new_tree, old_load_result == policy::load_result_e::loaded,
+        [&](const pt::ptree &tree) {
+          try {
+            write_tree(new_path, tree);
+            return true;
+          } catch (const std::exception &e) {
+            BOOST_LOG(error) << "statefile: failed to write "sv << new_path.string() << ": "sv << e.what();
+            return false;
+          }
+        },
+        [&](const pt::ptree &tree) {
+          try {
+            write_tree(old_path, tree);
+            return true;
+          } catch (const std::exception &e) {
+            BOOST_LOG(error) << "statefile: failed to write "sv << old_path.string() << ": "sv << e.what();
+            return false;
           }
         }
-      }
-
-      if (new_modified) {
-        try {
-          write_tree(new_path, new_tree);
-        } catch (const std::exception &e) {
-          BOOST_LOG(error) << "statefile: failed to write "sv << new_path.string() << ": "sv << e.what();
-        }
-      }
-      if (old_modified) {
-        try {
-          write_tree(old_path, old_tree);
-        } catch (const std::exception &e) {
-          BOOST_LOG(error) << "statefile: failed to write "sv << old_path.string() << ": "sv << e.what();
-        }
-      }
+      );
     });
   }
 
@@ -1233,6 +1212,34 @@ namespace statefile {
     return devices;
   }
 
+  void save_display_restore_preference(const bool always_restore_from_golden) {
+    migrate_recent_state_keys();
+    const auto &path_str = vibeshine_state_path();
+    if (path_str.empty()) {
+      return;
+    }
+
+    std::lock_guard<std::mutex> guard(state_mutex());
+    const fs::path path(path_str);
+    pt::ptree root;
+    if (load_tree_for_update(path, root) == policy::load_result_e::failed) {
+      return;
+    }
+
+    auto &root_node = ensure_root(root);
+    const auto previous = root_node.get_child_optional("display_restore_prefer_golden");
+    if (previous && previous->empty() &&
+        previous->data() == (always_restore_from_golden ? "true" : "false")) {
+      return;
+    }
+    root_node.put("display_restore_prefer_golden", always_restore_from_golden);
+    try {
+      write_tree(path, root);
+    } catch (const std::exception &e) {
+      BOOST_LOG(error) << "statefile: failed to write "sv << path.string() << ": "sv << e.what();
+    }
+  }
+
   void save_display_helper_engine(const std::string &engine) {
     if (engine.empty()) {
       return;
@@ -1357,6 +1364,52 @@ namespace statefile {
       BOOST_LOG(warning) << "statefile: failed to read virtual display scale: " << e.what();
     }
     return std::nullopt;
+  }
+
+  bool save_linux_display_snapshot(const std::optional<std::string> &snapshot) {
+    if (snapshot && (snapshot->empty() || snapshot->size() > 1024 * 1024)) {
+      return false;
+    }
+    migrate_recent_state_keys();
+    const auto &path = vibeshine_state_path();
+    if (path.empty()) {
+      return false;
+    }
+    std::lock_guard guard {state_mutex()};
+    pt::ptree tree;
+    if (load_tree_for_update(fs::path {path}, tree) == policy::load_result_e::failed) {
+      return false;
+    }
+    auto &root = ensure_root(tree);
+    if (snapshot) {
+      root.put("linux_display_topology", *snapshot);
+    } else {
+      root.erase("linux_display_topology");
+    }
+    try {
+      write_tree(fs::path {path}, tree);
+      return true;
+    } catch (const std::exception &storage_error) {
+      BOOST_LOG(error) << "statefile: failed to persist Linux display topology: " << storage_error.what();
+      return false;
+    }
+  }
+
+  std::optional<std::string> load_linux_display_snapshot() {
+    migrate_recent_state_keys();
+    const auto &path = vibeshine_state_path();
+    if (path.empty()) {
+      return std::nullopt;
+    }
+    std::lock_guard guard {state_mutex()};
+    pt::ptree tree;
+    if (!load_tree_if_exists(fs::path {path}, tree)) {
+      return std::nullopt;
+    }
+    const auto snapshot = tree.get_optional<std::string>("root.linux_display_topology");
+    return snapshot && !snapshot->empty() && snapshot->size() <= 1024 * 1024 ?
+             std::make_optional(*snapshot) :
+             std::nullopt;
   }
 
   void clear_virtual_display_scales() {

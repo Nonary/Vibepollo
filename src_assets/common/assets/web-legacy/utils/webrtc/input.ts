@@ -542,6 +542,20 @@ export function attachInputCapture(
   >();
   const keyAutoReleaseTimers = new Map<string, number>();
   const supportsPointer = typeof window !== 'undefined' && 'PointerEvent' in window;
+  const previousTouchAction = element.style.getPropertyValue('touch-action');
+  const previousTouchActionPriority = element.style.getPropertyPriority('touch-action');
+  if (supportsPointer) element.style.setProperty('touch-action', 'none');
+  let touchGesture: {
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startedAt: number;
+    threshold: number;
+    dragging: boolean;
+    start: { x: number; y: number };
+    last: { x: number; y: number };
+    modifiers: ReturnType<typeof modifiersFromEvent>;
+  } | null = null;
   const supportsGamepad =
     gamepadEnabled &&
     typeof navigator !== 'undefined' &&
@@ -876,12 +890,85 @@ export function attachInputCapture(
     sendButton(event, 'mouse_down');
   };
   const onMouseUp = (event: MouseEvent) => sendButton(event, 'mouse_up');
+  const finishTouch = (cancelled: boolean) => {
+    const gesture = touchGesture;
+    if (!gesture) return;
+    touchGesture = null;
+    if (rafId) cancelAnimationFrame(rafId);
+    flushMove();
+    const position = gesture.dragging ? gesture.last : gesture.start;
+    const button = { button: 0, ...position, modifiers: gesture.modifiers, ts: performance.now() };
+    if (!cancelled && !gesture.dragging) sendPayload({ ...button, type: 'mouse_down' });
+    if (gesture.dragging || !cancelled) sendPayload({ ...button, type: 'mouse_up' });
+    try {
+      element.releasePointerCapture(gesture.pointerId);
+    } catch {
+      // The browser may have already released capture during cancellation.
+    }
+  };
   const onPointerMove = (event: PointerEvent) => {
-    if (event.pointerType === 'touch') return;
+    if (event.pointerType === 'touch') {
+      event.preventDefault();
+      const gesture = touchGesture;
+      if (!gesture || gesture.pointerId !== event.pointerId) return;
+      if (!gesture.dragging) {
+        const distance = Math.hypot(event.clientX - gesture.startX, event.clientY - gesture.startY);
+        if (
+          distance < gesture.threshold ||
+          (performance.now() - gesture.startedAt < 140 &&
+            distance < Math.max(48, gesture.threshold * 2.5))
+        )
+          return;
+        gesture.dragging = true;
+        sendPayload({
+          type: 'mouse_down',
+          button: 0,
+          ...gesture.start,
+          modifiers: gesture.modifiers,
+          ts: performance.now(),
+        });
+      }
+      gesture.last = normalizePoint(event, element, video);
+    }
     queueMove(event);
   };
   const onPointerDown = (event: PointerEvent) => {
-    if (event.pointerType === 'touch') return;
+    if (event.pointerType === 'touch') {
+      event.preventDefault();
+      if (!event.isPrimary || touchGesture) return;
+      const { contentRect } = resolveInputRect(element, video);
+      if (
+        event.clientX < contentRect.left ||
+        event.clientX > contentRect.right ||
+        event.clientY < contentRect.top ||
+        event.clientY > contentRect.bottom
+      )
+        return;
+      // Suppressing the touch default also suppresses the browser's focus action.
+      element.focus();
+      requestKeyboardLockForCapture();
+      // Flush older mouse motion before the touch can select a new coordinate.
+      if (rafId) cancelAnimationFrame(rafId);
+      flushMove();
+      const position = normalizePoint(event, element, video);
+      touchGesture = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        startedAt: performance.now(),
+        threshold: Math.max(18, Math.min(32, Math.max(event.width, event.height) / 2 || 18)),
+        dragging: false,
+        start: position,
+        last: position,
+        modifiers: modifiersFromEvent(event),
+      };
+      try {
+        element.setPointerCapture(event.pointerId);
+      } catch {
+        // A tap remains valid when this browser cannot capture the pointer.
+      }
+      return;
+    }
     element.focus();
     requestKeyboardLockForCapture();
     try {
@@ -892,7 +979,13 @@ export function attachInputCapture(
     sendButton(event, 'mouse_down');
   };
   const onPointerUp = (event: PointerEvent) => {
-    if (event.pointerType === 'touch') return;
+    if (event.pointerType === 'touch') {
+      event.preventDefault();
+      if (touchGesture?.pointerId !== event.pointerId) return;
+      if (touchGesture.dragging) touchGesture.last = normalizePoint(event, element, video);
+      finishTouch(false);
+      return;
+    }
     sendButton(event, 'mouse_up');
     try {
       element.releasePointerCapture(event.pointerId);
@@ -901,22 +994,31 @@ export function attachInputCapture(
     }
   };
   const onPointerCancel = (event: PointerEvent) => {
-    if (event.pointerType === 'touch') return;
+    if (event.pointerType === 'touch') {
+      event.preventDefault();
+      if (touchGesture?.pointerId === event.pointerId) finishTouch(true);
+      return;
+    }
     try {
       element.releasePointerCapture(event.pointerId);
     } catch {
       /* ignore */
     }
   };
+  const onLostPointerCapture = (event: PointerEvent) => {
+    if (touchGesture?.pointerId === event.pointerId) finishTouch(true);
+  };
   const onContextMenu = (event: MouseEvent) => {
     event.preventDefault();
   };
   const onBlur = () => {
+    finishTouch(true);
     releaseAllKeys();
     releaseKeyboardLockForCapture();
   };
   const onVisibilityChange = () => {
     if (document.hidden) {
+      finishTouch(true);
       releaseAllKeys();
       releaseKeyboardLockForCapture();
     }
@@ -1141,6 +1243,7 @@ export function attachInputCapture(
     element.addEventListener('pointerdown', onPointerDown);
     element.addEventListener('pointerup', onPointerUp);
     element.addEventListener('pointercancel', onPointerCancel);
+    element.addEventListener('lostpointercapture', onLostPointerCapture);
   } else {
     element.addEventListener('mousemove', onMouseMove);
     element.addEventListener('mousedown', onMouseDown);
@@ -1161,6 +1264,12 @@ export function attachInputCapture(
   }
 
   return () => {
+    finishTouch(true);
+    if (supportsPointer && element.style.getPropertyValue('touch-action') === 'none') {
+      if (previousTouchAction)
+        element.style.setProperty('touch-action', previousTouchAction, previousTouchActionPriority);
+      else element.style.removeProperty('touch-action');
+    }
     if (rafId) cancelAnimationFrame(rafId);
     if (gamepadRaf) cancelAnimationFrame(gamepadRaf);
     if (supportsPointer) {
@@ -1168,6 +1277,7 @@ export function attachInputCapture(
       element.removeEventListener('pointerdown', onPointerDown);
       element.removeEventListener('pointerup', onPointerUp);
       element.removeEventListener('pointercancel', onPointerCancel);
+      element.removeEventListener('lostpointercapture', onLostPointerCapture);
     } else {
       element.removeEventListener('mousemove', onMouseMove);
       element.removeEventListener('mousedown', onMouseDown);

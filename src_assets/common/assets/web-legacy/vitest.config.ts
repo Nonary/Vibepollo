@@ -12,6 +12,9 @@ export default defineConfig({
       '@web': normalizePath(__dirname),
       '@': normalizePath(__dirname),
       pinia: resolve(__dirname, 'node_modules/pinia/dist/pinia.mjs'),
+      'vue-i18n': resolve(__dirname, 'node_modules/vue-i18n/dist/vue-i18n.mjs'),
+      'naive-ui': resolve(__dirname, 'node_modules/naive-ui/es/index.mjs'),
+      vue: resolve(__dirname, 'node_modules/vue/dist/vue.runtime.esm-bundler.js'),
       '@vue/test-utils': resolve(
         __dirname,
         'node_modules/@vue/test-utils/dist/vue-test-utils.esm-bundler.mjs',

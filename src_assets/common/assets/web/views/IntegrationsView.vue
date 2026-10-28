@@ -149,6 +149,7 @@ interface LibraryApp {
   uuid?: string;
   name?: string;
   'playnite-managed'?: string;
+  'remote-monitor-profile'?: unknown;
 }
 
 type IntegrationId = 'steam' | 'lutris' | 'mangohud' | 'playnite' | 'rtss' | 'lossless' | 'vigem' | 'vulkan';
@@ -218,7 +219,7 @@ const confirmOpen = ref(false);
 const pendingAction = ref<PendingAction | null>(null);
 
 const playniteAutoSyncCount = computed(
-  () => libraryApps.value.filter((app) => app['playnite-managed'] === 'auto').length,
+  () => libraryApps.value.filter((app) => app['playnite-managed'] === 'auto' && app['remote-monitor-profile'] !== true).length,
 );
 
 const isWindows = computed(() =>
@@ -1367,7 +1368,11 @@ function libraryRequest(
             <h2 :id="`integration-${summary.id}`">{{ summary.name }}</h2>
             <StatusBadge :label="summary.status" :tone="summary.tone" compact />
           </div>
-          <PlaynitePolicySettings v-if="summary.id === 'playnite' && isWindows" />
+          <PlaynitePolicySettings
+            v-if="summary.id === 'playnite' && isWindows"
+            :needs-directory="!playnite?.extensions_dir"
+            @saved="load"
+          />
           <ul v-if="summary.details.length" class="integration-details">
             <li v-for="detail in summary.details" :key="detail">{{ detail }}</li>
           </ul>

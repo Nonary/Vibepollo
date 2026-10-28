@@ -1,0 +1,46 @@
+---
+# Canonical thin launcher for the protected default branch. This exact file is
+# tested on Canary and copied to the default branch workflow path.
+name: Daily prerelease
+permissions: {}
+
+on:
+  schedule:
+    - cron: '32 6 * * *'
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Dispatch Canary publication (also requires DAILY_RELEASE_ENABLED)
+        type: boolean
+        default: false
+
+# Never hold the release workflow's lock while starting its child run.
+concurrency:
+  group: daily-windows-launcher
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    if: >-
+      (github.event_name == 'workflow_dispatch' || vars.DAILY_RELEASE_ENABLED == 'true') &&
+      (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') &&
+      github.repository == 'Nonary/Vibepollo' &&
+      github.ref_type == 'branch' &&
+      github.ref_name == github.event.repository.default_branch &&
+      vars.DAILY_RELEASE_SOURCE_BRANCH == 'canary' &&
+      vars.DAILY_RELEASE_SOURCE_CONFIRMED == 'Nonary/Vibepollo:canary'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch the same Canary-owned nightly workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH: ${{ github.event_name == 'schedule' || inputs.publish == true }}
+        run: |
+          set -euo pipefail
+          payload="$(mktemp)"
+          trap 'rm -f "$payload"' EXIT
+          jq -n --argjson publish "$PUBLISH" '{ref:"canary",inputs:{publish:$publish}}' > "$payload"
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/daily-prerelease.yml/dispatches" --input "$payload"
+          echo 'Canary nightly dispatch accepted. Build and publication outcomes belong to the child run.' >> "$GITHUB_STEP_SUMMARY"

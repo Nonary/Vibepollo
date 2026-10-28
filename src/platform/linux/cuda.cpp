@@ -31,6 +31,10 @@ extern "C" {
 #include "src/utility.h"
 #include "src/video.h"
 #include "wayland.h"
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+  #include "rtx_hdr_runtime.h"
+  #include "truehdr_gl.h"
+#endif
 
 #define SUNSHINE_STRINGVIEW_HELPER(x) x##sv
 #define SUNSHINE_STRINGVIEW(x) SUNSHINE_STRINGVIEW_HELPER(x)
@@ -302,7 +306,17 @@ namespace cuda {
 
   class gl_cuda_vram_t: public platf::avcodec_encode_device_t {
   public:
+    bool supports_rtx_hdr() const override {
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      return true;
+#else
+      return false;
+#endif
+    }
     ~gl_cuda_vram_t() override {
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      foreground.reset();
+#endif
       if (!cuda_context) {
         return;
       }
@@ -316,6 +330,15 @@ namespace cuda {
       }
 
       const auto raw_context = std::get<1>(ctx.el);
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      if (truehdr) {
+        if (!guard) (void) truehdr.release();
+        else {
+          if (eglGetCurrentContext() != raw_context) truehdr->abandon_gl();
+          truehdr.reset();
+        }
+      }
+#endif
       if (!guard || eglGetCurrentContext() != raw_context) {
         // Encoder probes can destroy this object from a different thread while
         // the worker still owns the GL context. EGL forbids stealing it; the
@@ -447,6 +470,18 @@ namespace cuda {
 
       cuda_ctx->stream = stream.get();
 
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      if (rtx_hdr_active) {
+        try {
+          truehdr = std::make_unique<platf::linux_truehdr::gl_converter_t>(gl::ctx, *cdf, stream.get(), SUNSHINE_TRUEHDR_RUNTIME_DIR, width, height);
+          foreground = std::make_unique<platf::rtx_hdr::foreground_t>();
+        } catch (const std::exception &exception) {
+          BOOST_LOG(error) << exception.what();
+          return -1;
+        }
+      }
+#endif
+
       CU_CHECK(cdf->cuGraphicsGLRegisterImage(&y_res, nv12->tex[0], GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY), "Couldn't register Y plane texture");
       CU_CHECK(cdf->cuGraphicsGLRegisterImage(&uv_res, nv12->tex[1], GL_TEXTURE_2D, CU_GRAPHICS_REGISTER_FLAGS_READ_ONLY), "Couldn't register UV plane texture");
 
@@ -489,6 +524,18 @@ namespace cuda {
       // Perform the color conversion and scaling in GL
       sws.load_vram(descriptor, offset_x, offset_y, rgb->tex[0]);
       sws.apply_output_lut(descriptor.crtc_gamma_lut, descriptor.crtc_gamma_lut_serial);
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      if (truehdr) {
+        try {
+          const auto settings = platf::rtx_hdr::frame_settings();
+          sws.loaded_texture = truehdr->convert(sws.loaded_texture, sws.output_lut[0], settings->enabled && foreground->matches(), settings->sdr_brightness, settings->values);
+          sws.apply_output_lut({}, 0);
+        } catch (const std::exception &exception) {
+          BOOST_LOG(error) << exception.what();
+          return -1;
+        }
+      }
+#endif
       if (sws.convert(nv12->buf)) {
         return -1;
       }
@@ -550,13 +597,28 @@ namespace cuda {
     registered_resource_t uv_res;
     CUcontext cuda_context {};
 
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+    std::unique_ptr<platf::linux_truehdr::gl_converter_t> truehdr;
+    std::unique_ptr<platf::rtx_hdr::foreground_t> foreground;
+#endif
+
     int offset_x;
     int offset_y;
   };
 
   class gl_cuda_nvenc_t: public platf::nvenc_encode_device_t {
   public:
+    bool supports_rtx_hdr() const override {
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      return true;
+#else
+      return false;
+#endif
+    }
     ~gl_cuda_nvenc_t() override {
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      foreground.reset();
+#endif
       const auto owned_gl_context = std::get<1>(ctx.el);
       const bool owns_gl_context = eglGetCurrentContext &&
                                    owned_gl_context != EGL_NO_CONTEXT &&
@@ -568,6 +630,16 @@ namespace cuda {
         // primary context and conversion stream disappear.
         nvenc = nullptr;
         native_encoder.reset();
+
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+        if (truehdr) {
+          if (!guard) (void) truehdr.release();
+          else {
+            if (!owns_gl_context) truehdr->abandon_gl();
+            truehdr.reset();
+          }
+        }
+#endif
 
         if (owns_gl_context && guard) {
           y_res.reset();
@@ -685,6 +757,18 @@ namespace cuda {
       }
       native_encoder->enable_io_streams();
 
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      if (rtx_hdr_active) {
+        try {
+          truehdr = std::make_unique<platf::linux_truehdr::gl_converter_t>(gl::ctx, *cdf, stream, SUNSHINE_TRUEHDR_RUNTIME_DIR, width, height);
+          foreground = std::make_unique<platf::rtx_hdr::foreground_t>();
+        } catch (const std::exception &exception) {
+          BOOST_LOG(error) << exception.what();
+          return false;
+        }
+      }
+#endif
+
       auto target = egl::create_target(client_config.width, client_config.height, sw_format);
       if (!target) {
         return false;
@@ -757,6 +841,18 @@ namespace cuda {
 
       sws.load_vram(descriptor, offset_x, offset_y, rgb->tex[0]);
       sws.apply_output_lut(descriptor.crtc_gamma_lut, descriptor.crtc_gamma_lut_serial);
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+      if (truehdr) {
+        try {
+          const auto settings = platf::rtx_hdr::frame_settings();
+          sws.loaded_texture = truehdr->convert(sws.loaded_texture, sws.output_lut[0], settings->enabled && foreground->matches(), settings->sdr_brightness, settings->values);
+          sws.apply_output_lut({}, 0);
+        } catch (const std::exception &exception) {
+          BOOST_LOG(error) << exception.what();
+          return -1;
+        }
+      }
+#endif
       if (sws.convert(nv12->buf)) {
         return -1;
       }
@@ -830,6 +926,10 @@ namespace cuda {
     registered_resource_t uv_res;
 
     std::unique_ptr<nvenc::nvenc_cuda> native_encoder;
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
+    std::unique_ptr<platf::linux_truehdr::gl_converter_t> truehdr;
+    std::unique_ptr<platf::rtx_hdr::foreground_t> foreground;
+#endif
   };
 
   class synthetic_cuda_display_t final: public platf::display_t {

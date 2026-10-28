@@ -3,6 +3,7 @@
  * @brief Definitions for the configuration of Sunshine.
  */
 // standard includes
+#include "managed_app_focus.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -33,8 +34,10 @@
 #include <nlohmann/json.hpp>
 
 // local includes
+#include "amf/amf_config_policy.h"
 #include "amf/amf_lifecycle.h"
 #include "config.h"
+#include "control_peer_timeout.h"
 #include "virtual_display_scale.h"
 #include "config_key.h"
 #include "config_playnite.h"
@@ -51,6 +54,7 @@
 #include "nvhttp.h"
 #include "platform/common.h"
 #include "process.h"
+#include "process_catalog.h"
 #include "rtsp.h"
 #include "session_history.h"
 #include "state_storage.h"
@@ -62,6 +66,7 @@
 
 #ifdef __linux__
   #include "platform/linux/private_display.h"
+  #include "platform/linux/rtx_hdr_runtime.h"
 #endif
 
 #ifdef _WIN32
@@ -110,6 +115,7 @@ namespace VDISPLAY {
 
 namespace config {
   namespace {
+    void update_base_session_input_config_snapshot(const std::unordered_map<std::string, std::string> &vars);
     void update_base_adapter_config_snapshot(
       const std::unordered_map<std::string, std::string> &vars
     );
@@ -877,9 +883,9 @@ namespace config {
       (int) amd::rc_av1_e::vbr_latency,  // rate control (av1)
       std::nullopt,  // qvbr_quality_level (0/unset = encoder default)
       0,  // enforce_hrd
-      (int) amd::quality_h264_e::balanced,  // quality (h264)
-      (int) amd::quality_hevc_e::balanced,  // quality (hevc)
-      (int) amd::quality_av1_e::balanced,  // quality (av1)
+      (int) amd::quality_h264_e::speed,  // quality (h264)
+      (int) amd::quality_hevc_e::speed,  // quality (hevc)
+      (int) amd::quality_av1_e::speed,  // quality (av1)
       0,  // preanalysis
       1,  // vbaq
       (int) amd::coder_e::_auto,  // coder
@@ -890,6 +896,7 @@ namespace config {
       std::nullopt,  // high_motion_quality_boost (auto)
       std::nullopt,  // av1_screen_content (auto)
       std::nullopt,  // av1_latency_mode (auto)
+      0,  // av1_tiles (preserve client/preset behavior)
     },  // amd
 
     {
@@ -927,6 +934,7 @@ namespace config {
     video_t::virtual_display_mode_e::per_client,  // virtual_display_mode
     video_t::virtual_display_layout_e::exclusive,  // virtual_display_layout
 
+    4,  // virtual_display_max_clients
     false,  // remote_monitor_mute_audio
     false,  // remote_monitor_disconnect_on_stream_end
     false,  // remote_monitor_disconnect_on_client_disconnect
@@ -942,6 +950,7 @@ namespace config {
       video_t::dd_t::hdr_option_e::automatic,  // hdr_option
       video_t::dd_t::hdr_request_override_e::automatic,  // hdr_request_override
       3s,  // config_revert_delay
+      false,  // remove_virtual_display_after_restore (retain stable identities by default)
       {},  // config_revert_on_disconnect
       7200,  // paused_virtual_display_timeout_secs (2 hours)
       true,  // always_restore_from_golden (uses session fallback until a golden snapshot exists)
@@ -952,6 +961,8 @@ namespace config {
 #else
       0,  // snapshot_restore_hotkey_modifiers
 #endif
+      0,  // end_stream_hotkey (disabled by default)
+      0x7,  // end_stream_hotkey_modifiers (ctrl+alt+shift)
       true,  // use_sunshine_virtual_display_driver
       false,  // activate_virtual_display
       0,  // virtual_display_scale_percent
@@ -970,6 +981,7 @@ namespace config {
     true,  // wgc_pacing_smoothing
     "1920x1080x60",  // fallback_mode
     false,  // ignore_encoder_probe_failure
+    true  // wgc_direct_encoder_input
   };
 
   audio_t audio {
@@ -990,6 +1002,7 @@ namespace config {
 
     20,  // fecPercentage
     64,  // video_max_batch_size_kb
+    false,  // pacing_batch_demand_limit (experimental per-call demand-based sizing; default off)
     20,  // pyrowave_critical_fec_percentage
 
     ENCRYPTION_MODE_NEVER,  // lan_encryption_mode
@@ -1017,6 +1030,8 @@ namespace config {
       {0x11, 0xA2},
       {0x12, 0xA4},
     },
+    0,  // guide_button_key (disabled)
+    0,  // guide_button_controller (first controller of the sending client)
     -1ms,  // back_button_timeout
     500ms,  // key_repeat_delay
     std::chrono::duration<double> {1 / 24.9},  // key_repeat_period
@@ -1034,6 +1049,7 @@ namespace config {
     true,  // client gamepads with touchpads are emulated as DS4
     true,  // ds5_inputtino_randomize_mac
     true,  // proton_dualsense_compatibility
+    1.0,  // dualsense_haptics_gain
 
     true,  // keyboard enabled
     true,  // mouse enabled
@@ -1103,7 +1119,7 @@ namespace config {
     "ipv4",  // Address family
     {},  // Bind address
     (platf::appdata() / default_log_filename).string(),  // log file
-    false,  // notify_pre_releases
+    true,  // notify_pre_releases
     false,  // legacy_ordering
     true,  // system_tray
     {},  // prep commands
@@ -1118,6 +1134,12 @@ namespace config {
   };
 
   namespace {
+    // Only completed applies publish this setting; the control thread never
+    // reads the mutable/reset-in-progress configuration objects.
+    std::atomic<std::uint32_t> g_control_peer_timeout_ms {0};
+
+    hardware_metrics_config_t g_hardware_metrics_config;
+
     const video_t default_video = video;
     const audio_t default_audio = audio;
     const stream_t default_stream = stream;
@@ -1152,6 +1174,14 @@ namespace config {
       sunshine.cmd = preserved_cmd;
     }
   }  // namespace
+
+  std::chrono::milliseconds get_control_peer_timeout() {
+    return std::chrono::milliseconds {g_control_peer_timeout_ms.load(std::memory_order_acquire)};
+  }
+
+  hardware_metrics_settings_t get_hardware_metrics_settings() {
+    return g_hardware_metrics_config.snapshot();
+  }
 
   bool endline(char ch) {
     return ch == '\r' || ch == '\n';
@@ -1722,6 +1752,7 @@ namespace config {
 
   void apply_config(std::unordered_map<std::string, std::string> &&vars) {
     reset_runtime_config_to_defaults();
+    std::chrono::milliseconds control_peer_timeout {0};
 #ifndef __ANDROID__
     // TODO: Android can possibly support this
     if (!fs::exists(stream.file_apps.c_str())) {
@@ -1864,6 +1895,11 @@ namespace config {
     int_f(vars, "amd_high_motion_quality_boost", video.amd.amd_high_motion_quality_boost, amd::tristate_from_view);
     int_f(vars, "amd_av1_screen_content", video.amd.amd_av1_screen_content, amd::tristate_from_view);
     int_f(vars, "amd_av1_latency_mode", video.amd.amd_av1_latency_mode, amd::av1_latency_from_view);
+    int_f(vars, "amd_av1_tiles", video.amd.amd_av1_tiles);
+    if (!amf::config_policy::valid_av1_tiles_override(video.amd.amd_av1_tiles)) {
+      BOOST_LOG(warning) << "config: amd_av1_tiles must be 0, 1, 2 or 4; using auto instead of "sv << video.amd.amd_av1_tiles;
+      video.amd.amd_av1_tiles = 0;
+    }
 
     int_f(vars, "vt_coder", video.vt.vt_coder, vt::coder_from_view);
     int_f(vars, "vt_software", video.vt.vt_allow_sw, vt::allow_software_from_view);
@@ -1885,6 +1921,7 @@ namespace config {
 
     string_f(vars, "capture", video.capture);
     bool_f(vars, "wgc_pacing_smoothing", video.wgc_pacing_smoothing);
+    bool_f(vars, "wgc_direct_encoder_input", video.wgc_direct_encoder_input);
     string_f(vars, "encoder", video.encoder);
     const auto configured_encoder = video.encoder;
     video.encoder = std::string(nvenc::canonical_encoder_name(video.encoder));
@@ -1924,6 +1961,7 @@ namespace config {
     }
 #endif
     generic_f(vars, "virtual_display_layout", video.virtual_display_layout, virtual_display_layout_from_view);
+    int_between_f(vars, "virtual_display_max_clients", video.virtual_display_max_clients, {1, 8});
     bool_f(vars, "remote_monitor_mute_audio", video.remote_monitor_mute_audio);
     bool_f(vars, "remote_monitor_disconnect_on_stream_end", video.remote_monitor_disconnect_on_stream_end);
     bool_f(vars, "remote_monitor_disconnect_on_client_disconnect", video.remote_monitor_disconnect_on_client_disconnect);
@@ -1944,6 +1982,7 @@ namespace config {
         video.dd.config_revert_delay = std::chrono::milliseconds {value};
       }
     }
+    bool_f(vars, "dd_remove_virtual_display_after_restore", video.dd.remove_virtual_display_after_restore);
     bool_f(vars, "dd_config_revert_on_disconnect", video.dd.config_revert_on_disconnect);
     {
       int value = 0;
@@ -1991,6 +2030,14 @@ namespace config {
       auto it = vars.find("dd_snapshot_restore_hotkey_modifiers");
       if (it != std::end(vars)) {
         video.dd.snapshot_restore_hotkey_modifiers = dd::snapshot_restore_hotkey_modifiers_from_view(it->second);
+        vars.erase(it);
+      }
+    }
+    generic_f(vars, "end_stream_hotkey", video.dd.end_stream_hotkey, dd::snapshot_restore_hotkey_from_view);
+    {
+      auto it = vars.find("end_stream_hotkey_modifiers");
+      if (it != std::end(vars)) {
+        video.dd.end_stream_hotkey_modifiers = dd::snapshot_restore_hotkey_modifiers_from_view(it->second);
         vars.erase(it);
       }
     }
@@ -2146,6 +2193,17 @@ namespace config {
       stream.ping_timeout = std::chrono::milliseconds(to);
     }
 
+    // Parse locally so reset/parse cannot expose a transient policy to CONNECT.
+    // Each completed apply uses default 0 for invalid or missing values.
+    generic_f(vars, "control_peer_timeout", control_peer_timeout, [&](std::string_view value) {
+      const auto timeout = parse_control_peer_timeout(value);
+      if (!timeout) {
+        BOOST_LOG(warning) << "Invalid control_peer_timeout: expected decimal milliseconds from 0 to "sv
+                           << max_control_peer_timeout.count();
+      }
+      return timeout.value_or(control_peer_timeout);
+    });
+
     int_between_f(vars, "lan_encryption_mode", stream.lan_encryption_mode, {0, 2});
     int_between_f(vars, "wan_encryption_mode", stream.wan_encryption_mode, {0, 2});
 
@@ -2168,6 +2226,7 @@ namespace config {
     vars.erase("pyrowave_send_rate_mbps");
     int_between_f(vars, "pyrowave_critical_fec_percentage", stream.pyrowave_critical_fec_percentage, {0, 255});
     int_between_f(vars, "video_max_batch_size_kb", stream.video_max_batch_size_kb, {0, 64});
+    bool_f(vars, "pacing_batch_demand_limit", stream.pacing_batch_demand_limit);
     if (stream.video_max_batch_size_kb == 0) {
       stream.video_max_batch_size_kb = 64;
     } else if (stream.video_max_batch_size_kb != 16 && stream.video_max_batch_size_kb != 32 && stream.video_max_batch_size_kb != 64) {
@@ -2176,6 +2235,8 @@ namespace config {
     }
 
     map_int_int_f(vars, "keybindings"s, input.keybindings);
+    int_between_f(vars, "guide_button_key", input.guide_button_key, {0, 255});
+    int_between_f(vars, "guide_button_controller", input.guide_button_controller, {0, 15});
 
     // This config option will only be used by the UI
     // When editing in the config file itself, use "keybindings"
@@ -2210,6 +2271,7 @@ namespace config {
     bool_f(vars, "ds4_back_as_touchpad_click", input.ds4_back_as_touchpad_click);
     bool_f(vars, "motion_as_ds4", input.motion_as_ds4);
     bool_f(vars, "proton_dualsense_compatibility", input.proton_dualsense_compatibility);
+    double_between_f(vars, "dualsense_haptics_gain", input.dualsense_haptics_gain, {0.0, 4.0});
     bool_f(vars, "touchpad_as_ds4", input.touchpad_as_ds4);
 
     bool_f(vars, "mouse", input.mouse);
@@ -2299,6 +2361,7 @@ namespace config {
 
     // Provider settings are cross-platform. Playnite remains Windows-only,
     // while Steam's parser enforces the Linux Steam-only policy.
+    managed_app_focus::settings = managed_app_focus::parse_policy(vars);
     config::apply_steam(vars);
 #ifdef __linux__
     config::apply_lutris(vars);
@@ -2350,6 +2413,8 @@ namespace config {
       }
     }
 
+    bool_f(vars, "hardware_metrics", sunshine.hardware_metrics);
+    int_between_f(vars, "hardware_metrics_interval", sunshine.hardware_metrics_interval, {500, 10000});
     bool_f(vars, "realtime_stats_enabled", sunshine.realtime_stats_enabled);
     int_between_f(vars, "realtime_stats_poll_interval_ms", sunshine.realtime_stats_poll_interval_ms, {250, 60000});
 
@@ -2368,6 +2433,10 @@ namespace config {
     }
 
 #ifdef _WIN32
+    platf::hotkey::update_end_stream_hotkey(
+      video.dd.end_stream_hotkey,
+      video.dd.end_stream_hotkey_modifiers
+    );
     platf::hotkey::update_restore_hotkey(
       video.dd.snapshot_restore_hotkey,
       video.dd.snapshot_restore_hotkey_modifiers
@@ -2380,6 +2449,16 @@ namespace config {
       }
     }
 
+    // Publish the completed timeout after configuration parsing and side effects succeed.
+    // A pending CONNECT can keep using the last completed policy during apply.
+    g_control_peer_timeout_ms.store(static_cast<std::uint32_t>(control_peer_timeout.count()), std::memory_order_release);
+
+    // Publish only after parsing and apply_config side effects succeed. Reset
+    // and failed applies leave the preceding completed settings visible.
+    g_hardware_metrics_config.publish({sunshine.hardware_metrics, sunshine.hardware_metrics_interval});
+#ifdef __linux__
+    platf::rtx_hdr::notify_live_settings_changed();
+#endif
   }
 
   int parse(int argc, char *argv[]) {
@@ -2460,6 +2539,7 @@ namespace config {
 
       merge_config_overrides(vars, cmd_vars);
       update_base_adapter_config_snapshot(vars);
+      update_base_session_input_config_snapshot(vars);
 
       // Apply the config. Note: This will try to create any paths
       // referenced in the config, so we may receive exceptions if
@@ -2470,6 +2550,9 @@ namespace config {
       // Persist snapshot exclusion devices to vibeshine_state.json on startup so the display
       // helper can read them directly without depending on IPC from Sunshine.
       statefile::save_snapshot_exclude_devices(video.dd.snapshot_exclude_devices);
+      // Persist the resolved config (including custom files and command-line overrides)
+      // so recovery at next logon does not require a live host/IPC connection.
+      statefile::save_display_restore_preference(video.dd.always_restore_from_golden);
     } catch (const std::filesystem::filesystem_error &err) {
       BOOST_LOG(fatal) << "Failed to apply config: "sv << err.what();
     } catch (const boost::filesystem::filesystem_error &err) {
@@ -2559,6 +2642,19 @@ namespace config {
     // across hot-apply and deferred reloads while an app is running.
     std::mutex g_runtime_overrides_mutex;
     std::unordered_map<std::string, std::string> g_runtime_config_overrides;
+
+    std::mutex g_session_input_config_mutex;
+    std::unordered_map<std::string, std::string> g_base_guide_button_vars;
+
+    void update_base_session_input_config_snapshot(const std::unordered_map<std::string, std::string> &vars) {
+      std::lock_guard<std::mutex> lock(g_session_input_config_mutex);
+      g_base_guide_button_vars.clear();
+      for (const auto key : {"guide_button_key", "guide_button_controller"}) {
+        if (const auto it = vars.find(key); it != vars.end()) {
+          g_base_guide_button_vars.emplace(*it);
+        }
+      }
+    }
 
     struct adapter_config_pair_t {
       std::string name;
@@ -2652,6 +2748,8 @@ namespace config {
         "motion_as_ds4",
         "touchpad_as_ds4",
         "back_button_timeout",
+        "guide_button_key",
+        "guide_button_controller",
         "keyboard",
         "key_repeat_delay",
         "key_repeat_frequency",
@@ -2663,6 +2761,7 @@ namespace config {
         "keybindings",
         "ds5_inputtino_randomize_mac",
         "proton_dualsense_compatibility",
+        "dualsense_haptics_gain",
 
         // Stream audio/video and display automation
         "audio_sink",
@@ -2700,6 +2799,7 @@ namespace config {
         // Codec / capture negotiation
         "fec_percentage",
         "video_max_batch_size_kb",
+        "pacing_batch_demand_limit",
         "pyrowave_critical_fec_percentage",
         "qp",
         "min_threads",
@@ -3035,6 +3135,10 @@ namespace config {
     return std::shared_lock<std::shared_mutex>(g_apply_gate);
   }
 
+  std::shared_mutex &apply_gate_mutex() {
+    return g_apply_gate;
+  }
+
   void record_active_adapter_config() {
     // Session start/resume calls this while holding acquire_apply_read_gate(),
     // so video's two strings are copied from one effective config generation.
@@ -3086,6 +3190,28 @@ namespace config {
     }
 
     base.insert_or_assign(std::string(adapter_pnp_id_key), adapter_pnp_id->second);
+  }
+
+  ::input::guide_button_config_t guide_button_config_for_session(
+    const std::unordered_map<std::string, std::string> &app_overrides,
+    const std::unordered_map<std::string, std::string> &client_overrides
+  ) {
+    std::unordered_map<std::string, std::string> vars;
+    {
+      std::lock_guard<std::mutex> lock(g_session_input_config_mutex);
+      vars = g_base_guide_button_vars;
+    }
+    for (const auto *layer : {&app_overrides, &client_overrides}) {
+      for (const auto key : {"guide_button_key", "guide_button_controller"}) {
+        if (const auto it = layer->find(key); it != layer->end()) {
+          vars.insert_or_assign(it->first, it->second);
+        }
+      }
+    }
+    ::input::guide_button_config_t result;
+    int_between_f(vars, "guide_button_key", result.key, {0, 255});
+    int_between_f(vars, "guide_button_controller", result.controller, {0, 15});
+    return result;
   }
 
   bool adapter_config_overrides_compatible_with_active(
@@ -3185,10 +3311,11 @@ namespace config {
     return video.output_name;
   }
 
-  void apply_config_now() {
+  void apply_config_now(const display_transition::before_mutation_f &before_display_mutation) {
     // Ensure only one apply runs at a time and block session start/resume while applying.
     std::unique_lock<std::shared_mutex> write_gate(g_apply_gate);
     std::unique_lock<std::mutex> apply_once(g_apply_mutex);
+    proc::catalog::config_apply_scope apply_scope;
     try {
       // Capture previous DD configuration state to detect any changes
       const auto prev_dd_config_opt = video.dd.configuration_option;
@@ -3224,6 +3351,7 @@ namespace config {
       auto vars = parse_config(file_handler::read_file(sunshine.config_file.c_str()));
       merge_config_overrides(vars, command_line_overrides);
       update_base_adapter_config_snapshot(vars);
+      update_base_session_input_config_snapshot(vars);
 
       // Apply runtime overrides (per-app) on top of file values so hot-apply and deferred reloads
       // keep the effective config consistent while an app is running.
@@ -3233,78 +3361,91 @@ namespace config {
       const int old_min_level = sunshine.min_log_level;
       const std::string old_log_file = sunshine.log_file;
 
-      apply_config(std::move(vars));
-      if (sunshine.session_history_enabled != prev_session_history_enabled && has_active_stream_sessions()) {
-        BOOST_LOG(info) << "Hot-apply: deferring session history enablement change until active sessions end.";
-        sunshine.session_history_enabled = prev_session_history_enabled;
-        g_deferred_reload.store(true, std::memory_order_release);
-      }
-      if (sunshine.realtime_stats_enabled != prev_realtime_stats_enabled ||
-          sunshine.realtime_stats_poll_interval_ms != prev_realtime_stats_poll_interval_ms) {
-        host_stats::configuration_changed();
-      }
-      session_history::reload_settings();
+      auto install_effective_configuration = [&] {
+        apply_config(std::move(vars));
+        if (sunshine.session_history_enabled != prev_session_history_enabled && has_active_stream_sessions()) {
+          BOOST_LOG(info) << "Hot-apply: deferring session history enablement change until active sessions end.";
+          sunshine.session_history_enabled = prev_session_history_enabled;
+          g_deferred_reload.store(true, std::memory_order_release);
+        }
+        if (sunshine.realtime_stats_enabled != prev_realtime_stats_enabled || sunshine.realtime_stats_poll_interval_ms != prev_realtime_stats_poll_interval_ms) {
+          host_stats::configuration_changed();
+        }
+        session_history::reload_settings();
 
-      // If only the log level changed, we can reconfigure sinks in place.
-      if (sunshine.min_log_level != old_min_level && sunshine.log_file == old_log_file) {
-        logging::reconfigure_min_log_level(sunshine.min_log_level);
-      }
+        // If only the log level changed, we can reconfigure sinks in place.
+        if (sunshine.min_log_level != old_min_level && sunshine.log_file == old_log_file) {
+          logging::reconfigure_min_log_level(sunshine.min_log_level);
+        }
 
 #ifdef _WIN32
-      const bool rtx_hdr_live_changed =
-        prev_rtx_hdr_enabled != video.rtx_hdr.enabled ||
-        prev_rtx_hdr_sdr_brightness != video.rtx_hdr.sdr_brightness ||
-        prev_rtx_hdr_contrast != video.rtx_hdr.contrast ||
-        prev_rtx_hdr_saturation != video.rtx_hdr.saturation ||
-        prev_rtx_hdr_middle_gray != video.rtx_hdr.middle_gray ||
-        prev_rtx_hdr_peak_brightness != video.rtx_hdr.peak_brightness;
-      if (rtx_hdr_live_changed) {
-        platf::rtx_hdr::notify_live_settings_changed();
-      }
+        const bool rtx_hdr_live_changed =
+          prev_rtx_hdr_enabled != video.rtx_hdr.enabled ||
+          prev_rtx_hdr_sdr_brightness != video.rtx_hdr.sdr_brightness ||
+          prev_rtx_hdr_contrast != video.rtx_hdr.contrast ||
+          prev_rtx_hdr_saturation != video.rtx_hdr.saturation ||
+          prev_rtx_hdr_middle_gray != video.rtx_hdr.middle_gray ||
+          prev_rtx_hdr_peak_brightness != video.rtx_hdr.peak_brightness;
+        if (rtx_hdr_live_changed) {
+          platf::rtx_hdr::notify_live_settings_changed();
+        }
 #endif
 
-      // Persist snapshot exclusion devices to vibeshine_state.json so the display helper
-      // can read them directly without depending on IPC from Sunshine.
-      // This is done unconditionally to ensure the state file is always up-to-date.
-      statefile::save_snapshot_exclude_devices(video.dd.snapshot_exclude_devices);
+        // Persist snapshot exclusion devices to vibeshine_state.json so the display helper
+        // can read them directly without depending on IPC from Sunshine.
+        // This is done unconditionally to ensure the state file is always up-to-date.
+        statefile::save_snapshot_exclude_devices(video.dd.snapshot_exclude_devices);
+        // Persist the resolved config (including custom files and command-line overrides)
+        // so recovery at next logon does not require a live host/IPC connection.
+        statefile::save_display_restore_preference(video.dd.always_restore_from_golden);
 
-      // Check if any DD configuration changed and handle hot-apply when no active sessions
-      using dd_cfg_e = config::video_t::dd_t::config_option_e;
-      const bool dd_disabled_now = (video.dd.configuration_option == dd_cfg_e::disabled);
-      const bool dd_was_enabled = (prev_dd_config_opt != dd_cfg_e::disabled);
+        // Check if any DD configuration changed and handle hot-apply when no active sessions
+        using dd_cfg_e = config::video_t::dd_t::config_option_e;
+        const bool dd_disabled_now = (video.dd.configuration_option == dd_cfg_e::disabled);
+        const bool dd_was_enabled = (prev_dd_config_opt != dd_cfg_e::disabled);
 
-      // Detect if any DD settings changed
-      const bool dd_config_changed = (prev_dd_config_opt != video.dd.configuration_option) ||
-                                     (prev_dd_resolution_opt != video.dd.resolution_option) ||
-                                     (prev_dd_refresh_rate_opt != video.dd.refresh_rate_option) ||
-                                     (prev_dd_hdr_opt != video.dd.hdr_option) ||
-                                     (prev_dd_hdr_req_override != video.dd.hdr_request_override) ||
-                                     (prev_dd_manual_resolution != video.dd.manual_resolution) ||
-                                     (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
-                                     (prev_dd_revert_delay != video.dd.config_revert_delay) ||
-                                     (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
-                                     (prev_dd_paused_virtual_display_timeout_secs != video.dd.paused_virtual_display_timeout_secs) ||
-                                     (prev_dd_use_sunshine_virtual_display_driver != video.dd.use_sunshine_virtual_display_driver) ||
-                                     (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
-                                     (prev_dd_virtual_display_scale_percent != video.dd.virtual_display_scale_percent) ||
-                                     (prev_dd_virtual_display_permanent_count != video.dd.virtual_display_permanent_count) ||
-                                     (prev_dd_virtual_display_permanent_count_configured != video.dd.virtual_display_permanent_count_configured) ||
-                                     (prev_virtual_display_outputs != video.dd.virtual_display_outputs) ||
-                                     (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
-                                     (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10);
-
-      // If any DD settings changed and there are no active sessions, revert to clear cached state
-      if (dd_config_changed && !has_active_stream_sessions() && runtime_overrides.empty()) {
+        // Detect if any DD settings changed
+        const bool dd_config_changed = (prev_dd_config_opt != video.dd.configuration_option) ||
+                                       (prev_dd_resolution_opt != video.dd.resolution_option) ||
+                                       (prev_dd_refresh_rate_opt != video.dd.refresh_rate_option) ||
+                                       (prev_dd_hdr_opt != video.dd.hdr_option) ||
+                                       (prev_dd_hdr_req_override != video.dd.hdr_request_override) ||
+                                       (prev_dd_manual_resolution != video.dd.manual_resolution) ||
+                                       (prev_dd_manual_refresh_rate != video.dd.manual_refresh_rate) ||
+                                       (prev_dd_revert_delay != video.dd.config_revert_delay) ||
+                                       (prev_dd_revert_on_disconnect != video.dd.config_revert_on_disconnect) ||
+                                       (prev_dd_paused_virtual_display_timeout_secs != video.dd.paused_virtual_display_timeout_secs) ||
+                                       (prev_dd_use_sunshine_virtual_display_driver != video.dd.use_sunshine_virtual_display_driver) ||
+                                       (prev_dd_activate_virtual_display != video.dd.activate_virtual_display) ||
+                                       (prev_dd_virtual_display_scale_percent != video.dd.virtual_display_scale_percent) ||
+                                       (prev_dd_virtual_display_permanent_count != video.dd.virtual_display_permanent_count) ||
+                                       (prev_dd_virtual_display_permanent_count_configured != video.dd.virtual_display_permanent_count_configured) ||
+                                       (prev_virtual_display_outputs != video.dd.virtual_display_outputs) ||
+                                       (prev_dd_snapshot_exclude_devices != video.dd.snapshot_exclude_devices) ||
+                                       (prev_dd_dummy_plug != video.dd.wa.dummy_plug_hdr10);
+        return display_transition::state_t {dd_config_changed, runtime_overrides.empty(), dd_was_enabled, dd_disabled_now};
+      };
+      auto revert_after_configuration = [&](const display_transition::state_t &state) {
         stream::session::cleanup_reservation_t cleanup_reservation;
         BOOST_LOG(info) << "Hot-apply: DD configuration changed with no active sessions; reverting cached display state.";
+#ifdef _WIN32
+        display_helper_integration::revert(true, false, state.allow_disabled_recovery());
+#else
         display_helper_integration::revert();
+#endif
 
-        if (dd_was_enabled && dd_disabled_now) {
+        if (state.allow_disabled_recovery()) {
           BOOST_LOG(info) << "Hot-apply: DD configuration changed to disabled.";
-        } else if (!dd_disabled_now) {
+        } else if (!state.dd_disabled_now) {
           BOOST_LOG(info) << "Hot-apply: DD configuration updated. New settings will take effect on next stream.";
         }
-      }
+      };
+      display_transition::apply(
+        install_effective_configuration,
+        [] { return has_active_stream_sessions(); },
+        before_display_mutation,
+        revert_after_configuration
+      );
     } catch (const std::exception &e) {
       BOOST_LOG(warning) << "Hot apply_config_now failed: "sv << e.what();
     }

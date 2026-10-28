@@ -8,6 +8,7 @@ param(
     [switch]$Build,
     [switch]$ValidateOnly,
     [string]$BuildDir,
+    [string]$VulkanLayerX86BuildDir,
     [string]$PrebuiltPackageDir,
     [string]$PackageVersion,
     [string]$DriverVerDate,
@@ -218,6 +219,14 @@ function Resolve-PackageVersionFromPrebuiltRoot {
         return ''
     }
 
+    # Reviewed metadata supplies the actual component version even when the
+    # caller chooses a cache directory whose name does not carry the release.
+    $metadataPath = Join-Path $Path 'consumer-release-lock.json'
+    if (Test-Path -LiteralPath $metadataPath -PathType Leaf) {
+        $metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+        if ($metadata.driver_ver -match '^\d{2}/\d{2}/\d{4},(\d+\.\d+\.\d+\.\d+)$') { return $Matches[1] }
+        throw '[SunshineVirtualDisplay] Reviewed producer metadata has no valid component version.'
+    }
     $current = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
     while ($current) {
         if ($current.Name -match '^libvirtualdisplay-([0-9]+\.[0-9]+\.[0-9]+(?:\.[0-9]+)?)-windows-[^-]+$') {
@@ -498,6 +507,15 @@ $packageRoot = Resolve-RequiredPath -Path $PackageDir
 $driverSourceInf = Join-Path $libRoot 'src\driver\windows_driver\SunshineVirtualDisplayDriver.inf'
 Resolve-RequiredPath -Path $driverSourceInf -Leaf | Out-Null
 $prebuiltPackageRoot = Resolve-PrebuiltPackageRoot -Path $PrebuiltPackageDir
+if ($prebuiltPackageRoot) {
+    # Validate before copying catalog-bound bytes or building the separate x86 layer.
+    # A release tag/folder name alone is not provenance or an OS trust approval.
+    $producerLockPath = Join-Path $PSScriptRoot '../../../third-party/libvirtualdisplay-release/windows-x64.json'
+    $producerLock = Get-Content -LiteralPath $producerLockPath -Raw | ConvertFrom-Json
+    $producerVerifier = Join-Path $PSScriptRoot '../../../scripts/download_libvirtualdisplay_release.ps1'
+    & $producerVerifier -Repository $producerLock.repository -Tag $producerLock.tag -OutDir $prebuiltPackageRoot -LockPath $producerLockPath -ValidateOnly
+    if ($LASTEXITCODE -ne 0) { throw '[SunshineVirtualDisplay] Reviewed producer verification failed.' }
+}
 $resolvedPackageVersion = Resolve-PackageVersion -LibRoot $libRoot -PrebuiltRoot $prebuiltPackageRoot -ExistingInfPath (Join-Path $packageRoot 'SunshineVirtualDisplayDriver.inf') -AdvanceLocalDirtyVersion:$Build
 $resolvedDriverVersion = ConvertTo-DriverVerVersion -Version $resolvedPackageVersion
 $resolvedDriverDate = Resolve-DriverVerDateFromGit -Path $libRoot
@@ -521,6 +539,11 @@ $driverBuildInf = Join-Path $driverBuildDir 'SunshineVirtualDisplayDriver.inf'
 $probeBuildExe = Join-Path $BuildDir 'src\driver\virtualdisplay_probe.exe'
 $vulkanLayerBuildDll = Join-Path $BuildDir 'src\driver\VkLayer_sunshine_hdr.dll'
 $vulkanLayerBuildJson = Join-Path $BuildDir 'src\driver\VkLayer_sunshine_hdr.json'
+if (-not $VulkanLayerX86BuildDir) {
+    $VulkanLayerX86BuildDir = "$BuildDir-vulkan-x86"
+}
+$vulkanLayerX86BuildDll = Join-Path $VulkanLayerX86BuildDir 'VkLayer_sunshine_hdr_x86.dll'
+$vulkanLayerX86BuildJson = Join-Path $VulkanLayerX86BuildDir 'VkLayer_sunshine_hdr_x86.json'
 
 $driverPackageDir = @(Get-ChildItem -LiteralPath $driverBuildDir -Recurse -Directory -Filter 'driver-package' -ErrorAction SilentlyContinue |
     Sort-Object -Property FullName |
@@ -544,6 +567,8 @@ $packageInstaller = Join-Path $packageRoot 'install.ps1'
 $packageVulkanLayerDir = Join-Path $packageRoot 'vulkan-layer'
 $packageVulkanLayerDll = Join-Path $packageVulkanLayerDir 'VkLayer_sunshine_hdr.dll'
 $packageVulkanLayerJson = Join-Path $packageVulkanLayerDir 'VkLayer_sunshine_hdr.json'
+$packageVulkanLayerX86Dll = Join-Path $packageVulkanLayerDir 'VkLayer_sunshine_hdr_x86.dll'
+$packageVulkanLayerX86Json = Join-Path $packageVulkanLayerDir 'VkLayer_sunshine_hdr_x86.json'
 $expectedPackageDll = ''
 $expectedPackageInf = ''
 $expectedPackageCat = ''
@@ -634,6 +659,26 @@ if ($Build) {
     }
 }
 
+# The pinned producer release contains the signed x64 driver and x64 layer.
+# Build the additional WOW64 layer from the exact checked-out source on every
+# refresh. This is independent of driver signing and cannot silently fall back
+# to an x64 DLL or an old cached x86 payload.
+if ($Build) {
+    $vsDevCmd = Resolve-VsDevCmd
+    $cmake = Resolve-Tool -Name 'cmake.exe'
+    $ninja = Resolve-Tool -Name 'ninja.exe'
+    $layerSourceDir = Join-Path $PSScriptRoot 'vulkan_layer_x86'
+    Write-Host '[SunshineVirtualDisplay] Building the x86 Vulkan HDR layer from pinned libvirtualdisplay source.'
+    $x86BuildCommand = "`"$vsDevCmd`" -arch=x86 -host_arch=x64 && `"$cmake`" -S `"$layerSourceDir`" -B `"$VulkanLayerX86BuildDir`" -G Ninja -DCMAKE_MAKE_PROGRAM=`"$ninja`" -DCMAKE_CXX_COMPILER=cl -DCMAKE_BUILD_TYPE=Release -DLIBVIRTUALDISPLAY_DIR=`"$libRoot`" && `"$cmake`" --build `"$VulkanLayerX86BuildDir`" --target check_vulkan_layer_export -j 10"
+    Invoke-Cmd -Command $x86BuildCommand
+    Assert-File -Path $vulkanLayerX86BuildDll
+    Assert-File -Path $vulkanLayerX86BuildJson
+    Copy-Item -Force -LiteralPath $vulkanLayerX86BuildDll -Destination $packageVulkanLayerX86Dll
+    Copy-Item -Force -LiteralPath $vulkanLayerX86BuildJson -Destination $packageVulkanLayerX86Json
+    Assert-SameFile -Expected $vulkanLayerX86BuildDll -Actual $packageVulkanLayerX86Dll
+    Assert-SameFile -Expected $vulkanLayerX86BuildJson -Actual $packageVulkanLayerX86Json
+}
+
 foreach ($artifact in @(
     $packageInstaller,
     (Join-Path $packageRoot 'nefconc.exe'),
@@ -642,7 +687,9 @@ foreach ($artifact in @(
     $packageCat,
     $packageProbe,
     $packageVulkanLayerDll,
-    $packageVulkanLayerJson
+    $packageVulkanLayerJson,
+    $packageVulkanLayerX86Dll,
+    $packageVulkanLayerX86Json
 )) {
     Assert-File -Path $artifact
 }

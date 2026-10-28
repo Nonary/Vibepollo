@@ -127,3 +127,26 @@ test('disabling dummy-plug HDR does not erase an explicit VSYNC override', () =>
   const disabled = applyDummyPlugVsyncChange(enabled, false);
   assert.equal(disabled.frame_limiter_disable_vsync, true);
 });
+
+test('cold startup is unobserved, not ready, while real failures remain failures without an active driver', () => {
+  const metadata = {
+    platform: 'windows',
+    virtual_display_driver: {
+      configured: 'vibeshine',
+      active: null,
+      status: 'unknown',
+      status_code: 1,
+    },
+  };
+  assert.equal(windowsDisplayHealth(metadata).state, 'uninitialized');
+  assert.equal(windowsDisplayHealth(metadata).activeDriver, undefined);
+  for (const status of ['failed', 'version_incompatible', 'watchdog_failed'] as const) {
+    assert.equal(
+      windowsDisplayHealth({
+        ...metadata,
+        virtual_display_driver: { ...metadata.virtual_display_driver, status },
+      }).state,
+      status,
+    );
+  }
+});

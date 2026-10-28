@@ -35,12 +35,19 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE : DWORD {
 } D3DKMT_GPU_PREFERENCE_QUERY_STATE;
 
 #include "display.h"
+#include "display_output_monitor.h"
+#include "src/platform/windows/ipc/display_settings_client.h"
 #include "game_activity.h"
 #include "misc.h"
 #include "src/config.h"
 #include "src/display_device.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#if defined(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE) && SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE
+#include "src/platform/windows/display_frame_push.h"
+#endif
+#include "src/platform/windows/frame_push_capture_policy.h"
+#include "src/platform/windows/virtual_display.h"
 #include "src/video.h"
 #include "utf_utils.h"
 #include "wgc_capture_policy.h"
@@ -51,22 +58,36 @@ namespace platf {
 
 namespace platf::dxgi {
   namespace {
-    constexpr std::uint32_t WINDOWS_23H2_BUILD = 22631;
-
-    wgc_policy::input_geometry_change_e current_input_geometry_change(const display_base_t &display) {
-      const auto &rect = display.captured_output_desc.DesktopCoordinates;
-      return wgc_policy::assess_input_geometry(
-        {display.offset_x, display.offset_y, display.env_width, display.env_height},
-        static_cast<int>(rect.left),
-        static_cast<int>(rect.top),
-        {
-          GetSystemMetrics(SM_XVIRTUALSCREEN),
-          GetSystemMetrics(SM_YVIRTUALSCREEN),
-          GetSystemMetrics(SM_CXVIRTUALSCREEN),
-          GetSystemMetrics(SM_CYVIRTUALSCREEN),
+    gpu_priority_manager_t &gpu_priority_manager() {
+      // Capture objects can overlap during reinitialization or multiple streams.
+      // The last successful lease restores the process's original class, not an
+      // assumed NORMAL class and not a boost saved by another capture object.
+      static gpu_priority_manager_t manager {
+        []() -> std::optional<int> {
+          using get_priority_t = NTSTATUS(WINAPI *)(HANDLE, display_base_t::D3DKMT_SCHEDULINGPRIORITYCLASS *);
+          const auto module = GetModuleHandleA("GDI32");
+          const auto get = module ? reinterpret_cast<get_priority_t>(GetProcAddress(module, "D3DKMTGetProcessSchedulingPriorityClass")) : nullptr;
+          display_base_t::D3DKMT_SCHEDULINGPRIORITYCLASS priority {};
+          if (!get || FAILED(get(GetCurrentProcess(), &priority))) {
+            BOOST_LOG(warning) << "Unable to query GPU priority for capture-scoped restoration";
+            return std::nullopt;
+          }
+          return static_cast<int>(priority);
+        },
+        [](int priority) {
+          const auto module = GetModuleHandleA("GDI32");
+          const auto set = module ? reinterpret_cast<display_base_t::PD3DKMTSetProcessSchedulingPriorityClass>(GetProcAddress(module, "D3DKMTSetProcessSchedulingPriorityClass")) : nullptr;
+          if (!set || FAILED(set(GetCurrentProcess(), static_cast<display_base_t::D3DKMT_SCHEDULINGPRIORITYCLASS>(priority)))) {
+            BOOST_LOG(warning) << "Unable to change capture-scoped GPU priority to " << priority;
+            return false;
+          }
+          return true;
         }
-      );
+      };
+      return manager;
     }
+
+    constexpr std::uint32_t WINDOWS_23H2_BUILD = 22631;
 
     std::mutex g_adapter_luid_mutex;
     std::optional<wgc_adapter_identity_t> g_last_wgc_adapter_identity;
@@ -379,6 +400,9 @@ namespace platf::dxgi {
   }
 
   capture_e display_base_t::capture(const push_captured_image_cb_t &push_captured_image_cb, const pull_free_image_cb_t &pull_free_image_cb, bool *cursor) {
+    auto invalidate_geometry_on_exit = util::fail_guard([this] {
+      if (output_monitor) output_monitor->terminate_input_geometry();
+    });
     auto adjust_client_frame_rate = [&]() -> DXGI_RATIONAL {
       // Use exactly the requested rate if the client sent an X100 value
       if (client_frame_rate_strict.Numerator > 0 && client_frame_rate_strict.Denominator > 0) {
@@ -456,72 +480,10 @@ namespace platf::dxgi {
 
     sleep_overshoot_logger.reset();
 
-    auto next_output_refresh_attempt = std::chrono::steady_clock::time_point::min();
-    bool output_refresh_deferred = false;
-    // DXGI can report a stale factory while an HDR transition is settling. The
-    // continuation path below may therefore accept a replacement output while
-    // it still reports the old colorspace. Re-enumerate the output periodically
-    // so a transition missed during that window still tears down the fixed
-    // capture resources and recreates them with the correct HDR state.
-    auto next_hdr_state_check = std::chrono::steady_clock::time_point::min();
-
     while (true) {
-      // Moving another monitor can change absolute-input normalization even
-      // while WGC's capture item and DXGI factory remain usable. Recreate the
-      // display so make_port() publishes fresh geometry to every stream.
-      if (refresh_only_changes_supported && current_input_geometry_change(*this) == wgc_policy::input_geometry_change_e::changed) {
-        BOOST_LOG(info) << "WGC capture reinitializing because desktop input geometry changed";
-        return platf::capture_e::reinit;
-      }
-
-      // A stale factory can mean either a harmless refresh-only change or a
-      // structural display/GPU change. WGC can keep its capture item for the
-      // former. Never wait for a display mode-set on this thread: WGC remains
-      // valid during refresh-only changes, so keep consuming frames and retry
-      // output validation on a later frame if DXGI is still settling.
-      if (!factory->IsCurrent()) {
-        if (!refresh_only_changes_supported) {
-          return platf::capture_e::reinit;
-        }
-
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= next_output_refresh_attempt) {
-          const auto refresh_result = refresh_output_after_nonstructural_change();
-
-          switch (refresh_result) {
-            case output_refresh_e::refreshed:
-              frame_pacing_group_start.reset();
-              frame_pacing_group_frames = 0;
-              last_pacing_slot.reset();
-              output_refresh_deferred = false;
-              BOOST_LOG(info) << "WGC capture continued after non-structural display change";
-              continue;
-
-            case output_refresh_e::retry_later:
-              next_output_refresh_attempt = std::chrono::steady_clock::now() + 50ms;
-              if (!output_refresh_deferred) {
-                output_refresh_deferred = true;
-                BOOST_LOG(debug) << "WGC output refresh deferred while DXGI settles; capture remains active";
-              }
-              break;
-
-            case output_refresh_e::structural_change:
-              return platf::capture_e::reinit;
-          }
-        }
-      }
-
-      if (refresh_only_changes_supported && captured_hdr_state_valid) {
-        const auto now = std::chrono::steady_clock::now();
-        if (now >= next_hdr_state_check) {
-          next_hdr_state_check = now + 1s;
-
-          const auto refresh_result = refresh_output_after_nonstructural_change();
-          if (refresh_result == output_refresh_e::structural_change) {
-            BOOST_LOG(info) << "Display state changed during periodic WGC validation; requesting reinitialization";
-            return platf::capture_e::reinit;
-          }
-        }
+      if (output_monitor && output_monitor->reinit_requested()) {
+        BOOST_LOG(debug) << "Capture restart: source=output-monitor phase=before-snapshot monitor_id=" << output_monitor->diagnostic_id();
+        return capture_e::reinit;
       }
 
       if (auto diag_now = std::chrono::steady_clock::now(); diag_now - pacing_diag_last_log >= 10s) {
@@ -657,8 +619,17 @@ namespace platf::dxgi {
         }
       }
 
+      if (output_monitor && output_monitor->reinit_requested()) {
+        BOOST_LOG(debug) << "Capture restart: source=output-monitor phase=after-snapshot backend_status=" << static_cast<int>(status)
+                         << " monitor_id=" << output_monitor->diagnostic_id();
+        release_snapshot();
+        return capture_e::reinit;
+      }
+
       switch (status) {
         case platf::capture_e::reinit:
+          BOOST_LOG(debug) << "Capture restart: source=backend phase=snapshot";
+          return status;
         case platf::capture_e::error:
         case platf::capture_e::interrupted:
           return status;
@@ -679,6 +650,9 @@ namespace platf::dxgi {
 
       status = release_snapshot();
       if (status != platf::capture_e::ok) {
+        if (status == platf::capture_e::reinit) {
+          BOOST_LOG(debug) << "Capture restart: source=backend phase=release-snapshot";
+        }
         return status;
       }
     }
@@ -686,7 +660,11 @@ namespace platf::dxgi {
     return capture_e::ok;
   }
 
+  display_base_t::display_base_t() = default;
+  display_base_t::~display_base_t() = default;
+
   void display_base_t::prepare_for_reinit() {
+    if (output_monitor) output_monitor->terminate_input_geometry();
     release_snapshot();
 
     if (device_ctx) {
@@ -695,97 +673,8 @@ namespace platf::dxgi {
     }
   }
 
-  display_base_t::output_refresh_e display_base_t::refresh_output_after_nonstructural_change() {
-    factory1_t replacement_factory;
-    if (FAILED(CreateDXGIFactory1(IID_IDXGIFactory1, reinterpret_cast<void **>(&replacement_factory)))) {
-      return output_refresh_e::retry_later;
-    }
-
-    adapter_t replacement_adapter;
-    output_t replacement_output;
-    DXGI_OUTPUT_DESC replacement_desc {};
-    for (UINT adapter_index = 0; !replacement_adapter; ++adapter_index) {
-      adapter_t::pointer adapter_ptr = nullptr;
-      const auto adapter_status = replacement_factory->EnumAdapters1(adapter_index, &adapter_ptr);
-      if (adapter_status == DXGI_ERROR_NOT_FOUND) {
-        break;
-      }
-      if (FAILED(adapter_status) || !adapter_ptr) {
-        continue;
-      }
-
-      adapter_t candidate_adapter {adapter_ptr};
-      DXGI_ADAPTER_DESC1 adapter_desc {};
-      if (FAILED(candidate_adapter->GetDesc1(&adapter_desc)) ||
-          !luid_equal(adapter_desc.AdapterLuid, captured_adapter_luid)) {
-        continue;
-      }
-
-      for (UINT output_index = 0;; ++output_index) {
-        output_t::pointer output_ptr = nullptr;
-        const auto output_status = candidate_adapter->EnumOutputs(output_index, &output_ptr);
-        if (output_status == DXGI_ERROR_NOT_FOUND) {
-          break;
-        }
-        if (FAILED(output_status) || !output_ptr) {
-          continue;
-        }
-
-        output_t candidate_output {output_ptr};
-        DXGI_OUTPUT_DESC desc {};
-        if (FAILED(candidate_output->GetDesc(&desc)) ||
-            std::wcscmp(desc.DeviceName, captured_output_desc.DeviceName) != 0) {
-          continue;
-        }
-        replacement_adapter = std::move(candidate_adapter);
-        replacement_output = std::move(candidate_output);
-        replacement_desc = desc;
-        break;
-      }
-    }
-
-    if (!replacement_adapter || !replacement_output) {
-      return output_refresh_e::retry_later;
-    }
-
-    const auto &old_rect = captured_output_desc.DesktopCoordinates;
-    const auto &new_rect = replacement_desc.DesktopCoordinates;
-    const auto input_geometry_change = current_input_geometry_change(*this);
-    if (input_geometry_change == wgc_policy::input_geometry_change_e::unavailable) {
-      return output_refresh_e::retry_later;
-    }
-    const bool geometry_unchanged = input_geometry_change == wgc_policy::input_geometry_change_e::unchanged && replacement_desc.AttachedToDesktop &&
-                                    replacement_desc.Rotation == captured_output_desc.Rotation &&
-                                    old_rect.left == new_rect.left && old_rect.top == new_rect.top &&
-                                    old_rect.right == new_rect.right && old_rect.bottom == new_rect.bottom;
-    if (!geometry_unchanged) {
-      BOOST_LOG(info) << "WGC capture continuation rejected because output or desktop input geometry changed";
-      return output_refresh_e::structural_change;
-    }
-
-    output6_t replacement_output6;
-    const bool replacement_hdr_valid = SUCCEEDED(
-      replacement_output->QueryInterface(IID_IDXGIOutput6, reinterpret_cast<void **>(&replacement_output6))
-    );
-    bool replacement_hdr = false;
-    if (replacement_hdr_valid) {
-      DXGI_OUTPUT_DESC1 desc1 {};
-      if (FAILED(replacement_output6->GetDesc1(&desc1))) {
-        return output_refresh_e::retry_later;
-      }
-      replacement_hdr = desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-    }
-    if (captured_hdr_state_valid != replacement_hdr_valid ||
-        (captured_hdr_state_valid && captured_hdr_state != replacement_hdr)) {
-      BOOST_LOG(info) << "WGC capture continuation rejected because HDR state changed";
-      return output_refresh_e::structural_change;
-    }
-
-    factory = std::move(replacement_factory);
-    adapter = std::move(replacement_adapter);
-    output = std::move(replacement_output);
-    captured_output_desc = replacement_desc;
-    return output_refresh_e::refreshed;
+  std::optional<input_geometry_snapshot_t> display_base_t::input_geometry_snapshot() const {
+    return output_monitor ? output_monitor->input_geometry_snapshot() : std::nullopt;
   }
 
   /**
@@ -883,7 +772,8 @@ namespace platf::dxgi {
     const ::video::config_t &config,
     const std::string &display_name,
     const bool skip_dd_test,
-    const std::optional<LUID> &required_adapter_luid
+    const std::optional<LUID> &required_adapter_luid,
+    const bool preserve_capture_for_input_geometry
   ) {
     static std::once_flag windows_cpp_once_flag;
 
@@ -1181,7 +1071,7 @@ namespace platf::dxgi {
     {
       const DWORD flags = TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY;
       TOKEN_PRIVILEGES tp;
-      HANDLE token;
+      HANDLE token = nullptr;
       LUID val;
 
       if (OpenProcessToken(GetCurrentProcess(), flags, &token) &&
@@ -1195,7 +1085,9 @@ namespace platf::dxgi {
         }
       }
 
-      CloseHandle(token);
+      if (token) {
+        CloseHandle(token);
+      }
 
       HMODULE gdi32 = GetModuleHandleA("GDI32");
       if (gdi32) {
@@ -1252,7 +1144,8 @@ namespace platf::dxgi {
           }
           BOOST_LOG(info) << "Active GPU has HAGS " << (hags_enabled ? "enabled" : "disabled");
           BOOST_LOG(info) << "Using " << (priority == D3DKMT_SCHEDULINGPRIORITYCLASS_HIGH ? "high" : "realtime") << " GPU priority";
-          if (FAILED(d3dkmt_set_process_priority(GetCurrentProcess(), priority))) {
+          gpu_priority_lease = gpu_priority_manager().acquire(static_cast<int>(priority));
+          if (!gpu_priority_lease) {
             BOOST_LOG(warning) << "Failed to adjust GPU priority. Please run application as administrator for optimal performance.";
           }
         } else {
@@ -1291,8 +1184,9 @@ namespace platf::dxgi {
     dxgi::output6_t output6 {};
     status = output->QueryInterface(IID_IDXGIOutput6, (void **) &output6);
     if (SUCCEEDED(status)) {
-      DXGI_OUTPUT_DESC1 desc1;
-      output6->GetDesc1(&desc1);
+      DXGI_OUTPUT_DESC1 desc1 {};
+      if (FAILED(output6->GetDesc1(&desc1))) return -1;
+      captured_color_desc = desc1;
       captured_hdr_state_valid = true;
       captured_hdr_state = desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
 
@@ -1314,7 +1208,9 @@ namespace platf::dxgi {
       return -1;
     }
 
-    refresh_only_changes_supported = skip_dd_test;
+    output_monitor = std::make_unique<display_output_monitor_t>(captured_adapter_luid, captured_output_desc,
+      captured_hdr_state_valid, captured_hdr_state, offset_x, offset_y, env_width, env_height,
+      preserve_capture_for_input_geometry);
 
     return 0;
   }
@@ -1327,73 +1223,13 @@ namespace platf::dxgi {
   }
 
   bool display_base_t::is_hdr() {
-    dxgi::output6_t output6 {};
-
-    auto status = output->QueryInterface(IID_IDXGIOutput6, (void **) &output6);
-    if (FAILED(status)) {
-      BOOST_LOG(warning) << "Failed to query IDXGIOutput6 from the output"sv;
-      return false;
-    }
-
-    DXGI_OUTPUT_DESC1 desc1;
-    output6->GetDesc1(&desc1);
-
-    return desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
-  }
-
-  bool is_hdr_active_for_output(const std::string &output_name) {
-    dxgi::factory1_t factory;
-    if (FAILED(CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory))) {
-      return false;
-    }
-
-    dxgi::adapter_t::pointer adapter_p {};
-    for (int x = 0; factory->EnumAdapters1(x, &adapter_p) != DXGI_ERROR_NOT_FOUND; ++x) {
-      dxgi::adapter_t adapter {adapter_p};
-
-      dxgi::output_t::pointer output_p {};
-      for (int y = 0; adapter->EnumOutputs(y, &output_p) != DXGI_ERROR_NOT_FOUND; ++y) {
-        dxgi::output_t output {output_p};
-
-        DXGI_OUTPUT_DESC desc;
-        if (FAILED(output->GetDesc(&desc)) || !desc.AttachedToDesktop) {
-          continue;
-        }
-        if (!output_name.empty() && utf_utils::to_utf8(desc.DeviceName) != output_name) {
-          continue;
-        }
-
-        dxgi::output6_t output6 {};
-        if (FAILED(output->QueryInterface(IID_IDXGIOutput6, (void **) &output6))) {
-          continue;
-        }
-
-        DXGI_OUTPUT_DESC1 desc1;
-        if (FAILED(output6->GetDesc1(&desc1))) {
-          continue;
-        }
-        if (desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020) {
-          return true;
-        }
-      }
-    }
-
-    return false;
+    return captured_hdr_state_valid && captured_hdr_state;
   }
 
   bool display_base_t::get_hdr_metadata(SS_HDR_METADATA &metadata) {
-    dxgi::output6_t output6 {};
-
     std::memset(&metadata, 0, sizeof(metadata));
-
-    auto status = output->QueryInterface(IID_IDXGIOutput6, (void **) &output6);
-    if (FAILED(status)) {
-      BOOST_LOG(warning) << "Failed to query IDXGIOutput6 from the output"sv;
-      return false;
-    }
-
-    DXGI_OUTPUT_DESC1 desc1;
-    output6->GetDesc1(&desc1);
+    if (!captured_hdr_state_valid || !captured_hdr_state) return false;
+    auto desc1 = captured_color_desc;
 
     // The primaries reported here seem to correspond to scRGB (Rec. 709)
     // which we then convert to Rec 2020 in our scRGB FP16 -> PQ shader
@@ -1766,12 +1602,45 @@ namespace platf {
     const bool user_requested_ddx = capture_mode == "ddx";
     const bool default_to_wgc = dxgi::should_use_wgc_default();
     const bool wgc_requested = capture_mode.starts_with("wgc");
-    const bool prefer_wgc_backend = !user_requested_ddx && (wgc_requested || default_to_wgc);
+    const bool frame_push_requested = frame_push::policy::requested(capture_mode);
+    frame_push::policy::Selection frame_push_selection = frame_push::policy::Selection::NotRequested;
+    if (frame_push_requested) {
+#if defined(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE) && SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE
+      const bool sunshine_virtual_display = VDISPLAY::is_sunshine_virtual_display_output(display_name);
+      const bool driver_capable = sunshine_virtual_display && VDISPLAY::driver_supports_frame_push_capture();
+      frame_push_selection = frame_push::policy::select(
+        true,
+        true,
+        sunshine_virtual_display,
+        driver_capable,
+        false
+      );
+      if (frame_push_selection == frame_push::policy::Selection::HostBackendUnavailable &&
+          hwdevice_type == mem_type_e::dxgi) {
+        auto frame_push_display = std::make_shared<dxgi::display_frame_push_vram_t>();
+        if (frame_push_display->init(config, display_name, required_adapter_luid) == 0) {
+          frame_push_selection = frame_push::policy::select(true, true, true, true, true);
+          BOOST_LOG(info) << "capture=idd-push initialized the live frame-push session.";
+          return frame_push_display;
+        }
+      }
+#else
+      frame_push_selection = frame_push::policy::select(true, false, false, false, false);
+#endif
+      if (frame_push_selection != frame_push::policy::Selection::Ready) {
+        BOOST_LOG(warning) << "capture=idd-push requested; "
+                           << frame_push::policy::fallback_reason(frame_push_selection)
+                           << "; using WGC fallback.";
+      }
+    }
+    const bool frame_push_wgc_fallback = frame_push::policy::use_wgc_fallback(frame_push_selection);
+    const bool prefer_wgc_backend = !user_requested_ddx &&
+                                    (wgc_requested || default_to_wgc || frame_push_wgc_fallback);
 
     if (hwdevice_type == mem_type_e::dxgi) {
       if (prefer_wgc_backend) {
         auto disp = dxgi::display_wgc_ipc_vram_t::create(config, display_name, required_adapter_luid);
-        if (disp || wgc_requested) {
+        if (disp || wgc_requested || frame_push_wgc_fallback) {
           return disp;
         }
       }
@@ -1783,7 +1652,7 @@ namespace platf {
     } else if (hwdevice_type == mem_type_e::system) {
       if (prefer_wgc_backend) {
         auto disp = dxgi::display_wgc_ipc_ram_t::create(config, display_name, required_adapter_luid);
-        if (disp || wgc_requested) {
+        if (disp || wgc_requested || frame_push_wgc_fallback) {
           return disp;
         }
       }

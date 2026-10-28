@@ -29,6 +29,16 @@ const prepCommandSections: ReadonlyArray<{
     descKey: 'config.global_state_cmd_desc',
   },
 ];
+const machineHostTrayUnavailable = computed(
+  () => platform.value === 'linux' && metadata.value.linux?.machine_host === true,
+);
+// Display the effective policy without changing the saved preference.
+const systemTray = computed({
+  get: () => (machineHostTrayUnavailable.value ? false : config.value.system_tray),
+  set: (value) => {
+    if (!machineHostTrayUnavailable.value) config.value.system_tray = value;
+  },
+});
 
 function prepCommands(key: PrepCommandKey): PrepCommand[] {
   const current = config.value?.[key];
@@ -93,6 +103,14 @@ function removeServerCommand(index: number) {
     />
 
     <ConfigFieldRenderer v-model="config.min_log_level" setting-key="min_log_level" class="mb-6" />
+
+    <section class="mb-6 space-y-4" aria-labelledby="app-focus-heading">
+      <h3 id="app-focus-heading" class="text-lg font-semibold">{{ $t('config.app_focus_title') }}</h3>
+      <p class="text-sm opacity-70">{{ $t('config.app_focus_description') }}</p>
+      <ConfigFieldRenderer v-model="config.app_focus_attempts" setting-key="app_focus_attempts" />
+      <ConfigFieldRenderer v-model="config.app_focus_timeout_secs" setting-key="app_focus_timeout_secs" />
+      <ConfigFieldRenderer v-model="config.app_focus_exit_on_first" setting-key="app_focus_exit_on_first" />
+    </section>
 
     <div
       v-for="section in prepCommandSections"
@@ -264,14 +282,22 @@ function removeServerCommand(index: number) {
       class="mb-3"
     />
 
-    <ConfigFieldRenderer v-model="config.system_tray" setting-key="system_tray" class="mb-3" />
+    <ConfigFieldRenderer
+      v-model="systemTray"
+      setting-key="system_tray"
+      class="mb-3"
+      :disabled="machineHostTrayUnavailable"
+      :default-value="machineHostTrayUnavailable ? false : undefined"
+      :desc="machineHostTrayUnavailable ? $t('config.system_tray_desc_machine_host') : undefined"
+    />
 
     <ConfigFieldRenderer
       v-if="config.system_tray"
       v-model="config.hide_tray_controls"
       setting-key="hide_tray_controls"
       class="mb-3"
-    />  </div>
+    />
+  </div>
 </template>
 
 <style scoped></style>

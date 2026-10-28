@@ -108,7 +108,7 @@ namespace platf::publish {
       0,  // flags
       0,  // interfaceIndex
       nullptr,  // name
-      platf::SERVICE_TYPE,
+      platf::SERVICE_TYPE.data(),  // The view spans a complete, static string literal.
       nullptr,  // domain
       nullptr,  // host
       htons(net::map_port(nvhttp::PORT_HTTP)),

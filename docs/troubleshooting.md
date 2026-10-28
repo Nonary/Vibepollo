@@ -30,7 +30,169 @@ If you experience unusual mouse behavior, try attaching a physical mouse to the 
 ### Web UI Access
 Can't access the web UI?
 
-1. Check firewall rules.
+1. Enter the full **HTTPS** URL. On the host, the default is
+   [https://localhost:47990](https://localhost:47990). From another LAN device, use
+   the host's LAN IP address, for example `https://192.168.1.10:47990` (replace the
+   example address with your host's address). Do not omit `https://`: a bare
+   `192.168.1.10:47990` can make the browser use plain HTTP and display
+   `ERR_EMPTY_RESPONSE` instead of opening the Web UI. The Web UI port accepts HTTPS,
+   not plain HTTP, and does not redirect HTTP requests to HTTPS.
+2. Check the host log. The warning
+   `Configuration HTTPS listener: plain HTTP received on the TLS port; use an https:// URL.`
+   means the request reached the listener using the wrong protocol. Correct the URL;
+   changing `origin_web_ui_allowed` to `wan` or opening firewall ports will not fix
+   that protocol mismatch. If you changed the base `port` setting, use the Web UI
+   port in the `Configuration UI available at` startup message. When connecting
+   from another device, replace a loopback host in that message with the host's LAN
+   IP address, keeping the HTTPS scheme and port.
+3. A certificate warning after switching to HTTPS is a separate trust issue: the
+   default certificate is self-signed. See the [configuration introduction](getting_started.md#configuration).
+   Do not enter credentials if you cannot verify the host's identity. Plain HTTP is
+   not a safe workaround for accessing the authenticated administration interface.
+4. If the correct HTTPS URL still cannot connect, check that Vibepollo is running,
+   that its bind address and `origin_web_ui_allowed` permit the intended LAN access,
+   and that firewall rules allow the configured Web UI port on the intended network.
+
+### Zero-filled auxiliary state prevents crash dismissal or token saves
+
+If both `vibeshine_state.json` and `vibeshine_state.json.bak` are empty or contain
+only zero bytes after an unexpected shutdown, their contents cannot be recovered.
+The host deliberately refuses to overwrite them. A newer file writer prevents
+known write/flush failures from replacing an existing target, but does not repair
+already-lost data or establish power-loss durability on every storage device.
+
+The native `--auxiliary-recovery` command can prepare an **explicit reset**, not a
+repair. It does not start the host or install anything. Resetting auxiliary state
+loses API tokens, Web UI sessions, app-ID aliases, display metadata and crash/update
+notification metadata. API integrations need new tokens, the Web UI needs a fresh
+login, and display settings/launch shortcuts may need reconfiguration. It does
+**not** reset the Web UI username/password or Moonlight pairings.
+
+1. Stop the host/service and keep a private copy of the entire configuration
+   directory. This disconnects active streams. Confirm that the configured
+   auxiliary file is the separate `vibeshine_state.json`, **not** the pairing or
+   credentials file. Custom/shared filenames are unsupported by this command;
+   do not rename a pairing/credential file to bypass this check. The command
+   runs before host configuration is parsed and cannot verify this separation
+   from zero-filled copies. Copy the auxiliary
+   file and its `.bak` into `C:\PrivateRecovery`. Never upload either snapshot.
+2. In PowerShell, inspect those two copies:
+
+   ```powershell
+   & 'C:\Program Files\Sunshine\sunshine.exe' --auxiliary-recovery inspect 'C:\PrivateRecovery\vibeshine_state.json'
+   ```
+
+   Adjust the executable path for your installation. Both snapshots must exist
+   and be entirely empty/zero-filled. A valid, partially readable, missing or
+   inaccessible snapshot requires separate investigation, not this reset. Copy
+   the `snapshot_token` from the report.
+3. If you accept the listed data loss, prepare the reset. Replace `TOKEN` with
+   that value; `C:\PrivateRecovery\reset` must not exist:
+
+   ```powershell
+   & 'C:\Program Files\Sunshine\sunshine.exe' --auxiliary-recovery prepare-reset 'C:\PrivateRecovery\vibeshine_state.json' --expect-snapshot TOKEN --accept-token-and-metadata-loss --confirm-separate-auxiliary-state --output 'C:\PrivateRecovery\reset'
+   ```
+
+   Success creates private copies of both originals, two identical reset
+   candidates and `recovery.json`. Check that the manifest says `complete: true`.
+   Do not install files from an incomplete output directory. No source file,
+   pairing state, password or running configuration was changed by the command.
+4. With the host still stopped, copy `vibeshine_state.reset.json` and
+   `vibeshine_state.reset.json.bak` from the output directory to the actual
+   configuration directory as `vibeshine_state.json` and `vibeshine_state.json.bak`.
+   Replace **only these two auxiliary files**, retaining the originals privately.
+   Start the host, sign in again, check crash dismissal and re-create API tokens
+   as needed. Do not install an old token-bearing backup over the reset later.
+
+### Duplicate paired-client records after upgrading from 1.x
+
+Vibeshine 1.x added a new paired-client record every time an already-paired
+Moonlight client paired again, and could re-import legacy certificates the same
+way. It always used the first record for a client certificate: later copies were
+never used for authorization, the client's identity or its settings.
+
+Builds up to 2.0.2-daily.d20261020.4 refused to start with these duplicates
+(`root.named_devices[N].cert duplicates ...`, then "HTTP interface is stopping")
+and the service restarted them in a loop. Startup now collapses them without any
+manual steps:
+
+- The first record for each certificate, the one 1.x used, keeps its UUID, name
+  and settings. Later copies are removed and each removal is logged.
+- If any copy was disabled, the kept record is disabled. Re-enable it in the Web
+  UI, or pair the client again, if that is intended.
+- The original file is saved once as `sunshine_state.json.before-dedupe.bak` next
+  to the pairing state. Do not upload it: it contains credential hashes.
+
+If pairing state cannot be loaded for any other reason, such as malformed JSON
+without a valid recovery copy, the host and Web UI stay up but refuse pairing and
+streaming, log the reason and retry automatically.
+
+#### Choosing a different record offline
+
+To keep a different duplicate than startup would, the offline recovery command
+prepares a separate candidate without starting the host or changing its
+configuration.
+
+1. Arrange a maintenance window and stop the host/service before copying or
+   replacing its state. Stopping the host disconnects active clients. Keep a
+   private backup of the full configuration directory, including credentials,
+   applications, auxiliary state and both pairing-state snapshots.
+2. Work on copies of `sunshine_state.json` and, when present,
+   `sunshine_state.json.bak` in the same private directory. Supply the actual
+   configured pairing-state filename if `file_state` overrides the default.
+   Do not upload these files: they can contain credential hashes and tokens.
+3. Inspect the copies. For example, from PowerShell on Windows:
+
+   ```powershell
+   & 'C:\Program Files\Apollo\sunshine.exe' --pairing-recovery inspect 'C:\PrivateRecovery\sunshine_state.json'
+   ```
+
+   The report lists duplicate groups, existing UUIDs, names and enabled status,
+   plus a `snapshot_token` bound to both input snapshots. It does not print
+   certificates or credentials. Compare each group's original records privately,
+   including per-client settings and any unknown fields, before choosing which
+   existing UUID to retain.
+4. Prepare a candidate, repeating `--keep` once for each duplicate group:
+
+   ```powershell
+   & 'C:\Program Files\Apollo\sunshine.exe' --pairing-recovery prepare 'C:\PrivateRecovery\sunshine_state.json' --expect-snapshot TOKEN --keep EXISTING-UUID --output 'C:\PrivateRecovery\candidate'
+   ```
+
+   Replace `TOKEN` and `EXISTING-UUID` with values from inspection. The output
+   directory must not exist. Changed inputs require a fresh inspection. If any
+   record in a group is disabled, the survivor must also be disabled; intentional
+   reauthorization belongs in the normal pairing flow after recovery.
+5. Review `recovery.json` and `sunshine_state.reconciled.json`. A complete output
+   includes `primary.original.json`, `backup.original.json` when a backup existed,
+   and a manifest marked `complete`. Missing or unreadable files, a missing
+   manifest, or an unexpected hash mean the candidate must not be installed.
+   The original copies remain byte-for-byte unchanged. Credential fields, host
+   identity, unrelated records and unknown JSON values are retained in the
+   candidate; only selected duplicate records and their JSON separators are
+   removed. All other input bytes, including unknown numeric values, survive.
+6. With the host still stopped, verify that live state has not changed since
+   it was copied. Preserve its current primary and backup outside the live
+   filenames. Install the reviewed candidate as the configured primary using
+   the existing owner and file permissions, then restart the host. Do not restore
+   an older backup over newer credentials or revocations. Successful startup
+   refreshes the validated recovery copy through the existing state writer.
+   Verify retained pairings, disabled-client rejection, Web UI credentials and
+   client settings, then restart once more to verify persistence.
+
+The command requires an explicit `--keep` choice for every group of different
+UUIDs. Only an entire byte-identical record repeated under the same UUID is
+collapsed without a choice. Conflicting records under one UUID, invalid
+certificates and malformed state are refused. The command never installs a
+candidate, alters live pairing data or falls back to stale authorization.
+
+Vibepollo also treats a native permission mask with no recognized permissions as
+disabled. An imported `enabled: false` record remains disabled even if its mask
+grants permissions. Recovery retains the selected record's exact permission
+mask, client preferences and unknown fields; it never combines permission masks.
+
+The output directory and files are private to the creating account on POSIX and
+to the owner, Administrators and LocalSystem on Windows. Protect the input copies
+and retained backups with equivalent permissions.
 
 ### Controller works on Steam but not in games
 One trick might be to change Steam settings and check or uncheck the configuration to support Xbox/PlayStation

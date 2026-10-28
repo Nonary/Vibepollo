@@ -1045,7 +1045,7 @@ namespace nvenc {
     lock_bitstream.doNotWait = async_event_handle ? 1 : 0;
 
     if (async_event_handle && !wait_for_async_event(100)) {
-      BOOST_LOG(error) << "NvEnc: frame " << frame_index << " encode wait timeout";
+      BOOST_LOG(error) << "NvEnc: frame " << frame_index << " encode completion wait unsuccessful";
       return {};
     }
 

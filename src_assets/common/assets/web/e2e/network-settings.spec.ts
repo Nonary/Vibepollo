@@ -1,12 +1,16 @@
-import { expect, test, type Page } from '@playwright/test';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { localRoute, expect, test, type Page } from './fixtures';
+
+const screenshotDirectory = process.env.VIBEPOLLO_TEST_OUTPUT || process.env.VIBESHINE_TEST_OUTPUT || join(tmpdir(), 'vibepollo-ui-results');
 
 async function host(page: Page, config: Record<string, unknown> = {}) {
   const patches: Record<string, unknown>[] = [];
-  await page.route('**/api/**', async (route) => {
+  await localRoute(page, '**/api/**', async (route) => {
     const url = new URL(route.request().url());
     const path = url.pathname;
     if (!path.startsWith('/api/')) {
-      await route.continue();
+      await route.fallback();
       return;
     }
     const method = route.request().method();
@@ -78,7 +82,7 @@ test('custom network ports show all listeners, update WAN warning before save, a
     page.getByText('Exposing the Web UI to the internet is a security risk!'),
   ).toBeVisible();
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/network-custom-desktop-wan.png',
+    path: join(screenshotDirectory, 'network-custom-desktop-wan.png'),
     fullPage: true,
   });
 
@@ -104,7 +108,7 @@ test('network details remain readable at narrow width and contain no page overfl
     page.getByText('Exposing the Web UI to the internet is a security risk!'),
   ).toBeVisible();
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/network-custom-mobile-wan.png',
+    path: join(screenshotDirectory, 'network-custom-mobile-wan.png'),
     fullPage: true,
   });
 });
@@ -134,10 +138,10 @@ test('invalid network drafts show a clear error, no derived rows, and cannot be 
     page.getByText('This base port would place the TCP listener at base + 21 above 65535.'),
   ).toBeVisible();
   await page.locator('.network-port-details').screenshot({
-    path: '/tmp/vibeshine-ui-results/network-invalid-desktop-details.png',
+    path: join(screenshotDirectory, 'network-invalid-desktop-details.png'),
   });
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/network-invalid-desktop.png',
+    path: join(screenshotDirectory, 'network-invalid-desktop.png'),
     fullPage: true,
   });
 
@@ -149,7 +153,7 @@ test('invalid network drafts show a clear error, no derived rows, and cannot be 
   await expect(page.getByText('Enter a whole number for the base port.')).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
   await page.screenshot({
-    path: '/tmp/vibeshine-ui-results/network-invalid-mobile.png',
+    path: join(screenshotDirectory, 'network-invalid-mobile.png'),
     fullPage: true,
   });
 });

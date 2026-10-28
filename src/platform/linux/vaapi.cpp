@@ -425,7 +425,11 @@ namespace va {
 
         rgb = egl::rgb_t {};
 
-        auto rgb_opt = egl::import_source(display.get(), descriptor.sd);
+        auto rgb_opt = egl::import_source_with_cpu_fallback(
+          descriptor.sd,
+          [this](const auto &surface) { return egl::import_source(display.get(), surface); },
+          [this](const auto &surface) { return egl::upload_source(display.get(), surface); }
+        );
 
         if (!rgb_opt) {
           return -1;

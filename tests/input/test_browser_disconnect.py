@@ -5,8 +5,11 @@ import subprocess
 import tempfile
 
 from test_delayed_mouse_release import ROOT, function
+from test_guide_session_config import config_code
 
 PRELUDE = r'''
+#include "src/input_session_config.h"
+#include "src/utility.h"
 #include <algorithm>
 #include <atomic>
 #include <bitset>
@@ -55,14 +58,34 @@ namespace input {
     touch_port_t touch_port;
     bool closed = false;
     int resets = 0;
+    guide_button_config_t guide_button;
   };
   void reset(std::shared_ptr<input_t> &input) { input->closed = true; ++input->resets; }
-  std::shared_ptr<input_t> alloc(std::shared_ptr<safe::mail_raw_t> mail) {
-    auto result = std::make_shared<input_t>(); result->touch_port_event = mail->port; return result;
+  std::shared_ptr<input_t> alloc(std::shared_ptr<safe::mail_raw_t> mail, guide_button_config_t guide_button) {
+    auto result = std::make_shared<input_t>(); result->touch_port_event = mail->port; result->guide_button = guide_button; return result;
   }
 }
 std::shared_ptr<safe::mail_raw_t> capture_mail;
 std::shared_ptr<safe::mail_raw_t> current_capture_mail() { return capture_mail; }
+'''
+CLIENT_STUBS = r'''
+using vars_t = std::unordered_map<std::string, std::string>;
+namespace config { struct { int guide_button_key = 124, guide_button_controller = 0; } input; }
+namespace proc {
+  struct ctx_t { vars_t config_overrides; };
+  struct proc_t {
+    std::unordered_map<int, ctx_t> apps;
+    int current_app_id() { return 1; }
+    std::optional<ctx_t> resolve_app(int id) {
+      auto it = apps.find(id); return it == apps.end() ? std::nullopt : std::optional<ctx_t> {it->second};
+    }
+  } proc;
+}
+namespace nvhttp {
+  std::unordered_map<std::string, vars_t> clients;
+  vars_t get_client_config_overrides(const std::string &uuid) { return clients[uuid]; }
+}
+struct SessionOptions { std::optional<int> app_id; std::optional<std::string> client_uuid; };
 '''
 CALLBACK_STUBS = r'''
 struct SessionDataChannelContext { std::string id; std::atomic_bool active {true}; };
@@ -77,9 +100,21 @@ TESTS = r'''
 int main() {
   capture_mail = std::make_shared<safe::mail_raw_t>();
   assert(!current_input_context("unknown"));
-  browser_inputs.emplace("a", nullptr); browser_inputs.emplace("b", nullptr);
+  config::update_base_session_input_config_snapshot({{"guide_button_key", "123"}, {"guide_button_controller", "2"}});
+  proc::proc.apps[1] = {{{"guide_button_key", "122"}, {"guide_button_controller", "3"}}};
+  nvhttp::clients["a"] = {{"guide_button_key", "124"}, {"guide_button_controller", "0"}};
+  nvhttp::clients["b"] = {{"guide_button_key", "125"}, {"guide_button_controller", "1"}};
+  nvhttp::clients["off"] = {{"guide_button_key", "0"}};
+  register_session_input("a", guide_button_config_for_client({1, "a"}));
+  register_session_input("b", guide_button_config_for_client({{}, "b"})); // resume joins running app
+  register_session_input("off", guide_button_config_for_client({1, "off"}));
+  auto off = current_input_context("off");
+  assert(off->context->guide_button.key == 0 && off->context->guide_button.controller == 3);
+  reset_session_input("off");
   auto a = current_input_context("a"), b = current_input_context("b");
   assert(a->context != b->context);
+  assert(a->context->guide_button.key == 124 && a->context->guide_button.controller == 0);
+  assert(b->context->guide_button.key == 125 && b->context->guide_button.controller == 1);
   a->gamepads.set(0); assert(!b->gamepads.test(0));
   input::touch_port_t port;
   port.width = port.env_width = 1920; port.height = port.env_height = 1080;
@@ -93,9 +128,14 @@ int main() {
   SessionDataChannelContext ctx_a {"a"};
   on_peer_state(&ctx_a, LWRTC_PEER_DISCONNECTED);
   assert(a->context->closed && !current_input_context("a") && !b->context->closed);
+  // A later app/client/config update cannot alter the registered session.
+  nvhttp::clients["a"]["guide_button_key"] = "126";
+  proc::proc.apps[1].config_overrides["guide_button_controller"] = "4";
+  config::update_base_session_input_config_snapshot({});
   on_peer_state(&ctx_a, LWRTC_PEER_CONNECTED);
   auto reconnected = current_input_context("a");
   assert(reconnected && reconnected != a && !reconnected->context->closed);
+  assert(reconnected->context->guide_button.key == 124 && reconnected->context->guide_button.controller == 0);
   on_peer_state(&ctx_a, LWRTC_PEER_FAILED);
   assert(reconnected->context->closed && !current_input_context("a"));
   assert(closed_sessions.empty() && task_pool.tasks.size() == 1);
@@ -111,10 +151,11 @@ int main() {
   capture_mail = std::make_shared<safe::mail_raw_t>();
   auto replacement = current_input_context("b");
   assert(b->context->closed && replacement != b && !replacement->context->closed);
+  assert(replacement->context->guide_button.key == 125 && replacement->context->guide_button.controller == 1);
   reset_input_context(); assert(replacement->context->closed);
   reset_session_input("b"); assert(!current_input_context("b"));
   // No-capture input still gets usable default coordinates.
-  capture_mail.reset(); browser_inputs.emplace("fallback", nullptr);
+  capture_mail.reset(); register_session_input("fallback", {});
   auto fallback = current_input_context("fallback");
   assert(input::client_to_touchport(fallback->context, {0.5, 0.5}, {1, 1})->first == 960);
   reset_session_input("fallback"); assert(fallback->context->closed);
@@ -127,6 +168,8 @@ def main():
     source = (ROOT / 'src/webrtc_stream.cpp').read_text()
     definitions = source[source.index('    struct BrowserInput {'):source.index('    std::shared_ptr<safe::mail_raw_t> current_capture_mail();')]
     helpers = '\n'.join(function(source, signature) for signature in (
+        'void register_session_input(const std::string &session_id, input::guide_button_config_t guide_button)',
+        'input::guide_button_config_t guide_button_config_for_client(const SessionOptions &options)',
         'std::shared_ptr<BrowserInput> current_input_context(std::string_view session_id)',
         'void reset_session_input(std::string_view session_id)',
         '[[maybe_unused]] void suspend_session_input(std::string_view session_id)',
@@ -140,8 +183,8 @@ def main():
         header = (ROOT / 'third-party/libwebrtc/include/libwebrtc_c.h').read_text()
         peer_enum = header[header.index('typedef enum lwrtc_peer_state {'):header.index('} lwrtc_peer_state_t;') + len('} lwrtc_peer_state_t;')]
         callback = function(source, 'void on_peer_state(void *user, int state)')
-        cpp.write_text(PRELUDE + peer_enum + '\nnamespace input {\n' + port_helper + '\n}\n' + definitions + helpers + CALLBACK_STUBS + callback + TESTS)
-        subprocess.run(['c++', '-std=c++20', '-Wall', '-Wextra', str(cpp), '-o', str(binary)], check=True)
+        cpp.write_text(PRELUDE + config_code((ROOT / 'src/config.cpp').read_text()) + CLIENT_STUBS + peer_enum + '\nnamespace input {\n' + port_helper + '\n}\n' + definitions + helpers + CALLBACK_STUBS + callback + TESTS)
+        subprocess.run(['c++', '-I', str(ROOT), '-std=c++20', '-Wall', '-Wextra', str(cpp), '-o', str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
         # Arch disables WebRTC, leaving these anonymous-namespace helpers
         # without callback callers. Keep that configuration warning-clean.
@@ -149,8 +192,8 @@ def main():
         for name in ('suspend_session_input', 'resume_session_input'):
             helper = function(source, f'[[maybe_unused]] void {name}(std::string_view session_id)')
             disabled_helpers = disabled_helpers.replace(helper, '\nnamespace {\n' + helper + '\n}\n')
-        cpp.write_text(PRELUDE + '\nnamespace input {\n' + port_helper + '\n}\n' + definitions + disabled_helpers)
-        subprocess.run(['c++', '-std=c++20', '-Wall', '-Wextra', '-Werror=unused-function', '-c', str(cpp), '-o', str(Path(temp) / 'disabled.o')], check=True)
+        cpp.write_text(PRELUDE + config_code((ROOT / 'src/config.cpp').read_text()) + CLIENT_STUBS + '\nnamespace input {\n' + port_helper + '\n}\n' + definitions + disabled_helpers)
+        subprocess.run(['c++', '-I', str(ROOT), '-std=c++20', '-Wall', '-Wextra', '-Werror=unused-function', '-c', str(cpp), '-o', str(Path(temp) / 'disabled.o')], check=True)
 
 
 if __name__ == '__main__':

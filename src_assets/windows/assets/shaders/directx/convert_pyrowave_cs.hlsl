@@ -21,7 +21,9 @@
 // The picture is letterboxed into the output: pixels outside it, and every pixel of a
 // blank frame, are black.
 
-#if defined(PQ)
+#if defined(TRUEHDR_PEAK)
+  #include "include/convert_truehdr_peak_base.hlsl"
+#elif defined(PQ)
   #include "include/convert_perceptual_quantizer_base.hlsl"
 #elif defined(LINEAR)
   #include "include/convert_linear_base.hlsl"

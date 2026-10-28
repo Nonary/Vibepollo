@@ -18,6 +18,38 @@ def load_workflow(name: str) -> dict:
 
 
 class ArchRepositoryWorkflowTest(unittest.TestCase):
+    def test_cuda_shared_cache_contains_only_versioned_installer_without_fallback(self) -> None:
+        job = load_workflow("ci-archlinux.yml")["jobs"]["build_archlinux"]
+        steps = {step.get("name"): step for step in job["steps"]}
+        restore = steps["Restore checksum-verified CUDA installer"]
+        save = steps["Save checksum-verified CUDA installer"]
+        self.assertEqual(restore["with"]["path"], "pkg/cuda-x86_64.run")
+        self.assertEqual(save["with"]["path"], "pkg/cuda-x86_64.run")
+        self.assertIn("-cuda-installer-v2-", restore["with"]["key"])
+        self.assertNotIn("restore-keys", restore["with"])
+        self.assertEqual(save["with"]["key"], "${{ steps.cuda-cache.outputs.cache-primary-key }}")
+        # The shared archive never restores the SDK or its receipt into scratch.
+        for step in job["steps"]:
+            if "actions/cache/" in step.get("uses", ""):
+                self.assertNotIn(".linux-cache/cuda", step["with"]["path"])
+        self.assertEqual(job["env"]["CUDA_CACHE_DIR"], "${{ github.workspace }}/.linux-cache/cuda")
+        # Both successful publication and trusted-failure receipts retain the
+        # original save restrictions; cache size work does not relax eligibility.
+        self.assertIn("steps.cuda-cache.outputs.cache-hit != 'true'", save["if"])
+        self.assertIn("success()", save["if"])
+        self.assertIn("github.event.repository.default_branch", save["if"])
+        self.assertIn("github.event.repository.full_name == github.repository", save["if"])
+        self.assertIn("steps.partial-cache.outputs.cuda == 'true'", save["if"])
+        partial = steps["Verify failed-validation partial cache eligibility"]
+        for required in ("failure()", "inputs.validation_only", "github.event_name == 'workflow_dispatch'",
+                         "github.event.repository.full_name == github.repository", "steps.build.outcome == 'failure'",
+                         "steps.toolchain.outputs.abi != ''"):
+            self.assertIn(required, partial["if"])
+        build = steps["Build PKGBUILD"]["run"]
+        self.assertIn('CUDA_CACHE_DIR="$CUDA_CACHE_DIR"', build)
+        self.assertIn('makepkg "${package_options[@]}"', build)
+        self.assertIn("bash scripts/check-linux-partial-cache.sh", partial["run"])
+
     def test_pages_is_native_and_deploys_the_arch_branch(self) -> None:
         workflow = load_workflow("update-pages.yml")
         text = (ROOT / ".github" / "workflows" / "update-pages.yml").read_text(

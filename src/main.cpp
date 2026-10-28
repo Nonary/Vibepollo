@@ -28,8 +28,11 @@
 #include "logging.h"
 #include "main.h"
 #include "nvhttp.h"
+#include "pairing_recovery.h"
 #include "process.h"
+#include "pyrowave_host.h"
 #include "rtsp.h"
+#include "shutdown_signal.h"
 #include "system_tray.h"
 #include "update.h"
 #include "upnp.h"
@@ -38,6 +41,7 @@
 #include "video.h"
 #include "session_history.h"
 #include "state_storage.h"
+#include "shutdown_phase.h"
 #include "steam_auto_sync.h"
 #ifdef __linux__
   #include "lutris_auto_sync.h"
@@ -98,13 +102,12 @@ void on_signal(int sig, FN &&fn) {
 #endif
 
 namespace {
-  static_assert(std::atomic_bool::is_always_lock_free, "shutdown signal flag must be lock-free in a signal handler");
-
   class shutdown_deadline_t {
   public:
-    explicit shutdown_deadline_t(std::atomic_bool *signal_requested, bool supervised_machine_host):
+    explicit shutdown_deadline_t(std::atomic_bool *signal_requested, bool supervised_machine_host, shutdown_phase::tracker_t &shutdown_phase):
         signal_requested_ {signal_requested},
-        supervised_machine_host_ {supervised_machine_host} {
+        supervised_machine_host_ {supervised_machine_host},
+        shutdown_phase_ {shutdown_phase} {
       // The machine host runs under systemd with SendSIGKILL=no so that the
       // display topology survives a stop. That makes this watchdog the only
       // thing that can end a shutdown whose joins never return: without it a
@@ -196,7 +199,8 @@ namespace {
         // can be blocked by the shutdown path that this watchdog protects.
         std::_Exit(lifetime::desired_exit_code);
       }
-      BOOST_LOG(fatal) << deadline.count() << " seconds passed, yet Vibepollo's still running: Forcing shutdown"sv;
+      BOOST_LOG(fatal) << deadline.count() << " seconds passed, yet Vibepollo's still running: Forcing shutdown; active shutdown phase: "sv
+                       << shutdown_phase_.current_name();
       lifetime::debug_trap();
     }
 
@@ -205,6 +209,7 @@ namespace {
     state_e state_ {state_e::idle};
     std::atomic_bool *signal_requested_ = nullptr;
     bool supervised_machine_host_ = false;
+    shutdown_phase::tracker_t &shutdown_phase_;
     std::jthread worker_;
   };
 }  // namespace
@@ -341,6 +346,12 @@ int main(int argc, char *argv[]) {
   setlocale(LC_ALL, "C");
 #endif
 
+  // Explicit snapshot copies only: recover without parsing the host profile,
+  // repairing its ACLs, initializing logging or changing driver preferences.
+  if (const auto result = pairing_recovery::dispatch_native(argc, argv, std::cout, std::cerr)) {
+    return *result;
+  }
+
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
   // Use UTF-8 conversion for the default C++ locale (used by boost::log)
@@ -360,6 +371,15 @@ int main(int argc, char *argv[]) {
   if (!log_deinit_guard) {
     BOOST_LOG(error) << "Logging failed to initialize"sv;
   }
+
+#ifdef WIN32
+  // Own cleanup even for maintenance commands and early startup returns.
+  // shutdown() is terminal and contains exceptions before logger teardown.
+  auto restore_nvprefs = []() noexcept {
+    nvprefs_instance.shutdown();
+  };
+  auto nvprefs_shutdown_guard = util::fail_guard(restore_nvprefs);
+#endif
 
 #ifdef _WIN32
   const auto app_user_model_id_status =
@@ -436,8 +456,16 @@ int main(int argc, char *argv[]) {
   // Its cleanup guard also runs on early startup returns, so it must be able
   // to bound that join as well as the ordinary shutdown path below.
   auto shutdown_event = mail::man->event<bool>(mail::shutdown);
-  std::atomic_bool shutdown_signal_requested {false};
-  shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested, supervised_machine_host};
+  auto &shutdown_signal_requested = lifetime::shutdown_signal_requested;
+  shutdown_phase::tracker_t shutdown_phase_state;
+  shutdown_deadline_t shutdown_deadline {&shutdown_signal_requested, supervised_machine_host, shutdown_phase_state};
+  // Later guards drain stream/probe users first, including on startup returns.
+  // Final Vulkan instance release must run before the owned deadline completes:
+  // a vendor wait during static teardown would otherwise escape supervision.
+  auto pyrowave_shutdown_guard = util::fail_guard([&shutdown_deadline]() {
+    shutdown_deadline.arm();
+    pyrowave::host::shutdown();
+  });
 
 #ifdef __linux__
   std::atomic_bool termination_signal_monitor_stopping {false};
@@ -572,10 +600,12 @@ int main(int argc, char *argv[]) {
     // This cleanup guard covers early returns before shutdown_event->view().
     // Arm the owned deadline before any potentially unbounded join so that a
     // pathological message loop cannot hang process teardown indefinitely.
+    shutdown_phase_state.set(shutdown_phase::phase_e::session_monitor_window_future);
     shutdown_deadline.arm();
 
     auto request_session_monitor_shutdown = [&](bool force_quit_only) {
       if (!force_quit_only) {
+        shutdown_phase_state.set(shutdown_phase::phase_e::session_monitor_window_future);
         if (session_monitor_hwnd_future.wait_for(1s) == std::future_status::ready) {
           if (HWND session_monitor_hwnd = session_monitor_hwnd_future.get()) {
             if (PostMessage(session_monitor_hwnd, WM_CLOSE, 0, 0)) {
@@ -591,6 +621,7 @@ int main(int argc, char *argv[]) {
         }
       }
 
+      shutdown_phase_state.set(shutdown_phase::phase_e::session_monitor_thread_id_future);
       if (session_monitor_thread_id_future.wait_for(1s) != std::future_status::ready) {
         BOOST_LOG(warning) << "session_monitor_thread_id_future reached timeout";
         return false;
@@ -612,7 +643,9 @@ int main(int argc, char *argv[]) {
 
     request_session_monitor_shutdown(false);
 
+    shutdown_phase_state.set(shutdown_phase::phase_e::session_monitor_join_wait);
     if (session_monitor_join_thread_future.wait_for(3s) == std::future_status::ready) {
+      shutdown_phase_state.set(shutdown_phase::phase_e::session_monitor_join);
       session_monitor_thread.join();
       return;
     }
@@ -624,10 +657,13 @@ int main(int argc, char *argv[]) {
     // process globals. It must never escape into CRT teardown. The shutdown
     // deadline is armed before the normal call site below, so an unexpected
     // stuck message loop is diagnosed instead of being detached unsafely.
+    shutdown_phase_state.set(shutdown_phase::phase_e::session_monitor_force_quit_wait);
     if (session_monitor_join_thread_future.wait_for(5s) == std::future_status::ready) {
+      shutdown_phase_state.set(shutdown_phase::phase_e::session_monitor_forced_join);
       session_monitor_thread.join();
     } else {
       BOOST_LOG(error) << "session_monitor_thread still running after forced WM_QUIT; waiting for owned thread exit";
+      shutdown_phase_state.set(shutdown_phase::phase_e::session_monitor_forced_join);
       session_monitor_thread.join();
     }
   };
@@ -641,10 +677,16 @@ int main(int argc, char *argv[]) {
   task_pool.start(1);
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
-  // create tray thread and detach it if enabled in config
+  // Keep tray shutdown inside main's lifetime, including early startup returns.
   if (config::sunshine.system_tray) {
     system_tray::run_tray();
   }
+#ifdef _WIN32
+  auto tray_shutdown_guard = util::fail_guard([&shutdown_deadline]() {
+    shutdown_deadline.arm();
+    system_tray::end_tray();
+  });
+#endif
   // Schedule periodic update checks if configured
   if (config::sunshine.update_check_interval_seconds > 0) {
     // Trigger an immediate update check on startup so users don't wait
@@ -669,8 +711,8 @@ int main(int argc, char *argv[]) {
     shutdown_signal_requested.store(true, std::memory_order_relaxed);
     BOOST_LOG(info) << "Interrupt handler called"sv;
 
-    // Preserve Vibepollo's eager application cleanup; the owned deadline above
-    // replaces the detached task-pool watchdog that used to follow it.
+    // Undo waits also observe the signal flag above. Keep eager cleanup before
+    // waking main so its teardown cannot overlap this callback's termination.
     proc::proc.terminate();
     // Break out of the main loop
     shutdown_event->raise(true);
@@ -710,14 +752,23 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Platform failed to initialize"sv;
   }
 
+#ifdef _WIN32
+  display_helper_integration::start_orphan_recovery_monitor();
+  auto orphan_recovery_monitor_guard = util::fail_guard([]() {
+    display_helper_integration::shutdown_orphan_recovery_monitor();
+  });
+#endif
+
 #ifdef __linux__
   (void) platf::linux_display::backend().initialize();
   auto linux_private_display_guard = util::fail_guard([supervised_machine_host]() {
     if (supervised_machine_host) {
       platf::linux_private_display::request_process_shutdown_preserve();
+      platf::linux_private_display::shutdown_restore_worker(false);
       return;
     }
     (void) platf::linux_display::backend().revert();
+    platf::linux_private_display::shutdown_restore_worker(true);
   });
 #endif
 
@@ -1017,11 +1068,14 @@ int main(int argc, char *argv[]) {
 #endif
 
   // Wait for shutdown
+  shutdown_phase_state.set(shutdown_phase::phase_e::waiting_for_shutdown_event);
   shutdown_event->view();
 #ifdef __linux__
   if (supervised_machine_host) {
+    shutdown_phase_state.set(shutdown_phase::phase_e::linux_private_display_preserve);
     platf::linux_private_display::request_process_shutdown_preserve();
   }
+  shutdown_phase_state.set(shutdown_phase::phase_e::termination_signal_monitor_stop);
   stop_termination_signal_monitor();
   termination_signal_monitor_guard.disable();
 #endif
@@ -1040,20 +1094,32 @@ int main(int argc, char *argv[]) {
   // Stop the owned lock-screen virtual-output worker before recovery workers
   // can publish more overrides. Both use configuration, the display helper,
   // and mail, all of which remain live until these joins complete.
+  shutdown_phase_state.set(shutdown_phase::phase_e::deferred_virtual_output_shutdown);
   config::request_deferred_virtual_output_reapply_shutdown();
+  shutdown_phase_state.set(shutdown_phase::phase_e::orphan_recovery_monitor_shutdown);
+  display_helper_integration::shutdown_orphan_recovery_monitor();
+  orphan_recovery_monitor_guard.disable();
+  shutdown_phase_state.set(shutdown_phase::phase_e::virtual_display_recovery_shutdown);
   VDISPLAY::request_virtual_display_recovery_shutdown();
+  shutdown_phase_state.set(shutdown_phase::phase_e::deferred_virtual_output_worker_join);
   config::join_deferred_virtual_output_reapply_worker();
+  shutdown_phase_state.set(shutdown_phase::phase_e::virtual_display_recovery_monitor_join);
   VDISPLAY::join_virtual_display_recovery_monitors();
 #endif
 
+  shutdown_phase_state.set(shutdown_phase::phase_e::http_thread_join);
   httpThread.join();
+  shutdown_phase_state.set(shutdown_phase::phase_e::config_thread_join);
   configThread.join();
+  shutdown_phase_state.set(shutdown_phase::phase_e::rtsp_thread_join);
   rtspThread.join();
 
 #ifdef __linux__
+  shutdown_phase_state.set(shutdown_phase::phase_e::lutris_autosync_stop);
   platf::lutris::autosync::stop();
   lutris_autosync_guard.disable();
 #endif
+  shutdown_phase_state.set(shutdown_phase::phase_e::steam_autosync_stop);
   platf::steam::autosync::stop();
   steam_autosync_guard.disable();
 
@@ -1061,32 +1127,42 @@ int main(int argc, char *argv[]) {
   // Full process shutdown cannot leave the paused-session watchdog running.
   // If it survives past main(), CRT teardown can fast-fail while the helper
   // watchdog thread is still unwinding.
+  shutdown_phase_state.set(shutdown_phase::phase_e::display_helper_watchdog_stop);
   display_helper_integration::stop_watchdog(true);
 
   // The virtual display watchdog thread also lives in static storage.
   // Ensure it is joined before CRT on-exit handlers destroy the thread object.
+  shutdown_phase_state.set(shutdown_phase::phase_e::retained_display_cleanup);
   VDISPLAY::cleanup_retained_ensure_display();
+  shutdown_phase_state.set(shutdown_phase::phase_e::virtual_display_device_close);
   VDISPLAY::closeVDisplayDevice();
 #endif
 
+  shutdown_phase_state.set(shutdown_phase::phase_e::task_pool_stop);
   task_pool.stop();
+  shutdown_phase_state.set(shutdown_phase::phase_e::task_pool_join);
   task_pool.join();
 
   // stop system tray
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+  shutdown_phase_state.set(shutdown_phase::phase_e::system_tray_stop);
   system_tray::end_tray();
+#ifdef _WIN32
+  tray_shutdown_guard.disable();
+#endif
 #endif
 
 #ifdef WIN32
   // Restore global NVIDIA control panel settings
-  if (nvprefs_instance.owning_undo_file() && nvprefs_instance.load()) {
-    nvprefs_instance.restore_global_profile();
-    nvprefs_instance.unload();
-  }
+  shutdown_phase_state.set(shutdown_phase::phase_e::restore_nvprefs);
+  restore_nvprefs();
+  nvprefs_shutdown_guard.disable();
 #endif
 
+  shutdown_phase_state.set(shutdown_phase::phase_e::session_history_shutdown);
   session_history::shutdown();
   session_history_shutdown_guard.disable();
 
+  shutdown_phase_state.set(shutdown_phase::phase_e::main_cleanup_return);
   return lifetime::desired_exit_code;
 }

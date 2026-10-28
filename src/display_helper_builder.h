@@ -58,6 +58,9 @@ namespace display_helper_integration {
    */
   struct DisplayTopologyDefinition {
     std::vector<std::vector<std::string>> topology;
+    /// Adopt an enlarged live physical base without reusing staged settings.
+    /// Durable session/golden restore snapshots are preserved.
+    bool refresh_settings_baseline = false;
     std::map<std::string, display_device::Point> monitor_positions;
     // A remote composed topology is applied as one operation and may select a
     // saved client display as primary after its target is part of that topology.

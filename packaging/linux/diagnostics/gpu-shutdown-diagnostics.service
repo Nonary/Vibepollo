@@ -1,0 +1,20 @@
+[Unit]
+Description=Send late shutdown diagnostics to an independent log receiver
+Wants=network-online.target
+After=network-online.target gpu-diagnostics-setup.service
+# Arm debug logging before ordinary network and desktop services stop.
+After=NetworkManager.service vibepollo.service vibepollo-session-controller.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/default/gpu-shutdown-diagnostics
+ExecStart=/usr/local/libexec/gpu-shutdown-diagnostics prepare
+ExecStop=/usr/local/libexec/gpu-shutdown-diagnostics arm
+TimeoutStartSec=20
+TimeoutStopSec=20
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -245,6 +245,45 @@ HDR requests require an HDR-capable fallback; they do not silently become SDR.
 
 - The desktop implementation delegates connector reservation, mode application,
   and restoration to `linux_private_display` (KScreen and the private DRM pool).
+  Restoration verifies a saved output and its capture availability before
+  retiring private connectors, including connected outputs whose client
+  reservations have already been released. It rechecks the saved guard before
+  each retirement and waits for each hotplug to settle. The remaining saved
+  outputs activate after private retirement, avoiding a temporary requirement
+  for the baseline plus virtual outputs to fit simultaneously. KWin output
+  priorities and the complete saved mode, orientation, scale, position, HDR
+  and activation state are verified after its output ordering has settled.
+  Mode identifiers cannot bypass saved resolution or known refresh evidence.
+  A missing secondary output does not prevent retiring private connectors
+  behind a verified surviving baseline output. Final verification still checks
+  the complete saved desktop and retains the baseline if it is incomplete.
+  Confirmed restore failures receive up to three attempts, with 250 ms and
+  1 s backoff and a 30 s budget per attempt, including lock acquisition. Backoff
+  releases the lifecycle and display locks, and every attempt rechecks ownership
+  and cancellation. Unknown helper completion fences further mutations.
+  Capture readiness observations use bounded private Wayland connections and
+  never request portal consent. An explicitly selected portal cannot certify a
+  replacement scanout noninteractively, so cleanup preserves the connector
+  and reports incomplete restoration. Local DRM/X11 library calls still depend
+  on the display driver or server remaining responsive.
+  A failed restore retains its pre-stream snapshot and reports failure; it does
+  not discard that baseline or report successful cleanup. The service-owned
+  auxiliary state persists the baseline before hotplug, bound to the selected
+  session UID and role. Restart recovery validates that owner and restores armed
+  intent through the same capture-verified handoff; idle records do not override
+  the user's current layout. Without usable saved intent or an enabled physical
+  guard, recovery preserves the private scanout until a physical output is enabled.
+  A reconnect cancels stale restoration before display preparation. Failed
+  preparation re-arms guarded cleanup, including failures before the caller's
+  stream-start rollback guard exists, while respecting paused-session retention
+  and restore-delay settings. Physical/dummy capture targets are disabled through
+  KScreen when needed; only driver-managed private connectors are unplugged.
+  Terminal desktop streams without a running app release normal display roles
+  after all transports drain. Failed release remains recovery state without
+  preventing restoration, and successful restoration reconciles only drained
+  pending roles. Paused apps, live capture and retained Remote Monitors keep
+  their ownership. Logical completion runs under the lifecycle gate after the
+  display mutex is released.
 - The Gamescope implementation supplies the existing compositor scene, owns no
   connector, and performs no topology restoration. Physical, per-client, and
   shared display preferences all select that scene for normal game sessions.
@@ -256,6 +295,54 @@ Persistent display/layout preferences remain unchanged. Independent-monitor
 capabilities are separate from HDR capture: Gamescope's PipeWire backend still
 verifies the HDR extension and negotiated pixel format. This does not create
 an independent headless compositor or implement Remote Monitor topology there.
+
+#### Session display-preparation precedence
+
+`src/session_display_policy.h` resolves preparation when RTSP and WebRTC build
+launch metadata. Client generic `dd_configuration_option` overrides both dedicated
+and generic application preparation. Dedicated application preparation takes
+precedence over its same-application generic representation; unset fields inherit
+the effective global configuration.
+
+An explicit application/client virtual target, virtual mode, or virtual layout
+can lift a lower-level VerifyOnly preparation to the layout's normal preparation.
+For example, global VerifyOnly plus an application extended-primary virtual
+layout prepares the virtual display as primary. An explicit VerifyOnly at the
+same or a higher level remains authoritative. Without a higher virtual override,
+VerifyOnly still verifies an existing extended target without preparing topology.
+Physical selections and explicit client disables do not trigger this promotion.
+The explicit preparation and deferred virtual-only promotion are stored on the
+launch session; they never write into the configuration file or runtime/global
+settings. Windows configuration, monitor-position, and request helpers consume
+that same policy. Linux private-display mode parsing consumes the same effective
+preparation after reserving the virtual target. Promotion applies only while
+creating or configuring a virtual target; a fallback to physical capture retains
+VerifyOnly. WebRTC resolves it before virtual-output selection is consumed.
+Vibepollo also finalizes preparation after resume fills in the running app's
+display settings, retaining the verified client's original display choice.
+These policy rules do not establish that a physical monitor honors a disable
+request; that requires separate runtime evidence.
+
+#### Nonblocking client display warning
+
+After normal RTSP launch/resume admission succeeds, `nvhttp.cpp` can add the
+optional XML field `clientWarning=virtual_display_disabled_by_client`. It requires
+an actual `virtualDisplay=0` request, an otherwise virtual effective choice, and
+a successful session without a newly selected virtual output. It excludes joins of an existing capture output,
+virtual output, creation failures and Linux backends that only capture an existing
+compositor scene. Assembly captures warning intent from the same app/client snapshots using the
+explicit-choice resolver. The response observer never re-reads mutable settings; it never changes display selection, preparation,
+authentication, success status or persistent settings. Resume uses the application
+actually resolved into the session; it does not import missing app policy merely
+for the warning. Absence of `virtualDisplay` always inherits.
+
+A session flag does not certify the later capture target or physical scanout;
+the warning describes the suppressed request and continued existing-display stream.
+Only a client implementing this optional code can display the warning. Nonary
+Moonlight has a bounded, localized, temporary in-stream overlay receiver, but does
+not itself send the explicit disable today. Unchanged Artemis clients can ignore
+the field. An app virtual request that still creates a virtual display is silent;
+this extension does not change that platform-dependent display policy.
 
 #### Launch + display prep (Windows-specific heavy lifting)
 
@@ -786,3 +873,51 @@ sequenceDiagram
   UI->>API: DELETE /api/webrtc/sessions/:id
   API->>WS: close_session -> stop capture if idle
 ```
+
+## PyroWave bandwidth calibration (2026-10-02)
+
+Reviewed over `6d8fc5ac`: paired `/serverinfo` advertises UDP probe v1 alongside
+wire budget v1 and the current critical FEC policy. `/pyrowave-udp-probe` runs
+on the serialized NVHTTP blocking worker, holds the stream-start lifecycle
+lock, rejects active streams, and sends a bounded two-second paced UDP test
+to the HTTPS peer. Reliable response counts allow Moonlight to score packet
+loss, including the lost tail, and schedule-relative delivery delay. The old
+HTTPS throughput probe remains for compatibility. RTSP now caps the total
+wire budget at physical endpoint capacity, without the old blanket 20%
+reduction. Client-reported receive speed still limits stream packet pacing.
+The existing encoder continues reserving critical FEC, headers, and audio
+inside the total allowance. See [the shared protocol](docs/pyrowave-protocol.md#fec-inclusive-recommendations-and-udp-calibration)
+for rate search, validation thresholds, packet layout, and limits of the test.
+
+The Windows calibration correction adds `PyroWaveUdpHandshakeVersion=1`.
+With `handshake=1`, the paired HTTPS response announces `X-PyroWave-Udp-Port`
+before its final XML body. The sender exchanges ungraded 32-byte tokens with
+the HTTPS peer for at most 1500 ms, then starts the measured two-second probe
+using the client's observed UDP source port. This establishes outbound UDP
+state on both peers without changing firewall rules. Warmups and handshake
+time are excluded from results; legacy clients retain the original transfer.
+
+## Managed application focus timing
+
+Timing follow-up reviewed from source primary `97835dbfb14faafd8b4f13d98bc00cc921d45296`
+(2026-10-18). `src/managed_app_focus.h` owns the shared steady-clock discovery
+and activation bounds. Steam/Lutris sessions and both Playnite game launch
+branches wait up to `max(180s, app_focus_timeout_secs)` for eligible window
+identities. Each unseen process/window identity arms the configured focus
+window, capped by the original hard limit; observations and status refreshes do
+not move that limit or restore confirmed-success counts. Expired activation
+windows permit further discovery but no activation of stale windows.
+
+Windows retains visible, unowned target-window discovery and confirms the
+specific window/PID; direct Playnite keeps its foreground confirmation dedupe
+and Lossless Scaling refocus callback. The fullscreen library UI has its own
+existing focus budget. Linux resolves the installed Steam/Lutris catalog target,
+filters process identity (including protected Steam exclusions), then inspects
+KWin normal taskbar windows by PID/internalId before activating a selected ID.
+The same script handles native Wayland and XWayland windows. Each script is
+one-shot and unloaded. Broker/session generation cancellation remains external
+to the timing budget. macOS observes Core Graphics window ID/PID/geometry for
+target applications before existing AppKit activation; it requests no new
+Accessibility or capture permission. Windows and macOS own cancellable workers
+joined on session destruction. An exhausted confirmation count or exit-on-first
+ends a session even if a later replacement window would otherwise be eligible.

@@ -5,8 +5,16 @@
 #include "../../../tests_common.h"
 
 #include <src/platform/linux/wayland_hdr_compatibility.h>
+#include <src/hdr_stream_policy.h>
 
 namespace compatibility = platf::wayland_hdr_compatibility;
+
+TEST(WaylandHdrCompatibility, RtxHdrDoesNotAdvertiseNativeHdrToTheGame) {
+  const bool source_hdr = video::hdr_stream_policy::requires_hdr_source(true, true);
+  const auto result = compatibility::resolve(true, true, source_hdr);
+  EXPECT_FALSE(result.enabled);
+  EXPECT_EQ(result.suppression_reason, compatibility::suppression_reason_e::resolved_sdr);
+}
 
 TEST(WaylandHdrCompatibility, ManagedWaylandSessionDoesNotDependOnHostDisplayEnvironment) {
   EXPECT_TRUE(compatibility::selected_session_is_wayland(false, "wayland"));

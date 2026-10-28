@@ -25,9 +25,17 @@
         "saveFailed": "Save failed",
         "unavailable": "Application unavailable"
       },
-      "cover": {
+      "compatibility": {
+      "title": "Compatibility and state commands",
+      "description": "Override launch behavior and commands for this application.",
+      "default": "Use host default",
+      "addState": "Add state command",
+      "resume": "Resume command",
+      "pause": "Pause command"
+    },
+    "cover": {
         "alt": "{name} cover",
-        "unavailable": "Cover preview unavailable",
+        "unavailable": "Configured cover unavailable",
         "unavailableLabel": "{name} cover unavailable"
       },
       "coverPicker": {
@@ -131,7 +139,7 @@
           "label": "Client icon path"
         },
         "imagePath": {
-          "help": "Enter a local PNG path or find matching cover artwork online.",
+          "help": "Custom Moonlight covers need a readable PNG file no larger than 16 MiB. Moonlight may show its default image when the configured cover is unavailable. Renaming another image format to .png does not convert it. Save the application to refresh its cover preview.",
           "label": "Cover image path",
           "placeholder": "C:/path/to/cover.png"
         },
@@ -430,7 +438,7 @@
         "display_override": "Use a client-specific display route",
         "hdr_description": "Apply HDR calibration and virtual-display presentation settings for this client.",
         "hdr_peak_description": "Set a manual peak brightness for this client's virtual display and HDR stream, or leave it automatic.",
-        "hdr_profile_description": "Choose an installed Windows HDR color profile for this client, or leave it automatic.",
+        "hdr_profile_description": "The Vibeshine virtual display driver retains Windows HDR calibration profiles automatically. Select an override here only for physical displays or other virtual display drivers.",
         "name_helper": "Use a name that identifies the person or screen using this client.",
         "no_displays": "No displays were reported by this host",
         "no_hdr_profiles": "No installed HDR color profiles",
@@ -445,7 +453,9 @@
           "identity": "Identity and permissions"
         },
         "title": "Edit device",
-        "use_common_value": "Use common setting: {value}"
+        "use_common_value": "Use common setting: {value}",
+        "allow_sleep": "Allow this device to put the PC to sleep",
+        "allow_sleep_description": "Separate permission for compatible clients and Windows hosts with native sleep support. Sleep requires every host application and stream to be closed. Disabled by default."
       },
       "common_settings_title": "Common host settings unavailable",
       "common_settings_unavailable": "The common host settings could not be loaded. Existing client overrides are preserved, but inherited values may be incomplete.",
@@ -501,8 +511,8 @@
         "success": "All devices were unpaired."
       },
       "layout": {
-        "title": "Arrange remote monitors",
-        "description": "Choose how remote monitors sit beside your other screens."
+        "title": "Arrange client displays",
+        "description": "Choose placement for extended application streams and Remote Monitor."
       }
     },
     "integrations": {
@@ -533,8 +543,8 @@
         "playniteInstallTitle": "Install the Playnite extension?",
         "playniteRemoveDescription": "Playnite will close to remove the extension. Library synchronization will stop until the extension is installed again.",
         "playniteRemoveTitle": "Remove the Playnite extension?",
-        "playnitePurgeAutosyncDescriptionOne": "There is currently {count} Playnite-managed auto-synced application entry. Confirm to remove auto-synced entries only; manually added apps and other providers are kept.",
-        "playnitePurgeAutosyncDescriptionOther": "There are currently {count} Playnite-managed auto-synced application entries. Confirm to remove auto-synced entries only; manually added apps and other providers are kept.",
+        "playnitePurgeAutosyncDescriptionOne": "There is currently {count} Playnite-managed auto-synced application entry. Confirm to remove auto-synced entries only; manually added apps and other providers are kept. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
+        "playnitePurgeAutosyncDescriptionOther": "There are currently {count} Playnite-managed auto-synced application entries. Confirm to remove auto-synced entries only; manually added apps and other providers are kept. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
         "playnitePurgeAutosyncTitle": "Remove auto-synced Playnite apps?",
         "playniteUpdateTitle": "Update the Playnite extension?",
         "vigemDescription": "The bundled elevated installer will modify the virtual controller driver on this host.",
@@ -825,8 +835,8 @@
       "purgePlaynite": {
         "busy": "Removing Playnite entries",
         "confirm": "Remove Playnite entries",
-        "descriptionOne": "There is currently {count} Playnite-linked application entry. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept.",
-        "descriptionOther": "There are currently {count} Playnite-linked application entries. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept.",
+        "descriptionOne": "There is currently {count} Playnite-linked application entry. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
+        "descriptionOther": "There are currently {count} Playnite-linked application entries. Confirm to remove Playnite entries, including manual Playnite entries and the Playnite fullscreen launcher. Steam, Lutris, custom, and other applications are kept. Explicit Monitor profiles are kept; delete a profile individually to remove it.",
         "errorTitle": "Playnite removal failed",
         "failed": "One or more Playnite entries could not be removed.",
         "title": "Remove Playnite entries?"
@@ -973,6 +983,7 @@
         "revokeSessionDescription": "That browser will need to sign in again before it can manage this host.",
         "revokeSessionTitle": "Revoke {browser}?",
         "terminateVirtualDisplayDescription": "Vibepollo will disengage automatic recovery, try to restore the physical display layout, remove every managed virtual display, and stop display watchdogs. Active streams using a virtual display will lose video.",
+        "terminateVirtualDisplayLinuxDescription": "Vibepollo will cancel pending display recovery, try to restore the physical display layout, and disconnect every managed virtual display. Active streams using a virtual display will lose video. A host without a working physical display may go blank. New sessions can create virtual displays again.",
         "terminateVirtualDisplayTitle": "Terminate every virtual display?"
       },
       "crash": {
@@ -1013,12 +1024,16 @@
         "sessionRevoked": "{browser} was revoked.",
         "snapshotCaptured": "The current display layout is now the recovery baseline.",
         "snapshotDeleted": "The display recovery snapshot was deleted.",
-        "virtualDisplayTerminated": "Automatic recovery was disengaged and managed virtual displays were terminated."
+        "virtualDisplayTerminated": "Automatic recovery was disengaged and managed virtual displays were terminated.",
+        "virtualDisplayTerminatedLinux": "Managed virtual displays were disconnected.",
+        "virtualDisplayTerminatedLinuxWithoutRestore": "Managed virtual displays were disconnected, but the physical display layout could not be restored."
       },
       "recovery": {
         "available": "Available",
         "availableDetail": "A known-good display layout is available for recovery.",
         "lastFailure": "Last failure",
+        "linuxTitle": "Virtual display recovery",
+        "linuxDescription": "Terminate managed virtual displays to recover from a display problem. Vibepollo will first try to restore the physical display layout.",
         "noneRecorded": "None recorded",
         "notCaptured": "Not captured",
         "notCapturedDetail": "No known-good display layout has been saved.",
@@ -1549,7 +1564,7 @@
           "label": "Displays"
         },
         "everyday": {
-          "description": "The essentials for your streaming screen, sound, and controls.",
+          "description": "Set up Vibepollo's virtual screens, smoother game capture, Remote Monitor, and stream automation. Use the other categories for detailed tuning.",
           "label": "Everyday setup"
         },
         "files": {
@@ -1578,6 +1593,7 @@
         }
       },
       "categories_label": "Settings categories",
+      "game_libraries": "Game library integrations",
       "dependency_inactive": "Currently inactive because “{setting}” is off or uses another mode.",
       "description": "Make this host work the way you stream.",
       "command_editor": {
@@ -1630,14 +1646,14 @@
           "label": "HDR requested by the client"
         },
         "dd_manual_refresh_rate": {
-          "description": "Enter a whole or decimal refresh rate in hertz."
+          "description": "Enter a whole or decimal refresh rate in hertz. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override takes priority over a manual refresh rate."
         },
         "dd_config_revert_delay": {
           "description": "Wait this many milliseconds after the last stream or app ends before restoring the previous display layout.",
           "label": "Display restore delay"
         },
         "dd_manual_resolution": {
-          "description": "Use WIDTHxHEIGHT, for example 2560x1440."
+          "description": "Use WIDTHxHEIGHT, for example 2560x1440. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override and launch resolution scaling take priority over a manual resolution."
         },
         "dd_mode_remapping": {
           "description": "Use a different resolution on the streaming display when the client requests a specific size.",
@@ -1668,6 +1684,10 @@
           "description": "Optional comma-separated DRM connector names reserved for private streams. Leave empty to use the four-output managed pool. On Linux 7.1+, Vibepollo provides GPU-attached HDR10 and 10-bit output; HDR uses direct KMS capture, KWin is recommended for SDR, and managed display creation fails if the custom driver is unavailable.",
           "label": "Linux private display connectors"
         },
+        "virtual_display_max_clients": {
+          "label": "Virtual display client limit",
+          "description": "Allow 1 to 8 paired clients to own virtual displays (default 4). Normal streams and Remote Monitor share this limit. Linux is also limited by its provisioned private outputs. Lowering the limit keeps existing displays until their owners release them."
+        },
         "remote_monitor_mute_audio": {
           "description": "Send picture and input without sending game or desktop audio to the Remote Monitor client.",
           "label": "Mute audio on Remote Monitor"
@@ -1689,7 +1709,7 @@
           "label": "Confirm before replacing a running app"
         },
         "capture": {
-          "description": "Automatic follows the capture backend Vibepollo chooses for this host. On Linux, managed private HDR sessions use direct KMS capture while KWin remains recommended for SDR. Override it only for compatibility or a specific capture path.",
+          "description": "Automatic uses KMS for managed virtual screens on Linux for maximum compatibility and low latency. Explicit capture choices are honored for physical and virtual screens; other methods are not recommended for virtual screens.",
           "label": "Capture method"
         },
         "encoder": {
@@ -1761,6 +1781,10 @@
           "description": "Choose whether Vibepollo captures a physical monitor or creates a display sized for the client.",
           "label": "Streaming display"
         },
+        "wgc_direct_encoder_input": {
+          "description": "Encode each Windows capture frame directly instead of copying it first. This lowers encode latency. Turn it off to use the previous copy path.",
+          "label": "Direct Windows capture input"
+        },
         "wgc_pacing_smoothing": {
           "description": "Reduce visible pacing changes when Windows Graphics Capture is active.",
           "label": "Smooth Windows capture cadence"
@@ -1798,6 +1822,13 @@
         "status_unavailable_description": "The host could not report installation status. You can still enter a path manually.",
         "use_detected": "Save detected path",
         "use_selected": "Use selected path",
+        "playnite": {
+          "directory_label": "Playnite directory",
+          "directory_hint": "If automatic detection fails, choose the host folder containing Playnite.DesktopApp.exe. Save settings before installing the plugin. Clear the path to restore automatic detection.",
+          "browse_title": "Choose Playnite directory",
+          "browse_selected": "Selected folder: {path}",
+          "browse_empty": "This folder has no subfolders. You can select the current folder."
+        },
         "lossless": {
           "not_detected": "Lossless Scaling was not found. Install it from Steam or enter the full path to LosslessScaling.exe.",
           "path_is_directory": "The selected path is a folder. Choose LosslessScaling.exe itself.",
@@ -1812,10 +1843,16 @@
           "not_detected": "RTSS was not found. Install it or enter its installation folder; automatic selection will use another limiter when available.",
           "path_missing": "The configured RTSS folder was not found. Choose another folder or clear the path to resume automatic detection.",
           "ready": "RTSS and its hooks are installed. Frame pacing is ready to use.",
-          "selected": "RTSS is selected and ready for the next stream."
-        }
+          "selected": "RTSS is selected and ready for the next stream.",
+          "saved_status_hint": "RTSS status checks the saved installation. Save path changes before rescanning; active streams may defer applying them."
+        },
+        "saved_ready": "Saved installation ready"
       },
       "groups": {
+        "app_focus": {
+          "title": "Managed application focus",
+          "description": "Automatically bring games from managed libraries to the foreground after launch."
+        },
         "audio_routing": {
           "title": "Audio routing"
         },
@@ -1848,8 +1885,18 @@
           "title": "Capture, encoding, sound, and controllers"
         },
         "everyday_display": {
-          "description": "Choose the streaming screen, how it joins the host desktop, and how Vibepollo captures it.",
-          "title": "Screen used for streaming"
+          "title": "Your streaming screen",
+          "description": "Choose a virtual screen or your physical monitor, then match your client’s resolution, refresh rate, and HDR."
+        },
+        "everyday_integrations": {
+          "title": "Streaming integrations",
+          "description": "Connect frame limiting and Lossless Scaling to your stream.",
+          "description_linux": "Configure Proton or MangoHUD frame limiting and your performance overlay.",
+          "description_windows": "Configure frame limiting, RTSS, and Lossless Scaling."
+        },
+        "everyday_pyrowave": {
+          "title": "PyroWave",
+          "description": "Vibepollo’s alternative to H.264, HEVC, and AV1."
         },
         "everyday_encoding": {
           "description": "Use the preferred dedicated GPU automatically, then adjust only its relevant preset and stream recovery overhead.",
@@ -1876,8 +1923,8 @@
           "title": "Remote Monitor"
         },
         "everyday_smoothness": {
-          "description": "Vibepollo runs the virtual screen faster than your stream so each game frame is captured right after it's drawn, and caps games to the stream rate. Pick how fast below.",
-          "description_linux": "Vibepollo manages virtual-screen capture automatically. Manual Linux pacing overrides are available under Advanced capture and pacing.",
+          "description": "Choose faster virtual-screen capture timing and automatic game pacing, or turn them off.",
+          "description_linux": "Choose automatic virtual-screen pacing or compatibility mode. Configure Proton and MangoHUD under Streaming integrations below.",
           "title": "Smoother game capture"
         },
         "everyday_virtual_display": {
@@ -1967,6 +2014,10 @@
         "encoder_sw": {
           "title": "Software encoding",
           "description": "Advanced settings for this encoder. Automatic selection is verified by the host when streaming starts."
+        },
+        "everyday_compatibility": {
+          "title": "Display compatibility",
+          "description": "Override HDR requests or the capture method when troubleshooting."
         }
       },
       "loading": "Loading settings",
@@ -2022,8 +2073,8 @@
           "verify_only": "Verify it is active"
         },
         "encoder": {
-          "amdvce_ffmpeg": "AMD AMF (FFmpeg)",
-          "amdvce_experimental": "AMD AMF (Experimental)",
+          "amdvce_ffmpeg": "AMD AMF (Legacy FFmpeg)",
+          "amdvce_experimental": "AMD AMF (Native)",
           "auto": "Automatic · Recommended",
           "auto_selected": "Automatic · {encoder}",
           "mediafoundation": "Windows Media Foundation",
@@ -2151,7 +2202,8 @@
           "percent": "{value}%",
           "preserve": "@:config.virtual_display_scale_auto",
           "recommended": "@:config.virtual_display_scale_recommended"
-        }
+        },
+        "unsupported_saved": "Unsupported saved value ({value})"
       },
       "placeholders": {
         "follow_client": "0 · Follow the client",
@@ -2171,7 +2223,7 @@
         "inactive_title": "Overrides are currently inactive",
         "invalid_saved_description": "The saved value is not in the supported three-list format. It has been preserved unchanged so these controls cannot silently replace it. Correct it in the configuration file before editing substitutions here.",
         "invalid_saved_title": "Saved resolution overrides could not be read",
-        "manual_description": "A fixed resolution or refresh rate takes priority for that part of the display mode. Overrides remain active for each value set to Match the client.",
+        "manual_description": "A fixed resolution or refresh rate takes priority over remapping rules for that value. For a new app launch with no app or stream already running, matching configuration values take priority in this order: Client, Application, Global. Joining an active shared session or reconnecting to an existing app, including a paused app, may keep the host's existing settings. A client's Display mode override takes priority over manual values. Launch resolution scaling also takes priority over a manual resolution. Rules remain active for each value set to Match the client, unless a client's Display mode override is active; that override bypasses all remapping.",
         "manual_title": "A fixed display mode is active",
         "policy_conflict_description": "The automatic-refresh and fixed-refresh rule lists contain different behavior for the same resolution. Preserve those policy-specific rules in Advanced Display settings, or make them agree before using the simple editor.",
         "policy_conflict_title": "Policy-specific resolution rules need attention",
@@ -2285,7 +2337,8 @@
           "unknown": "Unknown driver"
         },
         "states": {
-          "failed": "Unavailable"
+          "failed": "Unavailable",
+          "uninitialized": "No driver result"
         },
         "messages": {
           "ready": {
@@ -2297,8 +2350,8 @@
             "description": "{driver} did not respond to the latest runtime check. Repair or reinstall the selected driver before using a virtual display."
           },
           "uninitialized": {
-            "title": "Driver has not been initialized",
-            "description": "The host has not initialized a virtual-display driver yet. Start a stream or restart Vibepollo, then check this status again."
+            "title": "No driver result available",
+            "description": "Vibepollo opens the virtual-display connection when needed. No current driver result is available. This status alone does not indicate a failure."
           },
           "version_incompatible": {
             "title": "Driver version mismatch",
@@ -2328,7 +2381,7 @@
       "linux": {
         "title": "Display readiness",
         "recommendation": "Virtual screens match your client's resolution and refresh rate automatically.",
-        "explanation": "A virtual screen provides smooth frame delivery and low capture latency. Automatic resolution and refresh matching keeps it in sync with your client.",
+        "explanation": "KMS capture on managed virtual screens provides smooth frame delivery and low capture latency. Other capture methods are allowed, but may not work properly and do not use this low-latency path. Automatic resolution and refresh matching keeps the screen in sync with your client.",
         "per_client": "Virtual screen per device",
         "shared": "One shared virtual screen",
         "states": {
@@ -2370,7 +2423,25 @@
         "port_range": "Choose a base port from 1029 through 65514 so all dependent listeners remain valid.",
         "resolution": "Enter a resolution such as 2560x1440.",
         "array": "Enter a JSON array; leave empty to use the default."
-      }
+      },
+      "everyday_help": {
+        "pyrowave": "Use Vibepollo’s GPU wavelet codec with a compatible client. Requires a compatible GPU and a fast wired network.",
+        "frame_limiter_auto_virtual_framegen": "Automatic and Compatibility use a faster virtual-screen refresh rate. Off follows the stream frame rate. Your stream frame rate stays the same.",
+        "dd_virtual_display_scale": "Change the size of text and controls on your virtual screen.",
+        "wayland_hdr_compatibility": "Use compatibility handling for HDR games on the managed Wayland display."
+      },
+      "links": {
+        "displays": "All display settings →",
+        "pacing": "Capture and pacing settings →",
+        "pyrowave": "PyroWave codec settings →",
+        "integrations": "Manage integrations →",
+        "remote_monitor": "All Remote Monitor settings →",
+        "video": "All video settings →",
+        "recovery": "All display recovery settings →",
+        "automation": "Host automation settings →"
+      },
+      "game_library_links": "Game libraries",
+      "legacy_fec_zero": "The saved zero is ignored by the host. Choose 1–255% to set standard FEC."
     },
     "api_tokens": {
       "active": {

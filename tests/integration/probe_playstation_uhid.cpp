@@ -91,6 +91,7 @@ static void probe(int profile) {
     require((report[28] | report[29] << 8 | report[30] << 16 | report[31] << 24) >= 0x1003e,
             "DS5 native firmware gate failed");
     require((report[44] | report[45] << 8) >= 0x0390, "libScePad DualSense update version failed");
+    require((report[44] | report[45] << 8) >= 0x0630, "Steam DualSense update version failed");
   }
   report.fill(0); report[0] = profile == 4 ? 0x12 : 0x09;
   require(ioctl(fd.value, HIDIOCGFEATURE(report.size()), report.data()) == (profile == 4 ? 16 : 20),

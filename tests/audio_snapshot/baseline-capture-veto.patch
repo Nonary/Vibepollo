@@ -1,0 +1,19 @@
+--- a/src/config_display_transition.h
++++ b/src/config_display_transition.h
+@@ -20,14 +20,8 @@
+     }
+   };
+ 
+-  inline void capture_best_effort(const before_mutation_f &capture) noexcept {
+-    try {
+-      if (capture) {
+-        capture();
+-      }
+-    } catch (...) {
+-      // Optional capture must never veto the original display operation.
+-    }
++  inline void capture_best_effort(const before_mutation_f &capture) {
++    if (capture) capture();
+   }
+ 
+   // Installation includes parsing/effective settings and returns the original

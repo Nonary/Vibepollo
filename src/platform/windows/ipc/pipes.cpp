@@ -46,6 +46,23 @@
 
 namespace platf::dxgi {
 
+  namespace {
+    int client_wait_ms(
+      const std::chrono::steady_clock::time_point deadline,
+      const int stage_limit_ms,
+      const std::function<bool()> &cancelled
+    ) {
+      if (cancelled && cancelled()) {
+        return 0;
+      }
+      const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                               deadline - std::chrono::steady_clock::now()
+      )
+                               .count();
+      return static_cast<int>(std::clamp<long long>(remaining, 0, stage_limit_ms));
+    }
+  }  // namespace
+
   // Helper functions for proper string conversion
 
   bool init_sd_with_explicit_aces(SECURITY_DESCRIPTOR &desc, std::vector<EXPLICIT_ACCESS> &eaList, PACL *out_pacl) {
@@ -255,11 +272,26 @@ namespace platf::dxgi {
     _secdesc_builder = std::move(builder);
   }
 
+  void NamedPipeFactory::set_client_identification_only() {
+    _client_security_flags = SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION;
+  }
+
   std::unique_ptr<INamedPipe> NamedPipeFactory::create_client(const std::string &pipeName) {
+    return create_client(pipeName, {}, std::chrono::steady_clock::time_point::max());
+  }
+
+  std::unique_ptr<INamedPipe> NamedPipeFactory::create_client(
+    const std::string &pipeName,
+    const std::function<bool()> &cancelled,
+    const std::chrono::steady_clock::time_point operation_deadline
+  ) {
+    if (client_wait_ms(operation_deadline, 500, cancelled) <= 0) {
+      return nullptr;
+    }
     auto wPipeBase = utf8_to_wide(pipeName);
     std::wstring fullPipeName = (wPipeBase.find(LR"(\\.\pipe\)") == 0) ? wPipeBase : LR"(\\.\pipe\)" + wPipeBase;
 
-    winrt::file_handle hPipe = create_client_pipe(fullPipeName);
+    winrt::file_handle hPipe = create_client_pipe(fullPipeName, cancelled, operation_deadline);
     if (!hPipe) {
       DWORD err = GetLastError();
       BOOST_LOG(error) << "CreateFileW failed (" << err << ")";
@@ -270,16 +302,19 @@ namespace platf::dxgi {
     return pipeObj;
   }
 
-  winrt::file_handle NamedPipeFactory::create_client_pipe(const std::wstring &fullPipeName) const {
-    constexpr ULONGLONG kClientConnectDeadlineMs = 500;  // 500ms per attempt; callers retry externally
-    const ULONGLONG deadline = GetTickCount64() + kClientConnectDeadlineMs;
+  winrt::file_handle NamedPipeFactory::create_client_pipe(
+    const std::wstring &fullPipeName,
+    const std::function<bool()> &cancelled,
+    const std::chrono::steady_clock::time_point operation_deadline
+  ) const {
+    const auto deadline = std::min(operation_deadline, std::chrono::steady_clock::now() + std::chrono::milliseconds(500));
     const ULONGLONG start_time = GetTickCount64();
     int retry_count = 0;
     DWORD last_error = 0;
 
-    while (GetTickCount64() < deadline) {
+    while (client_wait_ms(deadline, 500, cancelled) > 0) {
       winrt::file_handle pipe {
-        CreateFileW(fullPipeName.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED, nullptr)
+        CreateFileW(fullPipeName.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, FILE_FLAG_OVERLAPPED | _client_security_flags, nullptr)
       };
 
       if (pipe) {
@@ -298,7 +333,11 @@ namespace platf::dxgi {
         if (retry_count == 1 || retry_count % 20 == 0) {
           BOOST_LOG(debug) << "Pipe busy, waiting... (retry " << retry_count << ")";
         }
-        WaitNamedPipeW(fullPipeName.c_str(), 250);
+        const int wait_ms = client_wait_ms(deadline, cancelled ? 50 : 250, cancelled);
+        if (wait_ms <= 0) {
+          break;
+        }
+        WaitNamedPipeW(fullPipeName.c_str(), static_cast<DWORD>(wait_ms));
         continue;
       }
       if (err == ERROR_FILE_NOT_FOUND) {
@@ -308,7 +347,11 @@ namespace platf::dxgi {
           BOOST_LOG(warning) << "Still waiting for pipe after " << (GetTickCount64() - start_time)
                              << "ms (" << retry_count << " retries)";
         }
-        Sleep(50);
+        const int wait_ms = client_wait_ms(deadline, 50, cancelled);
+        if (wait_ms <= 0) {
+          break;
+        }
+        Sleep(static_cast<DWORD>(wait_ms));
         continue;
       }
 
@@ -342,28 +385,45 @@ namespace platf::dxgi {
 
     std::unique_ptr<INamedPipe> build_anonymous_server_pipe(
       std::unique_ptr<INamedPipe> control_pipe,
-      const NamedPipeFactory &factory
+      const NamedPipeFactory &factory,
+      std::function<bool()> stop_requested
     );
   }  // namespace
 
   std::unique_ptr<INamedPipe> AnonymousPipeFactory::create_server(const std::string &pipeName) {
+    return create_server(pipeName, {});
+  }
+
+  std::unique_ptr<INamedPipe> AnonymousPipeFactory::create_server(const std::string &pipeName, std::function<bool()> stop_requested) {
     auto first_pipe = _pipe_factory.create_server(pipeName);
     if (!first_pipe) {
       return nullptr;
     }
-    return build_anonymous_server_pipe(std::move(first_pipe), _pipe_factory);
+    return build_anonymous_server_pipe(std::move(first_pipe), _pipe_factory, std::move(stop_requested));
   }
 
   std::unique_ptr<INamedPipe> AnonymousPipeFactory::create_client(const std::string &pipeName) {
-    auto first_pipe = _pipe_factory.create_client(pipeName);
+    return create_client(pipeName, {}, std::chrono::steady_clock::time_point::max());
+  }
+
+  std::unique_ptr<INamedPipe> AnonymousPipeFactory::create_client(
+    const std::string &pipeName,
+    const std::function<bool()> &cancelled,
+    const std::chrono::steady_clock::time_point operation_deadline
+  ) {
+    auto first_pipe = _pipe_factory.create_client(pipeName, cancelled, operation_deadline);
     if (!first_pipe) {
       return nullptr;
     }
-    return handshake_client(std::move(first_pipe));
+    return handshake_client(std::move(first_pipe), cancelled, operation_deadline);
   }
 
   void AnonymousPipeFactory::set_security_descriptor_builder(NamedPipeFactory::SecurityDescriptorBuilder builder) {
     _pipe_factory.set_security_descriptor_builder(std::move(builder));
+  }
+
+  void AnonymousPipeFactory::set_client_identification_only() {
+    _pipe_factory.set_client_identification_only();
   }
 
   class PrefetchedPipe: public INamedPipe {
@@ -431,6 +491,8 @@ namespace platf::dxgi {
       return _inner && _inner->is_connected();
     }
 
+    std::optional<DWORD> peer_process_id() override { return _inner ? _inner->peer_process_id() : std::nullopt; }
+
   private:
     std::unique_ptr<INamedPipe> _inner;
     std::vector<uint8_t> _buffer;
@@ -439,31 +501,35 @@ namespace platf::dxgi {
 
   class AnonymousServerPipe final: public INamedPipe {
   public:
-    AnonymousServerPipe(std::unique_ptr<INamedPipe> control_pipe, NamedPipeFactory factory):
+    AnonymousServerPipe(std::unique_ptr<INamedPipe> control_pipe, NamedPipeFactory factory, std::function<bool()> stop_requested):
         control_(std::move(control_pipe)),
-        pipe_factory_(std::move(factory)) {}
+        pipe_factory_(std::move(factory)),
+        stop_requested_(std::move(stop_requested)) {}
 
     bool send(std::span<const uint8_t> bytes, int timeout_ms) override {
       maybe_handshake();
-      auto *pipe = active_pipe();
+      auto *pipe = stop_requested() ? nullptr : active_pipe();
       return pipe ? pipe->send(bytes, timeout_ms) : false;
     }
 
     PipeResult receive(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) override {
       maybe_handshake();
       bytesRead = 0;
-      auto *pipe = active_pipe();
+      auto *pipe = stop_requested() ? nullptr : active_pipe();
       return pipe ? pipe->receive(dst, bytesRead, timeout_ms) : PipeResult::Disconnected;
     }
 
     PipeResult receive_latest(std::span<uint8_t> dst, size_t &bytesRead, int timeout_ms) override {
       maybe_handshake();
       bytesRead = 0;
-      auto *pipe = active_pipe();
+      auto *pipe = stop_requested() ? nullptr : active_pipe();
       return pipe ? pipe->receive_latest(dst, bytesRead, timeout_ms) : PipeResult::Disconnected;
     }
 
     void wait_for_client_connection(int milliseconds) override {
+      if (stop_requested()) {
+        return;
+      }
       if (data_) {
         data_->wait_for_client_connection(milliseconds);
         return;
@@ -491,7 +557,13 @@ namespace platf::dxgi {
       return control_ && control_->is_connected();
     }
 
+    std::optional<DWORD> peer_process_id() override { auto *pipe = active_pipe(); return pipe ? pipe->peer_process_id() : std::nullopt; }
+
   private:
+    bool stop_requested() const {
+      return stop_requested_ && stop_requested_();
+    }
+
     INamedPipe *active_pipe() {
       if (data_) {
         return data_.get();
@@ -500,7 +572,7 @@ namespace platf::dxgi {
     }
 
     bool send_handshake_message(const std::string &pipe_name) {
-      if (!control_ || !control_->is_connected()) {
+      if (stop_requested() || !control_ || !control_->is_connected()) {
         return false;
       }
 
@@ -526,9 +598,12 @@ namespace platf::dxgi {
       std::array<uint8_t, 64> chunk {};
       const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
 
-      while (std::chrono::steady_clock::now() < deadline) {
+      while (!stop_requested() && std::chrono::steady_clock::now() < deadline) {
         size_t bytes_read = 0;
         const PipeResult result = control_->receive(chunk, bytes_read, 1000);
+        if (stop_requested()) {
+          return AnonymousPipeFactory::HandshakeAckResult::Failed;
+        }
 
         if (result == Success) {
           if (bytes_read == 0) {
@@ -544,6 +619,9 @@ namespace platf::dxgi {
             if (buffered.size() < sizeof(uint32_t)) {
               size_t peek_read = 0;
               const PipeResult peek = control_->receive(chunk, peek_read, 10);
+              if (stop_requested()) {
+                return AnonymousPipeFactory::HandshakeAckResult::Failed;
+              }
               if (peek == Success && peek_read > 0) {
                 buffered.insert(buffered.end(), chunk.begin(), chunk.begin() + static_cast<std::ptrdiff_t>(peek_read));
                 continue;
@@ -571,14 +649,14 @@ namespace platf::dxgi {
         }
       }
 
-      return AnonymousPipeFactory::HandshakeAckResult::Fallback;
+      return stop_requested() ? AnonymousPipeFactory::HandshakeAckResult::Failed : AnonymousPipeFactory::HandshakeAckResult::Fallback;
     }
 
     void maybe_handshake() {
       if (handshake_attempted_) {
         return;
       }
-      if (!control_ || !control_->is_connected()) {
+      if (stop_requested() || !control_ || !control_->is_connected()) {
         return;
       }
       handshake_attempted_ = true;
@@ -593,8 +671,15 @@ namespace platf::dxgi {
         return;
       }
 
+      if (stop_requested()) {
+        return;
+      }
+
       std::vector<uint8_t> buffered;
       const auto ack_result = wait_for_handshake_ack(buffered);
+      if (stop_requested()) {
+        return;
+      }
       if (ack_result != AnonymousPipeFactory::HandshakeAckResult::Acked) {
         BOOST_LOG(debug) << "Anonymous handshake: ACK not received; using control pipe.";
         if (!buffered.empty()) {
@@ -611,7 +696,13 @@ namespace platf::dxgi {
         }
         return;
       }
+      if (stop_requested()) {
+        return;
+      }
       data_pipe->wait_for_client_connection(0);
+      if (stop_requested()) {
+        return;
+      }
       if (!data_pipe->is_connected()) {
         BOOST_LOG(warning) << "Anonymous handshake: client did not connect to data pipe; using control pipe.";
         if (!buffered.empty()) {
@@ -632,15 +723,17 @@ namespace platf::dxgi {
     std::unique_ptr<INamedPipe> control_;
     std::unique_ptr<INamedPipe> data_;
     NamedPipeFactory pipe_factory_;
+    std::function<bool()> stop_requested_;
     bool handshake_attempted_ {false};
   };
 
   namespace {
     std::unique_ptr<INamedPipe> build_anonymous_server_pipe(
       std::unique_ptr<INamedPipe> control_pipe,
-      const NamedPipeFactory &factory
+      const NamedPipeFactory &factory,
+      std::function<bool()> stop_requested
     ) {
-      return std::make_unique<AnonymousServerPipe>(std::move(control_pipe), factory);
+      return std::make_unique<AnonymousServerPipe>(std::move(control_pipe), factory, std::move(stop_requested));
     }
   }  // namespace
 
@@ -790,12 +883,16 @@ namespace platf::dxgi {
     return HandshakeAckResult::Fallback;
   }
 
-  std::unique_ptr<INamedPipe> AnonymousPipeFactory::handshake_client(std::unique_ptr<INamedPipe> pipe) {
+  std::unique_ptr<INamedPipe> AnonymousPipeFactory::handshake_client(
+    std::unique_ptr<INamedPipe> pipe,
+    const std::function<bool()> &cancelled,
+    const std::chrono::steady_clock::time_point operation_deadline
+  ) {
     AnonConnectMsg msg {};
     std::vector<uint8_t> prefetched;
 
-    const auto msg_result = receive_handshake_message(pipe, msg, prefetched);
-    if (msg_result == HandshakeMessageResult::Failed) {
+    const auto msg_result = receive_handshake_message(pipe, msg, prefetched, cancelled, operation_deadline);
+    if (msg_result == HandshakeMessageResult::Failed || client_wait_ms(operation_deadline, 5000, cancelled) <= 0) {
       return nullptr;
     }
 
@@ -804,13 +901,16 @@ namespace platf::dxgi {
       return std::make_unique<PrefetchedPipe>(std::move(pipe), std::move(prefetched));
     }
 
-    if (!send_handshake_ack(pipe)) {
+    if (!send_handshake_ack(pipe, cancelled, operation_deadline)) {
       return nullptr;
     }
 
     std::wstring wpipeName(msg.pipe_name);
     std::string pipeNameStr = wide_to_utf8(wpipeName);
-    auto data_pipe = connect_to_data_pipe(pipeNameStr);
+    auto data_pipe = connect_to_data_pipe(pipeNameStr, cancelled, operation_deadline);
+    if (client_wait_ms(operation_deadline, 5000, cancelled) <= 0) {
+      return nullptr;
+    }
     if (!data_pipe) {
       BOOST_LOG(warning) << "Anonymous handshake: failed to connect to data pipe; using control pipe.";
       return pipe;
@@ -823,20 +923,22 @@ namespace platf::dxgi {
   AnonymousPipeFactory::HandshakeMessageResult AnonymousPipeFactory::receive_handshake_message(
     std::unique_ptr<INamedPipe> &pipe,
     AnonConnectMsg &msg,
-    std::vector<uint8_t> &prefetched
+    std::vector<uint8_t> &prefetched,
+    const std::function<bool()> &cancelled,
+    const std::chrono::steady_clock::time_point operation_deadline
   ) const {
     using enum platf::dxgi::PipeResult;
     prefetched.clear();
 
     std::array<uint8_t, 256> chunk {};
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    const auto deadline = std::min(operation_deadline, std::chrono::steady_clock::now() + std::chrono::seconds(2));
     int zero_reads = 0;
 
     constexpr uint32_t kMaxFrameLen = 2 * 1024 * 1024;
 
-    while (std::chrono::steady_clock::now() < deadline) {
+    while (const int wait_ms = client_wait_ms(deadline, cancelled ? 50 : 200, cancelled)) {
       size_t bytes_read = 0;
-      const PipeResult result = pipe->receive(chunk, bytes_read, 200);
+      const PipeResult result = pipe->receive(chunk, bytes_read, wait_ms);
 
       if (result == Success) {
         if (bytes_read == 0) {
@@ -888,9 +990,14 @@ namespace platf::dxgi {
     return HandshakeMessageResult::Inline;
   }
 
-  bool AnonymousPipeFactory::send_handshake_ack(std::unique_ptr<INamedPipe> &pipe) const {
+  bool AnonymousPipeFactory::send_handshake_ack(
+    std::unique_ptr<INamedPipe> &pipe,
+    const std::function<bool()> &cancelled,
+    const std::chrono::steady_clock::time_point operation_deadline
+  ) const {
     uint8_t ack = ACK_MSG;
-    if (!pipe->send(std::span<const uint8_t>(&ack, 1), 5000)) {
+    const int wait_ms = client_wait_ms(operation_deadline, 5000, cancelled);
+    if (wait_ms <= 0 || !pipe->send(std::span<const uint8_t>(&ack, 1), wait_ms)) {
       BOOST_LOG(error) << "Failed to send handshake ACK to server";
       pipe->disconnect();
       return false;
@@ -900,25 +1007,25 @@ namespace platf::dxgi {
     return true;
   }
 
-  std::unique_ptr<INamedPipe> AnonymousPipeFactory::connect_to_data_pipe(const std::string &pipeNameStr) {
-    std::unique_ptr<INamedPipe> data_pipe = nullptr;
-    auto retry_start = std::chrono::steady_clock::now();
-    const auto retry_timeout = std::chrono::seconds(5);
-
-    while (std::chrono::steady_clock::now() - retry_start < retry_timeout) {
-      data_pipe = _pipe_factory.create_client(pipeNameStr);
+  std::unique_ptr<INamedPipe> AnonymousPipeFactory::connect_to_data_pipe(
+    const std::string &pipeNameStr,
+    const std::function<bool()> &cancelled,
+    const std::chrono::steady_clock::time_point operation_deadline
+  ) {
+    const auto deadline = std::min(operation_deadline, std::chrono::steady_clock::now() + std::chrono::seconds(5));
+    while (client_wait_ms(deadline, 5000, cancelled) > 0) {
+      auto data_pipe = _pipe_factory.create_client(pipeNameStr, cancelled, deadline);
       if (data_pipe) {
+        return data_pipe;
+      }
+      const int wait_ms = client_wait_ms(deadline, cancelled ? 50 : 100, cancelled);
+      if (wait_ms <= 0) {
         break;
       }
-      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      std::this_thread::sleep_for(std::chrono::milliseconds(wait_ms));
     }
-
-    if (!data_pipe) {
-      BOOST_LOG(error) << "Failed to connect to data pipe after retries";
-      return nullptr;
-    }
-
-    return data_pipe;
+    BOOST_LOG(error) << "Failed to connect to data pipe before deadline or cancellation";
+    return nullptr;
   }
 
   WinPipe::WinPipe(winrt::file_handle pipe, bool isServer):
@@ -1306,16 +1413,21 @@ namespace platf::dxgi {
     }
   }
 
-  void AsyncNamedPipe::send(std::span<const uint8_t> message) {
+  bool AsyncNamedPipe::send(std::span<const uint8_t> message) {
     // Multiple producers (the pipe worker, helper state callbacks, and
     // dispatcher completions) can reply concurrently. Serialize complete
     // writes so their byte-mode frames cannot be interleaved on the wire.
     std::lock_guard<std::mutex> lock(_send_mutex);
-    safe_execute_operation("send", [this, message]() {
-      if (_pipe && _pipe->is_connected() && !_pipe->send(message, 5000)) {  // 5 second timeout for async sends
+    bool sent = false;
+    safe_execute_operation("send", [this, message, &sent]() {
+      if (_pipe && _pipe->is_connected()) {
+        sent = _pipe->send(message, 5000);
+      }
+      if (!sent) {
         BOOST_LOG(warning) << "Failed to send message through AsyncNamedPipe (timeout or error)";
       }
     });
+    return sent;
   }
 
   void AsyncNamedPipe::disconnect_pipe() {
@@ -1631,3 +1743,24 @@ namespace platf::dxgi {
     return inner && inner->is_connected();
   }
 }  // namespace platf::dxgi
+
+#ifdef _WIN32
+namespace platf::dxgi {
+  std::optional<DWORD> WinPipe::peer_process_id() {
+    ULONG pid = 0;
+    if (!_pipe || !(_is_server ? GetNamedPipeClientProcessId(_pipe.get(), &pid) :
+                               GetNamedPipeServerProcessId(_pipe.get(), &pid)) || pid == 0) return std::nullopt;
+    return static_cast<DWORD>(pid);
+  }
+  std::optional<DWORD> FramedPipe::peer_process_id() {
+    return _inner ? _inner->peer_process_id() : std::nullopt;
+  }
+  std::optional<DWORD> AsyncNamedPipe::peer_process_id() const {
+    return _pipe ? _pipe->peer_process_id() : std::nullopt;
+  }
+  std::optional<DWORD> SelfHealingPipe::peer_process_id() {
+    const auto inner = acquire_inner();
+    return inner ? inner->peer_process_id() : std::nullopt;
+  }
+}
+#endif

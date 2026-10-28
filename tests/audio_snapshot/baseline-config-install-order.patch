@@ -1,0 +1,13 @@
+--- a/src/config_display_transition.h
++++ b/src/config_display_transition.h
+@@ -35,9 +35,9 @@
+   // circuit order as the original apply_config_now predicate.
+   template<class Install, class ActiveOwners, class Revert>
+   void apply(Install &&install, ActiveOwners &&active_owners, const before_mutation_f &capture, Revert &&revert) {
++    capture_best_effort(capture);
+     const auto state = std::forward<Install>(install)();
+     if (state.dd_changed && !std::forward<ActiveOwners>(active_owners)() && state.runtime_overrides_empty) {
+-      capture_best_effort(capture);
+       std::forward<Revert>(revert)(state);
+     }
+   }

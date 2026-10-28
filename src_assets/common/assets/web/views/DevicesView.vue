@@ -31,6 +31,7 @@ interface PairedDevice {
   name: string;
   uuid: string;
   enabled: boolean;
+  allow_sleep?: boolean;
   connected: boolean;
   perm?: number | string;
   enable_legacy_ordering?: boolean;
@@ -44,6 +45,8 @@ interface PairedDevice {
   virtual_display_mode?: string;
   virtual_display_layout?: string;
   always_use_virtual_display?: boolean;
+  requested_resolution_only?: boolean;
+  requested_resolution_catalog_supported?: boolean;
   prefer_10bit_sdr?: boolean;
   config_overrides?: Record<string, unknown>;
 }
@@ -55,6 +58,7 @@ interface ClientsResponse {
 }
 
 interface MutationResponse {
+  allow_sleep_updated?: boolean;
   status?: boolean;
 }
 
@@ -177,6 +181,7 @@ function normalizeDevice(device: unknown, index: number): PairedDevice {
     uuid: stringValue(raw.uuid) || `unknown-device-${fallbackIdentity || index + 1}`,
     name: stringValue(raw.name),
     enabled: booleanValue(raw.enabled, true),
+    allow_sleep: raw.allow_sleep === true,
     connected: booleanValue(raw.connected, false),
     last_seen:
       typeof raw.last_seen === 'number' || typeof raw.last_seen === 'string' ? raw.last_seen : null,
@@ -186,6 +191,11 @@ function normalizeDevice(device: unknown, index: number): PairedDevice {
     virtual_display_mode: stringValue(raw.virtual_display_mode),
     virtual_display_layout: stringValue(raw.virtual_display_layout),
     always_use_virtual_display: booleanValue(raw.always_use_virtual_display, false),
+    requested_resolution_only: booleanValue(raw.requested_resolution_only, false),
+    requested_resolution_catalog_supported: booleanValue(
+      raw.requested_resolution_catalog_supported,
+      false,
+    ),
     prefer_10bit_sdr: booleanValue(raw.prefer_10bit_sdr, false),
     config_overrides: configOverrides ? structuredClone(toRaw(configOverrides)) : {},
   };
@@ -378,6 +388,7 @@ function draftFromDevice(device: PairedDevice): ClientDeviceDraft {
 
   return {
     name: device.name,
+    allowSleep: device.allow_sleep === true,
     permissions: permissionMask(device),
     enableLegacyOrdering: device.enable_legacy_ordering !== false,
     allowClientCommands: device.allow_client_commands !== false,
@@ -391,6 +402,7 @@ function draftFromDevice(device: PairedDevice): ClientDeviceDraft {
     virtualDisplayLayout,
     hdrProfile: device.hdr_profile?.trim() ?? '',
     prefer10BitSdr: Boolean(device.prefer_10bit_sdr),
+    requestedResolutionOnly: Boolean(device.requested_resolution_only),
     configOverrides:
       device.config_overrides && typeof device.config_overrides === 'object'
         ? structuredClone(toRaw(device.config_overrides))
@@ -554,6 +566,7 @@ function hasCustomSettings(device: PairedDevice): boolean {
       device.always_use_virtual_display ||
       device.hdr_profile ||
       device.prefer_10bit_sdr ||
+      device.requested_resolution_only ||
       Object.keys(device.config_overrides ?? {}).length,
   );
 }
@@ -592,11 +605,15 @@ function updatePayload(device: PairedDevice, draft: ClientDeviceDraft): Record<s
   const payload: Record<string, unknown> = {
     uuid: device.uuid,
     name: draft.name.trim(),
+    allow_sleep: draft.allowSleep,
     perm: draft.permissions & PERMISSION_ALL,
     enable_legacy_ordering: draft.enableLegacyOrdering,
     allow_client_commands: draft.allowClientCommands,
     do: draft.doCommands.map((entry) => ({ cmd: entry.command.trim(), elevated: entry.elevated })),
-    undo: draft.undoCommands.map((entry) => ({ cmd: entry.command.trim(), elevated: entry.elevated })),
+    undo: draft.undoCommands.map((entry) => ({
+      cmd: entry.command.trim(),
+      elevated: entry.elevated,
+    })),
     display_mode: draft.displayMode.trim(),
     output_name_override: outputName,
     always_use_virtual_display:
@@ -612,6 +629,7 @@ function updatePayload(device: PairedDevice, draft: ClientDeviceDraft): Record<s
         : '',
     virtual_display_layout: useVirtualDisplay ? (draft.virtualDisplayLayout ?? '') : '',
     prefer_10bit_sdr: draft.prefer10BitSdr,
+    requested_resolution_only: draft.requestedResolutionOnly,
     hdr_profile: draft.hdrProfile.trim(),
     config_overrides: cleanOverrides(draft.configOverrides),
   };
@@ -620,6 +638,7 @@ function updatePayload(device: PairedDevice, draft: ClientDeviceDraft): Record<s
 
 const draftScalarKeys = [
   'name',
+  'allowSleep',
   'permissions',
   'enableLegacyOrdering',
   'allowClientCommands',
@@ -633,6 +652,7 @@ const draftScalarKeys = [
   'virtualDisplayLayout',
   'hdrProfile',
   'prefer10BitSdr',
+  'requestedResolutionOnly',
 ] as const satisfies ReadonlyArray<Exclude<keyof ClientDeviceDraft, 'configOverrides'>>;
 
 function serializedValue(value: unknown): string {
@@ -718,7 +738,7 @@ async function saveDevice(device: PairedDevice): Promise<void> {
       '/api/clients/update',
       updatePayload(device, saveDraft),
     );
-    if (response.status !== true) {
+    if (response.status !== true || response.allow_sleep_updated !== true) {
       throw new Error(t('ui.devices.error.partial_update'));
     }
     drafts.value[device.uuid] = cloneDraft(saveDraft);
@@ -1002,6 +1022,9 @@ onBeforeUnmount(() => {
                   v-model="drafts[device.uuid]"
                   :common-settings="commonSettings"
                   :metadata="{ ...metadata, platform: metadata.platform || platform }"
+                  :requested-resolution-catalog-supported="
+                    device.requested_resolution_catalog_supported
+                  "
                   :display-devices="displayDevices"
                   :display-devices-loading="displayDevicesLoading"
                   :display-devices-loaded="displayDevicesLoaded"

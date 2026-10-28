@@ -21,10 +21,21 @@ struct controller_packet {
   int16_t leftStickX, leftStickY, rightStickX, rightStickY;
 };
 using PNV_MULTI_CONTROLLER_PACKET = controller_packet *;
+struct arrival_packet { uint8_t controllerNumber; uint8_t type; uint16_t capabilities; uint32_t supportedButtonFlags; };
+using PSS_CONTROLLER_ARRIVAL_PACKET = arrival_packet *;
 namespace platf {
   struct gamepad_id_t { int globalIndex; uint8_t clientRelativeIndex; };
-  struct gamepad_arrival_t {};
-  int alloc_gamepad(int, gamepad_id_t, gamepad_arrival_t, int) { return 0; }
+  struct gamepad_arrival_t {
+    uint8_t type;
+    uint16_t capabilities;
+    uint32_t supportedButtons;
+    bool persist_after_disconnect = false;
+  };
+  std::vector<gamepad_id_t> allocated_gamepads;
+  int alloc_gamepad(int, gamepad_id_t id, gamepad_arrival_t, int) {
+    allocated_gamepads.push_back(id);
+    return 0;
+  }
 }
 int alloc_id(std::bitset<16> &mask) {
   for (int i = 0; i < 16; ++i) if (!mask[i]) { mask[i] = true; return i; }
@@ -58,6 +69,12 @@ std::vector<uint8_t> packet_bytes(uint32_t magic) {
   return data;
 }
 void passthrough_next_message(std::shared_ptr<input_t>) {}
+namespace geometry {
+  inline bool request_serialized_worker_wake(std::atomic_bool &scheduled) noexcept {
+    return !scheduled.exchange(true, std::memory_order_acq_rel);
+  }
+}
+
 '''
 
 TESTS = r'''
@@ -243,7 +260,7 @@ int main(int argc, char **argv) {
     assert(a->input_queue.empty() && task_pool.tasks.empty());
   } else if (test == "late_packets_and_double_reset") {
     key(a, 0x41);
-    a->input_queue.push_back({1}); reset(a);
+    a->input_queue.push_back({{1}}); reset(a);
     passthrough(a, packet_bytes(KEY_DOWN_EVENT_MAGIC), crypto::PERM::_all_inputs);
     assert(a->input_queue.empty());
     reset(a); task_pool.drain();
@@ -270,12 +287,32 @@ int main(int argc, char **argv) {
     assert(platf::gamepad_events.back().second.buttonFlags == 0);
     disconnect(a);
   } else if (test == "controller_mask_removes_other_slot") {
+    // Reserve one host slot so global IDs differ from client-relative indices.
+    const auto other_client_id = alloc_id(gamepadMask);
+    assert(other_client_id == 0);
     controller_packet p {0, 3, platf::BACK}; passthrough(a, &p);
     p.controllerNumber = 1; p.buttonFlags = 0; passthrough(a, &p);
+    const auto first_host_id = a->gamepads[0].id;
+    const auto second_host_id = a->gamepads[1].id;
+    assert(first_host_id >= 0 && second_host_id >= 0 && first_host_id != second_host_id);
+    assert(first_host_id != 0 && second_host_id != 1);
+    assert(platf::allocated_gamepads.size() == 2);
+    assert(platf::allocated_gamepads[0].globalIndex == first_host_id);
+    assert(platf::allocated_gamepads[0].clientRelativeIndex == 0);
+    assert(platf::allocated_gamepads[1].globalIndex == second_host_id);
+    assert(platf::allocated_gamepads[1].clientRelativeIndex == 1);
     p.activeGamepadMask = 2; passthrough(a, &p);
-    assert(a->gamepads[0].id == -1 && a->gamepads[1].id >= 0);
-    assert(task_pool.timers.empty() && platf::freed_gamepads.size() == 1);
+    assert(a->gamepads[0].id == -1 && a->gamepads[1].id == second_host_id);
+    assert(task_pool.timers.empty());
+    assert(platf::freed_gamepads == std::vector<int>{first_host_id});
+    // The freed global ID must return to the allocator, not only the platform.
+    p.controllerNumber = 0; p.activeGamepadMask = 3; passthrough(a, &p);
+    assert(a->gamepads[0].id == first_host_id && a->gamepads[1].id == second_host_id);
+    assert(platf::allocated_gamepads.size() == 3);
+    assert(platf::allocated_gamepads[2].globalIndex == first_host_id);
+    assert(platf::allocated_gamepads[2].clientRelativeIndex == 0);
     disconnect(a);
+    assert(platf::freed_gamepads == std::vector<int>{first_host_id, first_host_id, second_host_id});
   } else if (test == "touch_pen_destroyed_while_context_retained") {
     a->client_context = std::make_unique<platf::client_input_t>();
     auto retained = a; disconnect(a);
@@ -286,6 +323,149 @@ int main(int argc, char **argv) {
     key(a, VKEY_LSHIFT); key(a, VKEY_LCONTROL); key(a, VKEY_LMENU);
     auto count = platf::keyboard_events.size(); key(a, 0x70); key(a, 0x70, true);
     assert(platf::keyboard_events.size() == count); disconnect(a);
+  } else if (test.starts_with("guide_")) {
+    // Fake backend setup; real session resolution has its own adapter suite.
+    config::input.guide_button_key = 124; // F13
+    config::input.guide_button_controller = test == "guide_target_slot" ? 1 : 0;
+    config::input.key_repeat_delay = 10ms;
+    a = std::make_shared<input_t>(); b = std::make_shared<input_t>();
+    auto connect = [](std::shared_ptr<input_t> &input, int slot, int mask, int flags = 0) {
+      controller_packet p {}; p.controllerNumber = slot; p.activeGamepadMask = mask; p.buttonFlags = flags;
+      passthrough(input, &p);
+    };
+    auto state = [](std::shared_ptr<input_t> &input, int slot = 0) {
+      const auto id = input->gamepads[slot].id;
+      for (auto it = platf::gamepad_events.rbegin(); it != platf::gamepad_events.rend(); ++it)
+        if (it->first == id) return it->second;
+      std::abort();
+    };
+    auto guide = [&](std::shared_ptr<input_t> &input, bool held, int slot = 0) {
+      assert(bool(state(input, slot).buttonFlags & platf::HOME) == held);
+    };
+    if (test == "guide_removed_while_disabled") {
+      connect(a, 0, 1, platf::BACK); key(a, 124); guide(a, true);
+      assert(!task_pool.timers.empty());
+      config::input.controller = false;
+      connect(a, 0, 0);
+      assert(a->gamepads[0].id == -1 && !a->gamepads[0].guide_key_down);
+      assert(task_pool.timers.empty() && a->guide_key_pressed);
+      assert(platf::gamepad_events.back().second.buttonFlags == 0);
+      auto count = platf::gamepad_events.size();
+      connect(a, 0, 1, platf::HOME); // disabled arrival/update cannot allocate
+      assert(a->gamepads[0].id == -1 && count == platf::gamepad_events.size());
+      config::input.controller = true;
+      connect(a, 0, 1); key(a, 124); guide(a, false); // held press never resurrects
+      key(a, 124, true); key(a, 124); guide(a, true); key(a, 124, true); expect({});
+    } else if (test == "guide_disabled_mask_removes_other_slot") {
+      connect(a, 0, 3, platf::BACK); connect(a, 1, 3); key(a, 124);
+      config::input.controller = false;
+      connect(a, 1, 2, platf::HOME);
+      assert(a->gamepads[0].id == -1 && a->gamepads[1].id >= 0);
+      assert(!a->gamepads[0].guide_key_down && task_pool.timers.empty());
+      guide(a, false, 1); // disabled packet's native HOME was not forwarded
+      key(a, 124, true); config::input.controller = true;
+      connect(a, 0, 3); guide(a, false); expect({});
+    } else if (test == "guide_default_disabled") {
+      config::input.guide_button_key = 0; a = std::make_shared<input_t>();
+      connect(a, 0, 1); key(a, 124); guide(a, false); key(a, 124, true);
+      expect({{124, false, 0}, {124, true, 0}});
+    } else if (test == "guide_held_release_repeat") {
+      connect(a, 0, 1); key(a, 124); guide(a, true);
+      auto count = platf::gamepad_events.size(); key(a, 124);
+      assert(platf::gamepad_events.size() == count && task_pool.timers.empty());
+      key(a, 124, true); guide(a, false); key(a, 124, true);
+      assert(platf::gamepad_events.size() == count + 1 && a->keys.empty()); expect({});
+    } else if (test == "guide_controller_arrival") {
+      arrival_packet p {0, 0, 0, 0}; passthrough(a, &p);
+      assert(a->gamepads[0].id >= 0); key(a, 124); guide(a, true);
+      key(a, 124, true); guide(a, false); expect({});
+    } else if (test == "guide_target_slot") {
+      connect(a, 0, 3); connect(a, 1, 3); key(a, 124);
+      guide(a, false, 0); guide(a, true, 1); key(a, 124, true);
+      guide(a, false, 1); expect({});
+    } else if (test == "guide_session_isolation") {
+      connect(a, 0, 1); connect(b, 0, 1); key(a, 124);
+      guide(a, true); guide(b, false); key(b, 124, true); guide(a, true);
+      key(b, 124); key(a, 124, true); guide(a, false); guide(b, true);
+      disconnect(a); guide(b, true); key(b, 124, true); guide(b, false); expect({});
+    } else if (test == "guide_absent_target_latched") {
+      key(a, 124); assert(platf::gamepad_events.empty() && gamepadMask.none());
+      connect(a, 0, 1); guide(a, false); key(a, 124); guide(a, false);
+      key(a, 124, true); key(a, 124); guide(a, true); key(a, 124, true); expect({});
+    } else if (test == "guide_controller_reconnect") {
+      connect(a, 0, 1); key(a, 124); guide(a, true);
+      connect(a, 0, 0); assert(a->gamepads[0].id == -1);
+      assert(platf::gamepad_events.back().second.buttonFlags == 0);
+      connect(a, 0, 1); key(a, 124); guide(a, false); key(a, 124, true); guide(a, false);
+      key(a, 124); guide(a, true); key(a, 124, true); expect({});
+    } else if (test == "guide_mask_removes_other_slot") {
+      connect(a, 0, 3); connect(a, 1, 3); key(a, 124); guide(a, true);
+      connect(a, 1, 2); assert(a->gamepads[0].id == -1);
+      assert(!a->gamepads[0].guide_key_down); guide(a, false, 1);
+      connect(a, 0, 3); key(a, 124); guide(a, false); key(a, 124, true); expect({});
+    } else if (test == "guide_native_or") {
+      connect(a, 0, 1, platf::HOME); key(a, 124); key(a, 124, true); guide(a, true);
+      key(a, 124); connect(a, 0, 1, 0); guide(a, true); key(a, 124, true); guide(a, false); expect({});
+    } else if (test == "guide_controller_state_preserved") {
+      connect(a, 0, 1); key(a, 124);
+      controller_packet p {0, 1, 0x1000, 0, 12, 34, 123, -456, 789, -1234};
+      passthrough(a, &p); guide(a, true);
+      auto v = state(a); assert(v.buttonFlags == (0x1000 | platf::HOME));
+      assert(v.lt == 12 && v.rt == 34 && v.lsX == 123 && v.lsY == -456 && v.rsX == 789 && v.rsY == -1234);
+      key(a, 124, true); v = state(a); assert(v.buttonFlags == 0x1000 && v.lt == 12 && v.lsX == 123); expect({});
+    } else if (test == "guide_back_timer_overlap") {
+      connect(a, 0, 1, platf::BACK); key(a, 124); task_pool.fire();
+      guide(a, true); assert(!(state(a).buttonFlags & platf::BACK));
+      key(a, 124, true); guide(a, false); expect({});
+    } else if (test == "guide_back_timer_unchanged") {
+      connect(a, 0, 1, platf::BACK); auto first = platf::gamepad_events.size(); task_pool.fire();
+      assert(platf::gamepad_events.size() == first + 3);
+      assert(platf::gamepad_events[first].second.buttonFlags == 0);
+      assert(platf::gamepad_events[first + 1].second.buttonFlags == platf::HOME);
+      assert(platf::gamepad_events[first + 2].second.buttonFlags == 0); expect({});
+    } else if (test == "guide_disabled_press") {
+      connect(a, 0, 1);
+      for (bool keyboard_disabled : {false, true}) {
+        config::input.keyboard = !keyboard_disabled; config::input.controller = keyboard_disabled;
+        key(a, 124); guide(a, false);
+        config::input.keyboard = config::input.controller = true; key(a, 124); guide(a, false);
+        key(a, 124, true); guide(a, false);
+      }
+      key(a, 124); guide(a, true); key(a, 124, true); expect({});
+    } else if (test == "guide_release_after_disabled") {
+      connect(a, 0, 1); key(a, 124); config::input.keyboard = config::input.controller = false;
+      key(a, 124, true); guide(a, false); expect({});
+    } else if (test == "guide_session_snapshot") {
+      connect(a, 0, 3); connect(a, 1, 3); key(a, 124);
+      config::input.guide_button_key = 125; config::input.guide_button_controller = 1;
+      b = std::make_shared<input_t>(); connect(b, 0, 3); connect(b, 1, 3);
+      key(a, 124, true); guide(a, false); key(a, 124); guide(a, true);
+      key(b, 125); guide(b, true, 1); guide(b, false, 0); key(b, 125, true); key(a, 124, true); expect({});
+    } else if (test == "guide_remap_and_shortcut_precedence") {
+      config::input.keybindings[124] = 0x41; connect(a, 0, 1); key(a, 124); guide(a, true);
+      key(a, 124, true); guide(a, false); expect({});
+      config::input.guide_button_key = 0x70; a = std::make_shared<input_t>(); connect(a, 0, 1);
+      key(a, VKEY_LSHIFT); key(a, VKEY_LCONTROL); key(a, VKEY_LMENU); auto count = platf::keyboard_events.size();
+      key(a, 0x70); guide(a, true); key(a, 0x70, true); guide(a, false);
+      assert(platf::keyboard_events.size() == count); disconnect(a);
+    } else if (test == "guide_consumed_modifier") {
+      for (int code : {VKEY_SHIFT, VKEY_LSHIFT, VKEY_RSHIFT, VKEY_CONTROL, VKEY_LCONTROL, VKEY_RCONTROL, VKEY_MENU, VKEY_LMENU, VKEY_RMENU}) {
+        config::input.guide_button_key = code; a = std::make_shared<input_t>(); connect(a, 0, 1);
+        int mod = code == VKEY_SHIFT || code == VKEY_LSHIFT || code == VKEY_RSHIFT ? MODIFIER_SHIFT :
+                  code == VKEY_CONTROL || code == VKEY_LCONTROL || code == VKEY_RCONTROL ? MODIFIER_CTRL : MODIFIER_ALT;
+        key(a, code, false, mod); guide(a, true); key(a, 0x41, false, mod); key(a, 0x41, true);
+        key(a, code, true); guide(a, false); expect({{0x41, false, 0}, {0x41, true, 0}});
+        disconnect(a); platf::keyboard_events.clear();
+      }
+    } else if (test == "guide_disconnect_cleanup") {
+      connect(a, 0, 1); key(a, 124); auto retained = a; disconnect(a);
+      assert(!retained->guide_key_pressed && !retained->gamepads[0].guide_key_down);
+      assert(retained->gamepads[0].id == -1 && platf::gamepad_events.back().second.buttonFlags == 0);
+      assert(task_pool.timers.empty() && host_keys.empty()); expect({});
+    } else if (test == "guide_invalid_slot") {
+      config::input.guide_button_controller = 16; a = std::make_shared<input_t>(); connect(a, 0, 1);
+      key(a, 124); guide(a, false); key(a, 124, true); expect({});
+    } else return 2;
   } else { return 2; }
 }
 '''
@@ -296,7 +476,7 @@ def main():
     parser.add_argument('--source', type=Path, default=ROOT / 'src/input.cpp')
     args = parser.parse_args()
     source = args.source.read_text()
-    prelude = production_prelude(source).replace('std::list<int> input_queue;', 'std::list<std::vector<uint8_t>> input_queue;\n  std::atomic_bool input_queue_task_scheduled {false};\n  int feedback_queue = 0;')
+    prelude = production_prelude(source).replace('std::list<int> input_queue;', 'std::list<std::vector<uint8_t>> input_queue;\n  std::atomic_bool input_queue_task_scheduled {false};\n  int feedback_queue = 0;\n  bool persist_gamepads = false;')
     prelude = prelude.replace('void push(std::function<void()> f) { tasks.push_back(std::move(f)); }',
                               'template<class F, class... A> void push(F f, A... a) { tasks.push_back([=] { f(a...); }); }')
     prelude = prelude.replace('constexpr int KEY_UP_EVENT_MAGIC = 2;', 'constexpr int KEY_UP_EVENT_MAGIC = 0x04;')
@@ -305,7 +485,9 @@ def main():
     permissions = crypto_source[crypto_source.index('  enum class PERM :'):crypto_source.index('  struct command_entry_t')]
     prelude += '\nnamespace crypto {\n' + permissions + '\n}\n'
     signatures = (
+        'void send_gamepad_state(const gamepad_t &gamepad)',
         'short map_keycode(short keycode)',
+        'bool passthrough_guide_key(input_t &input, uint16_t key_code, bool release',
         'inline void update_shortcutFlags(int *flags, short keyCode, bool release)',
         'bool is_modifier(uint16_t keyCode)',
         'uint16_t host_keycode(uint16_t key)',
@@ -313,22 +495,23 @@ def main():
         'void release_key(const held_key_t &key)',
         'void send_key_and_modifiers(const held_key_t &key, int shortcut_flags)',
         'void repeat_key(std::shared_ptr<input_t> input, uint16_t key_code)',
-        'void passthrough(std::shared_ptr<input_t> &input, PNV_KEYBOARD_PACKET packet)',
+        'void passthrough(std::shared_ptr<input_t> &input, PNV_KEYBOARD_PACKET packet',
         'void passthrough(std::shared_ptr<input_t> &input, PNV_MOUSE_BUTTON_PACKET packet)',
         'void free_gamepad(platf::input_t &platf_input, int id)',
         'void reset_gamepad(gamepad_t &gamepad)',
+        'void passthrough(std::shared_ptr<input_t> &input, PSS_CONTROLLER_ARRIVAL_PACKET packet)',
         'void passthrough(std::shared_ptr<input_t> &input, PNV_MULTI_CONTROLLER_PACKET packet)',
         'void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM &permission)',
         'void reset(std::shared_ptr<input_t> &input)',
     )
-    handlers = '\n'.join(function(source, signature) for signature in signatures)
+    handlers = '\n'.join(function(source, signature) for signature in signatures if signature in source)
     import re
-    cases = re.findall(r'test == "([^"]+)"', TESTS)
+    cases = list(dict.fromkeys(re.findall(r'test == "([^"]+)"', TESTS)))
     failed = []
     with tempfile.TemporaryDirectory(prefix='input-disconnect-') as temp:
         cpp, binary = Path(temp) / 'test.cpp', Path(temp) / 'test'
         cpp.write_text(prelude + EXTRA + handlers + TESTS)
-        subprocess.run(['c++', '-std=c++20', '-Wall', '-Wextra', '-Wno-sign-compare',
+        subprocess.run(['c++', '-I', str(ROOT), '-std=c++20', '-Wall', '-Wextra', '-Wno-sign-compare',
                         '-Wno-unused-const-variable', '-Wno-missing-field-initializers',
                         str(cpp), '-o', str(binary)], check=True)
         for case in cases:

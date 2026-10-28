@@ -4,11 +4,10 @@ Vibepollo releases are built from an existing, v-less semantic-version tag such 
 or `1.19.0`. The tagged commit must contain the matching version-scoped release notes file, for
 example `release_notes/1.19.0-beta.4.md`.
 
-Linux release candidates live on `vibe-test`. Every push to that branch builds and validates the
+Linux release candidates are built from `master`. Every branch push builds and validates the
 installable Arch/CachyOS package without creating a GitHub Release, updating the signed pacman
 repository, or deploying the production Pages site. Download the `build-Archlinux` artifact from
-the successful CI run for installation and MOK testing. Promote the verified commit to `master`
-before creating the first production tag.
+the successful CI run for installation and MOK testing, and tag only a verified `master` commit.
 
 ## Prepare the release
 

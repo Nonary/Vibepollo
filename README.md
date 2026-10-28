@@ -15,13 +15,25 @@ Vibepollo is an AI‑enhanced version of Apollo, a popular remote streaming appl
   Running Windows Graphics Capture (WGC) as a service improves performance and stability. It captures the full frame rate of frame‑generated titles, avoids crashes when VRAM is exceeded, and follows Microsoft’s recommended capture method going forward. Vibepollo auto‑switches capture methods on demand, so the login screen and UAC prompts are still captured even when using WGC.
 
 * **Native Virtualized Display**
-  Vibepollo uses its bundled virtual display driver by default and keeps SudoVDA installed as a rollback option. It can capture output from any GPU, including those in hybrid laptops, ensuring the virtual screen connects to the correct GPU when needed. It also provides simple virtual display options, allowing users to choose between a physical or virtual display. On headless setups, it enables automatically to prevent 503 errors and false encoder detections, such as incorrect HEVC support reports.
+  Vibepollo uses its bundled virtual display driver by default and keeps SudoVDA installed as a rollback option. It can capture output from any GPU, including those in hybrid laptops, ensuring the virtual screen connects to the correct GPU when needed. It also provides simple virtual display options, allowing users to choose between a physical or virtual display. On headless setups, it enables automatically to prevent 503 errors and false encoder detections, such as incorrect HEVC support reports. Up to eight clients can each have their own virtual screen (`virtual_display_max_clients`, default four), and the dashboard detects and recovers orphaned virtual screens, including when physical monitors wake or return.
+
+* **Remote Monitor and Remote Input**
+  Launch **Remote Monitor** from Moonlight on another device to turn it into an additional, independently streamed display beside your main session. **Remote Input** attaches a client for control without video. Remote Monitor entries can have their own settings, and on Windows you can save how client displays are arranged relative to each other under **Devices → Arrange client displays**.
+
+* **VRR Capture**
+  With Nonary's [VRR Moonlight Client fork](https://github.com/Nonary/moonlight-qt), Windows automatically switches the virtual display to a fixed 1000 Hz mode so newly presented game frames are captured promptly without raising the stream frame rate. Linux virtual displays use presentation-driven capture for the same effect.
+
+* **PyroWave Codec**
+  PyroWave is a GPU wavelet codec with very low encode and decode latency on Windows and Linux. Frames are independent, so a lost frame never forces a new keyframe, and it supports SDR/HDR, 8/10-bit, and 4:2:0/4:4:4 where the GPU allows. It needs a fast **wired LAN** and the [VRR Moonlight Client fork](https://github.com/Nonary/moonlight-qt); Vibepollo can calibrate the link with paced UDP probes and adapts FEC to the available bandwidth. See the [PyroWave guide](docs/pyrowave-protocol.md).
+
+* **Virtual Gamepad Driver (Windows)**
+  Vibepollo ships its own free virtual gamepad driver—no ViGEmBus and no license key. It emulates Xbox Series, Xbox One, DualSense, DualShock 4, and Switch Pro controllers with rumble, impulse triggers, touchpad, motion, battery, lightbar, and DualSense adaptive triggers where the client and game support them. Optional wired USB DualSense emulation delivers native waveform haptics to compatible games, with an adjustable `dualsense_haptics_gain`. See [DualSense haptics setup](docs/windows-dualsense-haptics.md).
 
 * **Focused Configuration Interface**
-  Vibepollo includes a responsive, dependency-light browser interface built around the tasks people perform most often: selecting a streaming display, tuning frame pacing, managing games and devices, checking sessions, and recovering the host. Less common controls remain organized by domain instead of competing with everyday setup.
+  Vibepollo includes a responsive, dependency-light browser interface built around the tasks people perform most often: selecting a streaming display, tuning frame pacing, managing games and devices, checking sessions, and recovering the host. The Everyday page groups display, smoothness, PyroWave, Remote Monitor, and game-library setup, while less common controls remain organized by domain.
 
-* **Playnite Integration**
-  Deep integration with Playnite (a “launcher of launchers”) automatically syncs your recently played games with configurable expiration rules, per‑category sync, and exclusions. You can also add games manually from a Web UI dropdown; Vibepollo handles artwork, launching, and clean termination—emulators included. The goal is a seamless, GeForce Experience–style library experience—only better.
+* **Game Library Sync (Playnite, Steam, Lutris)**
+  Deep integration with Playnite (a “launcher of launchers”) automatically syncs your recently played games with configurable expiration rules, per‑category sync, and exclusions, through a compiled Playnite plugin. Steam and Lutris libraries sync the same way, with artwork and recent-game policies. You can also add games manually from a Web UI dropdown; Vibepollo handles artwork, launching, focusing the game window, and clean termination—emulators included. The goal is a seamless, GeForce Experience–style library experience—only better.
 
 * **RTSS & NVIDIA Control Panel Integration**
   Vibepollo can manage RTSS to apply the correct frame limit and disable V‑Sync before streaming, significantly improving frame pacing and smoothness. The applied frame cap matches the client device’s requested FPS.
@@ -39,7 +51,9 @@ Vibepollo is an AI‑enhanced version of Apollo, a popular remote streaming appl
   The sign‑in flow supports password managers and includes a “remember me” option to minimize prompts. The experience is security‑hardened without sacrificing convenience.
 
 * **Update Notifications**
-  Built‑in notifications let you know when new features or bug fixes are available, making it easy to stay current.
+  Built‑in notifications let you know when new features or bug fixes are available, making it easy to stay current. Prerelease notifications are on by default; you can switch to stable-only.
+
+For PyroWave, VRR pacing, and DualSense waveform haptics, use Nonary's [VRR Moonlight Client fork](https://github.com/Nonary/moonlight-qt). Standard Moonlight clients still work for regular H.264, HEVC, and AV1 streaming.
 
 Due to the sheer pace and volume of changes I was producing, it became impractical to manage them within the original Sunshine repository. The review process simply couldn’t keep up with the rate of development, and large feature sets were piling up without a clear path to integration. To ensure the work remained organized, maintainable, and actively progressing, I established Vibepollo as a standalone fork.
 
@@ -53,15 +67,27 @@ Vibepollo now runs natively on Linux as a set of machine-wide system services wi
 virtual-display kernel driver. The beta targets **Arch Linux and CachyOS**, and it is developed and
 tested on **CachyOS with KDE Plasma 6 on Wayland**. You need Linux 6.16 or newer with matching
 kernel headers, a Plasma Wayland session started by SDDM or Plasma Login Manager, and a GPU with a
-hardware H.264 encoder. Pre-login streaming is NVIDIA-only.
+hardware H.264 encoder. Testing has focused on NVIDIA and modern AMD GPUs; older cards may not work
+properly. NVIDIA hosts can stream and pair from the login screen; AMD and Intel hosts start
+streaming after desktop login.
+
+Managed private virtual displays support HDR, GPU-resident capture, and Remote Monitor sessions
+without dummy plugs. Linux also supports PyroWave (except on the NvFBC capture path), Steam and
+Lutris library sync, Steam Big Picture, Proton-aware frame limiting and HDR compatibility, NVIDIA
+Smooth Motion, DualShock 4 emulation, and wireless DualSense haptics and adaptive triggers when the
+client also runs Linux. See [Linux PyroWave](docs/linux/pyrowave.md),
+[PlayStation controllers](docs/linux/playstation-controllers.md), and
+[Steam Big Picture](docs/linux/steam-big-picture.md).
 
 ```bash
-curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/vibe-test/scripts/linux_install.sh
+curl -fsSLO https://raw.githubusercontent.com/Nonary/Vibepollo/master/scripts/linux_install.sh
 sudo bash linux_install.sh
 ```
 
 The script checks the requirements, installs the kernel headers and the package, opens the firewall,
-and prints whether a reboot is needed. Manual steps, verification, and troubleshooting are in the
+and prints whether a reboot is needed. Reboot after the first installation, and approve Secure Boot
+key enrollment if prompted. Updates come through a signed pacman repository with a DKMS display
+driver. Manual steps, verification, and troubleshooting are in the
 [Linux install guide](docs/linux/install.md). AppImage, Flatpak, Debian, Fedora, and Docker builds
 are not part of this beta.
 
@@ -107,7 +133,7 @@ The name arose as a playful suggestion from another developer who joked about th
 
 AI significantly accelerates development by offloading much of the routine implementation work. Instead of spending hours writing boilerplate, wiring dependencies, or handling repetitive edge cases, I can focus on high‑level architecture, long‑term design decisions, and system direction. This shift doesn’t just speed things up—it fundamentally changes the role of the engineer, pushing us toward oversight, orchestration, and design rather than rote code production.
 
-What stands out most is that AI code works on the first try around 90% of the time. That reliability, combined with instant generation, makes it dramatically more efficient to accept its form of debt than to painstakingly write everything from scratch. In other words, I’m trading minor, manageable debt for massive development velocity—and that trade is almost always worth it.
+What stands out most is how reliably AI code now works on the first try. When I started Vibepollo, it worked about 90% of the time; today's models are far more effective than that. That reliability, combined with instant generation, makes it dramatically more efficient to accept its form of debt than to painstakingly write everything from scratch. In other words, I’m trading minor, manageable debt for massive development velocity—and that trade is almost always worth it.
 
 I’m not overly concerned about technical debt in this workflow, because the debt that truly matters stems from bad architecture and poor design choices, not from the code itself. As long as I guide the AI with clear structure and intent, the generated code ends up being maintainable. Problems like inconsistent naming, redundant code, or unused helpers are minor forms of debt—easily identified, cleaned up, or ignored. By contrast, deep architectural flaws, poor layering, or mismatched abstractions create lasting problems.
 
@@ -115,25 +141,25 @@ In fact, compared to many traditional enterprise codebases I’ve maintained, AI
 
 Broadly speaking, AI‑assisted development represents the future of software engineering. Just as compilers and IDEs once transformed programming, AI is now transforming how we design, implement, and maintain systems. Instead of fearing it, I view it as a force multiplier that complements professional judgment. Vibepollo is an example of what happens when you embrace that shift: rapid iteration, a massive expansion of features, and code that remains maintainable because the architecture is intentionally guided.
 
+That shift is no longer hypothetical. Major companies are now rebuilding core products with AI: Epic Games [rebuilt the Epic Games Store launcher from scratch with AI](https://www.pcgamer.com/software/platforms/epic-says-its-new-vibe-coded-epic-games-store-launcher-is-faster-than-steam/), and Shopify [moved its mobile apps off React Native to native Swift and Kotlin](https://shopify.engineering/back-to-native) because coding agents made building each platform separately affordable. Game preservation and emulation, some of the hardest reverse‑engineering work around, are progressing at an exponential pace: the [Super Smash Bros. Melee decompilation](https://www.androidauthority.com/super-smash-bros-melee-decompiled-3708716/) reached 100% after AI closed out the final stretch of a six‑year effort, the N64 game [Snowboard Kids was fully decompiled in 84 days](https://zeli.app/story/49466006) with AI agents (its sequel took 596 days without them), the fan‑made [Lost Odyssey static recompilation](https://www.xda-developers.com/i-waited-nearly-20-years-for-lost-odyssey-to-come-to-pc-and-it-finally-happened/) brought the Xbox 360 exclusive to PC with AI‑assisted development, and the open‑source PS5 translation layer [AnyPS5](https://hothardware.com/news/anyps5-hits-100-gpu-shader-coverage-for-playing-ps5-games-on-pc) reached full GPU shader instruction coverage with the help of AI‑generated code. It's clear that AI will be used in every software project from here on.
+
 ---
 
 ## The Original “AI-Only” Goal (And Why It Changed)
 
 One of the original goals of Vibepollo was to prove a specific point: that an experienced developer could maintain a complex project using almost entirely AI‑generated code, as long as they provided the architecture and kept the system coherent.
 
-That idea hasn’t aged particularly well, not because it was wrong, but because the models scaled far faster than most projections. The result is that the “skill gap” in prompting and guiding the AI matters less than it did even a few months prior. You still need engineering judgment and architecture, but it’s now dramatically easier to get high‑quality, end‑to‑end results without the same level of careful orchestration. So the original “prove it’s possible” goal is basically moot: it’s not a niche workflow anymore, it’s simply where the tools have gone.
+That idea hasn’t aged particularly well, not because it was wrong, but because the models scaled far faster than most projections. The result is that the “skill gap” in prompting and guiding the AI matters far less than it did when Vibepollo started. You still need engineering judgment and architecture, but it’s now dramatically easier to get high‑quality, end‑to‑end results without the same level of careful orchestration. So the original “prove it’s possible” goal is basically moot: it’s not a niche workflow anymore, it’s simply where the tools have gone.
 
 ---
 
 ## AI Models Used by Vibepollo
 
-Vibepollo has always been built with **Codex** as the primary workflow, and in practice that has meant mostly the **GPT‑5 family** (today: **GPT‑5.3‑Codex**). I use it with the same principles as before: start from architecture, sanity‑check assumptions, and do the hard reasoning up front so the implementation lands cleanly.
+Vibepollo has always been built with **Codex** as the primary workflow, and in practice that has meant mostly the **GPT family** (today: **GPT‑6.1**). I use it with the same principles as before: start from architecture, sanity‑check assumptions, and do the hard reasoning up front so the implementation lands cleanly.
 
-With **GPT‑5.3‑Codex**, there’s no real need to juggle a “fast but less capable” model anymore. In the past I’d reach for speed‑first models (like Sonnet, or smaller GPT “mini” variants) for quick turnaround, but **GPT‑5.3‑Codex** covers both: it’s about as fast as those options while also being strong enough to handle the hard engineering work in one pass.
+I mostly reach for GPT because it's usually faster and more precise for the way I work. I occasionally use **Claude Opus 5.5**, but rarely.
 
-Claude was used more heavily earlier on. Older Claude models had a tendency to go off on their own path, even when the architectural plan was clear. That behavior has mostly been fixed in newer Claude releases, but GPT still ended up being the more useful engineering tool for me because it will challenge you and not simply agree with whatever you ask for.
-
-In general, GPT has felt more intelligent for the way I build and maintain this codebase. I may occasionally ask **Claude Opus 4.5** for a second opinion if GPT can’t resolve something cleanly end‑to‑end, but this is increasingly rare.
+Honestly, the choice of model doesn't matter much anymore. Current‑generation AI is good enough for 99% of software engineering tasks, so whichever capable model you prefer will get the job done.
 
 ---
 
