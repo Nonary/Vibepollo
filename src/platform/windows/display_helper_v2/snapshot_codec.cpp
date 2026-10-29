@@ -1,5 +1,6 @@
 #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
 #include "src/platform/windows/display_helper_v2/topology_policy.h"
+#include "src/platform/windows/display_snapshot_policy.h"
 
 #if defined(_WIN32) || defined(SUNSHINE_TEST_PORTABLE_WINDOWS_TYPES)
 
@@ -473,23 +474,7 @@ namespace display_helper::v2::codec {
   }
 
   bool is_virtual_display_device(const display_device::EnumeratedDevice &device) {
-    if (contains_ci(device.m_device_id, "SunshineVirtualDisplay") ||
-        contains_ci(device.m_device_id, "Sunshine Virtual Display") ||
-        contains_ci(device.m_display_name, "SunshineVirtualDisplay") ||
-        contains_ci(device.m_display_name, "Sunshine Virtual Display") ||
-        contains_ci(device.m_friendly_name, "SunshineVirtualDisplay") ||
-        contains_ci(device.m_friendly_name, "Sunshine Virtual Display")) {
-      return true;
-    }
-
-    if (equals_ci(device.m_friendly_name, "Sunshine Virtual Display Driver")) {
-      return true;
-    }
-
-    // SDD = bundled Sunshine virtual display driver, SMK = SudoVDA (legacy driver).
-    return device.m_edid &&
-           (equals_ci(device.m_edid->m_manufacturer_id, "SDD") ||
-            equals_ci(device.m_edid->m_manufacturer_id, "SMK"));
+    return display_helper_integration::snapshot_policy::is_virtual(device);
   }
 
   bool is_active_display_device(const display_device::EnumeratedDevice &device) {
@@ -597,7 +582,8 @@ namespace display_helper::v2::codec {
     Snapshot snap,
     const EnumeratedDeviceList &devices,
     const std::vector<std::string> &exclusions,
-    std::string &reject_reason) {
+    std::string &reject_reason,
+    const std::vector<std::string> &capture_safe_devices) {
     reject_reason.clear();
 
     std::vector<std::string> exclusions_norm;
@@ -623,7 +609,7 @@ namespace display_helper::v2::codec {
     // path in the captured topology must remain present in this set.
     std::set<std::string> valid_device_ids;
     std::vector<std::string> enumerated_devices;
-    std::vector<std::string> virtual_devices;
+    std::vector<std::string> blocking_virtual_devices;
     std::set<std::string> virtual_device_ids;
     for (const auto &d : devices) {
       const auto id = d.m_device_id.empty() ? d.m_display_name : d.m_device_id;
@@ -638,8 +624,8 @@ namespace display_helper::v2::codec {
         if (!id.empty()) {
           virtual_device_ids.insert(id);
         }
-        if (is_active_display_device(d) && !id.empty()) {
-          virtual_devices.push_back(id);
+        if (display_helper_integration::snapshot_policy::blocks_capture(d, capture_safe_devices)) {
+          blocking_virtual_devices.push_back(id.empty() ? "<unknown>" : id);
         }
         continue;
       }
@@ -649,12 +635,11 @@ namespace display_helper::v2::codec {
         }
       }
     }
-    if (!virtual_devices.empty()) {
-      // A VDD can become visible between SNAPSHOT_CURRENT being dispatched and
-      // this capture. The physical devices in the same capture are still a
-      // valid restore baseline, so omit the VDD instead of discarding it all.
-      BOOST_LOG(info) << "Display snapshot: excluding active virtual display device(s): ["
-                      << join_ids(virtual_devices) << "]";
+    if (!blocking_virtual_devices.empty()) {
+      reject_reason = "active transient virtual display device present";
+      BOOST_LOG(warning) << "Display snapshot save rejected; active transient virtual display device(s) are present: ["
+                         << join_ids(blocking_virtual_devices) << "]";
+      return std::nullopt;
     }
 
     if (!exclusions.empty()) {

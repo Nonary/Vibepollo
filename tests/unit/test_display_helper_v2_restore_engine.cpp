@@ -13,6 +13,8 @@
   #include "src/platform/windows/display_helper_v2/snapshot.h"
   #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
   #include "src/platform/windows/display_helper_v2/topology_policy.h"
+  #include "src/platform/windows/display_snapshot_policy.h"
+  #include "src/platform/windows/virtual_display.h"
 
   #include <algorithm>
   #include <chrono>
@@ -56,6 +58,9 @@ namespace {
     if (!edid_manufacturer.empty()) {
       display_device::EdidData edid {};
       edid.m_manufacturer_id = edid_manufacturer;
+      if (edid_manufacturer == "SDD") {
+        edid.m_product_code = "5001";
+      }
       device.m_edid = edid;
     }
     if (active) {
@@ -267,7 +272,7 @@ TEST(DisplayHelperV2Codec, FilterLoadAllowsInactiveButConnectedDevices) {
 
 // --- save-side filtering ---
 
-TEST(DisplayHelperV2Codec, FilterSaveExcludesActiveVirtualDisplay) {
+TEST(DisplayHelperV2Codec, FilterSaveRejectsActiveTransientVirtualDisplayWithoutExclusion) {
   auto snap = make_snapshot({{"PHYS1"}, {"PHYS2"}, {"VDD"}});
   snap.m_origins["PHYS1"] = display_device::Point {0, 0};
   snap.m_origins["PHYS2"] = display_device::Point {1920, 0};
@@ -277,17 +282,129 @@ TEST(DisplayHelperV2Codec, FilterSaveExcludesActiveVirtualDisplay) {
     make_device("PHYS2", "\\\\.\\DISPLAY2", true),
     make_device("VDD", "\\\\.\\DISPLAY3", true, "SDD"),
   };
+  devices.back().m_edid->m_product_code = "5ABC";
 
   std::string reason;
   auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
+  EXPECT_FALSE(result.has_value());
+  EXPECT_EQ(reason, "active transient virtual display device present");
+}
+
+TEST(DisplayHelperV2Codec, FilterSaveRejectsRememberedSessionVddDespiteExclusion) {
+  auto snap = make_snapshot({{"PHYS1"}, {"SESSION"}});
+  snap.m_origins["PHYS1"] = {0, 0};
+  display_device::EnumeratedDeviceList devices {
+    make_device("PHYS1", "\\\\.\\DISPLAY1", true),
+    make_device("SESSION", "\\\\.\\DISPLAY2", true, "SDD"),
+  };
+  devices.back().m_edid->m_product_code = "5ABC";
+  std::string reason;
+  // Persisted session IDs are filtered on load/save even if cleanup and REVERT failed.
+  EXPECT_FALSE(codec::filter_snapshot_for_save(snap, devices, {" session "}, reason).has_value());
+  EXPECT_EQ(reason, "active transient virtual display device present");
+}
+
+TEST(DisplayHelperV2Codec, FilterSaveAllowsCaseInsensitiveTrimmedVddExclusion) {
+  auto snap = make_snapshot({{"PHYS1"}, {"PHYS2"}, {"VDD"}});
+  snap.m_origins["PHYS1"] = display_device::Point {0, 0};
+  snap.m_origins["PHYS2"] = display_device::Point {1920, 0};
+  snap.m_origins["VDD"] = display_device::Point {3840, 0};
+  display_device::EnumeratedDeviceList devices {
+    make_device("PHYS1", "\\\\.\\DISPLAY1", true),
+    make_device("PHYS2", "\\\\.\\DISPLAY2", true),
+    make_device("VDD", "\\\\.\\DISPLAY3", true, "SDD"),
+  };
+  devices.back().m_edid->m_product_code = "5ABC";
+
+  std::string reason;
+  auto result = codec::filter_snapshot_for_save(snap, devices, {" vDd "}, reason, {" vDd "});
   ASSERT_TRUE(result.has_value());
-  ASSERT_EQ(result->m_topology.size(), 2u);
-  EXPECT_EQ(result->m_topology[0].front(), "PHYS1");
-  EXPECT_EQ(result->m_topology[1].front(), "PHYS2");
+  EXPECT_EQ(result->m_topology, (display_device::ActiveTopology {{"PHYS1"}, {"PHYS2"}}));
   EXPECT_EQ(result->m_modes.count("VDD"), 0u);
   EXPECT_EQ(result->m_hdr_states.count("VDD"), 0u);
   EXPECT_EQ(result->m_origins.count("VDD"), 0u);
   EXPECT_EQ(result->m_primary_device, "PHYS1");
+  EXPECT_TRUE(reason.empty());
+}
+
+TEST(DisplayHelperV2Codec, FilterSaveKeepsPhysicalLayoutBesideRetainedSharedDisplay) {
+  namespace policy = display_helper_integration::snapshot_policy;
+  const std::array<std::uint8_t, 16> shared_guid {1, 2, 3};
+  const std::array<std::uint8_t, 16> session_guid {4, 5, 6};
+  // Both backends retain ensure-display under the shared GUID, not a client GUID.
+  for (const auto backend : {VDISPLAY::ensure_display_backend_e::sunshine, VDISPLAY::ensure_display_backend_e::sudovda}) {
+    SCOPED_TRACE(static_cast<int>(backend));
+    const std::vector<VDISPLAY::TrackedDisplayCleanupTarget> targets {
+      {shared_guid, "RETAINED", backend},
+      {session_guid, "SESSION", backend},
+      {shared_guid, "", backend},
+    };
+    std::vector<std::string> capture_safe_devices;
+    policy::append_shared_capture_safe_devices(capture_safe_devices, targets, shared_guid);
+    policy::append_shared_capture_safe_devices(capture_safe_devices, targets, shared_guid);
+    ASSERT_EQ(capture_safe_devices, (std::vector<std::string> {"RETAINED"}));
+    const std::vector<std::string> exclusions {"RETAINED", "SESSION"};
+
+    auto snap = make_snapshot({{"PHYS1"}, {"PHYS2"}, {"RETAINED"}});
+    snap.m_origins["PHYS1"] = {0, 0};
+    snap.m_origins["PHYS2"] = {3840, 0};
+    snap.m_modes["PHYS1"].m_refresh_rate = {240, 4};
+    const auto manufacturer = backend == VDISPLAY::ensure_display_backend_e::sunshine ? "SDD" : "SMK";
+    display_device::EnumeratedDeviceList devices {
+      make_device("PHYS1", R"(\\.\DISPLAY1)", true),
+      make_device("PHYS2", R"(\\.\DISPLAY2)", true),
+      make_device("RETAINED", R"(\\.\DISPLAY3)", true, manufacturer),
+    };
+    EXPECT_FALSE(policy::blocks_capture(devices.back(), capture_safe_devices));  // Host and legacy admission.
+    std::string reason;
+    auto result = codec::filter_snapshot_for_save(snap, devices, exclusions, reason, capture_safe_devices);
+    ASSERT_TRUE(result.has_value());
+    EXPECT_EQ(result->m_topology, (display_device::ActiveTopology {{"PHYS1"}, {"PHYS2"}}));
+    EXPECT_EQ(result->m_primary_device, "PHYS1");
+    EXPECT_EQ(result->m_origins.at("PHYS2").m_x, 3840);
+    EXPECT_EQ(result->m_origins.at("PHYS2").m_y, 0);
+    EXPECT_EQ(result->m_modes.at("PHYS1").m_refresh_rate.m_numerator, 240u);
+    EXPECT_EQ(result->m_modes.at("PHYS1").m_refresh_rate.m_denominator, 4u);
+    EXPECT_EQ(result->m_modes.count("RETAINED"), 0u);
+    EXPECT_TRUE(reason.empty());
+
+    // Keeping a shared display must not exempt a different, active session VDD.
+    devices.push_back(make_device("SESSION", R"(\\.\DISPLAY4)", true, manufacturer));
+    snap.m_topology.push_back({"SESSION"});
+    EXPECT_TRUE(policy::blocks_capture(devices.back(), capture_safe_devices));
+    EXPECT_FALSE(codec::filter_snapshot_for_save(snap, devices, exclusions, reason, capture_safe_devices).has_value());
+    EXPECT_EQ(reason, "active transient virtual display device present");
+  }
+}
+
+TEST(DisplayHelperV2Codec, FilterSaveAllowsPermanentSunshineVirtualDisplay) {
+  auto snap = make_snapshot({{"PHYS1"}, {"VDD"}});
+  display_device::EnumeratedDeviceList devices {
+    make_device("PHYS1", "\\\\.\\DISPLAY1", true),
+    make_device("VDD", "\\\\.\\DISPLAY2", true, "SDD"),
+  };
+  devices.back().m_edid->m_product_code = "4ABC";
+
+  std::string reason;
+  auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->m_topology, (display_device::ActiveTopology {{"PHYS1"}}));
+  EXPECT_EQ(result->m_modes.count("VDD"), 0u);
+  EXPECT_TRUE(reason.empty());
+}
+
+TEST(DisplayHelperV2Codec, FilterSaveAllowsInactiveVirtualDisplay) {
+  auto snap = make_snapshot({{"PHYS1"}, {"VDD"}});
+  display_device::EnumeratedDeviceList devices {
+    make_device("PHYS1", "\\\\.\\DISPLAY1", true),
+    make_device("VDD", "", false, "SMK"),
+  };
+
+  std::string reason;
+  auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
+  ASSERT_TRUE(result.has_value());
+  EXPECT_EQ(result->m_topology, (display_device::ActiveTopology {{"PHYS1"}}));
+  EXPECT_EQ(result->m_modes.count("VDD"), 0u);
   EXPECT_TRUE(reason.empty());
 }
 
@@ -300,7 +417,7 @@ TEST(DisplayHelperV2Codec, FilterSaveRejectsVirtualOnlySnapshot) {
   std::string reason;
   auto result = codec::filter_snapshot_for_save(snap, devices, {}, reason);
   EXPECT_FALSE(result.has_value());
-  EXPECT_EQ(reason, "no devices with valid display_name");
+  EXPECT_EQ(reason, "active transient virtual display device present");
 }
 
 TEST(DisplayHelperV2Codec, FilterSaveRejectsPhysicalPathLosingDisplayName) {

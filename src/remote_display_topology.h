@@ -1,6 +1,7 @@
 #pragma once
 
 #include "virtual_display_capacity.h"
+#include "src/display_restore_types.h"
 
 #include <cstdint>
 #include <functional>
@@ -10,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace remote_display_topology {
@@ -48,6 +50,8 @@ namespace remote_display_topology {
     // 1920x1080). Keep mode reporting native while composing in desktop units.
     std::optional<int> layout_width;
     std::optional<int> layout_height;
+    // CCD refresh can encode DRR state; do not round the saved physical rate.
+    std::optional<std::pair<unsigned int, unsigned int>> baseline_refresh_rate;
   };
 
   struct runtime_callbacks_t {
@@ -97,6 +101,9 @@ namespace remote_display_topology {
   nlohmann::json normalize_layout(const nlohmann::json &layout);
   bool validate_layout(const nlohmann::json &layout, const std::vector<std::string> &known_clients, const std::vector<std::string> &known_physical_ids, std::string &error);
 
+  std::vector<node_t> without_absent_devices(const std::vector<node_t> &nodes, const std::vector<std::string> &missing);
+  bool baseline_geometry_matches(const std::vector<node_t> &saved, const std::vector<node_t> &live, const std::vector<std::string> &missing);
+
   class coordinator_t {
   public:
     void set_runtime_callbacks(runtime_callbacks_t callbacks);
@@ -105,9 +112,11 @@ namespace remote_display_topology {
     // Missing placement/anchor preserves Windows' current arrangement, and
     // never recomposes or moves a peer owned by another session.
     std::optional<node_t> saved_stream_placement(const node_t &target, const std::vector<node_t> &active_nodes) const;
-    void set_physical_baseline(std::vector<node_t> nodes);
+    void set_physical_baseline(std::vector<node_t> nodes, const display_helper::BaselinePublisher &publish);
     // Inventory reads must not replace a baseline while managed displays own it.
-    void refresh_idle_physical_baseline(std::vector<node_t> nodes);
+    void refresh_idle_physical_baseline(std::vector<node_t> nodes, const display_helper::BaselinePublisher &publish);
+    std::vector<node_t> physical_baseline() const;
+    void reset_physical_baseline(const display_helper::BaselineReset &reset);
     std::vector<std::string> physical_node_ids() const;
     // Managed ownership is independent of transport lifetime. A retryable or
     // transport-less Remote Monitor remains protected until an explicit owner

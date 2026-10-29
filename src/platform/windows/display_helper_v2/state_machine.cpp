@@ -134,7 +134,7 @@ namespace display_helper::v2 {
       }
     }
   }  // namespace
-  std::optional<std::pair<Snapshot, codec::layout_rotation_map_t>> SnapshotLedger::capture_filtered(const std::vector<std::string> &exclusions, const char *reason) {
+  std::optional<std::pair<Snapshot, codec::layout_rotation_map_t>> SnapshotLedger::capture_filtered(const std::vector<std::string> &exclusions, const char *reason, const std::vector<std::string> &capture_safe_devices) {
     auto snap = service_.capture();
     if (!service_.topology_is_valid(snap.m_topology)) {
       BOOST_LOG(warning) << "Skipping display snapshot save (" << (reason ? reason : "snapshot")
@@ -143,7 +143,7 @@ namespace display_helper::v2 {
     }
 
     std::string reject_reason;
-    auto filtered = codec::filter_snapshot_for_save(std::move(snap), service_.enumerate(), exclusions, reject_reason);
+    auto filtered = codec::filter_snapshot_for_save(std::move(snap), service_.enumerate(), exclusions, reject_reason, capture_safe_devices);
     if (!filtered) {
       BOOST_LOG(warning) << "Skipping display snapshot save (" << (reason ? reason : "snapshot")
                          << "); " << reject_reason << ".";
@@ -168,11 +168,11 @@ namespace display_helper::v2 {
     return std::make_pair(std::move(*filtered), std::move(layouts));
   }
 
-  bool SnapshotLedger::capture_filtered_and_save(SnapshotTier tier, const std::vector<std::string> &exclusions, const char *reason) {
+  bool SnapshotLedger::capture_filtered_and_save(SnapshotTier tier, const std::vector<std::string> &exclusions, const char *reason, const std::vector<std::string> &capture_safe_devices) {
     const char *why = reason ? reason : "snapshot";
     constexpr int kMaxAttempts = 3;
     for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
-      if (auto captured = capture_filtered(exclusions, why)) {
+      if (auto captured = capture_filtered(exclusions, why, capture_safe_devices)) {
         if (persistence_.storage().save(tier, captured->first, captured->second)) {
           if (attempt > 1) {
             BOOST_LOG(info) << "Display snapshot save succeeded on retry #" << attempt << " (" << why << ").";
@@ -188,13 +188,13 @@ namespace display_helper::v2 {
     return false;
   }
 
-  bool SnapshotLedger::refresh_current_preserving_previous(const std::vector<std::string> &exclusions) {
+  bool SnapshotLedger::refresh_current_preserving_previous(const std::vector<std::string> &exclusions, const std::vector<std::string> &capture_safe_devices) {
     // Capture first; a failed capture must never destroy the existing baseline
     // chain (53cd8b4c / 62839421).
     constexpr int kMaxAttempts = 3;
     std::optional<std::pair<Snapshot, codec::layout_rotation_map_t>> captured;
     for (int attempt = 1; attempt <= kMaxAttempts && !captured; ++attempt) {
-      captured = capture_filtered(exclusions, "snapshot-only");
+      captured = capture_filtered(exclusions, "snapshot-only", capture_safe_devices);
       if (!captured && attempt < kMaxAttempts) {
         BOOST_LOG(info) << "Current session snapshot capture retry #" << (attempt + 1) << " scheduled.";
         clock_.sleep_for(std::chrono::milliseconds(50));
@@ -1044,6 +1044,7 @@ namespace display_helper::v2 {
 
   void StateMachine::set_snapshot_blacklist(std::set<std::string> blacklist) {
     snapshot_blacklist_ = std::move(blacklist);
+    snapshot_capture_safe_devices_.clear();
     restore_state_.set_exclusions(exclusions_vector());
   }
 
@@ -1259,6 +1260,7 @@ namespace display_helper::v2 {
 
     if (current_request_.snapshot_exclusions) {
       update_blacklist(*current_request_.snapshot_exclusions);
+      snapshot_capture_safe_devices_ = current_request_.snapshot_capture_safe_devices;
     }
 
     if (!current_request_.configuration) {
@@ -1300,7 +1302,7 @@ namespace display_helper::v2 {
     // a fallback whenever no baseline exists yet.
     if (!snapshots_.tier_exists(SnapshotTier::Current)) {
       BOOST_LOG(warning) << "Display helper: no session baseline present at APPLY; capturing pre-apply baseline now.";
-      if (!snapshots_.capture_filtered_and_save(SnapshotTier::Current, exclusions_vector(), "pre-apply baseline")) {
+      if (!snapshots_.capture_filtered_and_save(SnapshotTier::Current, exclusions_vector(), "pre-apply baseline", snapshot_capture_safe_devices_)) {
         BOOST_LOG(warning) << "Display helper: pre-apply baseline capture failed; REVERT may have nothing to restore.";
       }
     }
@@ -1524,9 +1526,10 @@ namespace display_helper::v2 {
 
     if (command.payload.update_exclusions || !command.payload.exclude_devices.empty()) {
       update_blacklist(command.payload.exclude_devices);
+      snapshot_capture_safe_devices_ = command.payload.capture_safe_devices;
     }
 
-    const bool saved = snapshots_.capture_filtered_and_save(SnapshotTier::Golden, exclusions_vector(), "export-golden");
+    const bool saved = snapshots_.capture_filtered_and_save(SnapshotTier::Golden, exclusions_vector(), "export-golden", snapshot_capture_safe_devices_);
     if (saved) {
       golden_health_.clear_status("snapshot exported");
     }
@@ -1548,9 +1551,10 @@ namespace display_helper::v2 {
 
     if (command.payload.update_exclusions || !command.payload.exclude_devices.empty()) {
       update_blacklist(command.payload.exclude_devices);
+      snapshot_capture_safe_devices_ = command.payload.capture_safe_devices;
     }
 
-    const bool saved = snapshots_.refresh_current_preserving_previous(exclusions_vector());
+    const bool saved = snapshots_.refresh_current_preserving_previous(exclusions_vector(), snapshot_capture_safe_devices_);
     send_snapshot_result(saved, command.connection_epoch, command.request_id);
   }
 

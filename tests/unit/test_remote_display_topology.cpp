@@ -7,11 +7,13 @@
 #include <mutex>
 
 #include "src/remote_display_topology.h"
+#include "src/platform/windows/display_restore_guard.h"
 #include "src/platform/linux/private_display_resume_policy.h"
 #include "src/platform/linux/private_display_capacity.h"
 #include "src/platform/linux/private_display_cleanup_policy.h"
 
 namespace {
+  const display_helper::BaselinePublisher setup_baseline = [](const auto &replace) { replace(); return true; };
   using remote_display_topology::mode_t;
 
   nlohmann::json layout(nlohmann::json placements) { return {{"version", 1}, {"placements", std::move(placements)}}; }
@@ -182,7 +184,7 @@ TEST(RemoteDisplayTopology, RemoteMonitorExtendsExistingPhysicalDesktop) {
     .x = 100,
     .y = 0,
     .configured_mode = {1920, 1080, 60},
-  }});
+  }}, setup_baseline);
   coordinator.set_runtime_callbacks({
     .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
     .apply_composed_topology = [&composed](const auto &nodes) {
@@ -217,7 +219,7 @@ TEST(RemoteDisplayTopology, RemoteMonitorUsesLogicalFootprintOfScaledPhysicalDes
   };
   physical.layout_width = 1920;
   physical.layout_height = 1080;
-  coordinator.set_physical_baseline({physical});
+  coordinator.set_physical_baseline({physical}, setup_baseline);
   coordinator.set_runtime_callbacks({
     .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
     .apply_composed_topology = [&composed](const auto &nodes) {
@@ -246,7 +248,7 @@ TEST(RemoteDisplayTopology, RemoteMonitorExtendsPreexistingStreamedVirtualDispla
     .physical = false,
     .active = true,
     .configured_mode = {2560, 1440, 60},
-  }});
+  }}, setup_baseline);
   coordinator.set_runtime_callbacks({
     .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
     .apply_composed_topology = [&composed](const auto &nodes) {
@@ -1667,7 +1669,7 @@ TEST(RemoteDisplayTopology, IdleShutdownAfterDevicesRefreshDoesNotTouchPhysicalM
   coordinator.refresh_idle_physical_baseline({
     {.id = "left", .device_id = "left", .physical = true, .active = true, .primary = true, .x = 0, .y = 0, .configured_mode = {1920, 1080, 144}},
     {.id = "right", .device_id = "right", .physical = true, .active = true, .x = 1920, .y = 0, .configured_mode = {1920, 1080, 144}},
-  });
+  }, setup_baseline);
   const auto devices_page = coordinator.snapshot({});
   ASSERT_EQ(devices_page["nodes"].size(), 2u);
   const auto right = std::find_if(devices_page["nodes"].begin(), devices_page["nodes"].end(), [](const auto &node) {
@@ -1823,7 +1825,7 @@ TEST(RemoteDisplayTopology, ClientAnchorCompositionIsIndependentOfMapIterationOr
     .physical = true,
     .active = true,
     .configured_mode = {1920, 1080, 60},
-  }});
+  }}, setup_baseline);
   coordinator.set_layout(layout({
     {"one", {{"anchor_kind", "client"}, {"anchor_id", "two"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", 0}}},
     {"two", {{"anchor_kind", "physical"}, {"anchor_id", "physical"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", 0}}},
@@ -2146,15 +2148,15 @@ TEST(RemoteDisplayTopology, RetainedRemoteMonitorBlocksPhysicalRestoreIncludingS
 
 TEST(RemoteDisplayTopology, InventoryRefreshPreservesManagedBaselineAndRejectsEmptyInventory) {
   remote_display_topology::coordinator_t coordinator;
-  coordinator.refresh_idle_physical_baseline({{.id = "original", .physical = true, .active = true, .x = -1920, .y = 120}});
-  coordinator.refresh_idle_physical_baseline({});
+  coordinator.refresh_idle_physical_baseline({{.id = "original", .physical = true, .active = true, .x = -1920, .y = 120}}, setup_baseline);
+  coordinator.refresh_idle_physical_baseline({}, setup_baseline);
   EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"original"});
   const auto reservation = coordinator.reserve_normal_game_identity("one", "One", {});
   ASSERT_TRUE(reservation.accepted);
-  coordinator.refresh_idle_physical_baseline({{.id = "changed", .physical = true, .active = true}});
+  coordinator.refresh_idle_physical_baseline({{.id = "changed", .physical = true, .active = true}}, setup_baseline);
   EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"original"});
   coordinator.rollback_normal_game_identity("one", reservation.token);
-  coordinator.refresh_idle_physical_baseline({{.id = "changed", .physical = true, .active = true}});
+  coordinator.refresh_idle_physical_baseline({{.id = "changed", .physical = true, .active = true}}, setup_baseline);
   EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"changed"});
 }
 
@@ -2171,10 +2173,10 @@ TEST(RemoteDisplayTopology, InventoryRefreshPreservesTransportlessMonitorBaselin
       return std::optional<std::string> {"display"};
     },
   });
-  coordinator.refresh_idle_physical_baseline({{.id = "original", .physical = true, .active = true}});
+  coordinator.refresh_idle_physical_baseline({{.id = "original", .physical = true, .active = true}}, setup_baseline);
   ASSERT_TRUE(coordinator.activate_or_resume("one", "One", {}, 1).ready);
   coordinator.transport_lost("one", 1);
-  coordinator.refresh_idle_physical_baseline({{.id = "changed", .physical = true, .active = true}});
+  coordinator.refresh_idle_physical_baseline({{.id = "changed", .physical = true, .active = true}}, setup_baseline);
   EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"original"});
 }
 
@@ -2215,7 +2217,7 @@ TEST(RemoteDisplayTopology, TerminalRemovalRetainsFailedPhysicalRestoreUntilShut
   coordinator.refresh_idle_physical_baseline({
     {.id = "left", .physical = true, .active = true, .primary = true},
     {.id = "right", .physical = true, .active = true, .x = 1920},
-  });
+  }, setup_baseline);
   ASSERT_TRUE(coordinator.activate_or_resume("one", "One", {}, 1).ready);
   fail_restore = true;
   ASSERT_TRUE(coordinator.explicit_release("one", 1, "terminal removal"));
@@ -2224,7 +2226,7 @@ TEST(RemoteDisplayTopology, TerminalRemovalRetainsFailedPhysicalRestoreUntilShut
   EXPECT_FALSE(coordinator.shutdown_complete());
   EXPECT_EQ(right_x, 3000);
   // A Devices read sees the partially applied layout, not the restore target.
-  coordinator.refresh_idle_physical_baseline({{.id = "right", .physical = true, .active = true, .x = 3000}});
+  coordinator.refresh_idle_physical_baseline({{.id = "right", .physical = true, .active = true, .x = 3000}}, setup_baseline);
   for (int retry = 0; retry < 2; ++retry) {
     const int before = applies;
     coordinator.shutdown(false);
@@ -2243,6 +2245,154 @@ TEST(RemoteDisplayTopology, TerminalRemovalRetainsFailedPhysicalRestoreUntilShut
   EXPECT_EQ(removals, 1);
   coordinator.shutdown(false);
   EXPECT_EQ(applies, before + 1);  // Now genuinely idle: no additional restore.
-  coordinator.refresh_idle_physical_baseline({{.id = "updated", .physical = true, .active = true}});
+  coordinator.refresh_idle_physical_baseline({{.id = "updated", .physical = true, .active = true}}, setup_baseline);
   EXPECT_EQ(coordinator.physical_node_ids(), std::vector<std::string> {"updated"});
+}
+
+TEST(RemoteDisplayTopology, RefreshInterleavedWithFailedComposeKeepsSavedGeometry) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  remote_display_topology::coordinator_t coordinator;
+  const remote_display_topology::node_t saved {.id = "saved", .physical = true, .active = true, .x = 3840};
+  coordinator.set_physical_baseline({saved}, setup_baseline);
+  const auto publish = guard.baseline_publisher();  // Before enumeration.
+  ASSERT_TRUE(publish);
+  auto partial = saved;
+  partial.x = 0;  // Enumeration observed an intermediate layout.
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  coordinator.set_physical_baseline({partial}, publish);
+  int physical_x = -1;
+  coordinator.set_runtime_callbacks({.apply_composed_topology = [&](const auto &nodes) {
+    physical_x = nodes.front().x;
+    return true;
+  }});
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_EQ(physical_x, 3840);
+  EXPECT_TRUE(!guard.baseline_publisher());
+}
+
+TEST(RemoteDisplayTopology, IdleInventoryDiscardsCaptureAcrossSuccessfulCompose) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  remote_display_topology::coordinator_t coordinator;
+  const remote_display_topology::node_t saved {.id = "saved", .physical = true, .active = true, .x = 3840};
+  coordinator.set_physical_baseline({saved}, setup_baseline);
+  const auto publish = guard.baseline_publisher();  // Devices-page pre-enumeration fence.
+  ASSERT_TRUE(publish);
+  auto stale = saved;
+  stale.x = 0;
+  ASSERT_TRUE(guard.compose([] { return true; }));
+  EXPECT_FALSE(!guard.baseline_publisher());
+  coordinator.refresh_idle_physical_baseline({stale}, publish);
+  int physical_x = -1;
+  coordinator.set_runtime_callbacks({.apply_composed_topology = [&](const auto &nodes) {
+    physical_x = nodes.front().x;
+    return true;
+  }});
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_EQ(physical_x, 3840);
+  // A fresh idle capture may still update the baseline normally.
+  coordinator.refresh_idle_physical_baseline({stale}, guard.baseline_publisher());
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_EQ(physical_x, 0);
+}
+
+TEST(RemoteDisplayTopology, ReleaseAndShutdownFilterMissingDevicesWithoutForgettingGeometry) {
+  for (const bool shutdown : {false, true}) {
+    SCOPED_TRACE(shutdown);
+    display_helper_integration::DisplayRestoreGuard guard;
+    remote_display_topology::coordinator_t coordinator;
+    std::vector<remote_display_topology::node_t> saved {
+      {.id = "main", .physical = true, .active = true, .primary = true},
+      {.id = "missing", .physical = true, .active = true, .x = 3840},
+    };
+    coordinator.set_physical_baseline(saved, setup_baseline);
+    std::vector<std::string> absent;
+    std::vector<remote_display_topology::node_t> applied;
+    coordinator.set_runtime_callbacks({
+      .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+      .apply_composed_topology = [&](const auto &nodes) {
+        applied = remote_display_topology::without_absent_devices(nodes, absent);
+        return guard.compose([&] { return absent.empty() || std::none_of(applied.begin(), applied.end(), [](const auto &node) { return node.id == "missing"; }); });
+      },
+      .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) { return std::optional<std::string> {"VDD"}; },
+      .remove_owned_display = [](const auto &) { return true; },
+    });
+    ASSERT_TRUE(coordinator.activate_or_resume("client", "Client", {1280, 720, 60}, 1).ready);
+    absent = {"missing"};
+    if (shutdown) coordinator.shutdown(false);
+    else EXPECT_TRUE(coordinator.explicit_release("client", 1, "release"));
+    EXPECT_TRUE(coordinator.shutdown_complete());
+    EXPECT_TRUE(guard.baseline_publisher());
+    const auto retained = coordinator.physical_baseline();
+    ASSERT_EQ(retained.size(), 2u);
+    EXPECT_EQ(retained.back().x, 3840);
+    absent.clear();
+    ASSERT_TRUE(coordinator.reapply_composed_topology());
+    ASSERT_EQ(applied.size(), 2u);
+    EXPECT_EQ(applied.back().id, "missing");
+    EXPECT_EQ(applied.back().x, 3840);
+  }
+}
+
+TEST(RemoteDisplayTopology, EmptyPublisherCannotReplaceEitherBaseline) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_physical_baseline({{.id = "saved", .physical = true, .active = true}}, setup_baseline);
+  coordinator.set_physical_baseline({{.id = "bad", .physical = true}}, {});
+  coordinator.refresh_idle_physical_baseline({{.id = "bad", .physical = true}}, {});
+  EXPECT_EQ(coordinator.physical_node_ids(), (std::vector<std::string> {"saved"}));
+}
+
+TEST(RemoteDisplayTopology, RepairProofRequiresMatchingGeometryAndActiveMembership) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  const std::vector<remote_display_topology::node_t> saved {
+    {.id = "main", .physical = true, .active = true, .primary = true},
+    {.id = "other", .physical = true, .active = true, .x = 1920},
+  };
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  auto live = saved;
+  const auto probe = [&] { return remote_display_topology::baseline_geometry_matches(saved, live, {}); };
+  live.back().x = 0;
+  EXPECT_FALSE(guard.verify_repaired(probe));
+  live = saved; live.back().primary = true;
+  EXPECT_FALSE(guard.verify_repaired(probe));
+  live = saved; live.back().active = false;
+  EXPECT_FALSE(guard.verify_repaired(probe));
+  live = saved; live.push_back({.id = "unexpected", .physical = true, .active = true});
+  EXPECT_FALSE(guard.verify_repaired(probe));
+  EXPECT_FALSE(guard.baseline_publisher());
+  live = saved;
+  EXPECT_TRUE(guard.verify_repaired(probe));
+  EXPECT_TRUE(guard.baseline_publisher());
+  ASSERT_FALSE(guard.compose([] { return false; }));
+  live.pop_back();
+  EXPECT_TRUE(guard.verify_repaired([&] { return remote_display_topology::baseline_geometry_matches(saved, live, {"other"}); }));
+}
+
+TEST(RemoteDisplayTopology, ResetForgetsBaselineAndInvalidatesOldPublications) {
+  display_helper_integration::DisplayRestoreGuard guard;
+  remote_display_topology::coordinator_t coordinator;
+  const auto stale = guard.baseline_publisher();
+  coordinator.set_physical_baseline({{.id = "saved", .physical = true, .active = true}}, stale);
+  const auto reset = [&] { coordinator.reset_physical_baseline([&](const auto &forget) { guard.reset(forget); }); };
+  reset();
+  EXPECT_TRUE(coordinator.physical_baseline().empty());
+  EXPECT_FALSE(stale([] { ADD_FAILURE(); }));
+  coordinator.set_physical_baseline({{.id = "saved", .physical = true, .active = true}}, guard.baseline_publisher());
+  bool allow_apply = true;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [&](const auto &) { return guard.compose([&] { return allow_apply; }); },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) { return std::optional<std::string> {"VDD"}; },
+    .terminate_owned_display = [](const auto &) { return true; },
+  });
+  ASSERT_TRUE(coordinator.activate_or_resume("client", "Client", {1280, 720, 60}, 1).ready);
+  allow_apply = false;
+  ASSERT_TRUE(coordinator.explicit_release("client", 1, "terminal release"));
+  EXPECT_FALSE(coordinator.shutdown_complete());
+  EXPECT_FALSE(guard.baseline_publisher());
+  reset();
+  EXPECT_TRUE(coordinator.shutdown_complete());
+  EXPECT_TRUE(coordinator.physical_baseline().empty());
+  EXPECT_TRUE(guard.baseline_publisher());
+  coordinator.refresh_idle_physical_baseline({{.id = "fresh", .physical = true, .active = true}}, guard.baseline_publisher());
+  EXPECT_EQ(coordinator.physical_node_ids(), (std::vector<std::string> {"fresh"}));
 }

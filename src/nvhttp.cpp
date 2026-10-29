@@ -84,6 +84,10 @@
   #include "platform/windows/display_target_borrow.h"
   #include "platform/windows/display_helper_request_policy.h"
   #include "platform/windows/display_helper_request_helpers.h"
+  #include "platform/windows/display_baseline_presence.h"
+#include <display_device/windows/win_api_layer.h>
+#include "platform/windows/display_baseline_node.h"
+#include "platform/windows/display_snapshot_policy.h"
   #include "platform/windows/misc.h"
   #include "platform/windows/virtual_display.h"
   #include "platform/windows/virtual_display_cleanup.h"
@@ -329,8 +333,15 @@ namespace nvhttp {
     }
 
     void refresh_remote_monitor_baseline(const bool extend_active_stream) {
-      const auto devices = display_helper_integration::enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
-      if (!devices) return;
+      display_helper_integration::recover_coordinator_baseline(!extend_active_stream);
+      const auto publish = display_helper_integration::coordinator_baseline_publisher();
+      if (!publish) return;
+      const auto devices = display_helper_integration::enumerate_active_devices();
+      if (!devices || devices->empty()) return;
+      const auto capture_safe_devices = display_helper_integration::snapshot_capture_safe_devices();
+      if (!extend_active_stream && std::any_of(devices->begin(), devices->end(), [&](const auto &device) {
+            return display_helper_integration::snapshot_policy::blocks_capture(device, capture_safe_devices);
+          })) return;
       const auto active_stream_output = extend_active_stream ? config::get_active_output_name() : std::string {};
       const bool active_stream_uses_virtual =
         !active_stream_output.empty() && VDISPLAY::is_virtual_display_output(active_stream_output);
@@ -347,7 +358,7 @@ namespace nvhttp {
       std::vector<remote_display_topology::node_t> baseline;
       for (const auto &device : *devices) {
         if (device.m_device_id.empty() || device.m_display_name.empty() || !device.m_info) continue;
-        const bool is_virtual = VDISPLAY::is_virtual_display_output(device.m_device_id);
+        const bool is_virtual = display_helper_integration::snapshot_policy::is_virtual(device);
         if (is_virtual) {
           // A virtual output is a baseline anchor only when another stream is
           // actively capturing that exact output. First-connection Remote
@@ -363,31 +374,25 @@ namespace nvhttp {
           // do not reintroduce physical outputs that it intentionally replaced.
           continue;
         }
-        remote_display_topology::node_t node;
+        auto node = *display_helper_integration::baseline_node(device);
         const bool owner_already_managed = std::find(managed_client_ids.begin(), managed_client_ids.end(), active_game.client_uuid) != managed_client_ids.end();
         node.id = is_virtual && !active_game.client_uuid.empty() ?
                     active_game.client_uuid + (owner_already_managed ? ":streamed" : "") :
                     device.m_device_id;
-        node.device_id = device.m_device_id;
-        node.label = device.m_friendly_name.empty() ? device.m_display_name : device.m_friendly_name;
-        node.preexisting = true;
-        node.physical = !is_virtual;
-        node.active = true;
-        node.primary = device.m_info->m_primary;
-        node.x = device.m_info->m_origin_point.m_x;
-        node.y = device.m_info->m_origin_point.m_y;
-        node.configured_mode = {
-          .width = static_cast<int>(device.m_info->m_resolution.m_width),
-          .height = static_cast<int>(device.m_info->m_resolution.m_height),
-          .refresh_hz = remote_refresh_hz(device.m_info->m_refresh_rate),
-          .hdr = device.m_info->m_hdr_state.value_or(display_device::HdrState::Disabled) == display_device::HdrState::Enabled,
-        };
         baseline.push_back(std::move(node));
       }
-      remote_display_topology::instance().set_physical_baseline(std::move(baseline));
+      remote_display_topology::instance().set_physical_baseline(std::move(baseline), publish);
     }
 
     bool apply_remote_monitor_composition(const std::vector<remote_display_topology::node_t> &nodes) {
+      display_device::WinApiLayer api;
+      std::vector<std::string> ids;
+      for (const auto &node : nodes) {
+        if (node.physical || node.preexisting) ids.push_back(node.device_id.empty() ? node.id : node.device_id);
+      }
+      const auto missing = display_helper_integration::disconnected_baseline_devices(api, ids);
+      if (!missing) return false;
+      const auto connected = remote_display_topology::without_absent_devices(nodes, *missing);
       display_helper_integration::DisplayTopologyDefinition topology;
       const auto physical = display_helper_integration::capture_physical_topology();
       if (!physical) return false;
@@ -398,7 +403,7 @@ namespace nvhttp {
           return std::any_of(group.begin(), group.end(), [&id](const auto &candidate) { return remote_device_id_equals(candidate, id); });
         });
       };
-      for (const auto &node : nodes) {
+      for (const auto &node : connected) {
         std::string device_id = node.device_id.empty() ? node.id : node.device_id;
         if (!node.physical && !node.preexisting) {
           const auto resolved = VDISPLAY::resolveActiveVirtualDisplayDeviceIdForStableId(node.id, {}, {}, false);
@@ -408,6 +413,9 @@ namespace nvhttp {
         if (!has_device(device_id)) topology.topology.push_back({device_id});
         topology.monitor_positions.emplace(device_id, display_device::Point {node.x, node.y});
         if (node.primary) topology.primary_device = device_id;
+        if (node.physical && node.baseline_refresh_rate) {
+          topology.device_refresh_rate_overrides[device_id] = *node.baseline_refresh_rate;
+        }
       }
       return display_helper_integration::apply_remote_composed_topology(topology);
     }
@@ -605,7 +613,7 @@ namespace nvhttp {
         );
         baseline.push_back(std::move(node));
       }
-      remote_display_topology::instance().set_physical_baseline(std::move(baseline));
+      remote_display_topology::instance().set_physical_baseline(std::move(baseline), [](const auto &replace) { replace(); return true; });
     }
 
     enum class linux_normal_identity_result_e {
@@ -1712,7 +1720,7 @@ namespace nvhttp {
         }
       }
 
-      // Snapshot current display state BEFORE any display enumeration.
+      // Snapshot current display state BEFORE any all-paths display enumeration.
       // queryDisplayConfig(QueryType::All) calls during display discovery can activate
       // external dummy plugs, which would pollute the snapshot used for session restore.
       if (no_active_sessions) {
@@ -1720,6 +1728,9 @@ namespace nvhttp {
               display_startup_cancelled,
               display_startup_deadline)) {
           BOOST_LOG(warning) << "Display helper snapshot before session start was not accepted.";
+        } else if (remote_display_topology::instance().managed_client_identity_count() == 0) {
+          // Active-only: legacy snapshot completion can still be pending here.
+          refresh_remote_monitor_baseline(false);
         }
       }
 

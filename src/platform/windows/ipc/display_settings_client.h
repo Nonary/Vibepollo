@@ -6,6 +6,8 @@
 
 #ifdef _WIN32
 
+  #include "src/display_restore_types.h"
+
   #include <cstdint>
   #include <chrono>
   #include <functional>
@@ -125,16 +127,16 @@ namespace platf::display_helper_client {
       std::chrono::steady_clock::time_point::max());
 
   // Save the current OS display state to session_current (rotate current->previous) without applying config.
-  bool send_snapshot_current(const std::string &json_payload = {});
+  ::display_helper::SnapshotResult send_snapshot_current(const std::string &json_payload = {});
 
   // Save the current OS display state and wait for the v2 helper's result.
   // Legacy helpers do not implement this acknowledgement.
-  bool send_snapshot_current_and_wait(const std::string &json_payload = {}, int timeout_ms = 3000);
+  ::display_helper::SnapshotResult send_snapshot_current_and_wait(const std::string &json_payload = {}, int timeout_ms = 3000);
 
   // Bounded stream-start snapshot. Connection, write, and any v2 completion
   // wait all share operation_deadline; legacy/unknown helpers remain
   // dispatch-only.
-  bool send_snapshot_current_within(
+  ::display_helper::SnapshotResult send_snapshot_current_within(
     const std::string &json_payload,
     std::chrono::steady_clock::time_point operation_deadline,
     std::function<bool()> cancellation_predicate = {});

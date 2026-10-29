@@ -4466,6 +4466,55 @@ TEST(DisplayHelperV2StateMachine, SnapshotCurrentRefreshesPreservingPrevious) {
   EXPECT_TRUE(*harness.snapshot_result);
 }
 
+TEST(DisplayHelperV2StateMachine, SnapshotCurrentRequiresExplicitSafeNeighborAndClearsOldPermission) {
+  StateMachineHarness harness;
+  harness.add_active_device("PHYS");
+  harness.add_active_device("VDD");
+  auto &vdd = harness.display_settings.devices.back();
+  vdd.m_edid = display_device::EdidData {};
+  vdd.m_edid->m_manufacturer_id = "SDD";
+  vdd.m_edid->m_product_code = "5ABC";
+  auto current = make_snapshot("PHYS");
+  current.m_topology.push_back({"VDD"});
+  current.m_modes["VDD"] = current.m_modes.at("PHYS");
+  current.m_origins["VDD"] = {1920, 0};
+  harness.display_settings.snapshot = current;
+  const auto previous = make_snapshot("old");
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, previous));
+
+  display_helper::v2::SnapshotCommandPayload payload;
+  payload.exclude_devices = {"VDD"};  // Remembered session ID, not proof of cleanup.
+  payload.update_exclusions = true;
+  const auto snapshot = [&] {
+    harness.state_machine.handle_message(display_helper::v2::SnapshotCurrentCommand {payload, harness.cancellation.current_generation()});
+  };
+  snapshot();
+  ASSERT_TRUE(harness.snapshot_result.has_value());
+  EXPECT_FALSE(*harness.snapshot_result);
+  auto stored = harness.storage.load(display_helper::v2::SnapshotTier::Current);
+  ASSERT_TRUE(stored);
+  EXPECT_EQ(stored->m_topology, previous.m_topology);
+  EXPECT_FALSE(harness.storage.load(display_helper::v2::SnapshotTier::Previous));
+
+  payload.capture_safe_devices = {" vDd "};  // Explicit retained shared display.
+  snapshot();
+  EXPECT_TRUE(*harness.snapshot_result);
+  stored = harness.storage.load(display_helper::v2::SnapshotTier::Current);
+  ASSERT_TRUE(stored);
+  EXPECT_EQ(stored->m_topology, (display_device::ActiveTopology {{"PHYS"}}));
+  EXPECT_EQ(stored->m_modes.count("VDD"), 0u);
+  auto stored_previous = harness.storage.load(display_helper::v2::SnapshotTier::Previous);
+  ASSERT_TRUE(stored_previous);
+  EXPECT_EQ(stored_previous->m_topology, previous.m_topology);
+
+  payload.capture_safe_devices.clear();  // Old array-only payload grants no permission.
+  snapshot();
+  EXPECT_FALSE(*harness.snapshot_result);
+  stored_previous = harness.storage.load(display_helper::v2::SnapshotTier::Previous);
+  ASSERT_TRUE(stored_previous);
+  EXPECT_EQ(stored_previous->m_topology, previous.m_topology);  // Failed capture did not rotate.
+}
+
 TEST(DisplayHelperV2StateMachine, SnapshotCurrentPersistsModesAndOriginsForEveryActiveOutput) {
   StateMachineHarness harness;
   harness.add_active_device("A");

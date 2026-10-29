@@ -281,6 +281,200 @@ int main() {
 }
 '''
 
+
+# Exercise the legacy golden-export branch itself, with save/log boundaries mocked.
+golden_branch = block_after(legacy, "if (type == MsgType::ExportGolden)")
+golden_program = r'''
+#include <atomic>
+#include <cassert>
+#include <sstream>
+#define BOOST_LOG(level) std::ostringstream {}
+namespace golden_capture {
+using legacy::MsgType;
+struct State {
+  std::atomic<bool> restore_requested {true};
+  int golden_path = 0;
+  int saves = 0;
+  bool save_snapshot_with_retry(int, const char *) { ++saves; return true; }
+  void clear_golden_restore_status(const char *) {}
+};
+void handle(State &state, MsgType type) {
+''' + golden_branch + r'''
+}
+void test_pending_restore_keeps_golden() {
+  State state;
+  handle(state, MsgType::ExportGolden);
+  assert(state.saves == 0);
+  state.restore_requested.store(false);
+  handle(state, MsgType::ExportGolden);
+  assert(state.saves == 1);
+}
+}
+'''
+program = program.replace('int main() {', golden_program + '\nint main() {\n  golden_capture::test_pending_restore_keeps_golden();')
+
+
+client = (root / "src/platform/windows/ipc/display_settings_client.cpp").read_text()
+bounded_snapshot = function(client, "::display_helper::SnapshotResult send_snapshot_current_within(")
+bounded_program = r'''
+#include <chrono>
+#include "src/display_restore_types.h"
+namespace bounded_snapshot_fixture {
+using std::uint8_t;
+using display_helper::SnapshotResult;
+enum class ApplyResponseProtocol { Unknown, V2 };
+ApplyResponseProtocol protocol = ApplyResponseProtocol::Unknown;
+bool send_ok = true;
+std::optional<bool> saved;
+int waits = 0, retired = 0;
+constexpr int kSnapshotResultTimeoutMs = 3000, kConnectTimeoutMs = 1, kSendTimeoutMs = 1, kStaleConnectionRetireTimeoutMs = 1;
+int session;
+std::atomic<std::uint64_t> generation {0}, next_id {1};
+auto &apply_wait_generation() { return generation; }
+auto &next_auxiliary_request_id() { return next_id; }
+template<class... T> int *connected_session_within(T &&...) { return &session; }
+ApplyResponseProtocol current_apply_response_protocol(int *) { return protocol; }
+bool session_is_current(int *) { return true; }
+template<class... T> bool lock_response_reader_until(T &&...) { return true; }
+enum class MsgType { SnapshotCurrent };
+template<class... T> bool send_serialized_within(T &&...) { return send_ok; }
+int remaining_timeout_ms(std::chrono::steady_clock::time_point) { return 100; }
+template<class... T> std::optional<bool> wait_for_snapshot_result_locked(T &&...) { ++waits; return saved; }
+template<class... T> void drop_connection_if_current_within(T &&...) { ++retired; }
+''' + bounded_snapshot + r'''
+void test_failed_dispatched_saved_mapping() {
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+  const auto send = [&] { return send_snapshot_current_within("{}", deadline, {}); };
+  saved = false;  // An unknown/legacy helper may later skip/fail the save.
+  assert(send() == SnapshotResult::dispatched && waits == 0);
+  send_ok = false;
+  assert(send() == SnapshotResult::failed && waits == 0);
+  send_ok = true;
+  protocol = ApplyResponseProtocol::V2;
+  assert(send() == SnapshotResult::failed && waits == 1);
+  saved = true;
+  assert(send() == SnapshotResult::saved && waits == 2);
+  saved = std::nullopt;
+  assert(send() == SnapshotResult::failed && waits == 3 && retired == 1);
+}
+}
+'''
+program = program.replace('int main() {', bounded_program + '\nint main() {\n  bounded_snapshot_fixture::test_failed_dispatched_saved_mapping();')
+
+
+integration = (root / "src/platform/windows/display_helper_integration.cpp").read_text()
+remote_compose = function(integration, "bool apply_remote_composed_topology(")
+prepare_program = r'''
+#include "src/platform/windows/display_restore_guard.h"
+namespace display_helper::borrow {
+struct native_mutation_scope_t { static bool enter(bool) { return true; } };
+}
+namespace prepare_fixture {
+struct DisplayTopologyDefinition {};
+display_helper_integration::DisplayRestoreGuard composed_restore_guard;
+bool ready = false;
+int applies = 0;
+std::optional<int> make_settings_manager() { return ready ? std::optional<int> {1} : std::nullopt; }
+bool apply_topology_definition(const DisplayTopologyDefinition &, const char *, std::optional<int>) { ++applies; return false; }
+''' + remote_compose + r'''
+void test_preparation_failure_does_not_latch_protection() {
+  assert(!apply_remote_composed_topology({}));
+  assert(applies == 0 && composed_restore_guard.baseline_publisher());
+  ready = true;
+  assert(!apply_remote_composed_topology({}));
+  assert(applies == 1 && !composed_restore_guard.baseline_publisher());
+}
+}
+'''
+program = program.replace('int main() {', prepare_program + '\nint main() {\n  prepare_fixture::test_preparation_failure_does_not_latch_protection();')
+
+
+reset_body = function(integration, "bool reset_persistence(")
+reset_program = r'''
+namespace remote_display_topology {
+struct ResetCoordinator {
+  bool has_baseline = true;
+  template<class Reset> void reset_physical_baseline(Reset reset) { reset([&] { has_baseline = false; }); }
+};
+ResetCoordinator reset_coordinator;
+ResetCoordinator &instance() { return reset_coordinator; }
+}
+namespace platf::display_helper_client { inline bool send_reset() { return true; } }
+namespace reset_fixture {
+display_helper_integration::DisplayRestoreGuard composed_restore_guard;
+std::mutex execution;
+bool helper_available = false;
+std::mutex &pending_apply_execution_mutex() { return execution; }
+void invalidate_apply_verification() {}
+bool ensure_helper_started() { return helper_available; }
+''' + reset_body + r'''
+void test_reset_clears_local_state_without_helper_confirmation() {
+  assert(!composed_restore_guard.compose([] { return false; }));
+  assert(!reset_persistence());  // Helper dispatch failed; explicit local reset still applies.
+  assert(!remote_display_topology::instance().has_baseline);
+  assert(composed_restore_guard.baseline_publisher());
+}
+}
+'''
+program = program.replace('int main() {', reset_program + '\nint main() {\n  reset_fixture::test_reset_clears_local_state_without_helper_confirmation();')
+
+
+nvhttp = (root / "src/nvhttp.cpp").read_text()
+composition_body = function(nvhttp, "bool apply_remote_monitor_composition(")
+topology = (root / "src/remote_display_topology.cpp").read_text()
+filter_body = function(topology, "std::vector<node_t> without_absent_devices(")
+composition_program = r'''
+#include <map>
+#include <unordered_set>
+namespace display_device { struct WinApiLayer {}; struct Point { int m_x, m_y; }; }
+namespace remote_display_topology {
+struct node_t {
+  std::string id {}, device_id {};
+  bool physical = false, preexisting = false, primary = false;
+  int x = 0, y = 0;
+  std::optional<std::pair<unsigned, unsigned>> baseline_refresh_rate {};
+};
+''' + filter_body + r'''
+}
+namespace VDISPLAY {
+std::optional<std::string> resolveActiveVirtualDisplayDeviceIdForStableId(const std::string &id, const std::string &, const std::string &, bool) { return id; }
+}
+namespace display_helper_integration {
+struct DisplayTopologyDefinition {
+  std::vector<std::vector<std::string>> topology;
+  std::map<std::string, display_device::Point> monitor_positions;
+  std::optional<std::string> primary_device;
+  std::map<std::string, std::pair<unsigned, unsigned>> device_refresh_rate_overrides;
+};
+std::vector<std::string> missing {"absent"};
+int presence_queries = 0;
+DisplayTopologyDefinition applied;
+std::optional<std::vector<std::string>> disconnected_baseline_devices(const display_device::WinApiLayer &, const std::vector<std::string> &) { ++presence_queries; return missing; }
+std::optional<std::vector<std::vector<std::string>>> capture_physical_topology() { return std::vector<std::vector<std::string>> {{"main"}}; }
+bool apply_remote_composed_topology(const DisplayTopologyDefinition &value) {
+  applied = value;
+  return std::none_of(value.topology.begin(), value.topology.end(), [](const auto &group) {
+    return std::any_of(group.begin(), group.end(), [](const auto &id) { return std::find(missing.begin(), missing.end(), id) != missing.end(); });
+  });
+}
+}
+namespace composition_fixture {
+bool remote_device_id_equals(const std::string &a, const std::string &b) { return a == b; }
+''' + composition_body + r'''
+void test_production_callback_filters_input_only() {
+  const std::vector<remote_display_topology::node_t> saved {
+    {.id = "main", .physical = true, .primary = true},
+    {.id = "absent", .physical = true, .x = 3840},
+  };
+  assert(apply_remote_monitor_composition(saved));
+  assert(display_helper_integration::presence_queries == 1);
+  assert(!display_helper_integration::applied.monitor_positions.contains("absent"));
+  assert(saved.size() == 2 && saved.back().x == 3840);
+}
+}
+'''
+program = program.replace('int main() {', composition_program + '\nint main() {\n  composition_fixture::test_production_callback_filters_input_only();')
+
 with tempfile.TemporaryDirectory(prefix="recovery-status-protocol-") as temporary:
     source = pathlib.Path(temporary) / "recovery_status_protocol.cpp"
     binary = pathlib.Path(temporary) / "recovery_status_protocol"

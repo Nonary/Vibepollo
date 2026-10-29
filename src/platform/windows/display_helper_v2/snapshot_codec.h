@@ -11,9 +11,9 @@
 /**
  * @file snapshot_codec.h
  * @brief Pure snapshot serialization/parsing/filtering logic shared with the legacy
- *        display helper. The on-disk JSON format and all filtering rules are ported
- *        verbatim from tools/display_settings_helper.cpp so snapshots written by either
- *        engine round-trip through the other.
+ *        display helper. Save-side filtering rejects active transient virtual displays
+ *        unless explicitly safe to capture beside. Permanent virtual displays are
+ *        filtered from an otherwise valid snapshot.
  */
 namespace display_helper::v2::codec {
   using layout_rotation_map_t = std::map<std::string, int>;
@@ -64,17 +64,21 @@ namespace display_helper::v2::codec {
   // --- filtering rules ---
 
   /**
-   * @brief Save-side filtering: omit virtual displays and explicit exclusions.
-   *        Reject if a remaining captured physical path is no longer enumerable
-   *        with a display_name, or if nothing restorable remains.
-   * @param exclusions Normalized (normalize_device_id) exclusion list.
+   * @brief Save-side filtering: reject active transient virtual displays unless
+   *        explicitly safe to capture beside, omit other virtual displays and explicit
+   *        exclusions, then reject a captured physical path that disappeared between
+   *        topology and device queries.
+   *        Also reject if nothing restorable remains.
+   * @param exclusions Exclusion list (normalized internally).
+   * @param capture_safe_devices Explicit retained neighbors allowed beside a physical capture.
    * @returns Filtered snapshot, or nullopt with reject_reason set.
    */
   std::optional<Snapshot> filter_snapshot_for_save(
     Snapshot snap,
     const EnumeratedDeviceList &devices,
     const std::vector<std::string> &exclusions,
-    std::string &reject_reason);
+    std::string &reject_reason,
+    const std::vector<std::string> &capture_safe_devices = {});
 
   /**
    * @brief Load-side filtering: reject snapshots referencing active virtual displays

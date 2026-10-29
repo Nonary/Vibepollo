@@ -153,6 +153,8 @@ namespace display_helper::v2 {
     /// the queued command ensures the state machine, rather than the pipe
     /// reader thread, owns mutation of the restore baseline policy.
     std::optional<std::vector<std::string>> snapshot_exclusions;
+    /// Explicit retained neighbors, never inferred from remembered session IDs.
+    std::vector<std::string> snapshot_capture_safe_devices;
     /// Client-generated v2 IPC token echoed in APPLY and verification replies.
     /// This keeps a late completion from a superseded transaction from opening
     /// a newer stream's capture gate.
@@ -170,6 +172,8 @@ namespace display_helper::v2 {
     std::vector<std::string> exclude_devices;
     /// True when the payload carried an exclusion list (even an empty one, which clears).
     bool update_exclusions = false;
+    /// Replaced together with exclude_devices; absent on old array payloads.
+    std::vector<std::string> capture_safe_devices;
   };
 
   struct ApplyCommand {
