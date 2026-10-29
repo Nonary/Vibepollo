@@ -24,6 +24,8 @@ int main(void) {
   strcpy(identity.compositor, "1234567890abcdef1234567890abcdef-42-123");
   assert(valid_backend_identity(&identity));
   assert(validate_xauthority(&identity));
+  // The focus helper receives only the validated peer PID and start time.
+  assert(!strcmp(hyprland_compositor_peer(&identity), "42-123"));
   // Hyprland's Xwayland uses no Xauthority. The controller publishes :N only
   // after binding that X socket's peer to the record's compositor.
   strcpy(identity.x_display, ":0");
@@ -50,7 +52,9 @@ int main(void) {
     assert(identity_boundary_calls == 0);
   }
   assert(!hyprland_request_supported(&identity, "touch-map"));
-  assert(!hyprland_request_supported(&identity, "managed-focus"));
+  // Focus is a Hyprland IPC operation bound to the record's compositor.
+  assert(hyprland_request_supported(&identity, "managed-focus"));
+  assert(!hyprland_request_supported(&identity, "rtx-hdr-foreground"));
   assert(!hyprland_request_supported(&identity, "app-wayland-hdr"));
   assert(hyprland_request_supported(&identity, "app"));
   assert(hyprland_request_supported(&identity, "audio-capture"));
