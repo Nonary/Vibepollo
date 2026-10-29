@@ -501,6 +501,34 @@ sunshine_add_test_target(
 )
 
 sunshine_add_test_target(
+    NAME test_fast_nvenc_log_flags
+    CATEGORY fast
+    TEST_SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/unit/test_nvenc_log_flags.cpp"
+    PRODUCT_SOURCES
+    DEFINITIONS
+    INCLUDE_DIRECTORIES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/nv-codec-headers/include"
+    LINK_LIBRARIES GTest::gtest
+    DEPENDENCIES
+)
+
+sunshine_add_test_target(
+    NAME test_fast_nvenc_intra_refresh
+    CATEGORY fast
+    TEST_SOURCES
+        "${CMAKE_CURRENT_LIST_DIR}/tests_main.cpp"
+        "${CMAKE_CURRENT_LIST_DIR}/unit/test_nvenc_intra_refresh.cpp"
+    PRODUCT_SOURCES
+    DEFINITIONS
+    INCLUDE_DIRECTORIES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/nv-codec-headers/include"
+    LINK_LIBRARIES GTest::gtest
+    DEPENDENCIES
+)
+
+sunshine_add_test_target(
     NAME test_component_nvenc_event_wait
     CATEGORY component
     TEST_SOURCES

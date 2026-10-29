@@ -5,6 +5,8 @@
 // this include
 #include "nvenc_base.h"
 #include "nvenc_api.h"
+#include "nvenc_intra_refresh.h"
+#include "nvenc_log_flags.h"
 
 // standard includes
 #include <algorithm>
@@ -525,6 +527,20 @@ namespace nvenc {
       L0_option = NV_ENC_NUM_REF_FRAMES_1;
     };
 
+    auto set_intra_refresh = [&](auto &format_config) {
+      switch (intra_refresh::apply(format_config, client_config.enableIntraRefresh, config, get_encoder_cap)) {
+        case intra_refresh::result_e::enabled_without_single_slice:
+          BOOST_LOG(warning) << "NvEnc: Single Slice Intra Refresh not supported";
+          break;
+        case intra_refresh::result_e::unsupported:
+          BOOST_LOG(error) << "NvEnc: Intra-refresh requested but the encoder does not support intra-refresh";
+          break;
+        case intra_refresh::result_e::not_requested:
+        case intra_refresh::result_e::enabled:
+          break;
+      }
+    };
+
     auto set_minqp_if_enabled = [&](int value) {
       if (config.enable_min_qp) {
         enc_config.rcParams.enableMinQP = 1;
@@ -606,21 +622,7 @@ namespace nvenc {
           set_ref_frames(format_config.maxNumRefFrames, format_config.numRefL0, 5);
           set_minqp_if_enabled(config.min_qp_h264);
           fill_h264_hevc_vui(format_config.h264VUIParameters);
-          if (client_config.enableIntraRefresh == 1) {
-            if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)) {
-              format_config.enableIntraRefresh = 1;
-              format_config.intraRefreshPeriod = 300;
-              format_config.intraRefreshCnt = 299;
-              format_config.outputRecoveryPointSEI = 1;
-              if (get_encoder_cap(NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH)) {
-                format_config.singleSliceIntraRefresh = 1;
-              } else {
-                BOOST_LOG(warning) << "NvEnc: Single Slice Intra Refresh not supported";
-              }
-            } else {
-              BOOST_LOG(error) << "NvEnc: Client asked for intra-refresh but the encoder does not support intra-refresh";
-            }
-          }
+          set_intra_refresh(format_config);
           break;
         }
 
@@ -648,21 +650,7 @@ namespace nvenc {
             format_config.outputMasteringDisplay = hdr_metadata.maxDisplayLuminance != 0;
           }
 #endif
-          if (client_config.enableIntraRefresh == 1) {
-            if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_INTRA_REFRESH)) {
-              format_config.enableIntraRefresh = 1;
-              format_config.intraRefreshPeriod = 300;
-              format_config.intraRefreshCnt = 299;
-              format_config.outputRecoveryPointSEI = 1;
-              if (get_encoder_cap(NV_ENC_CAPS_SINGLE_SLICE_INTRA_REFRESH)) {
-                format_config.singleSliceIntraRefresh = 1;
-              } else {
-                BOOST_LOG(warning) << "NvEnc: Single Slice Intra Refresh not supported";
-              }
-            } else {
-              BOOST_LOG(error) << "NvEnc: Client asked for intra-refresh but the encoder does not support intra-refresh";
-            }
-          }
+          set_intra_refresh(format_config);
           break;
         }
 
@@ -740,6 +728,7 @@ namespace nvenc {
     }
 
     init_params.encodeConfig = &enc_config;
+    bool initialized_with_driver_defaults = false;
 
     if (nvenc_failed(nvenc->nvEncInitializeEncoder(encoder, &init_params))) {
       auto init_error = last_nvenc_error_string;
@@ -788,6 +777,7 @@ namespace nvenc {
           return false;
         }
 
+        initialized_with_driver_defaults = true;
         BOOST_LOG(info) << "NvEnc: initialized with driver defaults (preset config was unavailable)";
       } else if (!have_preset_config && init_status == NV_ENC_ERR_INVALID_PARAM && hdr_metadata_requires_explicit_config) {
         BOOST_LOG(error) << "NvEnc: NvEncInitializeEncoder() failed: " << init_error
@@ -855,6 +845,7 @@ namespace nvenc {
       if (encoder_params.rfi) {
         extra += " rfi";
       }
+      extra += log_flags::intra_refresh(enc_config, client_config.videoFormat, initialized_with_driver_defaults);
       if (init_params.enableWeightedPrediction) {
         extra += " weighted-prediction";
       }
