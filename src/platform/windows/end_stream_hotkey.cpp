@@ -94,7 +94,9 @@ namespace {
     auto free_sid = util::fail_guard([&] {
       LocalFree(sid_text);
     });
-    std::wstring sddl = L"D:P(A;;GA;;;SY)(A;;GW;;;" + std::wstring(sid_text) + L")S:(ML;;NW;;;ME)";
+    // CreateFile always adds FILE_READ_ATTRIBUTES to the helper's GENERIC_WRITE
+    // open, so the user ACE must grant it too (0x40000080 = GW | RA).
+    std::wstring sddl = L"D:P(A;;GA;;;SY)(A;;0x40000080;;;" + std::wstring(sid_text) + L")S:(ML;;NW;;;ME)";
     PSECURITY_DESCRIPTOR security = nullptr;
     if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1, &security, nullptr)) {
       return false;
