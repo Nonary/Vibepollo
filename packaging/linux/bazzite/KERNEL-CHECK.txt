@@ -1,0 +1,24 @@
+Vibepollo Bazzite kernel qualification — experimental development checkpoint
+
+This is a compile-only test, not a Vibepollo installer or a working port.
+Extract this ZIP. Open a terminal in the extracted folder, then run:
+
+    python3 check-kernel.py
+
+Run as your regular desktop user. No sudo is needed. No internet is needed.
+The test builds the managed virtual-display driver and optional DualSense driver
+against the development files for your currently running kernel. Build output
+stays in a new vibepollo-kernel-check-* folder in the terminal's current folder.
+
+Send back report.json and the two .log files from that new folder. If the script
+stops before creating it, paste the error. Missing tools are reported explicitly;
+do not install random dependencies or disable security settings to work around it.
+
+No modules are signed, installed, loaded, or unloaded. No services, firewall
+rules, accounts, system files, Secure Boot keys, or SELinux policy are changed.
+Unsigned modules produced by this check are for compilation evidence only.
+Do not try to load them. Compilation success does not establish runtime support.
+
+sources.json records exact upstream commit IDs and SHA-256 checksums of bundled
+source files. These checksums detect accidental changes, not publisher identity.
+The DRM module version is intentionally 0.0.0 for this disposable build.

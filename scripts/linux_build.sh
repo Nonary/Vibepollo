@@ -27,6 +27,7 @@ skip_cleanup=0
 skip_cuda=0
 skip_libva=0
 skip_package=0
+bazzite_build=0
 sudo_cmd="sudo"
 ubuntu_test_repo=0
 step="all"
@@ -182,6 +183,7 @@ Options:
   --skip-cleanup           Do not restore the original gcc alternatives, or the math-vector.h file.
   --skip-cuda              Skip CUDA installation.
   --skip-libva             Skip libva installation. This will automatically be enabled if passing --appimage-build.
+  --bazzite                Configure the experimental immutable-host RPM profile.
   --skip-package           Skip creating DEB, or RPM package.
   --ubuntu-test-repo       Install ppa:ubuntu-toolchain-r/test repo on Ubuntu.
   --step                   Which step(s) to run: deps, cmake, validation, build, package, cleanup, or all (default: all)
@@ -239,6 +241,7 @@ while getopts ":hs-:" opt; do
         skip-cuda) skip_cuda=1 ;;
         skip-libva) skip_libva=1 ;;
         skip-package) skip_package=1 ;;
+        bazzite) bazzite_build=1 ;;
         sudo-off) sudo_cmd="" ;;
         ubuntu-test-repo) ubuntu_test_repo=1 ;;
         step=*)
@@ -412,8 +415,6 @@ function add_fedora_deps() {
     "cmake"
     "desktop-file-utils"
     "${DOXYGEN}"
-    "gcc${gcc_version}"
-    "gcc${gcc_version}-c++"
     "git"
     "graphviz"
     "libappindicator-gtk3-devel"
@@ -448,6 +449,13 @@ function add_fedora_deps() {
     "wget"  # necessary for cuda install with `run` file
     "which"  # necessary for cuda install with `run` file
   )
+
+  # Container qualification may supply a pinned toolchain outside the distro
+  # repositories. Keep versioned RPM dependencies for normal native builds.
+  if ! command -v "gcc-${gcc_version}" >/dev/null 2>&1 ||
+     ! command -v "g++-${gcc_version}" >/dev/null 2>&1; then
+    dependencies+=("gcc${gcc_version}" "gcc${gcc_version}-c++")
+  fi
 
   if [[ "$skip_libva" == 0 ]]; then
     dependencies+=(
@@ -570,15 +578,21 @@ function run_step_deps() {
     add_ubuntu_deps
   elif [[ "$distro" == "fedora" ]]; then
     add_fedora_deps
-    ${sudo_cmd} dnf group install "development-tools" -y
+    # A full development-tools group pulls in unrelated services (e.g.
+    # Subversion's systemd dependency), conflicting with Fedora's minimal
+    # container image. Install the build tools explicitly; versioned CUDA
+    # compilers and native libraries are in add_fedora_deps above.
+    ${sudo_cmd} dnf install -y make patch pkgconf-pkg-config gcc gcc-c++ binutils tar gzip xz
   fi
 
   # Install the dependencies
   $package_install_command "${dependencies[@]}"
 
-  # reload the environment
-  # shellcheck source=/dev/null
-  source ~/.bashrc
+  # Minimal CI containers need not have a user shell startup file.
+  if [[ -f "$HOME/.bashrc" ]]; then
+    # shellcheck source=/dev/null
+    source "$HOME/.bashrc"
+  fi
 
   #set gcc version based on distros
   export CC=gcc-${gcc_version}
@@ -667,6 +681,10 @@ function run_step_cmake() {
     "-DSUNSHINE_ENABLE_WAYLAND=ON"
     "-DSUNSHINE_ENABLE_X11=ON"
   )
+
+  if [[ "$bazzite_build" == 1 ]]; then
+    cmake_args+=("-DSUNSHINE_BUILD_BAZZITE=ON")
+  fi
 
   if [[ "$appimage_build" == 1 ]]; then
     cmake_args+=("-DSUNSHINE_BUILD_APPIMAGE=ON")

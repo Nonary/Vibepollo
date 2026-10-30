@@ -197,6 +197,21 @@ def poll_status(port, settings):
     return services, session, error
 
 
+def canonical_config_root(directory):
+    """Recognize only the root-owned Fedora Atomic /home alias.
+
+    Keep Settings' no-symlink traversal and private directory checks for all
+    remaining components; resolving the entire user path would bypass them.
+    """
+    directory = Path(directory)
+    if directory.parts[:2] == ('/', 'home'):
+        alias = os.lstat('/home')
+        if (stat.S_ISLNK(alias.st_mode) and alias.st_uid == 0
+                and os.path.realpath('/home') == '/var/home'):
+            return Path('/var/home').joinpath(*directory.parts[2:])
+    return directory
+
+
 class Settings:
     """Private, descriptor-relative storage; never chmod an existing path."""
 
@@ -371,7 +386,7 @@ def main(argv=None):
         return 0
 
     config_root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    store = Settings(config_root / "vibepollo-tray" / str(args.port))
+    store = Settings(canonical_config_root(config_root) / "vibepollo-tray" / str(args.port))
     try:
         settings = store.load()
     except OSError as error:

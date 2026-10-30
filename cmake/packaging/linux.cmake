@@ -551,3 +551,6 @@ endif()
 # metadata file
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/${PROJECT_FQDN}.metainfo.xml"
         DESTINATION "${CMAKE_INSTALL_DATAROOTDIR}/metainfo")
+
+# Keep the immutable-host package contract after all native defaults.
+include("${CMAKE_CURRENT_LIST_DIR}/bazzite.cmake")
