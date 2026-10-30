@@ -362,6 +362,12 @@ namespace rtsp_stream {
    */
   bool has_pending_launch_or_startup(bool expire_pending = true);
   bool has_pending_monitor_launch(std::string_view client_uuid, std::uint64_t generation);
+  /**
+   * @brief Like has_pending_launch_or_startup(), but ignores the given launch.
+   * @param launch_session_id The launch of a session being torn down, which clear()
+   *        releases only after that session's join().
+   */
+  bool has_other_pending_launch_or_startup(uint32_t launch_session_id);
 
   /**
    * @brief Publish whether an HDR stream launch is pending before the RTSP session is active.
