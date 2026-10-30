@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Windows.Controls;
 using Playnite.SDK;
 using Playnite.SDK.Events;
@@ -20,6 +22,7 @@ namespace SunshinePlaynite
             settings = new SunshinePlayniteSettings(this);
             connector = new ConnectorService(api, LogManager.GetLogger(), settings.EnableDebugLogging);
             connector.ApplySettings(settings.NotifyLibraryChanges, settings.EnableDebugLogging);
+            WarnAboutLegacyConnectors(api);
         }
 
         public override ISettings GetSettings(bool firstRunSettings)
@@ -77,6 +80,31 @@ namespace SunshinePlaynite
             else
             {
                 connector.Stop();
+            }
+        }
+
+        // The pre-0.5 script connector serves the same pipe name. When both are
+        // loaded only one can own it, so name the duplicate in the logs.
+        private void WarnAboutLegacyConnectors(IPlayniteAPI api)
+        {
+            var roots = new List<string>();
+            try { roots.Add(Path.Combine(api.Paths.ApplicationPath, "Extensions")); } catch { }
+            try { roots.Add(Path.Combine(api.Paths.ConfigurationPath, "Extensions")); } catch { }
+            var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var root in roots)
+            {
+                try
+                {
+                    if (!System.IO.Directory.Exists(root)) continue;
+                    foreach (var directory in System.IO.Directory.GetDirectories(root))
+                    {
+                        var module = Path.Combine(directory, "SunshinePlaynite.psm1");
+                        if (!File.Exists(module) || !seen.Add(Path.GetFullPath(module))) continue;
+                        connector.Warn("A legacy Sunshine Playnite script connector is installed at " + directory +
+                            ". It competes with this plugin for the Sunshine pipe; delete that folder and restart Playnite.");
+                    }
+                }
+                catch { }
             }
         }
 

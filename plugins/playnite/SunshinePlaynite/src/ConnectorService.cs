@@ -21,6 +21,11 @@ namespace SunshinePlaynite
         private const int DataConnectionTimeoutMs = 5000;
         private const int HelloTimeoutMs = 5000;
         private const int ShutdownFlushTimeoutMs = 500;
+        // Accept-loop backoff after a failed attempt: 250 ms doubling to 10 s.
+        private const int RetryInitialDelayMs = 250;
+        private const int RetryMaxDelayMs = 10000;
+        private const int FailureSummaryIntervalMs = 60000;
+        private const int ErrorPipeBusyHResult = unchecked((int)0x800700E7);
         private readonly IPlayniteAPI api;
         private readonly ConnectorLog log;
         private readonly PlayniteDataMapper dataMapper;
@@ -52,6 +57,8 @@ namespace SunshinePlaynite
             log = new ConnectorLog(logger, enableDebugLogging);
             dataMapper = new PlayniteDataMapper(api, Serialize);
         }
+
+        public void Warn(string message) { log.Warn(message); }
 
         public void ApplySettings(bool notifyLibraryChanges, bool enableDebugLogging)
         {
@@ -245,11 +252,15 @@ namespace SunshinePlaynite
         {
             log.Info("Pipe server starting");
             var security = ConnectorPipeTransport.CreatePipeSecurity();
+            var failures = new RepeatedFailureLog(log, FailureSummaryIntervalMs);
+            var random = new Random();
+            var retryDelayMs = 0;
             while (!token.IsCancellationRequested)
             {
                 NamedPipeServerStream control = null;
                 NamedPipeServerStream data = null;
                 PipeConnection unownedConnection = null;
+                var failed = false;
                 try
                 {
                     control = ConnectorPipeTransport.CreateServer(ControlPipeName, security);
@@ -295,15 +306,19 @@ namespace SunshinePlaynite
                         unownedConnection = null;
                     }
                     if (previous != null) previous.Dispose();
+                    failures.Succeeded();
+                    retryDelayMs = 0;
                 }
                 catch (OperationCanceledException) { break; }
                 catch (TimeoutException ex)
                 {
-                    if (!token.IsCancellationRequested) log.Warn("Pipe handshake timed out: " + ex.Message);
+                    failed = true;
+                    if (!token.IsCancellationRequested) failures.Failed("Pipe handshake timed out: " + ex.Message);
                 }
                 catch (Exception ex)
                 {
-                    if (!token.IsCancellationRequested) log.Warn("Pipe connection failed: " + ex.Message);
+                    failed = true;
+                    if (!token.IsCancellationRequested) failures.Failed(DescribeConnectionFailure(ex));
                 }
                 finally
                 {
@@ -313,8 +328,81 @@ namespace SunshinePlaynite
                     if (control != null) control.Dispose();
                     if (data != null) data.Dispose();
                 }
+                if (failed)
+                {
+                    // Without a delay, a pipe name held by another process
+                    // makes every CreateServer fail at once, in a tight loop.
+                    retryDelayMs = Math.Min(Math.Max(retryDelayMs * 2, RetryInitialDelayMs), RetryMaxDelayMs);
+                    var waitMs = retryDelayMs / 2 + random.Next(retryDelayMs / 2 + 1);
+                    if (token.WaitHandle.WaitOne(waitMs)) break;
+                }
             }
             log.Info("Pipe server exiting");
+        }
+
+        private static string DescribeConnectionFailure(Exception ex)
+        {
+            if (ex is IOException && ex.HResult == ErrorPipeBusyHResult)
+            {
+                return "Pipe connection failed: " + ex.Message.Trim() + " Another process already owns the '" +
+                    ControlPipeName + "' pipe. This is usually a second copy of the connector, such as the legacy " +
+                    "SunshinePlaynite.psm1 script extension; remove it and restart Playnite.";
+            }
+            return "Pipe connection failed: " + ex.Message.Trim();
+        }
+
+        // Logs the first of a run of failures, then at most one summary per
+        // interval, so a persistent failure adds a few lines a minute.
+        private sealed class RepeatedFailureLog
+        {
+            private readonly ConnectorLog log;
+            private readonly int summaryIntervalMs;
+            private readonly Stopwatch sinceSummary = new Stopwatch();
+            private string lastMessage;
+            private int totalFailures;
+            private int failuresSinceSummary;
+
+            public RepeatedFailureLog(ConnectorLog log, int summaryIntervalMs)
+            {
+                this.log = log;
+                this.summaryIntervalMs = summaryIntervalMs;
+            }
+
+            public void Failed(string message)
+            {
+                totalFailures++;
+                if (!string.Equals(message, lastMessage, StringComparison.Ordinal))
+                {
+                    FlushSummary();
+                    lastMessage = message;
+                    failuresSinceSummary = 0;
+                    sinceSummary.Restart();
+                    log.Warn(message);
+                    return;
+                }
+                failuresSinceSummary++;
+                if (sinceSummary.ElapsedMilliseconds >= summaryIntervalMs) FlushSummary();
+            }
+
+            public void Succeeded()
+            {
+                FlushSummary();
+                if (totalFailures > 0)
+                    log.Info(string.Format("Pipe connection accepted after {0} failed attempt(s)", totalFailures));
+                lastMessage = null;
+                totalFailures = 0;
+                failuresSinceSummary = 0;
+                sinceSummary.Reset();
+            }
+
+            private void FlushSummary()
+            {
+                if (failuresSinceSummary == 0) return;
+                log.Warn(string.Format("Still failing: {0} more attempt(s) in the last {1} s. Last error: {2}",
+                    failuresSinceSummary, (int)sinceSummary.Elapsed.TotalSeconds, lastMessage));
+                failuresSinceSummary = 0;
+                sinceSummary.Restart();
+            }
         }
 
         private void StartCore(PipeConnection connection, CancellationToken token)

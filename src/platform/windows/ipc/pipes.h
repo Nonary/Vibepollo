@@ -514,6 +514,15 @@ namespace platf::dxgi {
     // Permit peer identity checks without granting the server impersonation rights.
     void set_client_identification_only();
 
+    // Log expected connect failures (server absent or busy) at debug level.
+    // For callers that retry with their own rate-limited reporting.
+    void set_quiet_connect_failures();
+
+    // Win32 error from the most recent failed create_client, or 0.
+    DWORD last_connect_error() const {
+      return _last_connect_error;
+    }
+
   private:
     /**
      * @brief Creates a security descriptor for the pipe.
@@ -569,6 +578,8 @@ namespace platf::dxgi {
     ) const;
 
     DWORD _client_security_flags = 0;
+    bool _quiet_connect_failures = false;
+    mutable DWORD _last_connect_error = 0;
     SecurityDescriptorBuilder _secdesc_builder;  // optional custom SD builder (Playnite can override)
   };
 
@@ -618,6 +629,11 @@ namespace platf::dxgi {
     // Forward a custom SD builder into the underlying NamedPipeFactory
     void set_security_descriptor_builder(NamedPipeFactory::SecurityDescriptorBuilder builder);
     void set_client_identification_only();
+    void set_quiet_connect_failures();
+
+    DWORD last_connect_error() const {
+      return _pipe_factory.last_connect_error();
+    }
 
   private:
     std::unique_ptr<INamedPipe> handshake_server(std::unique_ptr<INamedPipe> pipe);
