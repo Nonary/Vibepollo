@@ -2,6 +2,7 @@
 #include "src/display_target_lease.h"
 #include "src/app_audio_termination.h"
 #include "src/remote_display_topology.h"
+#include "src/rtsp_launch_registry.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -35,8 +36,9 @@ struct Pause {
  void resume() { {std::lock_guard lock(mutex); release=true;} cv.notify_all(); }
 } join_pause, expiry_pause, parser_pause, peer_pause;
 std::atomic_bool physical=false, late_ordinary=false, armed=false, terminal_entered=false;
-std::atomic_int running=0, finalizer_calls=0, config_applies=0;
+std::atomic_int running=0, finalizer_calls=0, config_applies=0, app_pauses=0;
 int failures=0;
+namespace rtsp_stream {bool has_pending_launch_or_startup();bool has_other_pending_launch_or_startup(std::uint32_t);}
 void check(bool ok,const char *name) { std::cout<<(ok?"PASS ":"FAIL ")<<name<<'\n'; if(!ok) ++failures; }
 auto &topology = remote_display_topology::instance();
 namespace nvhttp {
@@ -47,7 +49,7 @@ void mark_client_last_seen(const std::string &) {}
 }
 namespace util {
 long from_view(std::string_view s) { parser_pause.wait(); return std::stol(std::string(s)); }
-template<class F> struct guard {F fn; ~guard(){fn();}};
+template<class F> struct guard {F fn; bool active=true; ~guard(){if(active) fn();} void disable(){active=false;}};
 template<class F> guard<F> fail_guard(F f){return {f};}
 }
 namespace audio {
@@ -73,11 +75,13 @@ struct config_t {
  int controlProtocolType=0,packetsize=0,minRequiredFecPackets=0,mlFeatureFlags=0,audioQosType=0,videoQosType=0,encryptionFlagsEnabled=0;
  int gen1_framegen_fix=0,gen2_framegen_fix=0,frame_generation_enabled=0,lossless_scaling_framegen=0,frame_generation_provider=0,lossless_scaling_target_fps=0,lossless_scaling_rtss_limit=0;
 };
-struct session_t {std::shared_ptr<void> audio_context_guard,display_power_guard;};
+namespace session {enum class state_e { RUNNING, STOPPING };}
+struct session_t {std::shared_ptr<void> audio_context_guard,display_power_guard;session::state_e state=session::state_e::STOPPING;std::uint32_t launch_session_id=0;bool control_attached=false;};
 namespace session {
-enum class state_e { STOPPING };
-state_e state(session_t &) {return state_e::STOPPING;}
-void stop(session_t &) {}
+state_e state(session_t &s) {return s.state;}
+void stop(session_t &s) {s.state=state_e::STOPPING;}
+std::uint32_t launch_session_id(const session_t &s) {return s.launch_session_id;}
+bool control_peer_attached(const session_t &s) {return s.control_attached;}
 void graceful_stop(session_t &) {}
 constexpr int START_PACING_REJECTED=2;
 inline std::atomic_int running_sessions=0,teardown_sessions=0;
@@ -88,10 +92,16 @@ struct cleanup_reservation_t {cleanup_reservation_t() {if(host_stream_control::l
 bool has_shared_runtime_owner() {return running!=0 || topology.managed_client_identity_count()!=0;}
 struct shared_runtime_finalize_context_t {std::optional<std::array<std::uint8_t,16>> virtual_display_guid_bytes;};
 bool finalize_shared_runtime_if_idle(std::string_view, const shared_runtime_finalize_context_t & = {}) {++finalizer_calls; if(has_shared_runtime_owner()) return false; if(armed.exchange(false) && physical) late_ordinary=true; return true;}
-void join(session_t &s,bool=false) {join_pause.wait(); std::lock_guard lock(nvhttp::lifecycle);s.audio_context_guard.reset();s.display_power_guard.reset(); --running; finalize_shared_runtime_if_idle("natural_join");}
+// The last join's pause decision runs the production pending-launch query from stream.cpp.
+void join(session_t &session,bool=false) {join_pause.wait(); std::lock_guard lock(nvhttp::lifecycle);session.audio_context_guard.reset();session.display_power_guard.reset();
+ if(--running==0) {
+@PAUSE_QUERY@
+  if(!rtsp_pending) ++app_pauses;
+ }
+ finalize_shared_runtime_if_idle("natural_join");}
 audio::config_t allocated_audio{};
 std::shared_ptr<session_t> alloc(const config_t &config,auto &launch) {allocated_audio=config.audio;auto s=std::make_shared<session_t>();s->audio_context_guard=std::move(launch.audio_context_guard);s->display_power_guard=launch.display_power_guard;return s;}
-int start(session_t &,const std::string &) {++running;armed=true;return 0;}
+int start(session_t &s,const std::string &) {++running;armed=true;s.state=state_e::RUNNING;return 0;}
 }
 }
 namespace config { struct {int fec_percentage=0,packetsize=0;std::chrono::seconds ping_timeout{5};} stream; struct {bool limit_framerate=false;int max_bitrate=0;} video; constexpr int PACKETSIZE_MIN=100,PACKETSIZE_MAX=2000,PACKETSIZE_SMALL=500,PACKETSIZE_LARGE=1400; constexpr int ENCRYPTION_MODE_MANDATORY=1; void maybe_apply_deferred() {} struct Gate {~Gate(){}}; Gate acquire_apply_read_gate(){return {};}}
@@ -104,8 +114,10 @@ namespace protocol {constexpr int BITSTREAM_FORMAT=99;constexpr std::string_view
 namespace policy {struct framing_e {static constexpr int records=1;};int select_framing(bool,std::optional<std::uint32_t>){return 0;}}
 namespace bandwidth {std::uint64_t pacing_link_bps(std::uint64_t,std::uint64_t){return 0;}}
 }
-namespace remote_session {enum class role_e {game,input,monitor};}
 namespace pending_policy {
+using rtsp_stream::pending_policy::announce_reply;
+using rtsp_stream::pending_policy::announce_reply_e;
+using rtsp_stream::pending_policy::clear_removed_session_launch;
 bool disconnect_scope_matches(remote_session::role_e actual,remote_session::role_e expected,bool same,bool all) {return actual==expected && (same||all);}
 struct pending_owner_t {remote_session::role_e role;std::string client_uuid;std::uint64_t generation;};
 auto expired_remote_input_owners(const std::vector<pending_owner_t> &v) {return v;}
@@ -119,6 +131,7 @@ struct launch_session_t {
  std::optional<display_target::descriptor_t> exact_monitor_target;
  std::shared_ptr<void> exact_target_hold;
  std::array<std::uint8_t,16> virtual_display_guid_bytes{};
+ std::optional<int> rtsp_cipher;
  std::shared_ptr<void> audio_context_guard,display_power_guard;
  std::string remote_capture_output,rtsp_source_address,av_ping_payload,client_name,device_name,normal_vdd_owner_uuid,audio_codec_offered;
  int gcm_key=0,iv=0,control_connect_data=0,secondary_game_client=0,client_display_mode_override=0,client_display_refresh_millihz=0,prefer_sdr_10bit=0,virtual_display=0,normal_vdd_identity_token=0,framegen_refresh_rate=0,framegen_refresh_millihz=0,framegen_refresh_multiplier=0,framegen_fixed_refresh=0;
@@ -149,13 +162,16 @@ struct LockedState {std::mutex mutex;SessionState state;auto lock(){return std::
 struct client_disconnect_result_t {bool disconnected=false;std::vector<remote_session::role_e> pending_roles;std::vector<std::uint64_t> pending_generations;};
 struct rtsp_server_t {
  LockedState _session_state;Pool startup_pool,io_context;host_stream_control::startup_dispatch_t startup_tasks;std::atomic_bool stopping=false;
- struct launch_session_entry_t {std::shared_ptr<launch_session_t> session;std::chrono::steady_clock::time_point expires_at;bool startup_claimed=false;};
- std::mutex _launch_sessions_mutex;std::vector<launch_session_entry_t> _launch_sessions;
+ using pending_launches_t = rtsp_stream::launch_registry_t<launch_session_t>;
+ std::mutex _launch_sessions_mutex;pending_launches_t _launch_sessions;std::vector<std::uint32_t> _joining_launch_ids;
  struct Timer {void cancel(){}} raised_timer;
  void arm_launch_timer_locked(){}
 @CLAIM_STARTUP@
 @RELEASE_CLAIM@
  int startup_count() const {return startup_tasks.count();}
+@NOTE_GUID@
+@FINISH_STARTUP@
+@HAS_OTHER@
 @RELEASE_HOLDS@
 @RETAIN_HOLDS@
 @CANCEL_PENDING@
@@ -176,8 +192,9 @@ struct rtsp_server_t {
 @CLEAR@
 };
 rtsp_server_t server;
+@STILL_RUNNING@
 @ANNOUNCE@
-namespace rtsp_stream {void terminate_sessions(bool p){server.clear(true,p);}bool has_pending_launch_or_startup(){return !server._launch_sessions.empty()||server.startup_count()>0;}int session_count_no_cleanup(){return server._session_state->sessions.size();}}
+namespace rtsp_stream {void terminate_sessions(bool p){server.clear(true,p);}bool has_pending_launch_or_startup(){return !server._launch_sessions.empty()||server.startup_count()>0;}bool has_other_pending_launch_or_startup(std::uint32_t id){return server.has_other_pending_launch_or_startup(id);}int session_count_no_cleanup(){return server._session_state->sessions.size();}}
 // The non-WEBRTC branch of the unchanged real close body still executes map
 // removal, teardown publication, history and capture-finalizer ordering.
 namespace webrtc_stream {
@@ -219,14 +236,14 @@ int main() {
  check(copied->audio_codec_offered=="EAC3","actual startup clone preserves the codec offer");
  reset();running=1;join_pause.reset(true);server._session_state->sessions.insert(std::make_shared<stream::session_t>());
  blocked_cleanup(join_pause,"actual natural clear drains removed owner before recovery",[]{server.clear(false);});
- reset();expiry_pause.reset(true);auto session=std::make_shared<launch_session_t>();server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{session,std::chrono::steady_clock::now()-1s});
+ reset();expiry_pause.reset(true);auto session=std::make_shared<launch_session_t>();server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{session,std::chrono::steady_clock::now()-1s});
  blocked_cleanup(expiry_pause,"actual expiry extraction/notification finishes before recovery",[]{server.arm_launch_timer();});
  check(config_applies==1,"expiry notification executes once");
- reset();server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{session,std::chrono::steady_clock::now()+1s});terminal();
+ reset();server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{session,std::chrono::steady_clock::now()+1s});terminal();
  check(config_applies==1 && server._launch_sessions.empty(),"actual terminal cancel releases pending Remote Input owner");
  reset();running=1;peer_pause.reset(true);webrtc_stream::sessions.emplace("old",0);webrtc_stream::active_sessions=1;
  blocked_cleanup(peer_pause,"actual WebRTC removed close drains history/capture tail",[]{webrtc_stream::close_session("old");});
- reset();parser_pause.reset(true);server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{session,std::chrono::steady_clock::now()+1s});
+ reset();parser_pause.reset(true);server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{session,std::chrono::steady_clock::now()+1s});
  std::string payload;
  for(auto key:{"x-nv-audio.surround.numChannels","x-nv-audio.surround.channelMask","x-nv-audio.surround.AudioQuality","x-nv-video[0].packetSize","x-nv-video[0].clientViewportHt","x-nv-video[0].clientViewportWd","x-nv-video[0].maxFPS","x-nv-vqos[0].bw.maximumBitrateKbps","x-nv-video[0].videoEncoderSlicesPerFrame","x-nv-video[0].maxNumReferenceFrames"}) payload+="a="+std::string(key)+":2\n";
  auto request=std::make_shared<Request>();request->payload=payload.data();request->payloadLength=payload.size();
@@ -235,7 +252,7 @@ int main() {
  parser_pause.reset(false);
  // Target ANNOUNCE also has an early identity/claim check. Keep a real pending
  // identity across a bounded failed terminal drain to isolate the ticket fence.
- reset();parser_pause.reset(true);session=std::make_shared<launch_session_t>();server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{session,std::chrono::steady_clock::now()+1s});
+ reset();parser_pause.reset(true);session=std::make_shared<launch_session_t>();server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{session,std::chrono::steady_clock::now()+1s});
  std::promise<void> entered,release;auto entered_future=entered.get_future();auto released=release.get_future();
  auto inflight=std::async(std::launch::async,[&]{host_stream_control::activity_guard_t activity;entered.set_value();released.wait();});entered_future.wait();
  request=std::make_shared<Request>();request->payload=payload.data();request->payloadLength=payload.size();
@@ -251,7 +268,7 @@ int main() {
  pending->audio_context_guard=std::shared_ptr<void>(new int(1),[&](void *p){late_resource=physical;delete static_cast<int*>(p);});
  std::weak_ptr<void> resource=pending->audio_context_guard;
  pending->display_power_guard=pending->audio_context_guard;
- server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
+ server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{pending,std::chrono::steady_clock::now()+1s});
  auto queued_request=std::make_shared<Request>();queued_request->payload=payload.data();queued_request->payloadLength=payload.size();
  check(cmd_announce(&server,std::make_shared<socket_t>(),pending,std::move(queued_request)),"actual ANNOUNCE queues metadata with pending resource owner");
  terminal();check(resource.expired(),"pending socket/queued aliases release runtime holds before recovery");
@@ -259,14 +276,14 @@ int main() {
  // Control: a legitimate worker transfers its holds to active capture; map
  // retirement must not release that active owner before the capture join.
  reset();pending=std::make_shared<launch_session_t>();pending->audio_context_guard=std::make_shared<int>(1);resource=pending->audio_context_guard;
- server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
+ server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{pending,std::chrono::steady_clock::now()+1s});
  auto valid_request=std::make_shared<Request>();valid_request->payload=payload.data();valid_request->payloadLength=payload.size();
  check(cmd_announce(&server,std::make_shared<socket_t>(),pending,std::move(valid_request)),"fresh ANNOUNCE is accepted");server.startup_pool.run();check(running==1 && !resource.expired(),"active capture retains admitted resource handoff");terminal();check(resource.expired(),"terminal joins active resource handoff before recovery");server.io_context.run();
  // All nonterminal map-removal paths retire the same shared resources while
  // socket aliases remain alive, so they cannot hide an owner from terminal.
  for(int removal=0;removal<3;++removal) {
    reset();pending=std::make_shared<launch_session_t>();pending->audio_context_guard=std::make_shared<int>(1);resource=pending->audio_context_guard;
-   server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
+   server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{pending,std::chrono::steady_clock::now()+1s});
    if(removal==0)server.session_clear(1);
    else if(removal==1)server.disconnect_client("one",false);
    else server.disconnect_remote_role("one",remote_session::role_e::input,1);
@@ -304,7 +321,7 @@ int main() {
    reset();audio::ac3_encoder=test.encoder;audio::eac3_encoder=test.encoder;config::audio.high_quality_audio=test.quality;
    pending=std::make_shared<launch_session_t>();pending->audio_codec_offered=test.offered;
    pending->audio_context_guard=std::make_shared<int>(1);resource=pending->audio_context_guard;
-   server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
+   server._launch_sessions.entries().push_back(rtsp_server_t::pending_launches_t::entry_t{pending,std::chrono::steady_clock::now()+1s});
    auto audio_payload=payload;const auto channels=audio_payload.find("numChannels:2");audio_payload.replace(channels,13,"numChannels:"+std::to_string(test.channels));
    if(*test.accepted)audio_payload+="a=x-ss-audio-codec-accept:"+std::string(test.accepted)+"\n";
    auto audio_request=std::make_shared<Request>();audio_request->payload=audio_payload.data();audio_request->payloadLength=audio_payload.size();
@@ -321,6 +338,27 @@ int main() {
      check(running==1 && !resource.expired(),"negotiated ANNOUNCE retains its active resource handoff");
    } else check(running==0 && server.startup_pool.queue.empty(),"rejected negotiation never queues capture");
    terminal();check(resource.expired() && running==0 && !late_ordinary,"terminal drains negotiated or rejected session resources before recovery");
+ }
+ // Two sessions stopped before their control streams attached keep their
+ // renewed launches until clear() has joined the whole batch. Whether the
+ // RTSP loop ends the broadcast or reaps stopped sessions, the last join must
+ // pause the app unless a launch for the next broadcast is pending, and that
+ // launch must survive the batch's launches being cleared.
+ for(const bool broadcast:{true,false}) for(const bool next_launch:{false,true}) {
+   reset();app_pauses=0;const auto now=std::chrono::steady_clock::now();
+   const auto queue=[&](std::uint32_t id){auto launch=std::make_shared<launch_session_t>();launch->id=id;launch->unique_id="launch-"+std::to_string(id);launch->rtsp_source_address="10.0.0."+std::to_string(id);
+     return server._launch_sessions.add(launch,now,10s,8)==rtsp_server_t::pending_launches_t::add_result_e::added;};
+   bool queued=true;
+   for(const std::uint32_t id:{11u,12u}) {queued=queue(id)&&queued;auto stopped=std::make_shared<stream::session_t>();stopped->launch_session_id=id;server._session_state->sessions.insert(stopped);++running;}
+   if(next_launch) queued=queue(13)&&queued;
+   const auto clear=rtsp_stream::pending_policy::rtsp_loop_clear(broadcast);
+   server.clear(clear.all_sessions,clear.preserve_pending_launches);
+   const int pauses=app_pauses;
+   server.io_context.run();
+   const bool launches_left=next_launch ? server._launch_sessions.size()==1 && server._launch_sessions.contains_live(13,"launch-13",now) : server._launch_sessions.empty();
+   const std::string name=std::string("actual ")+(broadcast?"broadcast shutdown":"stopped-session reap")+" of two sessions without control "+
+     (next_launch?"defers pause to the next launch and keeps it":"pauses the app once and clears both launches");
+   check(queued && running==0 && pauses==(next_launch?0:1) && launches_left && server._joining_launch_ids.empty(),name.c_str());
  }
  auto fresh=host_stream_control::start_guard_t(host_stream_control::request_ticket());check(bool(fresh),"fresh starts remain eligible after terminal reopen");
  return failures?1:0;
