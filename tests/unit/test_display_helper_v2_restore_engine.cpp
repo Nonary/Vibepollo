@@ -4,7 +4,7 @@
  *        (snapshot codec, filtering rules, golden health) ported from the
  *        battle-tested legacy helper.
  */
-#ifdef _WIN32
+#if defined(_WIN32) || defined(SUNSHINE_TEST_PORTABLE_WINDOWS_TYPES)
 
   #include "../tests_common.h"
 
@@ -518,7 +518,7 @@ namespace {
     }
 
     bool snapshot_matches_current(const display_device::DisplaySettingsSnapshot &snapshot) override {
-      return codec::equal_snapshots_strict(current, snapshot);
+      return codec::recovery_snapshot_matches(current, snapshot);
     }
 
     bool configuration_matches(const display_device::SingleDisplayConfiguration &) override {
@@ -840,7 +840,11 @@ TEST(DisplayHelperV2RecoveryEngine, ConfirmsUnknownHdrAndEmptyPrimaryWithoutAppl
 
     const auto outcome = harness.recovery.run(harness.cancellation.token());
 
-    EXPECT_TRUE(outcome.success);
+    ASSERT_TRUE(outcome.success);
+    ASSERT_TRUE(outcome.snapshot);
+    display_helper::v2::SnapshotService snapshots {harness.display};
+    display_helper::v2::RecoveryValidationOperation validation {snapshots, harness.clock};
+    EXPECT_TRUE(validation.run(*outcome.snapshot, harness.cancellation.token()));
     EXPECT_EQ(harness.display.topology_calls, 0);
     EXPECT_EQ(harness.display.apply_calls, 0);
     EXPECT_EQ(harness.display.current.m_hdr_states.at("A"), display_device::HdrState::Enabled);
@@ -860,7 +864,11 @@ TEST(DisplayHelperV2RecoveryEngine, ConfirmsUnknownHdrAndEmptyPrimaryWithoutAppl
 
     const auto outcome = harness.recovery.run(harness.cancellation.token());
 
-    EXPECT_TRUE(outcome.success);
+    ASSERT_TRUE(outcome.success);
+    ASSERT_TRUE(outcome.snapshot);
+    display_helper::v2::SnapshotService snapshots {harness.display};
+    display_helper::v2::RecoveryValidationOperation validation {snapshots, harness.clock};
+    EXPECT_TRUE(validation.run(*outcome.snapshot, harness.cancellation.token()));
     EXPECT_EQ(harness.display.topology_calls, 0);
     EXPECT_EQ(harness.display.apply_calls, 0);
     EXPECT_EQ(harness.display.current.m_primary_device, "B");
