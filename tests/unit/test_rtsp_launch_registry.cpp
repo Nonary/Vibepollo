@@ -123,6 +123,41 @@ TEST(RtspLaunchRegistry, BroadcastShutdownClearsOnlyTheRemovedSessionsLaunch) {
   EXPECT_EQ(registry.size(), 2u);
 }
 
+TEST(RtspLaunchRegistry, LastSessionTeardownIgnoresItsOwnRenewedLaunch) {
+  // A session stopped after ANNOUNCE 200 but before its control stream
+  // attaches is joined while its renewed launch is still queued; clear()
+  // releases that launch only afterwards. The last-session join must not let
+  // it skip the app's pause.
+  registry_t registry;
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_EQ(registry.add(plaintext(1, "10.0.0.2"), t0, ping_timeout, capacity), add_result_e::added);
+  ASSERT_TRUE(registry.claim_startup(1, "launch-1", t0 + 9500ms));
+  registry.finish_startup(1, "launch-1", true, t0 + 9900ms, ping_timeout);
+
+  EXPECT_FALSE(registry.empty());
+  EXPECT_FALSE(registry.contains_other_than(1));
+}
+
+TEST(RtspLaunchRegistry, LastSessionTeardownDefersToAnUnrelatedLaunch) {
+  // A launch queued for the next broadcast still keeps the app running while
+  // the stopped session is joined, and survives its launch being cleared.
+  registry_t registry;
+  const auto t0 = std::chrono::steady_clock::now();
+  ASSERT_EQ(registry.add(plaintext(1, "10.0.0.2"), t0, ping_timeout, capacity), add_result_e::added);
+  ASSERT_TRUE(registry.claim_startup(1, "launch-1", t0 + 9500ms));
+  registry.finish_startup(1, "launch-1", true, t0 + 9900ms, ping_timeout);
+  ASSERT_EQ(registry.add(plaintext(2, "10.0.0.3"), t0 + 10s, ping_timeout, capacity), add_result_e::added);
+
+  EXPECT_TRUE(registry.contains_other_than(1));
+
+  const auto removed = registry.remove_if([](const fake_session_t &session) {
+    return session.id == 1;
+  });
+  ASSERT_EQ(removed.size(), 1u);
+  EXPECT_TRUE(registry.contains_live(2, "launch-2", t0 + 10500ms));
+  EXPECT_TRUE(registry.contains_other_than(1));
+}
+
 TEST(RtspLaunchRegistry, UnclaimedLaunchExpiresAtItsDeadline) {
   registry_t registry;
   const auto t0 = std::chrono::steady_clock::now();
