@@ -185,14 +185,16 @@ namespace managed_app_focus::hyprland {
   namespace detail {
     // Lua configs, now Hyprland's default, parse dispatch as Lua; legacy
     // configs only accept the dispatcher form.
-    inline bool focus_window(const transport &ipc, const std::string &address) {
-      return ipc("/dispatch hl.dsp.focus({ window = \"address:" + address + "\" })") == "ok" ||
-             ipc("/dispatch focuswindow address:" + address) == "ok";
+    // Each dispatch is preceded by a fresh allowance check.
+    inline bool focus_window(const transport &ipc, const std::string &address, const std::function<bool()> &allowed) {
+      return (allowed() && ipc("/dispatch hl.dsp.focus({ window = \"address:" + address + "\" })") == "ok") ||
+             (allowed() && ipc("/dispatch focuswindow address:" + address) == "ok");
     }
   }  // namespace detail
 
-  // Same result shape as the KWin script; identities are pid:address.
-  inline nlohmann::json apply(const transport &ipc, const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate = {}) {
+  // Same result shape as the KWin script; identities are pid:address. Every
+  // request may block, so an identity is activated only while allowed() says so.
+  inline nlohmann::json apply(const transport &ipc, const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate = {}, const std::function<bool(const std::string &)> &allowed = {}) {
     if (pids.empty()) return {};
     const auto clients = detail::request_json(ipc, "j/clients");
     const auto active = detail::request_json(ipc, "j/activewindow");
@@ -210,7 +212,7 @@ namespace managed_app_focus::hyprland {
       result["windows"].push_back(identity);
       if (result["focused"].get<bool>() || std::ranges::find(activate, identity) == activate.end()) continue;
       // Only activewindow confirms the activation.
-      if (!detail::focus_window(ipc, address)) continue;
+      if (!allowed || !detail::focus_window(ipc, address, [&] { return allowed(identity); })) continue;
       const auto focused = detail::request_json(ipc, "j/activewindow");
       result["focused"] = detail::address(focused) == address;
     }

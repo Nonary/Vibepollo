@@ -12,6 +12,7 @@
 #include <csignal>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <gio/gio.h>
 #include <iostream>
 #include <nlohmann/json.hpp>
@@ -62,7 +63,7 @@ namespace {
       }
     }
 
-    nlohmann::json apply(const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate = {}) {
+    nlohmann::json apply(const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate = {}, const std::function<bool(const std::string &)> &allowed = {}) {
       if (!registration_ || pids.empty() || cancelled) {
         return {};
       }
@@ -87,9 +88,12 @@ namespace {
         g_variant_get(loaded, "(i)", &id);
         g_variant_unref(loaded);
       }
+      // Writing and loading may block, and the script activates as soon as it
+      // runs: recheck every identity it may activate right before that.
+      const bool runnable = activate.empty() || (allowed && std::ranges::all_of(activate, allowed));
       if (id >= 0) {
         const auto object = "/Scripting/Script" + std::to_string(id);
-        if (auto *reply = call(object.c_str(), "org.kde.kwin.Script", "run", nullptr)) {
+        if (auto *reply = runnable ? call(object.c_str(), "org.kde.kwin.Script", "run", nullptr) : nullptr) {
           g_variant_unref(reply);
           const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::min(500,timeout_ms_));
           while (!received_ && !cancelled && std::chrono::steady_clock::now() < deadline) {
@@ -243,8 +247,8 @@ int main(int argc, char **argv) {
   } else {
     kwin.emplace();
   }
-  const auto apply = [&](const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate = {}) {
-    return kwin ? kwin->apply(pids, activate) : managed_app_focus::hyprland::apply(hyprland_ipc, pids, activate);
+  const auto apply = [&](const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate, const std::function<bool(const std::string &)> &allowed) {
+    return kwin ? kwin->apply(pids, activate, allowed) : managed_app_focus::hyprland::apply(hyprland_ipc, pids, activate, allowed);
   };
   bool unavailable_reported = false;
   while (!cancelled && budget.active(managed_app_focus::budget::clock::now())) {
@@ -260,11 +264,13 @@ int main(int argc, char **argv) {
       pids = managed_app_focus::candidates({provider, id, directory}, *snapshot);
     }
     bool unavailable = false;
-    const bool confirmed = managed_app_focus::focus_step([&](const std::vector<std::string> &activate) {
+    const bool confirmed = managed_app_focus::focus_step([&](const std::vector<std::string> &activate, const std::function<bool(const std::string &)> &allowed) {
       if (cancelled) {
         return nlohmann::json {};
       }
-      auto result = apply(pids, activate);
+      auto result = apply(pids, activate, [&](const std::string &identity) {
+        return !cancelled && allowed(identity);
+      });
       unavailable = unavailable || (activate.empty() && result.is_null());
       return result;
     }, budget, managed_app_focus::budget::clock::now);
