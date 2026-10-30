@@ -287,6 +287,13 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
             "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_pyrowave_capture_guard.py"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
     set_tests_properties(test_component_pyrowave_capture_guard PROPERTIES LABELS "component" TIMEOUT 60)
+    # Source-text pin: a refused client slice count keeps the driver's count
+    # instead of failing native AMF setup.
+    add_test(NAME test_component_amf_client_slices
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_amf_client_slices.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    set_tests_properties(test_component_amf_client_slices PROPERTIES LABELS "component" TIMEOUT 30)
     # V6 extracts actual source staging, completion, collection, release, and
     # teardown bodies with controlled CPU leaves. The separate conversion
     # matrix covers preparation/copy/producer/consumer failure paths. Neither
