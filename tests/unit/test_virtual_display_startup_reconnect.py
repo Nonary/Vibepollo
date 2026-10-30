@@ -435,6 +435,7 @@ def transport():
     client = (args.client_source or root / 'src/platform/windows/ipc/display_settings_client.cpp').read_text()
     methods = '\n'.join(function(pipes, signature) for signature in [
         'int client_wait_ms(',
+        'bool is_expected_connect_failure(',
         'std::unique_ptr<INamedPipe> NamedPipeFactory::create_client(\n',
         'winrt::file_handle NamedPipeFactory::create_client_pipe(',
         'std::unique_ptr<INamedPipe> AnonymousPipeFactory::create_client(\n',
@@ -530,6 +531,8 @@ namespace platf::dxgi {
   using FramedPipe = PrefetchedPipe;
   struct NamedPipeFactory {
     DWORD _client_security_flags = 0;
+    bool _quiet_connect_failures = false;
+    mutable DWORD _last_connect_error = 0;
     std::unique_ptr<INamedPipe> create_client(const std::string &, const std::function<bool()> &, Time);
     winrt::file_handle create_client_pipe(const std::wstring &, const std::function<bool()> &, Time) const;
   };
