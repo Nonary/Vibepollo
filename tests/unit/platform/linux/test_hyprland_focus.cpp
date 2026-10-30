@@ -9,15 +9,19 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <fstream>
 #include <iostream>
 #include <iterator>
 #include <string>
+#include <string_view>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <thread>
 #include <unistd.h>
 #include <vector>
+
+using namespace std::chrono_literals;
 
 namespace {
   // Names the failed fixture syscall; the sandbox may forbid any of them.
@@ -102,10 +106,12 @@ namespace {
     bool steal_back = false;  // Another client takes focus again immediately.
     bool lua_config = false;  // Hyprland 0.56 Lua configs parse dispatch as Lua.
     std::vector<std::string> requests;
+    std::function<void(const std::string &)> on_request;  // Simulates a slow reply.
 
     managed_app_focus::hyprland::transport transport() {
       return [this](const std::string &request) -> std::optional<std::string> {
         requests.push_back(request);
+        if (on_request) on_request(request);
         if (request == "j/clients") return listed;
         if (request == "j/activewindow") return active;
         const std::string dispatch = "/dispatch focuswindow address:";
@@ -130,6 +136,10 @@ namespace {
 
 int main() {
   using managed_app_focus::hyprland::apply;
+  const auto always = [](const std::string &) { return true; };
+  const auto dispatched = [](const fake_hyprland &hyprland) {
+    return std::ranges::count_if(hyprland.requests, [](const auto &request) { return request.starts_with("/dispatch"); });
+  };
   using managed_app_focus::focus_step;
   {
     // Observation alone lists the fullscreen game before a maximized launcher
@@ -145,7 +155,7 @@ int main() {
   {
     // Only an allowed identity is activated, and Hyprland must confirm it.
     fake_hyprland hyprland;
-    const auto applied = apply(hyprland.transport(), {700, 701}, {"701:0x5a02", "900:0x5a03"});
+    const auto applied = apply(hyprland.transport(), {700, 701}, {"701:0x5a02", "900:0x5a03"}, always);
     assert(applied.value("focused", false));
     assert(hyprland.requests.back() == "j/activewindow");
     assert(std::ranges::count(hyprland.requests, std::string {"/dispatch focuswindow address:0x5a02"}) == 1);
@@ -160,7 +170,7 @@ int main() {
     hyprland.active = R"({"address":"0xbbbb","mapped":true,"hidden":false,"pid":700})";
     managed_app_focus::budget focus({1, 15, false}, managed_app_focus::budget::clock::now());
     const auto ipc = hyprland.transport();
-    assert(focus_step([&](const auto &activate) { return apply(ipc, {700}, activate); }, focus, managed_app_focus::budget::clock::now));
+    assert(focus_step([&](const auto &activate, const auto &allowed) { return apply(ipc, {700}, activate, allowed); }, focus, managed_app_focus::budget::clock::now));
     assert(std::ranges::count(hyprland.requests, std::string {"/dispatch focuswindow address:0xaaaa"}) == 1);
   }
   {
@@ -170,7 +180,7 @@ int main() {
     const auto now = managed_app_focus::budget::clock::now();
     managed_app_focus::budget focus({1, 15, false}, now);
     const auto ipc = hyprland.transport();
-    assert(!focus_step([&](const auto &activate) { return apply(ipc, {700, 701}, activate); }, focus, [now] { return now; }));
+    assert(!focus_step([&](const auto &activate, const auto &allowed) { return apply(ipc, {700, 701}, activate, allowed); }, focus, [now] { return now; }));
     assert(std::ranges::none_of(hyprland.requests, [](const auto &request) { return request.starts_with("/dispatch"); }));
     assert(focus.can_focus(now));
   }
@@ -179,7 +189,7 @@ int main() {
     // then sent as the Lua focus expression.
     fake_hyprland hyprland;
     hyprland.lua_config = true;
-    const auto applied = apply(hyprland.transport(), {701}, {"701:0x5a02"});
+    const auto applied = apply(hyprland.transport(), {701}, {"701:0x5a02"}, always);
     assert(applied.value("focused", false));
     assert(std::ranges::count(hyprland.requests, std::string {"/dispatch hl.dsp.focus({ window = \"address:0x5a02\" })"}) == 1);
   }
@@ -187,9 +197,38 @@ int main() {
     // An accepted dispatch without the window becoming active is not success.
     fake_hyprland hyprland;
     hyprland.steal_back = true;
-    const auto applied = apply(hyprland.transport(), {701}, {"701:0x5a02"});
+    const auto applied = apply(hyprland.transport(), {701}, {"701:0x5a02"}, always);
     assert(!applied.value("focused", true));
     assert(applied["windows"] == nlohmann::json {"701:0x5a02"});
+  }
+  {
+    // Hyprland's replies block between the focus step's eligibility check and
+    // the dispatch. A reply that carries an identity across its allowance, or
+    // the hard cap, or a refused Lua dispatch that does, sends no focus request.
+    using managed_app_focus::budget;
+    const auto start = budget::clock::time_point(std::chrono::hours(1));
+    struct gap {
+      budget::clock::duration seen, checked;
+      const char *slow;
+    };
+    for (const auto &[seen, checked, slow] : {gap {0s, 14900ms, "j/clients"}, gap {170s, 179900ms, "j/clients"},
+                                             gap {0s, 14900ms, "/dispatch hl.dsp.focus"}}) {
+      fake_hyprland hyprland;
+      hyprland.active = R"({"address":"0x5a02","mapped":true,"hidden":false,"pid":701})";
+      budget focus({1, 15, false}, start);
+      auto now = start + seen;
+      const auto ipc = hyprland.transport();
+      const auto step = [&] { return focus_step([&](const auto &activate, const auto &allowed) { return apply(ipc, {701}, activate, allowed); }, focus, [&] { return now; }); };
+      assert(!step());
+      hyprland.active = R"({"address":"0x5a03","mapped":true,"hidden":false,"pid":900})";
+      now = start + checked;
+      int replies = 0;
+      hyprland.on_request = [&](const std::string &request) {
+        if (request.starts_with(slow) && ++replies == (request == "j/clients" ? 2 : 1)) now += 300ms;
+      };
+      assert(!step());
+      assert(dispatched(hyprland) == (std::string_view(slow) == "j/clients" ? 0 : 1));
+    }
   }
   {
     // Addresses are compositor data, never trusted dispatcher syntax.
@@ -197,7 +236,7 @@ int main() {
     hyprland.listed = R"([{"address":"0x5a01 class:.*","mapped":true,"hidden":false,"pid":700},
                           {"address":"5a02","mapped":true,"hidden":false,"pid":700},
                           {"address":"0x","mapped":true,"hidden":false,"pid":700}])";
-    const auto applied = apply(hyprland.transport(), {700}, {"700:0x5a01 class:.*", "700:5a02", "700:0x"});
+    const auto applied = apply(hyprland.transport(), {700}, {"700:0x5a01 class:.*", "700:5a02", "700:0x"}, always);
     assert(applied["windows"].empty() && !applied.value("focused", true));
     assert(hyprland.requests.size() == 2);
   }

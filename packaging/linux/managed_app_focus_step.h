@@ -2,17 +2,23 @@
 
 #include "src/managed_app_focus.h"
 
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <vector>
 
 namespace managed_app_focus {
-  // One poll of the focus loop; apply({}) only observes. A game window that
-  // already has the foreground spends no attempt. The clock is read after the
-  // blocking observation, so a delayed reply cannot admit an expired window.
+  // One poll of the focus loop; apply({}, allowed) only observes. A game window
+  // that already has the foreground spends no attempt. The clock is read after
+  // the blocking observation, so a delayed reply cannot admit an expired window.
+  // Adapters ask allowed(identity) immediately before each activation, so a
+  // second blocking observation cannot carry it past the allowance either.
   template<class Apply, class Now>
   bool focus_step(Apply &&apply, budget &focus, Now &&clock_now) {
-    const nlohmann::json observed = apply(std::vector<std::string> {});
+    const std::function<bool(const std::string &)> still_allowed = [&](const std::string &identity) {
+      return focus.can_focus(identity, clock_now());
+    };
+    const nlohmann::json observed = apply(std::vector<std::string> {}, still_allowed);
     const auto now = clock_now();
     if (!observed.is_object() || !observed.contains("windows") || !observed["windows"].is_array()) {
       return false;
@@ -32,7 +38,7 @@ namespace managed_app_focus {
     if (allowed.empty() || observed.value("foreground", std::string {}) == allowed.front()) {
       return false;
     }
-    const nlohmann::json applied = apply(allowed);
+    const nlohmann::json applied = apply(allowed, still_allowed);
     if (!applied.is_object() || !applied.value("focused", false)) {
       return false;
     }

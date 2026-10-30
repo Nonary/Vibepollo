@@ -1,6 +1,7 @@
 #include "../../../../packaging/linux/managed_app_focus_step.h"
 
 #include <cassert>
+#include <functional>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -13,13 +14,18 @@ namespace {
     std::vector<std::string> windows {"701:0x5a02", "700:0x5a01"};  // Fullscreen game first.
     std::string foreground;
     int activations = 0;
+    std::function<void()> before_activation;  // The adapter's second observation.
 
-    nlohmann::json operator()(const std::vector<std::string> &activate) {
-      if (!activate.empty()) {
+    nlohmann::json operator()(const std::vector<std::string> &activate, const std::function<bool(const std::string &)> &allowed) {
+      if (!activate.empty() && before_activation) {
+        before_activation();
+      }
+      const bool focused = !activate.empty() && allowed(activate.front());
+      if (focused) {
         ++activations;
         foreground = activate.front();
       }
-      return {{"windows", windows}, {"focused", !activate.empty()}, {"foreground", foreground}};
+      return {{"windows", windows}, {"focused", focused}, {"foreground", foreground}};
     }
   };
 }  // namespace
@@ -102,10 +108,24 @@ int main() {
     assert(!focus_step(desktop, focus, at(start)));
     desktop.foreground = "900:0x5a04";
     auto now = start + 14s;
-    assert(!focus_step([&](const std::vector<std::string> &activate) {
+    assert(!focus_step([&](const std::vector<std::string> &activate, const auto &allowed) {
       now = start + 16s;  // The observation blocks across the deadline.
-      return desktop(activate);
+      return desktop(activate, allowed);
     }, focus, [&] { return now; }));
+    assert(desktop.activations == 0);
+  }
+  {
+    // Nor does a second observation by the adapter that blocks across the
+    // deadline, before it would dispatch.
+    fake_desktop desktop;
+    desktop.windows = {"701:0x5a02"};
+    budget focus({1, 15, false}, start);
+    desktop.foreground = "701:0x5a02";
+    assert(!focus_step(desktop, focus, at(start)));
+    desktop.foreground = "900:0x5a04";
+    auto now = start + 14s + 900ms;
+    desktop.before_activation = [&] { now = start + 15s + 200ms; };
+    assert(!focus_step(desktop, focus, [&] { return now; }));
     assert(desktop.activations == 0);
   }
   std::cout << "PASS: managed focus spends attempts only when the game lost the foreground\n";
