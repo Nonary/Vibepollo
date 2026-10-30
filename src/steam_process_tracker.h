@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace platf::steam::lifecycle {
@@ -122,6 +123,42 @@ namespace platf::steam::lifecycle {
     tracked_tree tree_;
     bool begun_ = false;
   };
+
+  enum class tracking_action {
+    keep_alive,           // keep the stream alive and poll again
+    tracked_tree_exited,  // the associated game tree is gone; end the session
+    give_up_detached,     // never associated within the launch window; stay detached
+  };
+
+  // Pure per-poll decision for a launch being tracked. was_associated is the
+  // state before this poll, associated_now is the latest tracker result, and
+  // reason is that result's explanation. An unavailable snapshot says nothing
+  // about whether the game exited, so it never ends the session.
+  tracking_action next_tracking_action(bool was_associated,
+                                       bool associated_now,
+                                       std::string_view reason,
+                                       std::chrono::steady_clock::time_point now,
+                                       std::chrono::steady_clock::time_point deadline);
+
+  enum class post_tracking_action {
+    cleanup,              // nothing keeps the app alive; run terminate()
+    keep_alive_placebo,   // already treated as a detached/status-driven app
+    keep_alive_running,   // the owned child process is still running
+    keep_alive_group,     // wait_all and the process group is still running
+    enter_auto_detach,    // exited within the auto_detach window; become placebo
+  };
+
+  // Pure decision made after the tracking block. exit_pending means the
+  // tracked game tree was confirmed gone and terminate() has not run yet, so
+  // it wins over every other check; a retry after lifecycle gate contention
+  // must still reach cleanup. process_running and group_running are only
+  // meaningful when exit_pending and placebo are false.
+  post_tracking_action next_post_tracking_action(bool exit_pending,
+                                                 bool placebo,
+                                                 bool process_running,
+                                                 bool group_running,
+                                                 bool auto_detach,
+                                                 std::chrono::steady_clock::duration since_launch);
 
   enum class signal_kind { terminate, kill };
 
