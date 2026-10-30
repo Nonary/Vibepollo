@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Build kernel-specific inspection RPMs locally. Does not install or enroll."""
+import argparse
 import base64
 import fcntl
 import hashlib
@@ -7,6 +8,7 @@ import json
 import os
 import re
 import shutil
+import shlex
 import subprocess
 import sys
 import time
@@ -90,7 +92,7 @@ def kernel_dependency(kernel):
                        'send this log so we can inspect the image package layout')
 
 
-def make_spec(kernel, files, dependency):
+def make_spec(kernel, files, dependency, release="2.bazzite"):
     # Prevent RPM stripping or compressing signed modules after signing.
     header = '''%global debug_package %{nil}
 %global __os_install_post %{nil}
@@ -103,6 +105,7 @@ License: GPL-2.0-only
 BuildArch: x86_64
 AutoReqProv: no
 '''
+    header = header.replace('Release: 2.bazzite', 'Release: ' + release)
     return header + f'''Requires: {dependency}
 Requires: kmod
 Requires: python3
@@ -125,11 +128,78 @@ fi
 '''
 
 
+def validate_kernel(kernel):
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[A-Za-z0-9._+-]+\.x86_64', kernel):
+        raise RuntimeError('Invalid x86_64 kernel release')
+    major, minor = map(int, kernel.split('.')[:2])
+    if (major, minor) < (6, 16):
+        raise RuntimeError('Virtual displays require Linux 6.16 or later')
+    return kernel
+
+
+def validate_image(image):
+    # Never build against a moving tag or silently switch OS/GPU variants.
+    if not re.fullmatch(r'ghcr.io/ublue-os/bazzite-nvidia-open@sha256:[0-9a-f]{64}', image):
+        raise RuntimeError('Use a digest-pinned ghcr.io/ublue-os/bazzite-nvidia-open image')
+    return image
+
+
+IMAGE_PROBE = r"""
+import json, pathlib, shutil, subprocess
+root = pathlib.Path('/usr/lib/modules')
+kernels = [p.name for p in root.iterdir() if p.is_dir() and (p / 'vmlinuz').is_file()]
+if len(kernels) != 1:
+    raise SystemExit('Target image must contain exactly one identifiable kernel')
+kernel = kernels[0]
+headers = pathlib.Path('/usr/src/kernels') / kernel
+if not (headers / 'Makefile').is_file():
+    raise SystemExit('Target image lacks matching kernel-devel; preparation stopped')
+release = headers / 'include/config/kernel.release'
+if not release.is_file() or release.read_text().strip() != kernel:
+    raise SystemExit('Target kernel-devel does not match kernel release')
+config = (headers / '.config').read_text()
+compiler = 'clang' if 'CONFIG_CC_IS_CLANG=y' in config.splitlines() else 'gcc'
+for tool in ('make', compiler):
+    if not shutil.which(tool):
+        raise SystemExit('Target image lacks build tool: ' + tool)
+owner = subprocess.check_output(['rpm', '-qf', '--qf',
+    '%{NAME} = %{EPOCHNUM}:%{VERSION}-%{RELEASE}\n', str(root / kernel / 'vmlinuz')], text=True)
+print(json.dumps({'kernel': kernel, 'dependency': owner.strip().replace(' = 0:', ' = ', 1)}))
+"""
+
+
+def probe_image(image):
+    validate_image(image)
+    run('podman', 'pull', image)
+    result = subprocess.check_output(['podman', 'run', '--rm', '--network=none',
+        '--cap-drop=ALL', '--security-opt=no-new-privileges',
+        '--entrypoint=/usr/bin/python3', image, '-c', IMAGE_PROBE], text=True)
+    metadata = json.loads(result)
+    validate_kernel(metadata['kernel'])
+    if not re.fullmatch(r'kernel(?:-[A-Za-z0-9_+.-]+)? = (?:[0-9]+:)?[A-Za-z0-9_+.~^-]+', metadata['dependency']):
+        raise RuntimeError('Unexpected target kernel RPM ownership')
+    if metadata['dependency'].startswith(('kernel-devel', 'kernel-headers')):
+        raise RuntimeError('Development package cannot establish a boot kernel dependency')
+    return metadata
+
+
+def update_command(image, package):
+    validate_image(image)
+    return shlex.join(['sudo', 'rpm-ostree', 'rebase',
+        '--uninstall=vibepollo-kmod', '--install=' + str(package),
+        'ostree-image-signed:docker://' + image])
+
+
 def main():
+    global KERNEL
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--target-image', help='Prepare drivers for a digest-pinned future Bazzite NVIDIA Open image')
+    args = parser.parse_args()
     if os.geteuid() == 0:
         raise RuntimeError('Run this script without sudo; only signing asks for sudo')
-    if os.uname().release != KERNEL:
-        raise RuntimeError(f'This first package targets {KERNEL}; your kernel has changed')
+    target_image = validate_image(args.target_image) if args.target_image else None
+    if not target_image and os.uname().release != KERNEL:
+        raise RuntimeError(f'Use --target-image for kernels other than the initially qualified {KERNEL}')
     for command in ('git', 'make', 'gcc', 'podman', 'rpm', 'sudo', 'openssl', 'modinfo'):
         if shutil.which(command) is None:
             raise RuntimeError(f'Missing host tool: {command}')
@@ -146,12 +216,17 @@ def main():
         if capture('git', '-C', repo, 'rev-parse', 'HEAD') != revision:
             raise RuntimeError(f'Unexpected submodule: {relative}')
         run('git', '-C', repo, 'diff', '--exit-code', 'HEAD', '--', 'linux')
-    dependency = kernel_dependency(KERNEL)
-    headers = Path('/usr/src/kernels') / KERNEL
-    if not (headers / 'Makefile').is_file():
-        raise RuntimeError(f'Matching kernel development files missing: {headers}')
+    if target_image:
+        metadata = probe_image(target_image)
+        KERNEL = metadata['kernel']
+        dependency = metadata['dependency']
+    else:
+        dependency = kernel_dependency(KERNEL)
+        headers = Path('/usr/src/kernels') / KERNEL
+        if not (headers / 'Makefile').is_file():
+            raise RuntimeError(f'Matching kernel development files missing: {headers}')
     run('podman', 'image', 'exists', IMAGE)
-    output = state / ('drivers-' + time.strftime('%Y%m%d-%H%M%S'))
+    output = state / ('drivers-' + time.strftime('%Y%m%d-%H%M%S') + '-' + KERNEL)
     output.mkdir(mode=0o700)
     print(f'Output: {output}', flush=True)
     display = output / 'work/display'
@@ -162,7 +237,17 @@ def main():
     jobs = str(min(8, os.cpu_count() or 1))
     # The shared build helper selects GCC or Clang to match the host kernel.
     for directory in (display, gamepad):
-        run('bash', directory / 'build-module', KERNEL, directory, '-j' + jobs)
+        if target_image:
+            relative = directory.relative_to(output)
+            run('podman', 'run', '--rm', '--network=none', '--cap-drop=ALL',
+                '--security-opt=no-new-privileges', '--userns=keep-id',
+                '--user', f'{os.getuid()}:{os.getgid()}', '--env', 'HOME=/tmp',
+                '--volume', f'{output}:/work:Z', '--workdir=/work',
+                '--entrypoint=/usr/bin/bash', target_image,
+                str(Path('/work') / relative / 'build-module'), KERNEL,
+                str(Path('/work') / relative), '-j' + jobs)
+        else:
+            run('bash', directory / 'build-module', KERNEL, directory, '-j' + jobs)
     for name, directory in zip(NAMES, (display, gamepad)):
         module = directory / name
         if capture('modinfo', '-F', 'vermagic', module).split()[0] != KERNEL:
@@ -174,7 +259,7 @@ def main():
     print('Signing needs sudo. The private key stays in /var/lib/vibepollo-module-signing.', flush=True)
     result = subprocess.run(['sudo', '/usr/bin/python3', '-I', '-c',
                              (kit / 'sign-modules.py').read_text()],
-                            input=json.dumps(request), text=True, stdout=subprocess.PIPE, check=True)
+                            input=json.dumps({'kernel': KERNEL, 'modules': request, 'require_existing_key': bool(target_image)}), text=True, stdout=subprocess.PIPE, check=True)
     signed = json.loads(result.stdout)
     payload = output / 'rpm/SOURCES/payload'
     files = []
@@ -213,7 +298,8 @@ ExecStartPre=/usr/libexec/vibeshine/vibepollo-bazzite-driver-check
     rpmroot = output / 'rpm'
     for name in ('BUILD', 'BUILDROOT', 'RPMS', 'SPECS', 'SRPMS'):
         (rpmroot / name).mkdir()
-    (rpmroot / 'SPECS/vibepollo-kmod.spec').write_text(make_spec(KERNEL, files, dependency))
+    (rpmroot / 'SPECS/vibepollo-kmod.spec').write_text(make_spec(KERNEL, files, dependency,
+        '3.bazzite.k' + KERNEL.replace('-', '_').replace('+', '_') + '.g' + source_revision[:12]))
     run('podman', 'run', '--rm', '--userns=keep-id', '--user', f'{os.getuid()}:{os.getgid()}',
         '--env', 'HOME=/tmp', '--volume', f'{rpmroot}:/rpmbuild:Z', IMAGE,
         'bash', '-euo', 'pipefail', '-c', '''
@@ -221,7 +307,7 @@ rpmbuild -bb --define '_topdir /rpmbuild' /rpmbuild/SPECS/vibepollo-kmod.spec
 packages=(/rpmbuild/RPMS/x86_64/*.rpm)
 test "${#packages[@]}" = 1
 rpm -qp --scripts "${packages[0]}" > /rpmbuild/scriptlets.txt
-grep -F "/usr/sbin/depmod -a 7.2.11-ogc4.1.fc44.x86_64" /rpmbuild/scriptlets.txt
+test -s /rpmbuild/scriptlets.txt
 rpm -qp --requires "${packages[0]}" > /rpmbuild/requires.txt
 mkdir /rpmbuild/extracted
 bsdtar -xf "${packages[0]}" -C /rpmbuild/extracted
@@ -230,6 +316,8 @@ bsdtar -xf "${packages[0]}" -C /rpmbuild/extracted
     if len(packages) != 1:
         raise RuntimeError('RPM metadata verification failed')
     requires = (rpmroot / 'requires.txt').read_text()
+    if f'/usr/sbin/depmod -a {KERNEL}' not in (rpmroot / 'scriptlets.txt').read_text():
+        raise RuntimeError('RPM lost target module-index hooks')
     if dependency not in requires.splitlines():
         raise RuntimeError('RPM lost exact kernel dependency')
     for name in NAMES:
@@ -239,9 +327,12 @@ bsdtar -xf "${packages[0]}" -C /rpmbuild/extracted
     package = output / packages[0].name
     shutil.copyfile(packages[0], package)
     report = {'kernel': KERNEL, 'kernel_package_dependency': dependency,
-              'revision': source_revision, 'modules_sha256': hashes,
+              'target_image': target_image, 'revision': source_revision, 'modules_sha256': hashes,
               'certificate_sha256': signed['certificate_sha256'], 'rpm_sha256': digest(package),
               'package': package.name, 'status': 'Built and inspected; not installed or enrolled'}
+    if target_image:
+        report['staging_command'] = update_command(target_image, package)
+        (output / 'STAGE-COMMAND.txt').write_text(report['staging_command'] + '\n')
     (output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2), flush=True)
     print(f'FINISHED. Report: {output / "report.json"}')

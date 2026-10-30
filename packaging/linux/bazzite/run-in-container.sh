@@ -17,6 +17,7 @@ cmake -S . -B build-local -G Ninja \
 cmake --build build-local --parallel "$BUILD_JOBS" 2>&1 | tee local-output/build.log
 python3 tests/unit/test_bazzite_package_profile.py
 python3 tests/unit/test_bazzite_runtime_fixes.py
+python3 tests/unit/test_bazzite_kernel_update.py
 ctest --test-dir build-local --output-on-failure --parallel 2 2>&1 | tee local-output/tests.log
 cpack -G RPM --config build-local/CPackConfig.cmake -B /workspace/local-output 2>&1 | tee local-output/package.log
 mapfile -t packages < <(find local-output -maxdepth 1 -type f -name '*.rpm')

@@ -36,8 +36,9 @@ bash packaging/linux/bazzite/drivers/build-drivers.sh
 ```
 
 The app builder bootstraps a cached Fedora 44/GCC 14 image for CUDA 12.9. The
-first build is lengthy. The driver builder uses the host kernel's compiler
-family and intentionally accepts only the qualified 7.2.11 kernel. It verifies
+first build is lengthy. Use the RPM filename printed by the driver builder
+where DRIVER_RPM_FILENAME appears below. The driver builder uses the host kernel's compiler
+family for the qualified 7.2.11 kernel by default. It verifies
 the driver submodule revisions and derives the exact kernel package dependency
 from RPM file ownership. It reuses the app builder image for packaging.
 
@@ -64,7 +65,7 @@ to the desktop. Check `mokutil --test-key DRIVER_OUTPUT/MOK.der` and
 `mokutil` emitted a keyring lookup warning despite successful enrollment.
 
 ```bash
-sudo rpm-ostree install "$PWD/local-output/Vibepollo.rpm" DRIVER_OUTPUT/vibepollo-kmod-2.0.2-2.bazzite.x86_64.rpm
+sudo rpm-ostree install "$PWD/local-output/Vibepollo.rpm" DRIVER_OUTPUT/DRIVER_RPM_FILENAME
 ```
 
 After successful staging, reboot, then check and configure:
@@ -90,10 +91,51 @@ For package revisions, the tested replacement operation was
 `rpm-ostree install --uninstall=vibepollo --uninstall=vibepollo-kmod APP_RPM DRIVER_RPM`,
 followed by a reboot. Reuse the signing key for future driver builds.
 
+## Preparing a future kernel (prototype; not yet hardware-qualified)
+
+Keep the current working deployment while preparing an update. Resolve the
+stable image digest on the host (requires skopeo):
+
+```bash
+skopeo inspect --format '{{.Digest}}' docker://ghcr.io/ublue-os/bazzite-nvidia-open:stable
+```
+
+Use that exact digest, not the moving stable tag:
+
+```bash
+bash packaging/linux/bazzite/drivers/build-drivers.sh --target-image ghcr.io/ublue-os/bazzite-nvidia-open@sha256:DIGEST
+```
+
+This pulls the target image locally and checks its kernel RPM owner, matching
+kernel-devel and compiler. If those tools/headers are absent, it stops; it does
+not modify the image or install packages into the host to compensate. Building
+uses that image's kernel headers and compiler in an unprivileged, offline
+container. Signing executes only the root-owned host sign-file tool, reusing
+the existing root-only key; update mode refuses to create a replacement key.
+The target image has no access to that key. RPM releases include the target
+kernel and source revision to distinguish future packages.
+
+After signature/metadata/payload checks succeed, report.json records the exact
+image digest, kernel package dependency, source revision and hashes.
+STAGE-COMMAND.txt contains a proposed rpm-ostree rebase command combining that
+signed image digest with replacement of the old local driver RPM in one
+transaction. The tool **does not execute it**, reboot, stop streaming, or change
+boot selection. Review the report and validate the host's rebase options before
+staging. Pin the known-good booted deployment before the first real update test.
+After staging succeeds, inspect the pending deployment before rebooting, then
+verify both modules load and repeat streaming/reconnect checks. Preserve the
+old deployment for recovery if the kernel or driver fails.
+
+This is supervised preparation, not integration with Bazzite's automatic updater.
+It has policy tests but no real future-kernel/container/transaction qualification
+yet. The already installed exact-kernel package continues to block an ordinary
+incompatible update until an appropriate driver replacement is supplied.
+
 ## Remaining work
 
-- Kernel-update automation: the exact kernel dependency deliberately blocks
-  using this package with another kernel. Do not remove it to force an upgrade.
+- Qualify future-image preparation on real hardware, including compiler/header
+  availability and one-transaction staging. Automatic updater integration remains
+  unfinished. Keep the exact kernel dependency; do not bypass it to force upgrades.
 - Clean install/reinstall and uninstall/rollback recovery qualification.
   No automated cleanup is provided; preserve credentials and pairings.
 - Windows-style Force Quit/disconnect action in the Linux tray.
