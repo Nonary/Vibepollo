@@ -176,6 +176,15 @@ namespace rtsp_stream {
       return entries_.empty();
     }
 
+    // Whether any launch other than `id` is pending. A session that stops before
+    // its control stream attaches still holds its renewed launch while it is
+    // joined, and that launch must not count as a reason to keep the app running.
+    bool contains_other_than(const std::uint32_t id) const {
+      return std::any_of(entries_.begin(), entries_.end(), [id](const entry_t &entry) {
+        return !entry.session || entry.session->id != id;
+      });
+    }
+
     std::size_t size() const {
       return entries_.size();
     }

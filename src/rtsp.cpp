@@ -1069,6 +1069,15 @@ namespace rtsp_stream {
       return has_pending_launch || startup_count() > 0;
     }
 
+    bool has_other_pending_launch_or_startup(uint32_t launch_session_id) {
+      bool has_pending_launch = false;
+      {
+        std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+        has_pending_launch = _launch_sessions.contains_other_than(launch_session_id);
+      }
+      return has_pending_launch || startup_count() > 0;
+    }
+
     bool has_launch_session(uint32_t id, std::string_view unique_id) {
       std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
       return _launch_sessions.contains_live(id, unique_id, std::chrono::steady_clock::now());
@@ -1838,6 +1847,10 @@ namespace rtsp_stream {
 
   bool has_pending_launch_or_startup(bool expire_pending) {
     return server.has_pending_launch_or_startup(expire_pending);
+  }
+
+  bool has_other_pending_launch_or_startup(uint32_t launch_session_id) {
+    return server.has_other_pending_launch_or_startup(launch_session_id);
   }
 
   void set_vulkan_hdr_layer_pending_stream(bool active) {

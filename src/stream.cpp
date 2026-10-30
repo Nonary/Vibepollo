@@ -4160,7 +4160,10 @@ namespace stream {
 #endif
       if (last_rtsp_session) {
         webrtc_stream::set_rtsp_sessions_active(false);
-        const bool rtsp_pending = rtsp_stream::has_pending_launch_or_startup();
+        // A session that stopped before its control stream attached still holds
+        // its own renewed launch here; clear() releases it only after this join,
+        // and nothing retries the pause then. Only other launches keep the app up.
+        const bool rtsp_pending = rtsp_stream::has_other_pending_launch_or_startup(session.launch_session_id);
         const bool webrtc_active =
           webrtc_stream::has_active_or_pending_sessions() ||
           webrtc_stream::has_teardown_in_progress();
