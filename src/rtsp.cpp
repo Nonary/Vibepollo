@@ -1069,11 +1069,17 @@ namespace rtsp_stream {
       return has_pending_launch || startup_count() > 0;
     }
 
+    // A session that stopped before its control stream attached still holds its
+    // renewed launch while it is joined, and clear() releases the launches of
+    // every session in its batch only after all their joins. None of those may
+    // count as a next launch at the last-session pause.
     bool has_other_pending_launch_or_startup(uint32_t launch_session_id) {
       bool has_pending_launch = false;
       {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
-        has_pending_launch = _launch_sessions.contains_other_than(launch_session_id);
+        has_pending_launch = _launch_sessions.contains_other_than([this, launch_session_id](const uint32_t id) {
+          return id == launch_session_id || std::ranges::find(_joining_launch_ids, id) != _joining_launch_ids.end();
+        });
       }
       return has_pending_launch || startup_count() > 0;
     }
@@ -1222,6 +1228,26 @@ namespace rtsp_stream {
 #ifdef _WIN32
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
 #endif
+
+      // Mark the batch's launches as joining until every join is done, so the
+      // last join's pause decision does not wait on another one of them.
+      std::vector<uint32_t> joining_launch_ids;
+      joining_launch_ids.reserve(to_cleanup.size());
+      for (const auto &slot : to_cleanup) {
+        joining_launch_ids.push_back(stream::session::launch_session_id(*slot));
+      }
+      {
+        std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+        _joining_launch_ids.insert(_joining_launch_ids.end(), joining_launch_ids.begin(), joining_launch_ids.end());
+      }
+      auto joined = util::fail_guard([this, &joining_launch_ids]() {
+        std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
+        for (const auto id : joining_launch_ids) {
+          if (const auto it = std::ranges::find(_joining_launch_ids, id); it != _joining_launch_ids.end()) {
+            _joining_launch_ids.erase(it);
+          }
+        }
+      });
 
       // Stop and join outside the lock
       std::vector<uint32_t> launches_without_control;
@@ -1813,6 +1839,9 @@ namespace rtsp_stream {
     sync_util::sync_t<session_state_t> _session_state;
     std::mutex _launch_sessions_mutex;
     pending_launches_t _launch_sessions;
+    // Launch IDs of the sessions clear() is joining, guarded by
+    // _launch_sessions_mutex. See has_other_pending_launch_or_startup().
+    std::vector<uint32_t> _joining_launch_ids;
     std::string plaintext_route_warning;
 
     boost::asio::io_context io_context;

@@ -19,6 +19,7 @@ p.add_argument('--boost-include', default='')
 a = p.parse_args()
 root=a.source.resolve(); out=a.build_dir.resolve(); out.mkdir(parents=True, exist_ok=True)
 rtsp=(root/'src/rtsp.cpp').read_text(); nv=(root/'src/nvhttp.cpp').read_text(); web=(root/'src/webrtc_stream.cpp').read_text()
+stream=(root/'src/stream.cpp').read_text()
 audio_header=(root/'src/audio.h').read_text(); audio_source=(root/'src/audio.cpp').read_text()
 def body(s, signature, indent):
     start=s.index(signature); end=s.index('\n'+indent+'}',start)+len('\n'+indent+'}')
@@ -33,6 +34,11 @@ fragments={
 'DOLBY_BITRATE':body(audio_source,'  int dolby_bitrate_kbps(','  '),
 'DOLBY_NAME':body(audio_source,'  std::string_view dolby_codec_name(','  '),
 'CLEAR':body(rtsp,'    void clear(bool all = true','    '),
+'NOTE_GUID':body(rtsp,'    static void note_virtual_display_guid(','    '),
+'FINISH_STARTUP':body(rtsp,'    void finish_launch_startup(','    '),
+'HAS_OTHER':body(rtsp,'    bool has_other_pending_launch_or_startup(','    '),
+'STILL_RUNNING':body(rtsp,'  static bool session_still_running(','  '),
+'PAUSE_QUERY':stream[stream.index('        const bool rtsp_pending = rtsp_stream::'):stream.index(';',stream.index('        const bool rtsp_pending = rtsp_stream::'))+1],
 'CANCEL_PENDING':body(rtsp,'    void cancel_pending_launches(','    '),
 'EXPIRE':body(rtsp,'    void arm_launch_timer()','    '),
 'SESSION_CLEAR':body(rtsp,'    void session_clear(','    '),
@@ -57,5 +63,5 @@ exe=out/'production-terminal-composition'
 cmd=[a.compiler,'-std=c++23','-Wall','-Wextra','-Werror','-Wno-sign-compare','-Wno-missing-field-initializers','-pthread','-I',str(root)]
 for inc in (a.json_include+';'+a.boost_include).split(';'):
     if inc: cmd+=['-I',str(Path(inc).resolve())]
-subprocess.run(cmd+[str(cpp),str(root/'src/remote_display_topology.cpp'),'-o',str(exe)],check=True)
+subprocess.run(cmd+[str(cpp),str(root/'src/remote_display_topology.cpp'),str(root/'src/rtsp_pending_policy.cpp'),'-o',str(exe)],check=True)
 subprocess.run([str(exe)],check=True,timeout=20)

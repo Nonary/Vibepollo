@@ -355,7 +355,8 @@ namespace rtsp_stream {
    */
   bool has_pending_launch_or_startup(bool expire_pending = true);
   /**
-   * @brief Like has_pending_launch_or_startup(), but ignores the given launch.
+   * @brief Like has_pending_launch_or_startup(), but ignores the given launch and
+   *        the launches of every session clear() is joining.
    * @param launch_session_id The launch of a session being torn down, which clear()
    *        releases only after that session's join().
    */
