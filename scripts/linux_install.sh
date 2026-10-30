@@ -483,6 +483,19 @@ install_kernel_headers() {
 }
 
 check_desktop() {
+  local config=${1:-/etc/vibepollo/machine.conf}
+  # An existing hyprland-kms policy needs Hyprland and UWSM, not Plasma/KWin.
+  if [[ -r "$config" ]] && grep -qx 'desktop_backend=hyprland-kms' "$config"; then
+    if pacman -Qq hyprland >/dev/null 2>&1 && pacman -Qq uwsm >/dev/null 2>&1; then
+      ok "Hyprland and UWSM are installed for the selected hyprland-kms desktop backend."
+    else
+      fail "desktop_backend=hyprland-kms requires Hyprland and UWSM (install hyprland and uwsm)."
+    fi
+    if ! pacman -Qq sddm >/dev/null 2>&1; then
+      warn "sddm is not installed. The Hyprland KMS backend attaches to the 'Hyprland (uwsm-managed)' session started by SDDM."
+    fi
+    return
+  fi
   if pacman -Qq plasma-workspace >/dev/null 2>&1 || pacman -Qq plasma-desktop >/dev/null 2>&1; then
     ok "KDE Plasma is installed."
   else
