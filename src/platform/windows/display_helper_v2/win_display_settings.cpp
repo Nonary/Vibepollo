@@ -818,10 +818,11 @@ namespace display_helper::v2 {
     }
 
     try {
-      // Order-insensitive comparison: Windows enumerates topology groups in an
-      // arbitrary order, and treating that as a mismatch caused endless restore
-      // re-applies that scrambled MPO planes (fd98755b).
-      return codec::equal_snapshots_strict(capture_snapshot(), snapshot);
+      // Final validation must use the same requested-field contract as the
+      // restore operation. Unknown HDR or an omitted primary is not a request
+      // to clear the observed value; rejecting it here re-arms a completed
+      // restore and can overwrite later local display changes.
+      return codec::recovery_snapshot_matches(capture_snapshot(), snapshot);
     } catch (...) {
       return false;
     }

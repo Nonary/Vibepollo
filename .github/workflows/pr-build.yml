@@ -29,6 +29,10 @@ jobs:
           python3 .github/scripts/vhf_release_identity.py --source-commit "$RELEASE_COMMIT" --github-env "$GITHUB_ENV"
       - name: Install host test headers
         run: sudo apt-get update && sudo apt-get install -y nlohmann-json3-dev libboost-dev
+      - name: Check production final display recovery validation
+        run: |
+          git submodule update --init --depth 1 third-party/libdisplaydevice
+          python3 tests/unit/test_display_recovery_confirmation.py . --compiler g++
       - name: Check Steam Controller feedback forwarding, queue policy, slot retirement and VHF fallback
         # Legacy master has no Steam implementation; Steam sources must run every harness.
         if: env.VHF_TAG == 'v0.1.0-beta.155'

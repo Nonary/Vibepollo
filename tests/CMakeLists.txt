@@ -1203,6 +1203,7 @@ endif()
 if(NOT WIN32)
     sunshine_register_component(NAME test_component_windows_display_recovery
         TEST_SOURCE unit/test_display_helper_v2_state_machine.cpp
+        EXTRA_TEST_SOURCES "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_v2_restore_engine.cpp"
         DEFINITIONS SUNSHINE_TEST_PORTABLE_WINDOWS_TYPES
         INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/support/display_helper_core"
         PRODUCT_SOURCES

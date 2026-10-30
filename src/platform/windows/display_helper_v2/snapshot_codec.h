@@ -49,6 +49,11 @@ namespace display_helper::v2::codec {
   // (and endlessly re-applied) just because the OS enumerates paths in a new order.
   bool equal_snapshots_strict(const Snapshot &a, const Snapshot &b);
 
+  // Recovery confirms only requested fields: unknown HDR, an omitted primary,
+  // and legacy missing origins are not settings to restore. Modes and topology
+  // remain exact; an empty saved mode map cannot confirm a recovery.
+  bool recovery_snapshot_matches(const Snapshot &current, const Snapshot &requested);
+
   // Stable textual representation for change detection/logging (canonical topology order).
   std::string signature(const Snapshot &snap);
 

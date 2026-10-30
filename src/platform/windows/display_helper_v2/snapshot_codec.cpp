@@ -410,6 +410,43 @@ namespace display_helper::v2::codec {
     return true;
   }
 
+  // Recovery writes only fields present in the saved snapshot. Unknown HDR,
+  // empty primary, and legacy snapshots without origins are therefore
+  // unrequested fields, while topology and display modes remain exact. An
+  // empty mode map cannot prove a restorable display mode and fails closed.
+  bool recovery_snapshot_matches(const Snapshot &current, const Snapshot &requested) {
+    if (requested.m_modes.empty() ||
+        canonical_topology(current.m_topology) != canonical_topology(requested.m_topology) ||
+        !topology::equal_display_modes(current.m_modes, requested.m_modes)) {
+      return false;
+    }
+
+    if (!requested.m_primary_device.empty() && current.m_primary_device != requested.m_primary_device) {
+      return false;
+    }
+
+    for (const auto &[id, requested_state] : requested.m_hdr_states) {
+      if (!requested_state) {
+        continue;
+      }
+      const auto current_state = current.m_hdr_states.find(id);
+      if (current_state == current.m_hdr_states.end() || !current_state->second ||
+          current_state->second != requested_state) {
+        return false;
+      }
+    }
+
+    for (const auto &[id, requested_origin] : requested.m_origins) {
+      const auto current_origin = current.m_origins.find(id);
+      if (current_origin == current.m_origins.end() ||
+          current_origin->second.m_x != requested_origin.m_x ||
+          current_origin->second.m_y != requested_origin.m_y) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   std::string signature(const Snapshot &snap) {
     // Build a stable textual representation
     std::string s;
