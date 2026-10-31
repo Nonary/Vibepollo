@@ -33,9 +33,8 @@ static const char power_interface[] = "org.kde.Solid.PowerManagement.PolicyAgent
 // PowerDevil's freedesktop Inhibit API only blocks session interruption.
 // Capture also needs ChangeScreenSettings (4) to prevent idle DPMS shutdown.
 static const guint power_inhibition_policies = 1u | 4u;
-// A retained private topology blocks only idle dimming/screen-off. It never
-// changes power state itself and must not keep an idle host from suspending.
-static const guint retained_inhibition_policies = 4u;
+// PowerDevil implies InterruptSession for ChangeScreenSettings, so there is
+// no screen-only inhibitor. Retained topology must follow normal idle policy.
 
 static bool display_power_wake(void) {
   const int lock=display_borrow_inherited_lock();
@@ -71,6 +70,9 @@ static bool display_power_release(struct display_power_state *state) {
 }
 
 static bool display_power_inhibit(struct display_power_state *state) {
+  // Keep the legacy retain helper protocol harmless for older host processes.
+  // Only pending/active captures may hold an inhibitor.
+  if (state->retain_only) return true;
   GError *error = NULL;
   GVariant *reply = g_dbus_connection_call_sync(
     state->bus, "org.freedesktop.DBus", "/org/freedesktop/DBus",
@@ -97,7 +99,7 @@ static bool display_power_inhibit(struct display_power_state *state) {
   // cookie or impersonate a successful acquisition in the same transaction.
   reply = g_dbus_connection_call_sync(
     state->bus, new_owner, power_path, power_interface, "AddInhibition",
-    g_variant_new("(uss)", state->retain_only ? retained_inhibition_policies : power_inhibition_policies, "Vibepollo", state->retain_only ? "Retained remote display" : (state->inhibit_only ? state->reason : "Active remote display")),
+    g_variant_new("(uss)", power_inhibition_policies, "Vibepollo", state->inhibit_only ? state->reason : "Active remote display"),
     G_VARIANT_TYPE("(u)"), G_DBUS_CALL_FLAGS_NONE, 1500, NULL, &error);
   if (!reply) {
     g_clear_error(&error);

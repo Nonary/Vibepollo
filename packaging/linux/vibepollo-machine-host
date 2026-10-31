@@ -33,7 +33,7 @@ declare -A application_environment=()
 
 fail() { /usr/bin/printf 'vibepollo-machine-host: %s\n' "$*" >&2; return 1; }
 require_root() { ((EUID == 0)) || fail "$1 requires root"; }
-valid_user() { [[ "$1" =~ ^[a-z_][a-z0-9_-]*$ ]]; }
+valid_user() { [[ "$1" =~ ^[A-Za-z_][A-Za-z0-9_-]*$ ]]; }
 
 capability_free_exec() {
   # Administrative helpers and the service supervisor are capability-free.
@@ -398,7 +398,7 @@ rewrite_machine_cover_paths() {
   [[ "$attributes" == "${service_user}:${service_user}:600" ]] ||
     fail 'machine-profile marker ownership is unsafe'
   IFS= read -r marker_line <"$profile_marker" || return 1
-  [[ "$marker_line" =~ ^source_user=([a-z_][a-z0-9_-]*)$ ]] || fail 'machine-profile marker is invalid'
+  [[ "$marker_line" =~ ^source_user=([A-Za-z_][A-Za-z0-9_-]*)$ ]] || fail 'machine-profile marker is invalid'
   source_user=${BASH_REMATCH[1]}
   entry=$(/usr/bin/getent passwd "$source_user") || fail 'machine-profile source account is unavailable'
   IFS=: read -r account_name _ _ _ _ account_home _ <<<"$entry"

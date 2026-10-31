@@ -211,6 +211,53 @@ class TrayTests(unittest.TestCase):
                 ("POST", "/api/apps/close", "Bearer private-token", b"{}"),
             ])
 
+    def test_force_close_uses_existing_scoped_pinned_endpoint(self):
+        with self.server() as (port, calls):
+            tray.api_request(port, self.pin, "private-token", "/api/apps/close", "POST", force=True)
+            self.assertEqual(len(calls), 1)
+            method, path, auth, body = calls[0]
+            self.assertEqual((method, path, auth),
+                             ("POST", "/api/apps/close", "Bearer private-token"))
+            self.assertEqual(json.loads(body), {"force": True})
+        with self.assertRaises(ValueError):
+            tray.api_request(1, self.pin, "private-token", "/api/session/status", force=True)
+
+    def test_force_close_menu_calls_api_and_keeps_services_running(self):
+        active = {tray.HOST: "active", tray.CONTROLLER: "active"}
+        session = {"status": True, "activeSessions": 1, "appRunning": True, "appName": "Desktop"}
+        for confirm, app_running in ((True, True), (False, True), (True, False)):
+            session["appRunning"] = app_running
+            with self.subTest(confirm=confirm, app_running=app_running), self.server(payload=lambda: session) as (port, calls):
+                def scenario():
+                    desktop.dispatch()  # Initial poll enables the action.
+                    self.assertTrue(desktop.actions["Force close client"].enabled)
+                    desktop.trigger("Force close client")
+                    if confirm:
+                        self.assertFalse(desktop.actions["Force close client"].enabled)
+                        desktop.dispatch()  # Close completion requests a fresh poll.
+                        desktop.dispatch()  # Fresh status completion.
+                    posts = [call for call in calls if call[0] == "POST"]
+                    self.assertEqual(len(posts), int(confirm))
+                    if posts:
+                        self.assertEqual(posts[0][1], "/api/apps/close")
+                        self.assertEqual(json.loads(posts[0][3]), {"force": True})
+                    return 0
+
+                desktop = DesktopStandins(scenario)
+                box = desktop.modules["PySide6.QtWidgets"].QMessageBox
+                if not confirm:
+                    box.question.return_value = box.StandardButton.No
+                with patch.dict(tray.sys.modules, desktop.modules), \
+                        patch.dict(os.environ, {"DBUS_SESSION_BUS_ADDRESS": "fixture", "WAYLAND_DISPLAY": "fixture"}), \
+                        patch.object(tray.os, "getuid", return_value=1000), \
+                        patch.object(tray.os, "geteuid", return_value=1000), \
+                        patch.object(tray, "Settings") as settings, \
+                        patch.object(tray, "read_services", return_value=active), \
+                        patch.object(tray, "run_service_action") as service_action:
+                    settings.return_value.load.return_value = {"token": "private-token", "fingerprint": self.pin}
+                    self.assertEqual(tray.main(["--port", str(port), "--no-notifications"]), 0)
+                    service_action.assert_not_called()
+
     def test_server_generator_alphabet_tokens_reach_pinned_tls(self):
         # Read the production generator's declared default rather than copying
         # a base64 assumption into the fixture. Exercise every character in a

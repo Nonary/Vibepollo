@@ -9,6 +9,7 @@ See docs/linux/local-development.md for supported layouts and rollback caveats.
 import argparse
 import base64
 import contextlib
+import errno
 import fcntl
 import hashlib
 import io
@@ -181,6 +182,17 @@ def inspect_archive(archive, version):
     return {name: member for name, member in members.items() if not member.isdir()}
 
 
+def set_xattr_if_changed(path, key, value):
+    """Avoid rewriting an identical read-only mount label; preserve failures."""
+    try:
+        if os.getxattr(path, key) == value:
+            return
+    except OSError as error:
+        if error.errno != errno.ENODATA:
+            raise
+    os.setxattr(path, key, value)
+
+
 def sync_path(path, directory=False):
     fd = os.open(path, os.O_RDONLY | (os.O_DIRECTORY if directory else os.O_NOFOLLOW))
     try:
@@ -311,7 +323,7 @@ class Files:
             if link is None:
                 temporary.chmod(mode)
                 for key, value in (xattrs or {}).items():
-                    os.setxattr(temporary, key, base64.b64decode(value))
+                    set_xattr_if_changed(temporary, key, base64.b64decode(value))
                 sync_path(temporary)
             os.replace(temporary, target)
             sync_path(target.parent, directory=True)
@@ -715,7 +727,7 @@ def restore_driver(directory, state, root=Path('/'), owner=0):
         for key in set(os.listxattr(path)) - saved['xattrs'].keys():
             os.removexattr(path, key)
         for key, value in saved['xattrs'].items():
-            os.setxattr(path, key, base64.b64decode(value))
+            set_xattr_if_changed(path, key, base64.b64decode(value))
         sync_path(path, directory=True)
     affected = set(state.get('kernels', []))
     affected.update(name.split('/')[3] for name in current | state['before'].keys()

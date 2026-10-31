@@ -1,0 +1,31 @@
+FROM fedora:44
+ARG BUILD_JOBS=6
+RUN dnf install -y git tar gzip xz ca-certificates gcc gcc-c++ make \
+    gmp-devel mpfr-devel libmpc-devel flex bison texinfo gettext-devel zlib-devel \
+    nodejs npm jq sqlite-devel libcap libcap-devel kwin-devel qt6-qtbase-devel \
+    libkscreen-devel wayland-devel wayland-protocols-devel libxkbcommon-devel libuuid-devel \
+    python3 python3-pytest python3-jinja2 openssl dbus-daemon bsdtar \
+    libwebp-devel libpng-devel libjpeg-turbo-devel systemd-devel libubsan
+RUN git init /tmp/gcc-source && \
+    git -C /tmp/gcc-source remote add origin https://github.com/gcc-mirror/gcc.git && \
+    git -C /tmp/gcc-source fetch --depth=1 origin c9cd41fba9ebd288c4f101e4b99da934bcb96a11 && \
+    git -C /tmp/gcc-source checkout --detach FETCH_HEAD && \
+    test "$(git -C /tmp/gcc-source rev-parse HEAD)" = c9cd41fba9ebd288c4f101e4b99da934bcb96a11
+RUN mkdir -p /tmp/gcc-build && cd /tmp/gcc-build && \
+    CXX="g++ -std=gnu++17" /tmp/gcc-source/configure --prefix=/opt/gcc14 \
+      --enable-languages=c,c++ --disable-multilib --disable-bootstrap \
+      --disable-libsanitizer --with-system-zlib --without-isl && \
+    make -j"${BUILD_JOBS}" && make install && \
+    ln -s gcc /opt/gcc14/bin/gcc-14 && ln -s g++ /opt/gcc14/bin/g++-14 && \
+    rm -rf /tmp/gcc-source /tmp/gcc-build
+ENV PATH="/opt/gcc14/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+COPY scripts/linux_build.sh /opt/vibepollo/scripts/linux_build.sh
+COPY packaging/linux/patches /opt/vibepollo/packaging/linux/patches
+RUN bash /opt/vibepollo/scripts/linux_build.sh -s --cuda-patches --step=deps
+RUN mkdir -p /opt/test-libs && \
+    runtime=$(/usr/bin/gcc -print-file-name=libubsan.so.1) && test -f "$runtime" && \
+    ln -s "$(realpath "$runtime")" /opt/test-libs/libubsan.so
+ENV LIBRARY_PATH=/opt/test-libs
+ENV CC=/opt/gcc14/bin/gcc-14
+ENV CXX=/opt/gcc14/bin/g++-14
+WORKDIR /workspace

@@ -64,16 +64,20 @@ class PinnedConnection(http.client.HTTPSConnection):
             raise CertificateChanged(actual)
 
 
-def api_request(port, fingerprint, token, path, method="GET"):
+def api_request(port, fingerprint, token, path, method="GET", *, force=False):
     if SCOPES.get(path) != method:
         raise ValueError("Unsupported tray API operation")
     # The server's crypto::rand_alphabet includes !%&() and interior '='.
     # Keep tokens bounded and header-safe without assuming base64 encoding.
     if not isinstance(token, str) or not re.fullmatch(r"[A-Za-z0-9._~+!%&()=/-]{1,4096}", token):
         raise ApiError("Connect an API token to use stream controls")
+    if force and (path != "/api/apps/close" or method != "POST"):
+        raise ValueError("Force close is only supported for application stop")
     connection = PinnedConnection(port, fingerprint)
+    if force:
+        connection.timeout = 30  # Transport drain and app cleanup can outlast a status query.
     try:
-        connection.request(method, path, body="{}" if method == "POST" else None,
+        connection.request(method, path, body=(json.dumps({"force": True}) if force else "{}") if method == "POST" else None,
                            headers={"Authorization": "Bearer " + token,
                                     "Content-Type": "application/json"})
         response = connection.getresponse()
@@ -195,6 +199,21 @@ def poll_status(port, settings):
         except Exception as exception:
             error = str(exception)
     return services, session, error
+
+
+def canonical_config_root(directory):
+    """Recognize only the root-owned Fedora Atomic /home alias.
+
+    Keep Settings' no-symlink traversal and private directory checks for all
+    remaining components; resolving the entire user path would bypass them.
+    """
+    directory = Path(directory)
+    if directory.parts[:2] == ('/', 'home'):
+        alias = os.lstat('/home')
+        if (stat.S_ISLNK(alias.st_mode) and alias.st_uid == 0
+                and os.path.realpath('/home') == '/var/home'):
+            return Path('/var/home').joinpath(*directory.parts[2:])
+    return directory
 
 
 class Settings:
@@ -371,7 +390,7 @@ def main(argv=None):
         return 0
 
     config_root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    store = Settings(config_root / "vibepollo-tray" / str(args.port))
+    store = Settings(canonical_config_root(config_root) / "vibepollo-tray" / str(args.port))
     try:
         settings = store.load()
     except OSError as error:
@@ -396,6 +415,8 @@ def main(argv=None):
     menu.addAction("Pair a client", lambda: open_ui("/v2/pair"))
     menu.addSeparator()
     close_action = menu.addAction("No application running")
+    force_action = menu.addAction("Force close client")
+    force_action.setEnabled(False)
     updates_action = menu.addAction("Check for Update")
     start_action = menu.addAction("Start Vibepollo")
     restart_action = menu.addAction("Restart")
@@ -447,20 +468,27 @@ def main(argv=None):
         restart_action.setEnabled(False)
         stop_action.setEnabled(False)
         close_action.setEnabled(False)
+        force_action.setEnabled(False)
         submit("service", lambda: run_service_action(action))
 
-    def close_application():
+    def close_application(force=False):
+        if "close" in busy or "service" in busy:
+            return
         if not settings.get("token"):
             connect_token()
             return
-        if QMessageBox.question(None, "Stop current application?",
-                                "This ends the running application and its active streams.") != QMessageBox.StandardButton.Yes:
+        title = "Force close client?" if force else "Stop current application?"
+        message = ("This disconnects all clients and ends the streaming application. "
+                   "Unsaved application progress may be lost. Vibepollo stays running."
+                   if force else "This ends the running application and its active streams.")
+        if QMessageBox.question(None, title, message) != QMessageBox.StandardButton.Yes:
             return
         snapshot = dict(settings)
         epoch.advance()
         close_action.setEnabled(False)
+        force_action.setEnabled(False)
         submit("close", lambda: api_request(args.port, snapshot.get("fingerprint"),
-                                            snapshot["token"], "/api/apps/close", "POST"))
+                                            snapshot["token"], "/api/apps/close", "POST", force=force))
 
     def connect_token():
         submit("certificate", lambda: certificate_fingerprint(args.port))
@@ -527,7 +555,7 @@ def main(argv=None):
         if error is not None:
             if kind == "poll":
                 show("Status unavailable", "apollo-locked", "#f5b041", "Could not read system service status")
-                for action in (start_action, restart_action, stop_action, close_action):
+                for action in (start_action, restart_action, stop_action, close_action, force_action):
                     action.setEnabled(False)
             else:
                 # Tokens never appear in exception messages or desktop notifications.
@@ -575,6 +603,9 @@ def main(argv=None):
             start_action.setEnabled(controller_state in ("inactive", "failed"))
             restart_action.setEnabled(controller_state in ("active", "failed"))
             stop_action.setEnabled(controller_state == "active")
+            force_action.setEnabled(host_active and "close" not in busy and "service" not in busy
+                                    and (not settings.get("token") or bool(session and (
+                                        session.get("appRunning") or session.get("activeSessions", 0) > 0))))
             can_close = bool(session and session.get("appRunning"))
             close_action.setEnabled(can_close and "close" not in busy)
             close_action.setText("Stop " + str(session.get("appName") or "current application")[:160]
@@ -594,7 +625,8 @@ def main(argv=None):
     forget_action.triggered.connect(forget_token)
     refresh_action.triggered.connect(poll)
     updates_action.triggered.connect(request_update_check)
-    close_action.triggered.connect(close_application)
+    close_action.triggered.connect(lambda: close_application())
+    force_action.triggered.connect(lambda: close_application(force=True))
     start_action.triggered.connect(lambda: service_action("start"))
     restart_action.triggered.connect(lambda: service_action("restart"))
     stop_action.triggered.connect(lambda: service_action("stop"))

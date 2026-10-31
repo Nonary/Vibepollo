@@ -33,6 +33,12 @@ if(SUNSHINE_ENABLE_NV_TRUEHDR AND CUDA_FOUND AND CMAKE_SYSTEM_NAME STREQUAL "Lin
         PATTERN "libnvVFXVideoFrameGeneration.so" EXCLUDE
         PATTERN "libnvVFXVideoSuperRes.so" EXCLUDE
         PATTERN "libnvidia-ngx-vsr.so*" EXCLUDE)
+    # NVIDIA's pinned libNVCVImage carries a build-machine CUDA 12.8 RPATH
+    # with an empty entry (current-directory lookup). The native loader opens
+    # cudart and its NPP/cuDNN peers by explicit bundled paths before this DSO.
+    # Remove that unused search path only from the installed copy, retaining
+    # the original extracted wheel and its provenance untouched.
+    install(CODE "file(RPATH_REMOVE FILE \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/vibeshine/truehdr/nvvfx/libs/libNVCVImage.so\")")
     install(DIRECTORY "${SUNSHINE_TRUEHDR_LINUX_ROOT}/nvidia_vfx.libs"
         "${SUNSHINE_TRUEHDR_LINUX_ROOT}/nvidia_vfx-0.2.0.0.dist-info/licenses"
         DESTINATION "${CMAKE_INSTALL_LIBDIR}/vibeshine/truehdr")
