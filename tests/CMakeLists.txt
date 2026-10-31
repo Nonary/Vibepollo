@@ -1902,6 +1902,13 @@ endif()
 
 # Production-code regression harnesses exercise Windows policies on the native host.
 find_package(Python3 COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND AND WIN32 AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    add_test(NAME regression_pyrowave_windows_header_order
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_pyrowave_header_order.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(regression_pyrowave_windows_header_order PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
 if(Python3_Interpreter_FOUND AND UNIX AND SUNSHINE_TEST_ENABLE_COMPONENT)
     add_test(NAME regression_macos_link_dependencies
         COMMAND "${Python3_EXECUTABLE}"
