@@ -144,3 +144,60 @@ incompatible update until an appropriate driver replacement is supplied.
 
 The user requested local builds only. Publication commits use `[skip ci]`;
 this draft adds no hosted Bazzite workflow and does not claim CI passed.
+
+## Automatic sleep and Force Close (2026-10-31)
+
+PowerDevil treats `ChangeScreenSettings` as also inhibiting session interruption.
+The former retained-display hold therefore prevented automatic suspend after a
+client disconnected. Only pending/active captures now own a power inhibitor;
+retaining a virtual topology does not. Legacy retain-helper modes remain accepted
+but no longer acquire an inhibitor or wake an output. Reconnect still acquires
+an active inhibitor and wakes DPMS before preparing the display.
+
+On the qualified host, rejecting only `Vibepollo / Retained remote display` through
+KDE's `SetInhibitionAllowed` restored automatic suspend, followed by successful
+Artemis Wake PC and reconnect. That establishes the diagnosis and workaround;
+installation/runtime qualification of this source change is still pending.
+Normal idle display-off with a retained virtual-only topology needs a longer
+regression test too: the removed hold was originally intended to avoid an NVIDIA
+GSP hang. A two-minute sleep test alone does not qualify that path.
+
+The native tray adds **Force close client**, using the existing token-authorized
+`POST /api/apps/close` scope with `{"force":true}`. It drains RTSP/WebRTC transports before calling the native
+Force Close application cleanup. All streams end, applications
+may lose unsaved progress, clients stay paired, and the host stays available.
+The existing Stop action and empty/null/`{}` API bodies keep graceful behavior.
+
+After installing and rebooting into the updated app RPM, remove the diagnostic
+KDE exception so the source fix is tested without it:
+
+```bash
+busctl --user call org.kde.Solid.PowerManagement.PolicyAgent \
+  /org/kde/Solid/PowerManagement/PolicyAgent \
+  org.kde.Solid.PowerManagement.PolicyAgent SetInhibitionAllowed ssb \
+  "Vibepollo" "Retained remote display" true
+```
+
+Then test automatic sleep with the short timeout, Artemis wake/reconnect, Force
+Close on a disposable desktop stream, and reconnect. Also leave a disconnected
+session through its normal screen-off timeout before testing reconnect. Restore
+the preferred sleep timeout afterward. No driver rebuild or MOK enrollment is
+required for these app-only changes.
+
+Remove the temporary PowerDevil debug override when diagnosis is complete:
+
+```bash
+rm -f "$XDG_RUNTIME_DIR/systemd/user/plasma-powerdevil.service.d/90-sleep-debug.conf"
+systemctl --user daemon-reload
+systemctl --user restart plasma-powerdevil.service
+```
+
+For the original qualified cached checkout, use the reviewed commit SHA with
+`update-runtime.sh SHA [SOURCE_DIRECTORY]`. It downloads that commit's narrow
+runtime/test patch, checks applicability before applying it, reuses the existing
+Fedora/GCC/CUDA container and CMake cache, runs focused regressions, and writes
+`runtime-fixed-output/Vibepollo.rpm` (app release `4.bazzite`). It installs nothing.
+The original checkout may still have local account/home-path fixes; they remain
+in place. If patch applicability fails, stop and inspect the log rather than
+resetting the checkout. This compatibility launcher is intended for the original
+single-machine qualification checkout, not as an automatic updater.

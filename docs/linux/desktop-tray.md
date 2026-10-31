@@ -41,6 +41,11 @@ The menu provides:
 
 - **Open Vibepollo** and **Pair a client** open the local Web UI.
 - **Stop [application]** uses the authenticated API, with confirmation.
+- **Force close client** disconnects active streams and stops the
+  streaming application, matching Windows Force Close. Vibepollo stays running
+  and clients remain paired. This requires the same token scopes above and asks
+  for confirmation; unsaved application progress may be lost. With no token,
+  choosing it opens token setup. Older tokens with these scopes remain valid.
 - **Check for Update** fetches public GitHub release metadata, displays the
   installed version and latest published stable/prerelease tags, and offers
   their release pages. It does not install anything or claim a nightly/stable
@@ -66,7 +71,7 @@ python3 packaging/linux/vibepollo-tray.py
 ```
 
 Manually verify token setup, streaming/paused/ready transitions, application
-stop, denied/cancelled polkit requests, and Quit/Start with a disposable stream.
+stop, Force close client (including desktop streams), denied/cancelled polkit requests, and Quit/Start with a disposable stream.
 Do not restart a live host as part of automated tests.
 
 The companion is installed only by native Linux builds with tray support enabled.

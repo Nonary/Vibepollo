@@ -45,7 +45,6 @@ struct provider {
   guint flags;
   int acquired;
   int released;
-  int retained;
   int reject;
 };
 
@@ -61,14 +60,11 @@ static void power_call(GDBusConnection *bus, const char *sender, const char *pat
     guint policies;
     const char *app, *reason;
     g_variant_get(parameters, "(u&s&s)", &policies, &app, &reason);
-    // A suspend-only inhibitor still lets DPMS remove capture's scanout.
-    // Require both InterruptSession (1) and ChangeScreenSettings (4). A
-    // retained topology blocks only screen changes; idle suspend remains.
-    const bool retained = !strcmp(reason, "Retained remote display");
-    g_assert_cmpuint(policies, ==, retained ? 4u : 5u);
+    // Retained helpers must never request an inhibitor: PowerDevil turns
+    // ChangeScreenSettings into InterruptSession as well.
+    g_assert_cmpuint(policies, ==, 5u);
     g_assert_cmpstr(app, ==, "Vibepollo");
-    if (!retained) g_assert_cmpstr(reason, ==, "Active remote display");
-    if (retained) g_atomic_int_inc(&provider->retained);
+    g_assert_cmpstr(reason, ==, "Active remote display");
     if (g_atomic_int_get(&provider->reject)) {
       g_dbus_method_invocation_return_dbus_error(invocation, "org.test.Unavailable", "restarting");
       return;
@@ -241,13 +237,13 @@ int main(int argc, char **argv) {
   display_power_release(&state); // Idempotent cleanup.
   g_assert_cmpint(g_atomic_int_get(&active_inhibitors), ==, 0);
 
-  // A retained private topology only blocks idle screen changes. It never
-  // wakes outputs, including after resume, so it cannot fight desktop DPMS.
+  // Legacy retained helpers must neither inhibit sleep nor wake outputs,
+  // including after resume.
   const int wakes_before_retain = wake_count;
   struct display_power_state retained = {.bus = bus, .require_inhibit = true, .retain_only = true};
   g_assert_true(display_power_prepare(&retained));
-  g_assert_true(retained.inhibited);
-  g_assert_cmpint(g_atomic_int_get(&replacement.retained), ==, 1);
+  g_assert_false(retained.inhibited);
+  g_assert_cmpint(g_atomic_int_get(&active_inhibitors), ==, 0);
   resume = g_variant_ref_sink(g_variant_new("(b)", FALSE));
   display_power_resume(NULL, NULL, NULL, NULL, NULL, resume, &retained);
   g_variant_unref(resume);
@@ -308,11 +304,10 @@ int main(int argc, char **argv) {
   g_object_unref(worker);
   g_assert_cmpint(g_atomic_int_get(&active_inhibitors), ==, 0);
 
-  // The retain worker becomes ready on its inhibitor alone and releases it.
+  // The compatibility retain worker becomes ready without a power inhibitor.
   worker = start_worker(argv[0], "--retain");
   g_assert_true(read_ready(worker));
-  g_assert_cmpint(g_atomic_int_get(&active_inhibitors), ==, 1);
-  g_assert_cmpint(g_atomic_int_get(&replacement.retained), ==, 2);
+  g_assert_cmpint(g_atomic_int_get(&active_inhibitors), ==, 0);
   g_subprocess_send_signal(worker, SIGTERM);
   g_assert_true(g_subprocess_wait_check(worker, NULL, NULL));
   g_object_unref(worker);

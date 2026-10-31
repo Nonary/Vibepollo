@@ -150,15 +150,6 @@ namespace platf::display_power {
     return lease;
   }
 
-  std::shared_ptr<void> retain_screen() {
-    if (!std::getenv("VIBEPOLLO_MACHINE_HOST")) {
-      static const auto noop = std::make_shared<int>(0);
-      return noop;
-    }
-    // Never share the capture lease: that one also inhibits suspend.
-    return start_ready("display-retain");
-  }
-
   std::optional<std::map<std::string, dpms_state_t>> query_dpms_states(
     std::chrono::steady_clock::time_point deadline
   ) {

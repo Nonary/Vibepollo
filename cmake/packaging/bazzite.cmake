@@ -15,7 +15,7 @@ foreach(_hook PRE_INSTALL POST_INSTALL PRE_UNINSTALL POST_UNINSTALL)
 endforeach()
 unset(_hook)
 set(CPACK_GENERATOR RPM)
-set(CPACK_RPM_PACKAGE_RELEASE "3.bazzite")
+set(CPACK_RPM_PACKAGE_RELEASE "4.bazzite")
 string(APPEND CPACK_RPM_PACKAGE_REQUIRES ", rpm >= 4.20, /usr/bin/systemd-sysusers, vibepollo-kmod")
 # The native KWin bridge is a trusted preload library. Preserve the same
 # payload mode as the Arch/spec packages without chmod in a scriptlet.

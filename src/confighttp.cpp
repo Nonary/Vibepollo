@@ -2317,7 +2317,25 @@ namespace confighttp {
 
     print_req(request);
 
-    proc::proc.terminate();
+    // Match the native tray's immediate termination without stopping the host.
+    // Empty/null bodies and {} retain the existing graceful-close behavior.
+    bool force = false;
+    if (request->content.size() > 0) {
+      try {
+        const auto input = nlohmann::json::parse(request->content);
+        if (!input.is_null()) force = input.value("force", false);
+      } catch (const std::exception &error) {
+        bad_request(response, request, error.what());
+        return;
+      }
+    }
+    if (force) {
+      // Drain transports before app teardown, outside the lifecycle mutex
+      // taken by terminate(). Also handle streams with no running process.
+      rtsp_stream::terminate_sessions(false);
+      webrtc_stream::shutdown_all_sessions();
+    }
+    proc::proc.terminate(force);
     nlohmann::json output_tree;
     output_tree["status"] = true;
     send_response(response, output_tree);

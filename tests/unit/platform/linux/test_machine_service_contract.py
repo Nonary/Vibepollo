@@ -642,12 +642,11 @@ require(pending_handoff, "snapshot->display_power_guard = entry.session->display
 require(stream, "session->display_power_guard = launch_session.display_power_guard", "active capture power ownership")
 require(stream, "session.display_power_guard.reset()", "capture teardown releases display power")
 forbid(linux_misc, "display_power::acquire()", "retained shared runtime must not inhibit sleep")
-# Idle screen-off of a private-only topology wedged NVIDIA GSP with no client
-# left. Its hold blocks only screen changes and ends with the restore.
-require(broker, '!strcmp(argv[1], "display-retain") && argc == 2', "fixed retained screen operation")
-require(display_power, "retained_inhibition_policies = 4u", "retained screen hold never inhibits suspend")
-require(display_power_client, 'start_ready("display-retain")', "retained screen hold is not the capture lease")
-require(private_display, "manager.retained_screen_hold.reset()", "restore releases retained screen hold")
+# A retained topology must not use ChangeScreenSettings: PowerDevil implies
+# InterruptSession for that policy and would prevent automatic suspend.
+forbid(private_display, "retained_screen_hold", "idle topology must not retain power inhibition")
+forbid(display_power_client, 'start_ready("display-retain")', "idle topology must not spawn a power hold")
+require(display_power, "if (state->retain_only) return true;", "legacy retain operation cannot inhibit sleep")
 
 require(host, "readonly machine_profile=/var/lib/vibepollo", "machine host")
 require(host, '"HOME=$machine_profile"', "machine host HOME isolation")
