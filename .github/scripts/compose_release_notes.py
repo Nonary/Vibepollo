@@ -39,6 +39,7 @@ def release_notes(notes_dir: Path, release_version: str) -> list[tuple[tuple[int
     target_key = version_key(release_version)
     target_line = target_key[:3]
     notes: list[tuple[tuple[int, int, int, int, int, str], str, Path]] = []
+    previous: list[tuple[tuple[int, int, int, int, int, str], str, Path]] = []
 
     for path in notes_dir.glob("*.md"):
         version = path.stem.removeprefix("v")
@@ -53,8 +54,16 @@ def release_notes(notes_dir: Path, release_version: str) -> list[tuple[tuple[int
             and (is_stable_release if target_key[3] == 40 else version == release_version)
         ):
             notes.append((key, version, path))
+        elif target_key[3] == 40 and is_stable_release and key[:2] == target_line[:2] and key[:3] < target_line:
+            previous.append((key, version, path))
 
-    return sorted(notes, key=lambda note: note[0])
+    notes.sort(key=lambda note: note[0])
+    if previous:
+        previous_line = max(note[0][:3] for note in previous)
+        notes += sorted(
+            (note for note in previous if note[0][:3] == previous_line), key=lambda note: note[0]
+        )
+    return notes
 
 
 def body_without_title(content: str) -> str:
@@ -179,6 +188,10 @@ def main() -> None:
             f"These release notes cover the stable {target_line} releases, "
             "from the original stable release through this update."
         )
+        previous_line = next((key[:3] for key, _, _ in notes if key[:3] != release_key[:3]), None)
+        if previous_line:
+            previous_version = ".".join(str(part) for part in previous_line)
+            summary += f" They also include the preceding stable {previous_version} release."
     else:
         summary = f"These release notes cover the {release_version} prerelease."
 
