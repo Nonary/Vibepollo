@@ -262,7 +262,7 @@ def main():
     windows_helpers(root, args.compiler)
     header = (root / 'packaging/linux/managed_app_focus_kwin.h').read_text()
     script = re.search(r'R"JS\((.*?)\)JS"', header, re.S).group(1)
-    script = script[:script.index('callDBus(')]
+    script = script[:script.index('result.call=')]
     js = r'''
 const assert=require('assert'),vm=require('vm');
 const production=PRODUCTION;

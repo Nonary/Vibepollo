@@ -8,7 +8,9 @@
 namespace managed_app_focus {
   // Used by the real one-shot KWin adapter and executed with a mock workspace
   // in regression tests. internalId works for native Wayland and XWayland.
-  inline std::string kwin_script(const std::vector<std::uint64_t> &pids, const std::string &destination, const std::vector<std::string> &activate = {}) {
+  // The result echoes call, so a late result from an earlier script is not
+  // taken for this one.
+  inline std::string kwin_script(const std::vector<std::uint64_t> &pids, const std::string &destination, const std::vector<std::string> &activate = {}, std::uint64_t call = 0) {
     return "var pids=" + nlohmann::json(pids).dump() + ";var activate=" + nlohmann::json(activate).dump() + R"JS(;
 var result={windows:[],focused:false};
 var active=workspace.activeWindow;
@@ -27,6 +29,6 @@ for (var i=0;i<windows.length;i++) {
   workspace.activeWindow=w;
   result.focused=workspace.activeWindow===w;
 }
-callDBus()JS" + nlohmann::json(destination).dump() + ",'/Focus','dev.vibepollo.Focus','Result',JSON.stringify(result));";
+result.call=)JS" + std::to_string(call) + ";callDBus(" + nlohmann::json(destination).dump() + ",'/Focus','dev.vibepollo.Focus','Result',JSON.stringify(result));";
   }
 }  // namespace managed_app_focus
