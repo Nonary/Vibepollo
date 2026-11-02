@@ -546,7 +546,16 @@ namespace audio {
     using enum audio::codec_e;
     config.use_ac3 = false;
     config.use_eac3 = false;
+    config.use_pcm = false;
     config.high_quality_dolby = false;
+    if (offered == "PCM" && accepted == offered) {
+      // PCM audio needs no encoder, carries every channel layout and ignores the Opus-only settings.
+      config.use_pcm = true;
+      config.packetDuration = 5;
+      config.flags[config_t::HIGH_QUALITY] = false;
+      config.flags[config_t::CUSTOM_SURROUND_PARAMS] = false;
+      return pcm;
+    }
     const bool supported_channels = config.channels == 2 || config.channels == 6;
     auto selected = opus;
     if (supported_channels && offered == "AC3" && accepted == offered && ac3_encoder_available) {
@@ -570,6 +579,7 @@ namespace audio {
     switch (codec) {
       case ac3: return "AC3";
       case eac3: return "EAC3";
+      case pcm: return "PCM";
       case opus:
       default: return "Opus";
     }
@@ -578,6 +588,7 @@ namespace audio {
   std::string_view codec_offer(std::string_view format, bool ac3_encoder_available, bool eac3_encoder_available) {
     if (format == "ac3" && ac3_encoder_available) return "AC3";
     if (format == "eac3" && eac3_encoder_available) return "EAC3";
+    if (format == "pcm") return "PCM";
     return {};
   }
 

@@ -934,6 +934,7 @@ export const settingsCategories: SettingsCategory[] = [
             option('opus', 'config.audio_format_opus'),
             option('ac3', 'config.audio_format_ac3'),
             option('eac3', 'config.audio_format_eac3'),
+            option('pcm', 'config.audio_format_pcm'),
           ]),
           boolean('high_quality_audio', { visibleWhen: { key: 'audio_format', notEquals: 'opus' } }),
           text('audio_sink', { monospace: true, stacked: true }),

@@ -125,7 +125,7 @@ namespace audio {
   bool eac3_available();
 
   /** @brief The audio codec a session uses; AC-3 and E-AC-3 are Dolby audio. */
-  enum class codec_e { opus, ac3, eac3 };
+  enum class codec_e { opus, ac3, eac3, pcm };
 
   /** @brief Select the offered audio codec only after an exact offer/accept match; otherwise retain Opus audio. */
   codec_e configure_codec(

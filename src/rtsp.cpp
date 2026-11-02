@@ -2510,10 +2510,12 @@ namespace rtsp_stream {
     const bool eac3_encoder_available = session->audio_codec_offered == "EAC3"sv && audio::eac3_available();
     const bool selected_encoder_available = ac3_encoder_available || eac3_encoder_available;
     const bool supported_dolby_channel_count = config.audio.channels == 2 || config.audio.channels == 6;
+    // PCM audio needs no encoder and carries every channel layout, so only Dolby audio can be refused.
+    const bool dolby_offered = session->audio_codec_offered == "AC3"sv || session->audio_codec_offered == "EAC3"sv;
 
     // Once a client has explicitly accepted an advertised codec, do not silently
     // change the negotiated codec if its encoder or requested channel layout is unsupported.
-    if (client_accepted_audio_codec && (!selected_encoder_available || !supported_dolby_channel_count)) {
+    if (client_accepted_audio_codec && dolby_offered && (!selected_encoder_available || !supported_dolby_channel_count)) {
       BOOST_LOG(error) << "Client accepted a Dolby codec that cannot be provided for the requested stream";
       respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return false;
@@ -2664,6 +2666,9 @@ namespace rtsp_stream {
           config.audio.high_quality_dolby,
           config.audio.channels
         );
+      } else if (config.audio.use_pcm) {
+        // PCM audio's actual bitrate: 16-bit samples at 48 kHz per channel.
+        audioBitrateAdjustment = 48000 * 16 * config.audio.channels / 1000;
       } else {
         audioBitrateAdjustment = (config.audio.flags[audio::config_t::HIGH_QUALITY] ? 256 : 96) * config.audio.channels;
       }
