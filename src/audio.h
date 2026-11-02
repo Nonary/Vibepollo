@@ -124,6 +124,9 @@ namespace audio {
   /** @brief Check whether the linked FFmpeg build provides the E-AC-3 encoder. */
   bool eac3_available();
 
+  /** @brief PCM audio's packet duration in milliseconds, fixed by the host. */
+  constexpr int PCM_PACKET_DURATION = 5;
+
   /** @brief The audio codec a session uses; AC-3 and E-AC-3 are Dolby audio. */
   enum class codec_e { opus, ac3, eac3, pcm };
 
@@ -143,4 +146,6 @@ namespace audio {
   std::string_view codec_offer(std::string_view format, bool ac3_encoder_available, bool eac3_encoder_available);
   /** @brief Choose the AC-3/E-AC-3 bitrate for stereo or 5.1. */
   int dolby_bitrate_kbps(bool eac3, bool high_quality, int channels);
+  /** @brief PCM audio's bitrate: 16-bit samples at 48 kHz per channel. */
+  int pcm_bitrate_kbps(int channels);
 }  // namespace audio

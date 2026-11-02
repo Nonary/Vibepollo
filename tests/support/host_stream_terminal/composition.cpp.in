@@ -53,6 +53,7 @@ template<class F> guard<F> fail_guard(F f){return {f};}
 namespace audio {
 @AUDIO_PARAMS@
 @AUDIO_CONFIG@
+@PCM_PACKET_DURATION@
 @AUDIO_CODEC@
 // Encoder discovery is an external capability edge; negotiation stays production code.
 bool ac3_encoder=true,eac3_encoder=true;
@@ -60,6 +61,7 @@ bool ac3_available(){return ac3_encoder;}
 bool eac3_available(){return eac3_encoder;}
 @AUDIO_CONFIGURE@
 @DOLBY_BITRATE@
+@PCM_BITRATE@
 @AUDIO_NAME@
 @AUDIO_OFFER@
 }
@@ -353,6 +355,7 @@ int main() {
  check(audio::codec_offer("ac3",true,true)=="AC3" && audio::codec_offer("ac3",false,true).empty(),"ac3 audio format offers AC3 only with its encoder");
  check(audio::codec_offer("eac3",true,true)=="EAC3" && audio::codec_offer("eac3",true,false).empty(),"eac3 audio format offers EAC3 only with its encoder");
  check(audio::codec_offer("pcm",false,false)=="PCM","pcm audio format offers PCM without any encoder");
+ check(audio::pcm_bitrate_kbps(2)==1536 && audio::pcm_bitrate_kbps(6)==4608 && audio::pcm_bitrate_kbps(8)==6144,"PCM audio bitrate is 16-bit samples at 48 kHz per channel");
  // Exercise the unchanged ANNOUNCE parser and production negotiation helper,
  // controlling only FFmpeg encoder discovery. Each accepted session must still
  // transfer and retire its resource owner through the real terminal path.

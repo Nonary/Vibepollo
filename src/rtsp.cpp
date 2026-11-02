@@ -2667,8 +2667,7 @@ namespace rtsp_stream {
           config.audio.channels
         );
       } else if (config.audio.use_pcm) {
-        // PCM audio's actual bitrate: 16-bit samples at 48 kHz per channel.
-        audioBitrateAdjustment = 48000 * 16 * config.audio.channels / 1000;
+        audioBitrateAdjustment = audio::pcm_bitrate_kbps(config.audio.channels);
       } else {
         audioBitrateAdjustment = (config.audio.flags[audio::config_t::HIGH_QUALITY] ? 256 : 96) * config.audio.channels;
       }

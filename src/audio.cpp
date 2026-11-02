@@ -535,6 +535,10 @@ namespace audio {
     return 0;
   }
 
+  int pcm_bitrate_kbps(int channels) {
+    return 48000 * 16 * channels / 1000;
+  }
+
   codec_e configure_codec(
     config_t &config,
     std::string_view offered,
@@ -551,7 +555,7 @@ namespace audio {
     if (offered == "PCM" && accepted == offered) {
       // PCM audio needs no encoder, carries every channel layout and ignores the Opus-only settings.
       config.use_pcm = true;
-      config.packetDuration = 5;
+      config.packetDuration = PCM_PACKET_DURATION;
       config.flags[config_t::HIGH_QUALITY] = false;
       config.flags[config_t::CUSTOM_SURROUND_PARAMS] = false;
       return pcm;
