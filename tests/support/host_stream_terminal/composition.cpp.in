@@ -61,6 +61,7 @@ bool eac3_available(){return eac3_encoder;}
 @DOLBY_CONFIGURE@
 @DOLBY_BITRATE@
 @DOLBY_NAME@
+@AUDIO_OFFER@
 }
 namespace stream {
 struct monitor_t {
@@ -347,6 +348,10 @@ int main() {
  check(topology.managed_client_identity_count()==0 && !topology.shutdown_complete(),"removed display retains pending physical restore");
  terminal();check(!physical,"empty-map pending restore failure prevents final physical cleanup");
  fail=false;terminal();check(physical && topology.shutdown_complete(),"empty-map pending restore succeeds on retry");
+ // DESCRIBE offers the codec the production offer function picks from the audio format and encoder discovery.
+ check(audio::codec_offer("opus",true,true).empty(),"opus audio format offers no audio codec");
+ check(audio::codec_offer("ac3",true,true)=="AC3" && audio::codec_offer("ac3",false,true).empty(),"ac3 audio format offers AC3 only with its encoder");
+ check(audio::codec_offer("eac3",true,true)=="EAC3" && audio::codec_offer("eac3",true,false).empty(),"eac3 audio format offers EAC3 only with its encoder");
  // Exercise the unchanged ANNOUNCE parser and production negotiation helper,
  // controlling only FFmpeg encoder discovery. Each accepted session must still
  // transfer and retire its resource owner through the real terminal path.

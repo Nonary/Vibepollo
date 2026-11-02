@@ -555,6 +555,12 @@ namespace audio {
     }
   }
 
+  std::string_view codec_offer(std::string_view format, bool ac3_encoder_available, bool eac3_encoder_available) {
+    if (format == "ac3" && ac3_encoder_available) return "AC3";
+    if (format == "eac3" && eac3_encoder_available) return "EAC3";
+    return {};
+  }
+
   bool is_audio_ctx_sink_available(const audio_ctx_t &ctx) {
     if (!ctx.control) {
       return false;

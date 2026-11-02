@@ -137,6 +137,8 @@ namespace audio {
 
   /** @brief Return the encoded format's RTSP response-header label. */
   std::string_view dolby_codec_name(dolby_codec_e codec);
+  /** @brief Choose the audio codec DESCRIBE offers for the audio format; empty offers none (Opus audio). */
+  std::string_view codec_offer(std::string_view format, bool ac3_encoder_available, bool eac3_encoder_available);
   /** @brief Choose the AC-3/E-AC-3 bitrate for stereo or 5.1. */
   int dolby_bitrate_kbps(bool eac3, bool high_quality, int channels);
 }  // namespace audio

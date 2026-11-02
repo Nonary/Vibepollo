@@ -2129,14 +2129,9 @@ namespace rtsp_stream {
 
     std::stringstream ss;
 
-    // Offer only the configured Dolby codec when its FFmpeg encoder is available.
-    // ANNOUNCE must explicitly accept this exact offer before the encoder is selected.
-    session->audio_codec_offered.clear();
-    if (config::audio.format == "ac3"sv && audio::ac3_available()) {
-      session->audio_codec_offered = "AC3";
-    } else if (config::audio.format == "eac3"sv && audio::eac3_available()) {
-      session->audio_codec_offered = "EAC3";
-    }
+    // Offer only the audio codec the audio format selects, when it can be provided.
+    // ANNOUNCE must explicitly accept this exact offer before the codec is selected.
+    session->audio_codec_offered = audio::codec_offer(config::audio.format, audio::ac3_available(), audio::eac3_available());
     if (!session->audio_codec_offered.empty()) {
       ss << "a=x-ss-audio-codec-offer:"sv << session->audio_codec_offered << std::endl;
     }

@@ -32,6 +32,7 @@ fragments={
 'DOLBY_CONFIGURE':body(audio_source,'  dolby_codec_e configure_dolby_audio(','  '),
 'DOLBY_BITRATE':body(audio_source,'  int dolby_bitrate_kbps(','  '),
 'DOLBY_NAME':body(audio_source,'  std::string_view dolby_codec_name(','  '),
+'AUDIO_OFFER':body(audio_source,'  std::string_view codec_offer(','  '),
 'CLEAR':body(rtsp,'    void clear(bool all = true','    '),
 'CANCEL_PENDING':body(rtsp,'    void cancel_pending_launches(','    '),
 'MONITOR_RECONCILIATION':'\n'.join(body(rtsp,signature,'    ') for signature in ('    void reconcile_abandoned_monitor_locked(', '    void retire_failed_monitor_start_locked(', '    void retry_abandoned_monitor(', '    void reconcile_abandoned_monitor(')),
