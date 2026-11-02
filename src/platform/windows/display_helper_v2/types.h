@@ -282,6 +282,9 @@ namespace display_helper::v2 {
     TransientDisconnectFinal,
     BaselineTopologyReturn,
     BaselineTopologyRepair,
+    // Post-APPLY singleton re-check for an active exclusive session after a
+    // generic display notification (physical outputs may have returned).
+    ExclusiveTopologyMaintenance,
   };
 
   struct VerificationCompleted {
