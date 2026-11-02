@@ -44,12 +44,14 @@ OPERATION
 static class InstallerRunner {
 KIND
   const uint MsiErrorSuccess = 0;
-  static string Failure, Root;
+  static string Failure, Root, ShortNames;
   static bool Throw, Verified;
   static int Closed, Checks;
   static List<string> Calls;
+  static List<string> Logged;
+  const string NativeRejection = "reason=untrusted_owner path=C:\\ [drive] owner_sid=S-1-5-21-1-2-3-1001 owner_trusted=0 dacl=present sddl=\"O:S-1-5-21-1-2-3-1001D:(A;;FA;;;SY)\"";
   static string BuildLogPath(string phase) { return phase; }
-  static void AppendInstallerLogMessage(string path, string message) { }
+  static void AppendInstallerLogMessage(string path, string message) { Logged.Add(message); }
   static void ValidateMsiPayloadImmediatelyBeforeExecution(IReadOnlyList<string> args) {
     Check(args.SequenceEqual(new[] { "/i", "incoming.msi" }), "exact incoming payload verified");
     if (Failure == "verify") throw new InvalidOperationException("signature rejected");
@@ -69,6 +71,7 @@ KIND
   static uint MsiSetProperty(IntPtr handle, string name, string value) {
     Check(handle == new IntPtr(42), "properties target opened package");
     if (name == "INSTALL_ROOT") Check(value == Root, "exact root preserved");
+    if (name == "SHORTFILENAMES") Check(value == ShortNames, "exact filename mode preserved before costing");
     if (name == "REMOVE") Check(value == "", "not uninstalling");
     if (name == "SKIP_REMOVE_CONFLICTING_PRODUCTS") Check(value == "0", "all competing roots checked");
     return Outcome(name);
@@ -80,7 +83,8 @@ KIND
   }
   static string ReadMsiProperty(IntPtr handle, string name) {
     if (name == "VIBESHINE_INSTALL_ROOT_WARNINGS" && Failure == "warning") return "locked optional file";
-    return name == "VIBESHINE_INSTALL_ROOT_ERROR" ? "reason=reparse path=C:\\Program Files\\Unsafe" : "";
+    if (name == "VIBESHINE_INSTALL_ROOT_DIAGNOSTICS" && Failure == "root-info") return NativeRejection;
+    return name == "VIBESHINE_INSTALL_ROOT_ERROR" ? NativeRejection : "";
   }
   static uint MsiSetInternalUI(uint level, IntPtr window) { return 5; }
   static uint MsiCloseHandle(IntPtr handle) { Closed++; return 0; }
@@ -88,41 +92,58 @@ METHOD
 APPLY_WARNINGS
 BUILD_MESSAGE
   static void Check(bool ok, string why) { Checks++; if (!ok) throw new Exception(why); }
-  static void Run(string failure, bool throws, string root) {
-    Failure = failure; Throw = throws; Root = root; Verified = false; Closed = 0; Calls = new List<string>();
-    var result = PreflightIncomingMsi("incoming.msi", Root, "preflight");
-    bool good = failure == null || failure == "warning";
+  static void Run(string failure, bool throws, string root, string shortNames = null) {
+    Failure = failure; Throw = throws; Root = root; Verified = false; Closed = 0; Calls = new List<string>(); Logged = new List<string>();
+    ShortNames = shortNames;
+    var result = PreflightIncomingMsi("incoming.msi", Root, "preflight", shortNames);
+    bool warning = failure == "warning";
+    bool good = failure == null || warning || failure == "root-info";
     Check(result.Succeeded == good, "rejected preflight cannot authorize removal: " + failure);
     Check(Closed == (failure == "verify" || failure == "null-handle" ? 0 : 1), "handles closed on success and failure");
     if (good) {
-      Check(result.ComponentFailures.Count == (failure == "warning" ? 1 : 0), "warnings retained without failing install");
+      Check(result.ComponentFailures.Count == (warning ? 1 : 0), "warnings retained without failing install");
       var completed = new InstallerResult { ExitCode = 0, Message = "Installed", LogPath = "install.log" };
       ApplyPreflightWarnings(completed, result);
       Check(completed.Succeeded, "warning keeps successful install outcome");
-      Check(completed.PartiallySucceeded == (failure == "warning"), "warning uses existing completion UI");
+      Check(completed.PartiallySucceeded == warning, "warning uses existing completion UI");
       if (failure == "warning") Check(completed.Message.Contains("locked optional file"), "warning detail visible without scripts");
+      if (failure == "root-info") {
+        Check(!completed.Message.Contains(NativeRejection), "drive root metadata is absent from completion UI");
+        Check(!completed.PartiallySucceeded, "drive root metadata does not degrade a successful install");
+        Check(Logged.Any(line => line.Contains("INSTALL_ROOT_INFO: " + NativeRejection)), "drive root evidence retained in preflight log");
+      }
       var expected = new List<string> { "open" };
       if (!string.IsNullOrWhiteSpace(root)) expected.Add("INSTALL_ROOT");
+      if (shortNames != null) expected.Add("SHORTFILENAMES");
       expected.AddRange(new[] { "REMOVE", "SKIP_REMOVE_CONFLICTING_PRODUCTS", "SUPPRESSMSGBOXES", "CostInitialize", "FileCost", "CostFinalize", "ValidateInstallRootPreview" });
       Check(Calls.SequenceEqual(expected), "cost then native guard ordering");
     } else {
       Check(result.ExitCode == 1603 && result.Message.Contains("has not been removed"), "failure explains preserved installation");
       if (Calls.Contains(failure)) Check(Calls.Last() == failure, "stop at first failure");
+      if (failure == "ValidateInstallRootPreview" && !throws) {
+        Check(result.Message.Contains(NativeRejection), "owner SID and full evidence reach failure report unchanged");
+        Check(Logged.Any(line => line.Contains(NativeRejection)), "owner SID and full evidence reach preflight log unchanged");
+      }
     }
   }
   static void Main() {
     Run(null, false, @"C:\Program Files\Sunshine");
     Run(null, false, null);
+    Run(null, false, @"C:\Program Files\Sunshine", "1");
+    Run(null, false, @"C:\Program Files\Sunshine", "0");
+    Run(null, false, @"C:\Program Files\Sunshine", "");
+    Run("SHORTFILENAMES", false, @"C:\Program Files\Sunshine", "1");
     Run("warning", false, @"C:\Program Files\Sunshine");
+    Run("root-info", false, @"C:\Program Files\Sunshine");
     foreach (var failure in new[] { "verify", "open", "null-handle", "INSTALL_ROOT", "REMOVE", "SKIP_REMOVE_CONFLICTING_PRODUCTS", "SUPPRESSMSGBOXES", "CostInitialize", "FileCost", "CostFinalize", "ValidateInstallRootPreview" }) {
       Run(failure, false, @"C:\Program Files\O'Brien");
       Run(failure, true, @"C:\Program Files\Sunshine");
     }
     var errorLog = Path.GetTempFileName();
     try {
-      File.WriteAllText(errorLog, "INSTALL_ROOT_ERROR: junction at C:\\Program Files\\Bad");
+      File.WriteAllText(errorLog, "INSTALL_ROOT_ERROR: " + NativeRejection);
       var message = BuildResultMessage("Install", 1603, errorLog);
-      Check(message.Contains("junction at C:\\Program Files\\Bad"), "actual failing path reaches UI");
+      Check(message.Contains(NativeRejection), "actual failure evidence reaches UI from MSI log");
       Check(!message.Contains("processes are running"), "do not invent a process failure");
     } finally { File.Delete(errorLog); }
     Console.WriteLine(Checks + " incoming MSI preflight checks passed; Windows boundaries stubbed.");

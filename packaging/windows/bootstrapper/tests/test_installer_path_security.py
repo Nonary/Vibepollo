@@ -55,6 +55,8 @@ class InstallerPathSecurityContract(unittest.TestCase):
         self.assertIn("PathIsUnderDirectory(fullPath, root)", validate)
         self.assertNotIn("RejectUntrustedWritableInstallAncestor", validate)
         self.assertIn("FileAttributes.ReparsePoint", validate)
+        self.assertNotIn("pending.Push", validate)
+        self.assertNotIn("File.GetAttributes(entry)", validate)
         self.assertIn("Directory.EnumerateFileSystemEntries(fullPath).Any()", validate)
         self.assertIn("!IsRegisteredInstallRoot(fullPath)", validate)
         self.assertIn("TryNormalizeAndValidateCliInstallRoot(cliArgs", self.source)

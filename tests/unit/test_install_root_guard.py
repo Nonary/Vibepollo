@@ -46,6 +46,17 @@ for secret in ('SidStart', 'descriptor', 'exception.what()'):
 assert 'catch(...) {}' in log
 for category in ('selected','installed','related','conflicting'):
  assert 'category=L"'+category+'"' in source
+# Keep the compatibility fallback aligned with the independently authored
+# custom-action commands, including maintenance and legacy removal inputs.
+import re
+actions=source.split('scope_t action_scope(',1)[1].split('std::wstring registered_component_path(',1)[0]
+protected={path.replace('\\\\','\\') for path in re.findall(r'L"([^"]+)"',actions)}
+for node in custom.iter():
+ if not node.tag.endswith('CustomAction'):continue
+ for value in node.attrib.values():
+  for path in re.findall(r'\[INSTALL_ROOT\]([^"\s]+)',value):
+   if path.lower().endswith(('.exe','.ps1','.bat','.cmd','.dll')):
+    assert path.lower() in protected,('unprotected custom-action input',path)
 code=r'''
 #include "packaging/windows/install_root_guard.h"
 #include <map>
@@ -54,27 +65,38 @@ code=r'''
 using namespace install_root_guard;
 struct Node{bool directory=true,unsafe=false,reparse=false,mutable_handle=false;std::uint32_t mask=0;std::wstring final_path={};bool same_identity=true;};
 struct FS{
- std::map<std::wstring,Node> nodes;std::map<std::wstring,std::vector<std::wstring>> listing;
+ std::map<std::wstring,Node> nodes;
  std::set<std::wstring> pinned;
+ std::vector<failure_t> warnings;
+ void note(const failure_t &failure){warnings.push_back(failure);}
  node_t pin(const std::wstring&p,bool strict,role_t role){
   auto it=nodes.find(p);if(it==nodes.end())return {false,false,2};
   if(it->second.unsafe)throw failure_t(L"untrusted_allow",role,L"none",0,0x10000);
   if(it->second.reparse)throw failure_t(L"reparse",role);
   if(it->second.mutable_handle)throw failure_t(L"open",role,L"CreateFileW",32);
   const bool root_identity=p.size()==3 && is_volume_guid_root(it->second.final_path) && it->second.same_identity;
-  if(!allow_ace_safe(it->second.mask,false,strict,false,false,root_identity))throw std::runtime_error("unsafe ACL");
+  if(!allow_ace_safe(it->second.mask,false,strict,false,false,root_identity)){
+   const bool identity_attempted=p.size()==3 && allow_ace_safe(it->second.mask,false,strict,false,false,true);
+   throw failure_t(identity_attempted?L"identity_unproven":L"untrusted_allow",role);
+  }
   if(p==L"c:\\program files\\vendor")if(!strict)throw std::runtime_error("higher Program Files ancestor must be strict");
   pinned.insert(p);return {true,it->second.directory};
  }
- std::vector<std::wstring> children(const std::wstring&p,role_t){if(!pinned.contains(p))throw std::runtime_error("un-pinned enumeration");return listing[p];}
 };
 void require(bool b){if(!b)throw std::runtime_error("guard regression");}
 FS baseline(){FS f;f.nodes[L"c:\\"]={};f.nodes[L"c:\\program files"]={};f.nodes[L"c:\\program files\\vendor"]={};return f;}
-bool pass(FS &f,bool missing=true){try{validate(f,L"c:\\program files\\vendor\\host",L"c:\\program files",missing);return true;}catch(const std::exception&){return false;}}
+bool pass(FS &f,bool missing=true){try{validate(f,L"c:\\program files\\vendor\\host",L"c:\\program files",missing,{L"script.ps1"});return true;}catch(const std::exception&){return false;}}
 int main(){
  require(critical(failure_t(L"reparse")));
  require(critical(failure_t(L"untrusted_allow")));
- require(critical(failure_t(L"owner_or_dacl")));
+ require(critical(failure_t(L"untrusted_owner")));
+ require(critical(failure_t(L"null_dacl")));
+ for(auto reason : {L"untrusted_owner",L"null_dacl",L"untrusted_allow"}) {
+   require(!critical(failure_t(reason,role_t::drive_ancestor)));
+   for(auto role : {role_t::anchor,role_t::ancestor,role_t::install_root,role_t::descendant})
+     require(critical(failure_t(reason,role)));
+ }
+ require(critical(failure_t(L"reparse",role_t::drive_ancestor)));
  require(!critical(failure_t(L"unsupported_ace")));
  require(!critical(failure_t(L"open",role_t::descendant,L"CreateFileW",32)));
  require(!critical(failure_t(L"installed_location_unresolved")));
@@ -151,35 +173,87 @@ int main(){
  root_acl.nodes[L"c:\\program files"].final_path=volume;require(!pass(root_acl)); // ordinary ancestor remains strict
 
  auto f=baseline();require(pass(f));require(f.pinned.contains(L"c:\\"));require(!pass(f,false)); // fresh vs maintenance missing target
- try{validate(f,L"c:\\program files\\vendor\\host",L"c:\\program files",false);require(false);}
+ try{validate(f,L"c:\\program files\\vendor\\host",L"c:\\program files",false,{L"script.ps1"});require(false);}
  catch(const failure_t &e){require(e.role==role_t::install_root && std::wstring(e.reason)==L"missing" && e.status==2 && std::wstring(e.api)==L"CreateFileW");}
  f=baseline();f.nodes[L"c:\\"].mutable_handle=true;
- try{validate(f,L"c:\\program files\\vendor\\host",L"c:\\program files",true);require(false);}
- catch(const failure_t &e){require(e.role==role_t::drive_ancestor && std::wstring(e.reason)==L"open" && std::wstring(e.api)==L"CreateFileW" && e.status==32);}
+ require(pass(f));require(f.warnings.size()==1);
+ require(f.warnings[0].role==role_t::drive_ancestor && std::wstring(f.warnings[0].reason)==L"open" && f.warnings[0].status==32);
+ require(f.pinned.contains(L"c:\\program files\\vendor")); // root warning must not end traversal
  f=baseline();f.nodes[L"c:\\program files"].reparse=true;
- try{validate(f,L"c:\\program files\\vendor\\host",L"c:\\program files",true);require(false);}
+ try{validate(f,L"c:\\program files\\vendor\\host",L"c:\\program files",true,{L"script.ps1"});require(false);}
  catch(const failure_t &e){require(e.role==role_t::anchor && std::wstring(e.reason)==L"reparse");}
  f=baseline();f.nodes[L"c:\\program files\\vendor"].unsafe=true;
- try{validate(f,L"c:\\program files\\vendor\\host",L"c:\\program files",true);require(false);}
+ try{validate(f,L"c:\\program files\\vendor\\host",L"c:\\program files",true,{L"script.ps1"});require(false);}
  catch(const failure_t &e){require(e.role==role_t::ancestor && e.access==0x10000);}
  f=baseline();f.nodes[L"c:\\"].mutable_handle=true;f.nodes[L"c:\\program files"].reparse=true;
- try{validate(f,L"c:\\program files\\vendor\\host",L"c:\\program files",true);require(false);}
- catch(const failure_t &e){require(e.role==role_t::drive_ancestor && std::wstring(e.reason)==L"open");} // first rejection
- f=baseline();f.nodes[std::wstring(L"c:")+wchar_t(92)].unsafe=true;require(!pass(f));
+ try{validate(f,L"c:\\program files\\vendor\\host",L"c:\\program files",true,{L"script.ps1"});require(false);}
+ catch(const failure_t &e){require(e.role==role_t::anchor && std::wstring(e.reason)==L"reparse");}
+ require(f.warnings.size()==1); // earlier warning cannot hide a critical destination issue
+ f=baseline();f.nodes[std::wstring(L"c:")+wchar_t(92)].unsafe=true;require(pass(f));require(f.warnings.size()==1);
  f=baseline();f.nodes[L"c:\\program files\\vendor"].unsafe=true;require(!pass(f));
  f=baseline();f.nodes[L"c:\\program files\\vendor"].reparse=true;require(!pass(f));
- f=baseline();f.nodes[L"c:\\program files\\vendor"].mutable_handle=true;require(!pass(f));
+ f=baseline();f.nodes[L"c:\\program files\\vendor"].mutable_handle=true;require(pass(f));require(f.warnings.size()==1);
  f=baseline();const std::wstring root=L"c:\\program files\\vendor\\host",script=root+L"\\script.ps1";
- f.nodes[root]={};f.nodes[script]={false};f.listing[root]={script};require(pass(f,false));require(f.pinned.contains(script));
+ // A compatibility warning cannot hide an independently accessible unsafe
+ // root or leaf, even when the warning belongs to an intermediate parent.
+ f.nodes[root]={};f.nodes[root].reparse=true;f.nodes[L"c:\\program files\\vendor"].mutable_handle=true;
+ try{validate(f,root,L"c:\\program files",false,{});require(false);}
+ catch(const failure_t &e){require(critical(e) && e.role==role_t::install_root);}
+ require(f.warnings.size()==1 && !f.pinned.contains(L"c:\\program files\\vendor"));
+ f=baseline();f.nodes[root]={};f.nodes[root+L"\\tools"].mutable_handle=true;f.nodes[root+L"\\tools\\helper.ps1"]={false,false,true};
+ try{validate(f,root,L"c:\\program files",false,{L"tools\\helper.ps1"});require(false);}
+ catch(const failure_t &e){require(critical(e) && e.path==root+L"\\tools\\helper.ps1");}
+ require(f.warnings.size()==1 && !f.pinned.contains(root+L"\\tools"));
+ f=baseline();
+ f.nodes[root]={};f.nodes[script]={false};require(pass(f,false));require(f.pinned.contains(script));
  f.nodes[script].mutable_handle=true;
- try{validate(f,root,L"c:\\program files",false);require(false);}
- catch(const failure_t &e){require(e.role==role_t::descendant && e.status==32 && std::wstring(e.api)==L"CreateFileW");}
+ validate(f,root,L"c:\\program files",false,{L"script.ps1"});require(f.warnings.size()==1);
+ require(f.warnings[0].role==role_t::descendant && f.warnings[0].status==32 && std::wstring(f.warnings[0].api)==L"CreateFileW");
  f.nodes[script].mutable_handle=false;
  f.nodes[script].unsafe=true;require(!pass(f));f.nodes[script].unsafe=false;f.nodes[script].reparse=true;require(!pass(f));
- f.nodes[script].reparse=false;f.nodes[script].mutable_handle=true;require(!pass(f));
- f=baseline();f.nodes[root]={};f.listing[root]={script};require(!pass(f)); // disappearing enumeration entry
- bool escaped=false;try{validate(f,L"d:\\host",L"c:\\program files",true);escaped=true;}catch(...){}require(!escaped);
- std::cout<<"MSI guard: fresh/maintenance, all ancestors, nested files, reparse, mutable handles, disappearing entries and bounds passed\n";
+ f.nodes[script].reparse=false;f.nodes[script].mutable_handle=true;require(pass(f));
+ f.nodes[root+L"\\later.exe"]={false,true};
+ try{validate(f,root,L"c:\\program files",false,{L"script.ps1",L"later.exe"});require(false);}
+ catch(const failure_t &e){require(critical(e) && e.path==root+L"\\later.exe");}
+ f=baseline();f.nodes[root]={};require(pass(f)); // repair may restore a missing package file
+ // Installer scope is explicit, not a filename-extension exception. User data
+ // is untouched; the exact same image is protected if the MSI owns its path.
+ f=baseline();f.nodes[root]={};
+ const auto assets=root+L"\\assets",custom=assets+L"\\windows.png",managed=assets+L"\\box.png";
+ f.nodes[assets]={};f.nodes[custom]={false,true};f.nodes[managed]={false};
+ validate(f,root,L"c:\\program files",false,{L"assets\\box.png"});
+ require(f.pinned.contains(assets) && f.pinned.contains(managed) && !f.pinned.contains(custom));
+ f.nodes[custom].reparse=true;f.nodes[custom].mutable_handle=true;
+ validate(f,root,L"c:\\program files",false,{L"assets\\box.png"}); // unrelated image is not inspected
+ f.nodes[custom].reparse=false;f.nodes[custom].mutable_handle=false;
+ try{validate(f,root,L"c:\\program files",false,{L"assets\\windows.png"});require(false);}
+ catch(const failure_t &e){require(critical(e) && e.path==custom);}
+ f.nodes[assets].unsafe=true;
+ try{validate(f,root,L"c:\\program files",false,{L"assets\\box.png"});require(false);}
+ catch(const failure_t &e){require(critical(e) && e.path==assets);}
+ for(const auto &invalid : {L"..\\outside.exe",L"\\absolute.exe",L"tools\\..\\outside.exe",L"tools\\\\bad.exe",L"payload.dll:stream"})
+   require(!relative_file_path(invalid));
+ require(relative_file_path(L"assets\\custom image.PNG"));
+ // Typed action-directory targets are checked even with no packaged child.
+ f=baseline();f.nodes[root]={};const auto config=root+L"\\config",credentials=config+L"\\credentials";
+ f.nodes[config]={};f.nodes[credentials]={};
+ validate(f,root,L"c:\\program files",false,{}, {L"config\\credentials"});
+ require(f.pinned.contains(credentials));
+ f.nodes[credentials].reparse=true;
+ try{validate(f,root,L"c:\\program files",false,{}, {L"config\\credentials"});require(false);}
+ catch(const failure_t &e){require(critical(e) && e.path==credentials);}
+ f.nodes[credentials].reparse=false;f.nodes[credentials].unsafe=true;
+ try{validate(f,root,L"c:\\program files",false,{}, {L"config\\credentials"});require(false);}
+ catch(const failure_t &e){require(critical(e) && e.path==credentials);}
+ // Post-pin ancestor failures must identify the actual intermediate object.
+ f=baseline();f.nodes[L"c:\\program files\\vendor"].directory=false;
+ try{validate(f,root,L"c:\\program files",false,{});require(false);}
+ catch(const failure_t &e){require(std::wstring(e.reason)==L"invalid_ancestor" && e.path==L"c:\\program files\\vendor");require(e.evidence.find(L"observed=file")!=std::wstring::npos);}
+ f=baseline();f.nodes.erase(L"c:\\program files");
+ try{validate(f,root,L"c:\\program files",false,{});require(false);}
+ catch(const failure_t &e){require(std::wstring(e.reason)==L"missing" && e.path==L"c:\\program files");}
+ bool escaped=false;try{validate(f,L"d:\\host",L"c:\\program files",true,{L"script.ps1"});escaped=true;}catch(...){}require(!escaped);
+ std::cout<<"MSI guard: fresh/maintenance, scoped payload files, unrelated user images, ancestors, reparse, mutable handles and bounds passed\n";
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:

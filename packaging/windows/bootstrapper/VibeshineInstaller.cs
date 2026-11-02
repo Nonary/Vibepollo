@@ -2681,18 +2681,9 @@ namespace VibepolloInstaller {
 
       if (!Directory.Exists(fullPath)) return fullPath;
 
-      var pending = new Stack<string>();
-      pending.Push(fullPath);
-      while (pending.Count > 0) {
-        foreach (var entry in Directory.EnumerateFileSystemEntries(pending.Pop())) {
-          var attributes = File.GetAttributes(entry);
-          if ((attributes & FileAttributes.ReparsePoint) != 0) {
-            throw new InvalidOperationException(
-              "The install folder contains a reparse point. Remove it or choose an empty folder.");
-          }
-          if ((attributes & FileAttributes.Directory) != 0) pending.Push(entry);
-        }
-      }
+      // Descendants are checked by the native MSI guard against its operation
+      // inventory. Inspecting unrelated user files here would reject links the
+      // installer never uses, before that scoped preflight gets a chance to run.
 
       if (Directory.EnumerateFileSystemEntries(fullPath).Any()
           && !IsRegisteredInstallRoot(fullPath)) {
@@ -3775,7 +3766,7 @@ namespace VibepolloInstaller {
     // Run only costing and the incoming package's read-only native guard.
     // Never execute INSTALL or a sequence here: the working host must remain
     // intact until its replacement has accepted the destination and old roots.
-    private static InstallerResult PreflightIncomingMsi(string msiPath, string installDirectory, string logPhase) {
+    private static InstallerResult PreflightIncomingMsi(string msiPath, string installDirectory, string logPhase, string shortFileNames = null) {
       var logPath = BuildLogPath(logPhase);
       IntPtr package = IntPtr.Zero;
       uint previousUiLevel = 0;
@@ -3794,6 +3785,11 @@ namespace VibepolloInstaller {
           if (code != MsiErrorSuccess)
             throw new InvalidOperationException("Setting the install folder failed (Windows Installer " + code + ").");
         }
+        if (shortFileNames != null) {
+          code = MsiSetProperty(package, "SHORTFILENAMES", shortFileNames);
+          if (code != MsiErrorSuccess)
+            throw new InvalidOperationException("Setting the target filename mode failed (Windows Installer " + code + ").");
+        }
         // Include competing roots even though the later install skips their
         // removal after our bootstrapper has handled it. Clear uninstall mode.
         foreach (var property in new[] { "REMOVE", "SKIP_REMOVE_CONFLICTING_PRODUCTS", "SUPPRESSMSGBOXES" }) {
@@ -3804,6 +3800,11 @@ namespace VibepolloInstaller {
         foreach (var action in new[] { "CostInitialize", "FileCost", "CostFinalize", "ValidateInstallRootPreview" }) {
           code = MsiDoAction(package, action);
           AppendInstallerLogMessage(logPath, "Incoming MSI preflight: " + action + " returned " + code + ".");
+          if (action == "ValidateInstallRootPreview") {
+            var diagnostics = ReadMsiProperty(package, "VIBESHINE_INSTALL_ROOT_DIAGNOSTICS") ?? "";
+            foreach (var detail in diagnostics.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+              AppendInstallerLogMessage(logPath, "INSTALL_ROOT_INFO: " + detail);
+          }
           if (code != MsiErrorSuccess) {
             var detail = ReadMsiProperty(package, "VIBESHINE_INSTALL_ROOT_ERROR");
             throw new InvalidOperationException(action + " failed (Windows Installer " + code + "). " + detail);
@@ -6458,7 +6459,8 @@ namespace VibepolloInstaller {
           };
         }
         preflight = PreflightIncomingMsi(GetMsiPathArgument(cliArgs),
-          GetPropertyValue(cliArgs, "INSTALL_ROOT"), "cli_preflight");
+          GetPropertyValue(cliArgs, "INSTALL_ROOT"), "cli_preflight",
+          HasProperty(cliArgs, "SHORTFILENAMES") ? GetPropertyValue(cliArgs, "SHORTFILENAMES") : null);
         if (!preflight.Succeeded) return preflight;
       }
       var cliUninstallRecoveryProduct = isUninstallOperation

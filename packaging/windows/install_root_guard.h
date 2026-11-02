@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm>
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 #include <stdexcept>
@@ -9,6 +10,7 @@ namespace install_root_guard {
   // Stable reason codes plus the affected local path for actionable installer logs.
   struct failure_t : std::exception {
     std::wstring path;
+    std::wstring evidence;
     const wchar_t *reason;
     role_t role;
     const wchar_t *api;
@@ -20,11 +22,15 @@ namespace install_root_guard {
   };
   inline bool critical(const failure_t &failure) {
     const std::wstring reason=failure.reason;
+    // Drive-root ownership/ACL policy alone does not establish an unsafe
+    // destination. Log it and keep inspecting Program Files and the target.
+    if(failure.role==role_t::drive_ancestor &&
+       (reason==L"untrusted_owner" || reason==L"null_dacl" || reason==L"untrusted_allow"))return false;
     // Block observed unsafe paths/permissions, not an inability to prove every
     // compatibility detail on the host. MSI reports actual transaction errors.
     return reason==L"invalid_path" || reason==L"invalid_local_path" ||
       reason==L"outside_program_files" || reason==L"outside_anchor" ||
-      reason==L"reparse" || reason==L"owner_or_dacl" || reason==L"untrusted_allow" ||
+      reason==L"reparse" || reason==L"untrusted_owner" || reason==L"null_dacl" || reason==L"untrusted_allow" ||
       reason==L"invalid_ancestor" || reason==L"unexpected" ||
       (reason==L"identity_unproven" && failure.status==0);
   }
@@ -66,15 +72,27 @@ namespace install_root_guard {
     return !unsafe_access_bits(mask,strict,volume_root);
   }
   struct node_t { bool exists, directory; std::uint32_t status=0; };
+  inline bool relative_file_path(const std::wstring &path) {
+    if(path.empty() || path.find_first_of(L":/")!=std::wstring::npos || path.find(L'\0')!=std::wstring::npos)return false;
+    for(std::size_t start=0;;) {
+      const auto end=path.find(L'\\',start);
+      const auto part=path.substr(start,end==std::wstring::npos?end:end-start);
+      if(part.empty() || part==L"." || part==L"..")return false;
+      if(end==std::wstring::npos)return true;
+      start=end+1;
+    }
+  }
   inline std::wstring parent(std::wstring path) {
     const auto end=path.find_last_of(L'\\');
     if(end==std::wstring::npos || end<2) throw failure_t(L"invalid_local_path");
     return path.substr(0,end==2 ? 3 : end);
   }
-  // Backends pin every existing object against write/delete sharing until the
-  // complete scan ends. Reparse points and untrusted owner/write ACLs fail.
+  // Inspect only package-managed files and explicit installer action inputs,
+  // including every directory leading to them. Unrelated user files are not
+  // installer inputs. Accepted objects stay pinned until validation ends.
   template<class Backend>
-  void validate(Backend &fs, const std::wstring &root, const std::wstring &anchor, bool allow_missing) {
+  void validate(Backend &fs, const std::wstring &root, const std::wstring &anchor, bool allow_missing,
+      const std::vector<std::wstring> &files,const std::vector<std::wstring> &directories={}) {
     std::vector<std::wstring> ancestors;
     bool anchored=false;
     for(auto path=root;;path=parent(path)) {
@@ -85,22 +103,61 @@ namespace install_root_guard {
     if(!anchored) throw failure_t(L"outside_anchor");
     std::reverse(ancestors.begin(),ancestors.end());
     bool missing=false;
+    std::map<std::wstring,node_t> checked;
     for(const auto &path:ancestors) {
       const auto role=path==root ? role_t::install_root : path.size()<=3 ? role_t::drive_ancestor : path==anchor ? role_t::anchor : role_t::ancestor;
-      const auto node=fs.pin(path,path==root || (anchor.size()>3 && path.size()>=anchor.size()),role);
-      if(!node.exists) { if(path.size()<=anchor.size() || !allow_missing) throw failure_t(L"missing",role,node.status?L"CreateFileW":L"none",node.status);missing=true; }
-      else if(missing || !node.directory) throw failure_t(L"invalid_ancestor",role);
+      node_t node{};
+      try { node=fs.pin(path,path==root || (anchor.size()>3 && path.size()>=anchor.size()),role); }
+      catch(const failure_t &failure) {
+        if(critical(failure))throw;
+        fs.note(failure);
+        // A parent may deny security inspection while a separately secured
+        // child remains accessible. Keep checking independently named inputs.
+        continue;
+      }
+      if(!node.exists) {
+        if(path.size()<=anchor.size() || !allow_missing) {
+          failure_t failure(L"missing",role,node.status?L"CreateFileW":L"none",node.status);failure.path=path;throw failure;
+        }
+        missing=true;
+      } else if(missing || !node.directory) {
+        failure_t failure(L"invalid_ancestor",role);failure.path=path;
+        failure.evidence=L" expected=directory observed="+std::wstring(node.directory?L"existing_after_missing_parent":L"file");throw failure;
+      }
+      checked.emplace(path,node);
     }
     if(missing) return;
-    std::vector<std::wstring> pending{root};
-    std::size_t count=ancestors.size();
-    while(!pending.empty()) {
-      auto directory=std::move(pending.back());pending.pop_back();
-      for(const auto &child:fs.children(directory,directory==root ? role_t::install_root : role_t::descendant)) {
-        if(++count>100000 || child.size()>32760) throw failure_t(L"bounds",role_t::descendant);
-        auto node=fs.pin(child,true,role_t::descendant);
-        if(!node.exists) throw failure_t(L"tree_changed",role_t::descendant,node.status?L"CreateFileW":L"none",node.status);
-        if(node.directory) pending.push_back(child);
+    std::vector<std::pair<std::wstring,bool>> inputs;
+    for(const auto &file:files)inputs.emplace_back(file,false);
+    for(const auto &directory:directories)inputs.emplace_back(directory,true);
+    for(const auto &[relative,directory_input]:inputs) {
+      if(!relative_file_path(relative))throw failure_t(L"invalid_path",role_t::descendant);
+      const auto file=root+L"\\"+relative;
+      if(file.size()>32760)throw failure_t(L"bounds",role_t::descendant);
+      std::vector<std::wstring> chain;
+      for(auto path=file;path!=root;path=parent(path))chain.push_back(path);
+      std::reverse(chain.begin(),chain.end());
+      for(const auto &path:chain) {
+        auto found=checked.find(path);
+        if(found==checked.end()) {
+          if(checked.size()>=100000)throw failure_t(L"bounds",role_t::descendant);
+          try { found=checked.emplace(path,fs.pin(path,true,role_t::descendant)).first; }
+          catch(failure_t &failure) {
+            if(failure.path.empty())failure.path=path;
+            if(critical(failure))throw;
+            fs.note(failure);
+            continue; // Unknown parent: still inspect accessible children.
+          }
+        }
+        const auto &node=found->second;
+        // Repair and upgrade can restore missing package files/directories.
+        if(!node.exists)break;
+        const bool expected_directory=path!=file || directory_input;
+        if(node.directory!=expected_directory) {
+          failure_t failure(L"invalid_ancestor",role_t::descendant);failure.path=path;
+          failure.evidence=L" expected="+std::wstring(expected_directory?L"directory":L"file")+
+            L" observed="+(node.directory?L"directory":L"file");throw failure;
+        }
       }
     }
   }

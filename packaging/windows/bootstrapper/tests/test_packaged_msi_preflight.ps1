@@ -28,7 +28,7 @@ foreach ($case in @(@{ Root=$validRoot; Accepted=$true }, @{ Root=$invalidRoot; 
     if (Test-Path -LiteralPath $case.Root) { throw 'Preflight test destination must not exist' }
     # Join-Path output can carry a PSObject wrapper. A typed array unwraps
     # every argument before it reaches the reflection binder (PowerShell 5.1).
-    [string[]]$invokeArguments = @($MsiPath, $case.Root, 'packaged_msi_preflight')
+    [object[]]$invokeArguments = @([string]$MsiPath, [string]$case.Root, [string]'packaged_msi_preflight', $null)
     $result = $method.Invoke($null, $invokeArguments)
     if ($result.Succeeded -ne $case.Accepted) {
         $detail = if ($null -eq $result) { 'unexpected acceptance' } else { $result.Message }
