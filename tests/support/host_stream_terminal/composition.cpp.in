@@ -53,14 +53,14 @@ template<class F> guard<F> fail_guard(F f){return {f};}
 namespace audio {
 @AUDIO_PARAMS@
 @AUDIO_CONFIG@
-@DOLBY_CODEC@
+@AUDIO_CODEC@
 // Encoder discovery is an external capability edge; negotiation stays production code.
 bool ac3_encoder=true,eac3_encoder=true;
 bool ac3_available(){return ac3_encoder;}
 bool eac3_available(){return eac3_encoder;}
-@DOLBY_CONFIGURE@
+@AUDIO_CONFIGURE@
 @DOLBY_BITRATE@
-@DOLBY_NAME@
+@AUDIO_NAME@
 @AUDIO_OFFER@
 }
 namespace stream {

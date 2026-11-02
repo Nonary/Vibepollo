@@ -515,7 +515,7 @@ namespace audio {
     return 0;
   }
 
-  dolby_codec_e configure_dolby_audio(
+  codec_e configure_codec(
     config_t &config,
     std::string_view offered,
     std::string_view accepted,
@@ -523,7 +523,7 @@ namespace audio {
     bool eac3_encoder_available,
     bool high_quality
   ) {
-    using enum audio::dolby_codec_e;
+    using enum audio::codec_e;
     config.use_ac3 = false;
     config.use_eac3 = false;
     config.high_quality_dolby = false;
@@ -545,8 +545,8 @@ namespace audio {
     return selected;
   }
 
-  std::string_view dolby_codec_name(dolby_codec_e codec) {
-    using enum audio::dolby_codec_e;
+  std::string_view codec_name(codec_e codec) {
+    using enum audio::codec_e;
     switch (codec) {
       case ac3: return "AC3";
       case eac3: return "EAC3";

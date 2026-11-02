@@ -2499,7 +2499,7 @@ namespace rtsp_stream {
       }
       config.audio.flags[audio::config_t::CUSTOM_SURROUND_PARAMS] = valid;
     }
-    // Select Dolby only when ANNOUNCE accepts the exact codec offered in DESCRIBE.
+    // Select an audio codec other than Opus only when ANNOUNCE accepts the exact codec offered in DESCRIBE.
     const auto audio_accept = args.find("x-ss-audio-codec-accept"sv);
     const std::string_view accepted_audio_codec =
       audio_accept == args.end() ? std::string_view {} : std::string_view {audio_accept->second};
@@ -2518,7 +2518,7 @@ namespace rtsp_stream {
       respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return false;
     }
-    const auto selected_audio_codec = audio::configure_dolby_audio(
+    const auto selected_audio_codec = audio::configure_codec(
       config.audio,
       session->audio_codec_offered,
       accepted_audio_codec,
@@ -2815,7 +2815,7 @@ namespace rtsp_stream {
         // scope. A failed start can hold the last reference, and ~session_t may then run
         // end_broadcast(), which joins a control thread that itself waits on this gate.
         lifecycle_lock.unlock();
-        server->post([server, socket = std::move(socket), session = std::move(session), sequence_number, startup_failed, startup_status, startup_error = std::move(startup_error), virtual_display_guid_bytes = launch_session->virtual_display_guid_bytes, audio_codec_name = std::string(audio::dolby_codec_name(selected_audio_codec))]() mutable {
+        server->post([server, socket = std::move(socket), session = std::move(session), sequence_number, startup_failed, startup_status, startup_error = std::move(startup_error), virtual_display_guid_bytes = launch_session->virtual_display_guid_bytes, audio_codec_name = std::string(audio::codec_name(selected_audio_codec))]() mutable {
           OPTION_ITEM completion_option {};
           completion_option.option = const_cast<char *>("CSeq");
           auto completion_seqn = std::to_string(sequence_number);
