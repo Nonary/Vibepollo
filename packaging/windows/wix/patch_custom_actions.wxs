@@ -48,9 +48,6 @@
       <ComponentRef Id="InstallerDriverSelectionPreferences"/>
     </Feature>
     <InstallExecuteSequence>
-      <!-- CostFinalize resolves directory properties. Restrict INSTALL_ROOT with
-           an MSI-native condition, never a shell command containing its value. -->
-      <Custom Action="BlockUnsafeInstallRoot" After="CostFinalize">NOT REMOVE AND ((INSTALL_ROOT ~= ProgramFilesFolder) OR (INSTALL_ROOT ~= ProgramFiles64Folder) OR NOT ((INSTALL_ROOT ~&lt;&lt; ProgramFilesFolder) OR (INSTALL_ROOT ~&lt;&lt; ProgramFiles64Folder)))</Custom>
       <Custom Action="RestoreSavedDisplayDriverSelection" After="AppSearch">INSTALL_DISPLAY_DRIVERS="" AND (SAVED_DISPLAY_DRIVER_SELECTION="0" OR SAVED_DISPLAY_DRIVER_SELECTION="1")</Custom>
       <Custom Action="DefaultDisplayDriverSelection" After="RestoreSavedDisplayDriverSelection">INSTALL_DISPLAY_DRIVERS=""</Custom>
       <Custom Action="RestoreSavedGamepadDriverSelection" After="DefaultDisplayDriverSelection">INSTALL_VIRTUAL_GAMEPAD_DRIVER="" AND (SAVED_GAMEPAD_DRIVER_SELECTION="0" OR SAVED_GAMEPAD_DRIVER_SELECTION="1")</Custom>
@@ -88,6 +85,8 @@
       <Custom Action="RemoveServiceQuiet" After="SetRemoveServiceQuiet">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
 
       <!-- Post-install chores -->
+      <Custom Action="SetRepairInstallRoot" Before="RepairInstallRoot">NOT REMOVE</Custom>
+      <Custom Action="RepairInstallRoot" Before="SetInstallSudovda">NOT REMOVE</Custom>
       <Custom Action="SetInstallSudovda" After="InstallFiles">NOT REMOVE AND INSTALL_SUDOVDA = "1" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
       <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE AND INSTALL_SUDOVDA = "1" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
       <Custom Action="SetInstallVirtualDisplayDriver" After="InstallSudovda">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>

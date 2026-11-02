@@ -2,7 +2,7 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <!--
     Custom actions to implement the Windows installer behavior:
-    - Validate the install directory without repairing untrusted ACLs
+    - Check the install directory and remove write access granted to every account
     - Update PATH (add/remove)
     - Migrate config files
     - Add/remove firewall rules
@@ -136,14 +136,14 @@
   </Fragment>
 
   <Fragment>
-    <!-- The embedded native validator examines no-follow handles and owner/ACLs
-         before any action executes files from INSTALL_ROOT. The prefix check
-         below is only an early diagnostic, not the security boundary. -->
+    <!-- The embedded native guard stops only for a path that cannot work, and
+         repair removes write access that every account on the PC would otherwise
+         have. Repair runs as SYSTEM, is best-effort, and can never fail an install. -->
     <Binary Id="InstallRootGuard" SourceFile="$(var.BinDir)\sunshine_install_guard.dll" />
     <CustomAction Id="ValidateInstallRootPreview" BinaryKey="InstallRootGuard" DllEntry="ValidateInstallRootPreview" Execute="immediate" Return="check" />
     <CustomAction Id="ValidateInstallRoot" BinaryKey="InstallRootGuard" DllEntry="ValidateInstallRoot" Execute="immediate" Return="check" />
-    <CustomAction Id="BlockUnsafeInstallRoot"
-                  Error="Vibepollo must be installed in a folder beneath Program Files." />
+    <CustomAction Id="SetRepairInstallRoot" Property="RepairInstallRoot" Value="[INSTALL_ROOT]" />
+    <CustomAction Id="RepairInstallRoot" BinaryKey="InstallRootGuard" DllEntry="RepairInstallRoot" Execute="deferred" Return="ignore" Impersonate="no" />
 
     <!-- Post-install housekeeping runs after InstallFiles. Migration and optional
          driver/Vulkan-layer failures remain best-effort because the core application

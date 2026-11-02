@@ -174,7 +174,7 @@ internal static class RollbackRegression {
           "proven unregistered MSI-shaped ARP row does not suppress exact rollback, marker=" + marker);
         Check(!Directory.Exists(retained.RecoveryDirectory), "native-confirmed stale-row recovery cleans only verified restored stash");
       }
-      foreach (var mode in new[] { "bad-configuration", "different-user", "advertised", "api-throws", "generic-legacy", "per-user" }) {
+      foreach (var mode in new[] { "bad-configuration", "different-user", "advertised", "api-throws", "generic-legacy" }) {
         Reset(); retained = RemoveLegacy(); NativeRegistrationPresent = false;
         Installed = Product(Other);
         if (mode == "bad-configuration") NativeProductState = -6;
@@ -182,10 +182,14 @@ internal static class RollbackRegression {
         if (mode == "advertised") NativeProductState = 1;
         if (mode == "api-throws") NativeStateThrows = true;
         if (mode == "generic-legacy") { Installed.IsWindowsInstaller = false; Installed.UninstallString = "legacy-uninstaller.exe /S"; }
-        if (mode == "per-user") Installed.IsPerUser = true;
         Recover(retained);
         Check(!Events.Contains("restore") && File.Exists(retained.MsiPath), mode + " retains conservative overwrite protection and rollback source");
       }
+      Reset(); retained = RemoveLegacy(); NativeRegistrationPresent = false;
+      Installed = Product(Other); Installed.IsPerUser = true;
+      var perUserRow = Recover(retained);
+      Check(Events.Contains("restore") && perUserRow.Message.Contains("automatically restored"),
+        "a per-user row skipped during replacement does not cost the removed product its rollback");
       Reset(); retained = RemoveLegacy(); RestoredProduct.IsWindowsInstaller = false;
       var markerlessRestore = Recover(retained);
       Check(markerlessRestore.Message.Contains("automatically restored") && !Directory.Exists(retained.RecoveryDirectory),

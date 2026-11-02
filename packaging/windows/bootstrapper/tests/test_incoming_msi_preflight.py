@@ -16,6 +16,11 @@ def extract(pattern):
     return matches[0]
 
 build_message = extract(r'^    private static string BuildResultMessage\(.*?^    \}')
+validate_root = extract(r'^    internal static string ValidateInstallRootPath\(.*?^    \}')
+registered_root = extract(r'^    private static bool IsRegisteredInstallRoot\(.*?^    \}')
+product_folder = extract(r'^    private static bool IsProductFolder\(.*?^    \}')
+under_directory = extract(r'^    private static bool PathIsUnderDirectory\(.*?^    \}')
+normalize_path = extract(r'^    private static string NormalizePath\(.*?^    \}')
 apply_warnings = extract(r'^    private static void ApplyPreflightWarnings\(.*?^    \}')
 method = extract(r'^    private static InstallerResult PreflightIncomingMsi\(.*?^    \}')
 kind = extract(r'^    internal enum InstalledProductKind \{.*?^    \}')
@@ -91,6 +96,64 @@ KIND
 METHOD
 APPLY_WARNINGS
 BUILD_MESSAGE
+VALIDATE_ROOT
+UNDER_DIRECTORY
+REGISTERED_ROOT
+PRODUCT_FOLDER
+NORMALIZE_PATH
+  sealed class Registration { public InstalledProductKind Kind; public string InstallLocation; }
+  static string Registered;
+  static IEnumerable<Registration> GetInstalledProductRegistrations(bool includeSunshine) {
+    return Registered == null ? new Registration[0] : new[] { new Registration { Kind = InstalledProductKind.Vibeshine, InstallLocation = Registered } };
+  }
+  static bool Accepts(string path) {
+    try { ValidateInstallRootPath(path); return true; } catch (InvalidOperationException) { return false; }
+  }
+  static void CheckInstallFolderPolicy() {
+    // Production validation rejects '/', so these paths only make sense on Windows.
+    if (Path.DirectorySeparatorChar != '\\') return;
+    var sandbox = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+    var previous = Environment.GetEnvironmentVariable("ProgramW6432");
+    Directory.CreateDirectory(sandbox);
+    try {
+      Environment.SetEnvironmentVariable("ProgramW6432", sandbox);
+      Func<string, string> folder = name => Directory.CreateDirectory(Path.Combine(sandbox, name)).FullName;
+      Check(Accepts(Path.Combine(sandbox, "NotCreatedYet")), "a new folder is accepted");
+      Check(Accepts(folder("EmptyChoice")), "an empty folder is accepted");
+      // Uninstalling keeps config and a failed upgrade removes the registration:
+      // neither may leave the default folder permanently unusable.
+      foreach (var name in new[] { "Sunshine", "vibeshine", "Apollo", "Vibepollo" }) {
+        var leftovers = folder(name);
+        File.WriteAllText(Path.Combine(leftovers, "desktop.png"), "user file");
+        Check(Accepts(leftovers), "the product's own unregistered folder is accepted: " + name);
+      }
+      var renamed = folder("MyStreamingHost");
+      Directory.CreateDirectory(Path.Combine(renamed, "config"));
+      File.WriteAllText(Path.Combine(renamed, "config", "sunshine.conf"), "");
+      Check(Accepts(renamed), "a custom folder with the product's config is accepted");
+      var unrelated = folder("SomeOtherApp");
+      File.WriteAllText(Path.Combine(unrelated, "other.exe"), "");
+      Check(!Accepts(unrelated), "another application's folder is refused");
+      Registered = unrelated;
+      Check(Accepts(unrelated), "a registered install folder is accepted");
+      Registered = null;
+      var elsewhere = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"), "Sunshine");
+      Directory.CreateDirectory(elsewhere);
+      File.WriteAllText(Path.Combine(elsewhere, "notes.txt"), "");
+      Check(!Accepts(elsewhere), "a matching name outside Program Files does not make a folder ours");
+      Directory.Delete(Path.GetDirectoryName(elsewhere), true);
+      Check(!Accepts(sandbox), "a populated parent folder is refused");
+      Check(!Accepts(Path.GetPathRoot(sandbox)), "a drive root is refused");
+      Check(!Accepts(@"\\\\server\\share\\host"), "a network path is refused");
+      Check(!Accepts(Path.Combine(sandbox, "100%")), "a percent sign is refused");
+      Check(!Accepts(Path.Combine(sandbox, "a;b")), "a semicolon is refused");
+      Check(Accepts(Path.Combine(sandbox, "R&D's $tuff")), "characters the commands quote safely do not stop an install");
+      Check(Accepts(Path.Combine(Path.GetTempPath(), "anywhere-" + Guid.NewGuid().ToString("N"))), "any other new local folder is accepted");
+    } finally {
+      Environment.SetEnvironmentVariable("ProgramW6432", previous);
+      Directory.Delete(sandbox, true);
+    }
+  }
   static void Check(bool ok, string why) { Checks++; if (!ok) throw new Exception(why); }
   static void Run(string failure, bool throws, string root, string shortNames = null) {
     Failure = failure; Throw = throws; Root = root; Verified = false; Closed = 0; Calls = new List<string>(); Logged = new List<string>();
@@ -146,11 +209,12 @@ BUILD_MESSAGE
       Check(message.Contains(NativeRejection), "actual failure evidence reaches UI from MSI log");
       Check(!message.Contains("processes are running"), "do not invent a process failure");
     } finally { File.Delete(errorLog); }
+    CheckInstallFolderPolicy();
     Console.WriteLine(Checks + " incoming MSI preflight checks passed; Windows boundaries stubbed.");
   }
 }
 }
-'''.replace('KIND', kind).replace('RESULT', result).replace('OPERATION', operation).replace('METHOD', method).replace('APPLY_WARNINGS', apply_warnings).replace('BUILD_MESSAGE', build_message)
+'''.replace('KIND', kind).replace('RESULT', result).replace('OPERATION', operation).replace('METHOD', method).replace('APPLY_WARNINGS', apply_warnings).replace('BUILD_MESSAGE', build_message).replace('VALIDATE_ROOT', validate_root).replace('UNDER_DIRECTORY', under_directory).replace('REGISTERED_ROOT', registered_root).replace('PRODUCT_FOLDER', product_folder).replace('NORMALIZE_PATH', normalize_path)
 dotnet = sys.argv[1] if len(sys.argv) > 1 else 'dotnet'
 major = subprocess.check_output([dotnet, '--version'], text=True).strip().split('.')[0]
 with tempfile.TemporaryDirectory(prefix='incoming-msi-preflight-') as directory:

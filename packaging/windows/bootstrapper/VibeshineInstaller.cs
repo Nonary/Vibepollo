@@ -518,7 +518,7 @@ namespace VibepolloInstaller {
       installStack.Children.Add(_installLocationTitleText);
 
       _installLocationHintText = new TextBlock {
-        Text = "Choose a folder beneath Program Files. The default is recommended.",
+        Text = "The default folder is recommended.",
         FontSize = 12.5,
         Foreground = new SolidColorBrush(Color.FromRgb(209, 222, 241)),
         Margin = new Thickness(0, 0, 0, 10),
@@ -1385,7 +1385,7 @@ namespace VibepolloInstaller {
       }
 
       var lines = new List<string> {
-        "The operation completed, but some components failed:"
+        "The installation finished, but needs your attention:"
       };
       foreach (var failure in componentFailures.Where(item => !string.IsNullOrWhiteSpace(item))) {
         lines.Add("- " + failure.Trim());
@@ -1936,7 +1936,7 @@ namespace VibepolloInstaller {
       var warningDetail = BuildComponentFailureDetail(installResult == null ? null : installResult.ComponentFailures);
       var decision = await ShowOverlayAsync(
         "Install completed with warnings",
-        warningDetail + "\n\nSave logs now, then report this issue on GitHub or Discord.",
+        warningDetail + "\n\nIf you need help, save logs and reach out on GitHub or Discord.",
         "Save logs",
         "Not now",
         new SolidColorBrush(Color.FromRgb(99, 102, 241)),
@@ -2462,7 +2462,7 @@ namespace VibepolloInstaller {
       Console.WriteLine("  /?, /h, --help  Show this help message");
       Console.WriteLine();
       Console.WriteLine("Supported MSI properties:");
-      Console.WriteLine("  INSTALL_ROOT=<path>  Install beneath Program Files (default: %ProgramFiles%\\Apollo)");
+      Console.WriteLine("  INSTALL_ROOT=<path>  Install folder (default: %ProgramFiles%\\Apollo)");
       Console.WriteLine("  INSTALL_VIRTUAL_DISPLAY_DRIVER=0  Use SudoVDA instead of the default Vibepollo Display Driver");
       Console.WriteLine("  INSTALL_VIRTUAL_GAMEPAD_DRIVER=0  Do not install the bundled Vibepollo virtual gamepad driver");
       Console.WriteLine("  INSTALL_USBIP_TRANSPORT=1  Install the optional signed USB/IP driver for DualSense USB waveform haptics");
@@ -2641,55 +2641,25 @@ namespace VibepolloInstaller {
           || string.Equals(fullPath, pathRoot, StringComparison.OrdinalIgnoreCase)) {
         throw new InvalidOperationException("A filesystem root cannot be used as the Vibepollo install folder.");
       }
-      if (fullPath.IndexOfAny(new[] { '"', '\'', '`', '$', '%', ';', '&', '|', '<', '>', '^', '\r', '\n', '/' }) >= 0) {
-        throw new InvalidOperationException("The install folder contains unsupported command characters.");
+      // % expands to a different directory, and ; splits the machine PATH entry.
+      if (fullPath.IndexOfAny(new[] { '%', ';' }) >= 0) {
+        throw new InvalidOperationException("The install folder name cannot contain % or ;.");
       }
-      var programFilesRoots = new[] {
-        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
-        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
-        Environment.GetEnvironmentVariable("ProgramW6432")
-      }
-        .Select(NormalizePath)
-        .Where(path => !string.IsNullOrWhiteSpace(path))
-        .Distinct(StringComparer.OrdinalIgnoreCase)
-        .ToList();
-      if (!programFilesRoots.Any(root =>
-        !string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase)
-        && PathIsUnderDirectory(fullPath, root))) {
-        throw new InvalidOperationException(
-          "The Vibepollo install folder must be a child folder beneath Program Files.");
-      }
-
-      var current = fullPath;
-      while (!string.IsNullOrWhiteSpace(current)) {
-        if (Directory.Exists(current)) {
-          var info = new DirectoryInfo(current);
-          info.Refresh();
-          if ((info.Attributes & FileAttributes.ReparsePoint) != 0) {
-            throw new InvalidOperationException(
-              "The install folder or one of its parent folders is a reparse point. "
-              + "Choose a direct local path so the installer can secure it safely.");
-          }
-          // The package's native guard owns ACL classification. A second
-          // managed policy must not turn its compatibility warnings into errors.
-        }
-        var parent = Path.GetDirectoryName(current);
-        if (string.IsNullOrWhiteSpace(parent)
-            || string.Equals(parent, current, StringComparison.OrdinalIgnoreCase)) break;
-        current = parent;
-      }
-
       if (!Directory.Exists(fullPath)) return fullPath;
 
-      // Descendants are checked by the native MSI guard against its operation
-      // inventory. Inspecting unrelated user files here would reject links the
-      // installer never uses, before that scoped preflight gets a chance to run.
-
-      if (Directory.EnumerateFileSystemEntries(fullPath).Any()
-          && !IsRegisteredInstallRoot(fullPath)) {
-        throw new InvalidOperationException(
-          "The selected install folder is not empty and is not the registered Vibepollo or Sunshine install folder. "
-          + "Choose a new empty folder so unrelated files are never modified.");
+      // Installing replaces same-named files, and migration and factory reset act
+      // on generic names like credentials and covers, so this would damage that app.
+      try {
+        if (Directory.EnumerateFileSystemEntries(fullPath).Any()
+            && !IsRegisteredInstallRoot(fullPath)
+            && !IsProductFolder(fullPath)) {
+          throw new InvalidOperationException(
+            "The selected install folder contains files from another application. "
+            + "Choose a new empty folder so its files are not damaged.");
+        }
+      } catch (UnauthorizedAccessException) {
+        // Being unable to list the folder is not evidence that it is someone else's.
+      } catch (IOException) {
       }
       return fullPath;
     }
@@ -2707,6 +2677,20 @@ namespace VibepolloInstaller {
             && string.Equals(normalized, installRoot, StringComparison.OrdinalIgnoreCase)) return true;
       }
       return false;
+    }
+
+    // Uninstalling keeps config and user files, and a failed upgrade can leave more
+    // behind. Those are this product's own leftovers, not another application's. A
+    // matching name only counts inside Program Files, where nothing else would use it.
+    private static bool IsProductFolder(string installRoot) {
+      if (File.Exists(Path.Combine(installRoot, "sunshine.exe"))
+          || File.Exists(Path.Combine(installRoot, "config", "sunshine.conf"))) return true;
+      if (!new[] { "Sunshine", "Vibeshine", "Apollo", "Vibepollo" }.Contains(Path.GetFileName(installRoot), StringComparer.OrdinalIgnoreCase)) return false;
+      return new[] {
+        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+        Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),
+        Environment.GetEnvironmentVariable("ProgramW6432")
+      }.Any(root => !string.IsNullOrWhiteSpace(root) && PathIsUnderDirectory(installRoot, root));
     }
 
     public static bool IsSunshineVirtualDisplayDriverEnabledInConfiguration(string installDirectory) {
@@ -3048,7 +3032,9 @@ namespace VibepolloInstaller {
           && isLiveMsi(candidate.ProductCode)).ToList();
         if (matches.Select(candidate => NormalizeProductCode(candidate.ProductCode))
             .Distinct(StringComparer.OrdinalIgnoreCase).Count() > 1) {
-          throw new InvalidOperationException("Multiple live MSI products claim the installation at " + root + ". No changes were made.");
+          // Each of those products is handled on its own row, so only this
+          // ambiguous front-end entry and its uninstall command are dropped.
+          continue;
         }
         resolved.Add(matches.Count == 0 ? product : matches[0]);
       }
@@ -3807,7 +3793,9 @@ namespace VibepolloInstaller {
           }
           if (code != MsiErrorSuccess) {
             var detail = ReadMsiProperty(package, "VIBESHINE_INSTALL_ROOT_ERROR");
-            throw new InvalidOperationException(action + " failed (Windows Installer " + code + "). " + detail);
+            throw new InvalidOperationException(string.IsNullOrWhiteSpace(detail)
+              ? action + " failed (Windows Installer " + code + ")."
+              : detail);
           }
         }
         var warnings = (ReadMsiProperty(package, "VIBESHINE_INSTALL_ROOT_WARNINGS") ?? "")
@@ -3820,12 +3808,155 @@ namespace VibepolloInstaller {
           Operation = InstallerOperation.Install,
           ExitCode = 1603,
           LogPath = logPath,
-          Message = "The replacement installer could not validate the install folders. The existing installation has not been removed. " + ex.Message
+          Message = "The installer stopped before making any changes. The existing installation has not been removed. " + ex.Message
         };
       } finally {
         if (package != IntPtr.Zero) MsiCloseHandle(package);
         if (previousUiLevel != 0) MsiSetInternalUI(previousUiLevel, IntPtr.Zero);
       }
+    }
+
+    // Builds 2.0.2 through the 2.0.5 nightlies run a strict guard during their own
+    // removal, and a cached MSI cannot be changed. It rejects things like a
+    // user-owned image, so fix those first or the upgrade would fail for nothing.
+    private static void ClearPreviousGuardObstacles(string logPath) {
+      try {
+        var roots = GetInstalledProductRegistrations(true)
+          .Where(product => !product.IsPerUser && product.Version != null
+            && product.Version.Major == 2 && product.Version.Minor == 0
+            && product.Version.Build >= 200 && product.Version.Build <= 590)
+          .Select(product => NormalizePath(product.InstallLocation))
+          .Where(root => !string.IsNullOrWhiteSpace(root) && Directory.Exists(root))
+          .Distinct(StringComparer.OrdinalIgnoreCase)
+          .ToList();
+        foreach (var root in roots) ClearPreviousGuardObstacles(root, logPath);
+      } catch (Exception ex) {
+        AppendInstallerLogMessage(logPath, "Previous guard cleanup skipped: " + ex.Message);
+      }
+    }
+
+    private static void ClearPreviousGuardObstacles(string root, string logPath) {
+      // A registered folder can itself be a link. Its target is not ours to change.
+      if ((File.GetAttributes(root) & FileAttributes.ReparsePoint) != 0) {
+        AppendInstallerLogMessage(logPath, "Previous guard cleanup skipped because the install folder is a link: " + root);
+        return;
+      }
+      var entries = new List<string> { root };
+      var pending = new Stack<string>();
+      pending.Push(root);
+      while (pending.Count > 0) {
+        foreach (var entry in Directory.GetFileSystemEntries(pending.Pop())) {
+          var attributes = File.GetAttributes(entry);
+          // The old guard refuses links anyway, and Windows can carry a folder's
+          // permission change through one, so leave this tree exactly as it is.
+          if ((attributes & FileAttributes.ReparsePoint) != 0) {
+            AppendInstallerLogMessage(logPath, "Previous guard cleanup skipped because of a link: " + entry);
+            return;
+          }
+          // Saving a folder's permissions updates files inside it, and a hardlink's
+          // other names may live outside this tree, so this must be settled up front.
+          if ((attributes & FileAttributes.Directory) == 0 && HasOtherHardLinks(entry)) {
+            AppendInstallerLogMessage(logPath, "Previous guard cleanup skipped because of a hardlink: " + entry);
+            return;
+          }
+          entries.Add(entry);
+          if ((attributes & FileAttributes.Directory) != 0) pending.Push(entry);
+        }
+      }
+      var cleared = 0;
+      foreach (var entry in entries) {
+        try {
+          const AccessControlSections sections = AccessControlSections.Access | AccessControlSections.Owner;
+          var isDirectory = Directory.Exists(entry);
+          Func<FileSystemSecurity> read;
+          Action<FileSystemSecurity> write;
+          if (isDirectory) {
+            var directory = new DirectoryInfo(entry);
+            read = () => directory.GetAccessControl(sections);
+            write = security => directory.SetAccessControl((DirectorySecurity)security);
+          } else {
+            var file = new FileInfo(entry);
+            read = () => file.GetAccessControl(sections);
+            write = security => file.SetAccessControl((FileSecurity)security);
+          }
+          if (SatisfyPreviousGuard(read, write, isDirectory)) cleared++;
+        } catch (Exception ex) {
+          AppendInstallerLogMessage(logPath, "Previous guard cleanup could not update " + entry + ": " + ex.Message);
+        }
+      }
+      AppendInstallerLogMessage(logPath, "Previous guard cleanup updated " + cleared + " entries under " + root + ".");
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ByHandleFileInformation {
+      public uint FileAttributes;
+      public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime, LastAccessTime, LastWriteTime;
+      public uint VolumeSerialNumber, FileSizeHigh, FileSizeLow, NumberOfLinks, FileIndexHigh, FileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetFileInformationByHandle(Microsoft.Win32.SafeHandles.SafeFileHandle file, out ByHandleFileInformation information);
+
+    // A file that cannot be inspected counts as not linked: skipping the whole tree
+    // over one busy file would bring back the failed upgrade this cleanup prevents.
+    private static bool HasOtherHardLinks(string path) {
+      try {
+        using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete)) {
+          ByHandleFileInformation information;
+          return GetFileInformationByHandle(stream.SafeFileHandle, out information) && information.NumberOfLinks > 1;
+        }
+      } catch (IOException) {
+        return false;
+      } catch (UnauthorizedAccessException) {
+        return false;
+      }
+    }
+
+    private static bool PreviousGuardTrusts(SecurityIdentifier sid) {
+      return sid.IsWellKnown(WellKnownSidType.LocalSystemSid)
+        || sid.IsWellKnown(WellKnownSidType.BuiltinAdministratorsSid)
+        || string.Equals(sid.Value, "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464", StringComparison.Ordinal);
+    }
+
+    private static bool IsRejectedByPreviousGuard(FileSystemAccessRule rule) {
+      // Delete, write and control rights, including generic all and generic write.
+      const int rejectedRights = 0x10000 | 0x40 | 0x40000 | 0x80000 | 0x2 | 0x4 | 0x10 | 0x100 | 0x10000000 | 0x40000000;
+      var account = (SecurityIdentifier)rule.IdentityReference;
+      return rule.AccessControlType == AccessControlType.Allow
+        && ((int)rule.FileSystemRights & rejectedRights) != 0
+        && !PreviousGuardTrusts(account)
+        && !(rule.PropagationFlags.HasFlag(PropagationFlags.InheritOnly) && account.IsWellKnown(WellKnownSidType.CreatorOwnerSid));
+    }
+
+    private static bool SatisfyPreviousGuard(Func<FileSystemSecurity> read, Action<FileSystemSecurity> write, bool directory) {
+      var changed = false;
+      var security = read();
+      var owner = security.GetOwner(typeof(SecurityIdentifier)) as SecurityIdentifier;
+      if (owner == null || !PreviousGuardTrusts(owner)) {
+        security.SetOwner(new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null));
+        write(security);
+        changed = true;
+      }
+      if (!security.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().Any(IsRejectedByPreviousGuard)) {
+        return changed;
+      }
+      // Inherited entries cannot be edited, and they only become explicit once
+      // protection has been saved and the descriptor read back.
+      security = read();
+      security.SetAccessRuleProtection(true, true);
+      write(security);
+      security = read();
+      foreach (var rule in security.GetAccessRules(true, false, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>().Where(IsRejectedByPreviousGuard).ToList()) {
+        security.RemoveAccessRuleSpecific(rule);
+        security.AddAccessRule(new FileSystemAccessRule(rule.IdentityReference, FileSystemRights.ReadAndExecute, rule.InheritanceFlags, rule.PropagationFlags, AccessControlType.Allow));
+      }
+      // The service and administrators must keep working if that was all they had.
+      var inherit = directory ? InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit : InheritanceFlags.None;
+      foreach (var type in new[] { WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid }) {
+        security.AddAccessRule(new FileSystemAccessRule(new SecurityIdentifier(type, null), FileSystemRights.FullControl, inherit, PropagationFlags.None, AccessControlType.Allow));
+      }
+      write(security);
+      return true;
     }
 
     public static InstallerResult RunInteractiveInstall(
@@ -3850,7 +3981,7 @@ namespace VibepolloInstaller {
         installDirectory = ValidateInstallRootPath(installDirectory);
       } catch (Exception ex) {
         var validationLog = BuildLogPath("install_path_validation");
-        var detail = "The install folder is not safe to use: " + ex.Message + " Path: " + installDirectory;
+        var detail = "This install folder cannot be used: " + ex.Message + " Path: " + installDirectory;
         AppendInstallerLogMessage(validationLog, detail);
         return new InstallerResult {
           Operation = InstallerOperation.Install, ExitCode = 1603, LogPath = validationLog, Message = detail
@@ -3871,6 +4002,7 @@ namespace VibepolloInstaller {
       }
       var preflight = PreflightIncomingMsi(msiPath, installDirectory, "install_preflight");
       if (!preflight.Succeeded) return preflight;
+      ClearPreviousGuardObstacles(preflight.LogPath);
 
       var recoveryDetails = new List<string>();
       StashedVibeshinePayload stashedPreviousPayload = null;
@@ -6370,6 +6502,7 @@ namespace VibepolloInstaller {
       }
 
       SweepStaleInstallerRecoveryDirectories();
+      ClearPreviousGuardObstacles(BuildLogPath("uninstall_guard_cleanup"));
 
       var uninstallResult = UninstallInstalledProducts(
         "uninstall",
@@ -6462,7 +6595,9 @@ namespace VibepolloInstaller {
           GetPropertyValue(cliArgs, "INSTALL_ROOT"), "cli_preflight",
           HasProperty(cliArgs, "SHORTFILENAMES") ? GetPropertyValue(cliArgs, "SHORTFILENAMES") : null);
         if (!preflight.Succeeded) return preflight;
+        ClearPreviousGuardObstacles(preflight.LogPath);
       }
+      if (isUninstallOperation) ClearPreviousGuardObstacles(BuildLogPath("cli_uninstall_guard_cleanup"));
       var cliUninstallRecoveryProduct = isUninstallOperation
         ? TryResolveCliMsiUninstallRecoveryProduct(cliArgs)
         : null;
@@ -7120,7 +7255,7 @@ namespace VibepolloInstaller {
         failureMessage = "The INSTALL_ROOT property could not be normalized.";
         return false;
       } catch (Exception ex) {
-        failureMessage = "The INSTALL_ROOT property is not safe to use: " + ex.Message;
+        failureMessage = "The INSTALL_ROOT folder cannot be used: " + ex.Message;
         return false;
       }
     }
@@ -7451,10 +7586,11 @@ namespace VibepolloInstaller {
       }
       foreach (var product in GetInstalledProductRegistrations(false).Where(item => item.Kind == InstalledProductKind.Vibeshine
         || item.Kind == InstalledProductKind.Vibepollo)) {
-        // Keep protection for per-user, genuine generic/legacy, advertised,
-        // other-user and unreadable registrations. Only a definitively absent
-        // Windows Installer product may be treated as a stale ARP row.
-        if (product.IsPerUser) return true;
+        // Keep protection for genuine generic/legacy, advertised, other-user and
+        // unreadable registrations. Only a definitively absent Windows Installer
+        // product may be treated as a stale ARP row. Per-user rows are skipped during
+        // replacement, so one must not also cost the removed product its rollback.
+        if (product.IsPerUser) continue;
         var msiShaped = product.IsWindowsInstaller || FindKnownMsiSourceRelease(product.ProductCode) != null
           || CommandTargetsMsiexec(product.UninstallString) || CommandTargetsMsiexec(product.QuietUninstallString);
         if (!msiShaped || !LooksLikeProductCode(NormalizeProductCode(product.ProductCode))) return true;
@@ -7651,48 +7787,37 @@ namespace VibepolloInstaller {
         };
       }
 
-      // This dispatcher runs after self-elevation. Disabling a later UAC
-      // prompt cannot lower its inherited token. HKCU MSI flags/GUIDs are
-      // equally untrusted; reject all per-user rows before any recovery work.
-      var perUserProduct = installedProducts.FirstOrDefault(product => product.IsPerUser);
-      if (perUserProduct != null) {
-        return new InstallerResult {
-          Operation = InstallerOperation.Uninstall, ExitCode = 1612,
-          Message = "Remove the per-user installation from your normal user account before retrying. Its user-writable registration cannot authorize an elevated uninstall.",
-          ProductCode = perUserProduct.ProductCode, ProductKind = perUserProduct.Kind, ProductDisplayName = perUserProduct.DisplayName
-        };
+      // This dispatcher runs after self-elevation, so a command from a user-writable
+      // registry hive must never run here. Skip it rather than stop the install.
+      var skippedLog = BuildLogPath(logPhase + "_skipped");
+      foreach (var perUserProduct in installedProducts.Where(product => product.IsPerUser)) {
+        AppendInstallerLogMessage(skippedLog, "Left a per-user installation in place: " + perUserProduct.DisplayName);
       }
+      installedProducts.RemoveAll(product => product.IsPerUser);
 
-      // Preflight every known identity before dispatching any competing
-      // uninstaller. Inventory order must not remove another product before
-      // a later catalogued row reveals ambiguous ownership or bad metadata.
       var knownSources = new Dictionary<string, StashedVibeshinePayload>(StringComparer.OrdinalIgnoreCase);
+      var mismatched = new List<InstalledProductInfo>();
       foreach (var product in installedProducts) {
         var commandTarget = FindKnownMsiSourceInCommand(product.QuietUninstallString)
           ?? FindKnownMsiSourceInCommand(product.UninstallString);
         if (commandTarget != null && !string.Equals(NormalizeProductCode(product.ProductCode), commandTarget.Identity.ProductCode, StringComparison.OrdinalIgnoreCase)) {
-          var failureLog = BuildLogPath(logPhase + "_remove");
-          return new InstallerResult {
-            Operation = InstallerOperation.Uninstall, ExitCode = 1612, LogPath = failureLog,
-            Message = "Replacement stopped: a registered uninstall command names the known MSI without a matching product identity.",
-            ProductCode = product.ProductCode, ProductKind = product.Kind, ProductDisplayName = product.DisplayName
-          };
+          AppendInstallerLogMessage(skippedLog, "Skipped an uninstall command that names another product: " + product.DisplayName);
+          mismatched.Add(product);
+          continue;
         }
         var productCode = NormalizeProductCode(product.ProductCode);
         if (FindKnownMsiSourceRelease(productCode) != null && !knownSources.ContainsKey(productCode)) {
           var preservationLog = BuildLogPath(logPhase + "_remove");
           StashedVibeshinePayload fullSourceStash;
           if (!TryPreserveKnownMsiSourceBeforeReplacement(product, preservationLog, out fullSourceStash)) {
-            return new InstallerResult {
-              Operation = InstallerOperation.Uninstall, ExitCode = 1612, LogPath = preservationLog,
-              Message = "Replacement stopped before uninstall because the verified MSI identity, original source or rollback payload was unavailable.",
-              ProductCode = product.ProductCode, ProductKind = product.Kind, ProductDisplayName = product.DisplayName
-            };
+            AppendInstallerLogMessage(preservationLog, "Continuing without a rollback copy of " + product.DisplayName);
+            continue;
           }
           AdoptStashedPayload(ref stashedSource, fullSourceStash);
           knownSources.Add(productCode, fullSourceStash);
         }
       }
+      installedProducts.RemoveAll(mismatched.Contains);
 
       var finalCode = 0;
       var lastLogPath = string.Empty;
@@ -7702,6 +7827,10 @@ namespace VibepolloInstaller {
         StashedVibeshinePayload knownSource;
         if (knownSources.TryGetValue(NormalizeProductCode(product.ProductCode), out knownSource)) {
           product = CreateKnownMsiProductView(product, knownSource.InstallLocation);
+        } else if (FindKnownMsiSourceRelease(product.ProductCode) != null) {
+          // No rollback copy, but its identity still means removal goes through
+          // Windows Installer and never through a command read from the registry.
+          product = CreateKnownMsiProductView(product, product.InstallLocation);
         }
         if (!CanUninstallProduct(product)) {
           // Stale ARP entry with no usable uninstall command — skip rather

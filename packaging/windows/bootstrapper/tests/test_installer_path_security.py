@@ -46,21 +46,90 @@ class InstallerPathSecurityContract(unittest.TestCase):
         derived_branch = derived_branch.split("if (ShouldRequireSignedMsiPayload()", 1)[0]
         self.assertIn("return;", derived_branch)
 
-    def test_bootstrapper_rejects_unsafe_install_roots_for_ui_and_cli(self):
+    def test_bootstrapper_rejects_only_unusable_install_roots_for_ui_and_cli(self):
         validate = self.source.split("internal static string ValidateInstallRootPath", 1)[1]
         validate = validate.split("private static bool IsRegisteredInstallRoot", 1)[0]
         self.assertIn("A filesystem root cannot be used", validate)
-        self.assertIn("must be a child folder beneath Program Files", validate)
-        self.assertIn("programFilesRoots.Any", validate)
-        self.assertIn("PathIsUnderDirectory(fullPath, root)", validate)
+        self.assertNotIn("programFilesRoots", validate)
         self.assertNotIn("RejectUntrustedWritableInstallAncestor", validate)
-        self.assertIn("FileAttributes.ReparsePoint", validate)
-        self.assertNotIn("pending.Push", validate)
-        self.assertNotIn("File.GetAttributes(entry)", validate)
         self.assertIn("Directory.EnumerateFileSystemEntries(fullPath).Any()", validate)
         self.assertIn("!IsRegisteredInstallRoot(fullPath)", validate)
+        self.assertIn("!IsProductFolder(fullPath)", validate)
         self.assertIn("TryNormalizeAndValidateCliInstallRoot(cliArgs", self.source)
         self.assertIn("installDirectory = ValidateInstallRootPath(installDirectory);", self.source)
+
+    def test_managed_validation_leaves_links_and_tree_scan_to_native_guard(self):
+        validate = self.source.split("internal static string ValidateInstallRootPath", 1)[1]
+        validate = validate.split("private static bool IsRegisteredInstallRoot", 1)[0]
+        # A recursive scan here would fail on unreadable entries and harmless links.
+        self.assertNotIn("ReparsePoint", validate)
+        self.assertNotIn("new Stack<string>", validate)
+        self.assertNotIn("File.GetAttributes", validate)
+        self.assertIn("catch (UnauthorizedAccessException)", validate)
+        self.assertIn("IndexOfAny(new[] { '%', ';' })", validate)  # other characters are quoted
+        self.assertIn("catch (IOException)", validate)
+        # An uninstall or failed upgrade must never strand the product's own folder.
+        product = self.source.split("private static bool IsProductFolder(string installRoot)", 1)[1]
+        product = product.split("public static bool IsSunshineVirtualDisplayDriverEnabledInConfiguration", 1)[0]
+        for name in ("Sunshine", "Vibeshine", "Apollo", "Vibepollo", "sunshine.exe", "sunshine.conf"):
+            self.assertIn(name, product)
+        # A matching name alone must not make someone's D:\\Photos\\Sunshine count as ours.
+        self.assertIn("PathIsUnderDirectory(installRoot, root)", product)
+        migration = (ROOT / "src_assets/windows/misc/migration/migrate-config.bat").read_text(encoding="utf-8")
+        self.assertIn("Join-Path $env:NEW_DIR 'apps.json'", migration)
+        self.assertNotIn("'%NEW_DIR%", migration)
+
+    def test_old_guard_obstacles_clear_after_preflight_and_before_any_removal(self):
+        for start, end in (("public static InstallerResult RunInteractiveInstall(", "private static bool IsCertificateThumbprint("),
+                           ("public static InstallerResult RunCli(", "private static void PreserveCliInstallDirectory(")):
+            body = self.source.split(start, 1)[1].split(end, 1)[0]
+            clear = body.index("ClearPreviousGuardObstacles(preflight.LogPath);")
+            self.assertLess(body.index("if (!preflight.Succeeded) return preflight;"), clear)
+            for effect in ("UninstallCompetingProducts(", "TryPreUninstallDowngradeSourceVersion("):
+                self.assertLess(clear, body.index(effect))
+        # Removal paths reach the old guard too.
+        uninstall = self.source.split("public static InstallerResult RunInteractiveUninstall(", 1)[1]
+        self.assertLess(uninstall.index("ClearPreviousGuardObstacles("), uninstall.index("UninstallInstalledProducts("))
+        cli = self.source.split("public static InstallerResult RunCli(", 1)[1]
+        self.assertIn("if (isUninstallOperation) ClearPreviousGuardObstacles(", cli)
+        cleanup = self.source.split("private static void ClearPreviousGuardObstacles(string logPath)", 1)[1]
+        cleanup = cleanup.split("private static bool SatisfyPreviousGuard", 1)[0]
+        # Only builds that carry the old guard, never a link, and a failure never stops the install.
+        self.assertIn("product.Version.Build >= 200 && product.Version.Build <= 590", cleanup)
+        self.assertIn("!product.IsPerUser", cleanup)
+        self.assertIn("FileAttributes.ReparsePoint", cleanup)
+        # Saving a folder updates its children, so hardlinks are settled before the first write.
+        self.assertLess(cleanup.index("HasOtherHardLinks(entry)"), cleanup.index("SatisfyPreviousGuard(read, write"))
+        self.assertIn("catch (Exception ex)", cleanup)
+        self.assertLess(cleanup.index("the install folder is a link"), cleanup.index("new Stack<string>"))
+        satisfy = self.source.split("private static bool SatisfyPreviousGuard", 1)[1].split("public static InstallerResult RunInteractiveInstall", 1)[0]
+        # Inherited entries only become editable after protection is saved and re-read.
+        protect = satisfy.index("SetAccessRuleProtection(true, true)")
+        self.assertLess(protect, satisfy.index("write(security);", protect))
+        self.assertLess(satisfy.index("write(security);", protect), satisfy.index("security = read();", protect))
+        self.assertIn("RemoveAccessRuleSpecific(rule)", satisfy)
+        self.assertNotIn("PurgeAccessRules", satisfy)  # would also drop deny entries
+        self.assertIn("WellKnownSidType.LocalSystemSid", satisfy)
+        migration = (ROOT / "src_assets/windows/misc/migration/migrate-config.bat").read_text(encoding="utf-8")
+        self.assertNotIn("*.txt", migration)
+        self.assertNotIn("*.log", migration)
+
+    def test_failed_guard_never_triggers_a_separate_uninstall(self):
+        # The log cannot prove which package's guard failed, so recovery must not act on it.
+        predicate = self.source.split("private static bool IsRecoverableMsiFirewallCleanupFailure", 1)[1].split("private const string", 1)[0]
+        self.assertIn("MsiFirewallExceptionUninstallFailureLogMarker", predicate)
+        self.assertNotIn("ValidateInstallRoot", predicate)
+
+    def test_replacing_old_products_does_not_stop_before_trying(self):
+        competing = self.source.split("private static InstallerResult UninstallCompetingProducts(", 1)[1]
+        before = competing.split("var finalCode = 0;", 1)[0]
+        self.assertNotIn("1612", before)
+        # User-writable commands never run, even though they no longer stop the install.
+        self.assertIn("installedProducts.RemoveAll(product => product.IsPerUser);", before)
+        self.assertIn("installedProducts.RemoveAll(mismatched.Contains);", before)
+        dispatch = competing.split("var finalCode = 0;", 1)[1]
+        self.assertLess(dispatch.index("FindKnownMsiSourceRelease(product.ProductCode) != null"), dispatch.index("CanUninstallProduct(product)"))
+        self.assertNotIn("Multiple live MSI products", self.source)
 
     def test_users_read_execute_does_not_overlap_mutation_mask(self):
         # FileSystemRights values from the Windows access-mask contract. RX has
@@ -88,15 +157,14 @@ class InstallerPathSecurityContract(unittest.TestCase):
         self.assertLess(cli.index("return RunElevatedBootstrapperCli(arguments, cliArgs);"),
                         cli.index("TryNormalizeAndValidateCliInstallRoot(cliArgs"))
 
-    def test_direct_msi_uses_native_program_files_policy_without_shell_interpolation(self):
+    def test_direct_msi_uses_native_guard_without_shell_interpolation(self):
 
         actions = {
             node.attrib.get("Id"): node
             for node in self.custom_root.iter()
             if node.tag.endswith("CustomAction") and node.attrib.get("Id")
         }
-        self.assertIn("BlockUnsafeInstallRoot", actions)
-        self.assertNotIn("Value", actions["BlockUnsafeInstallRoot"].attrib)
+        self.assertNotIn("BlockUnsafeInstallRoot", actions)
         self.assertEqual("InstallRootGuard", actions["ValidateInstallRoot"].get("BinaryKey"))
         self.assertEqual("ValidateInstallRoot", actions["ValidateInstallRoot"].get("DllEntry"))
         for removed in (
@@ -113,12 +181,7 @@ class InstallerPathSecurityContract(unittest.TestCase):
             for node in self.patch_root.iter()
             if node.tag == "Custom" and node.attrib.get("Action")
         }
-        policy = scheduled["BlockUnsafeInstallRoot"]
-        self.assertEqual("CostFinalize", policy.attrib.get("After"))
-        self.assertIn("INSTALL_ROOT ~<< ProgramFilesFolder", policy.text)
-        self.assertIn("INSTALL_ROOT ~<< ProgramFiles64Folder", policy.text)
-        self.assertIn("INSTALL_ROOT ~= ProgramFilesFolder", policy.text)
-        self.assertIn("INSTALL_ROOT ~= ProgramFiles64Folder", policy.text)
+        self.assertNotIn("BlockUnsafeInstallRoot", scheduled)
         self.assertEqual("InstallFiles", scheduled["SetInstallSudovda"].attrib.get("After"))
 
 

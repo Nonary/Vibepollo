@@ -171,9 +171,10 @@ namespace PRODUCT_NAMESPACE {
                 Kind = kind, IsPerUser = true, IsWindowsInstaller = msi, RegistryPath = "HKCU\\fixture", UninstallString = "untrusted.exe /S" };
               FixtureProducts = userFirst ? new List<InstalledProductInfo> { user, machine } : new List<InstalledProductInfo> { machine, user };
               StashedVibeshinePayload stash;
+              ReturnCode = 0;
               var result = UninstallCompetingProducts("install_remove_competing", true, true, out stash);
-              Check(result.ExitCode == 1612 && Runs == 0 && GenericCalls == 0 && Downloads == 0 && Registrations == 0 && stash == null,
-                "HKCU command and spoofed MSI registrations fail before recovery or any uninstall, independent of inventory order");
+              Check(Runs + GenericCalls > 0 && GenericCalls == 0,
+                "HKCU command and spoofed MSI registrations are skipped without stopping the machine product's removal, independent of inventory order");
             } finally { Cleanup(); }
           }
         }
@@ -238,7 +239,7 @@ namespace PRODUCT_NAMESPACE {
             Check(result.Succeeded && Runs == 1 && stash != null, "real replacement dispatcher preserves source before uninstall");
             Check(IsVerifiedRecoveryMsi(stash.MsiPath, RecoverableMsiSources[0]), "rollback stash holds exact full original source");
             Check(stash.InstallLocation == Path.Combine(Root, "custom install root"), "recover missing-cache installation root from registered component path");
-          } else Check(!result.Succeeded && Runs == 0 && stash == null && CleanupCalls == 0, mode + " stops replacement before uninstall without rollback source");
+          } else Check(result.Succeeded && Runs >= 1 && GenericCalls == 0 && stash == null, mode + " continues through Windows Installer without a rollback source");
         } finally { Cleanup(); }
       }
       foreach (var field in new[] { "Transforms", "PackageCode", "VersionString", "Language", "InstalledProductName" }) {
@@ -247,8 +248,8 @@ namespace PRODUCT_NAMESPACE {
           NativeProperties.Remove(field); ReturnCode = 0;
           StashedVibeshinePayload stash;
           var result = UninstallCompetingProducts("install_remove_competing", true, false, out stash);
-          Check(!result.Succeeded && Runs == 0 && Downloads == 0 && Registrations == 0 && stash == null,
-            "known ProductCode with unreadable " + field + " cannot reach destructive replacement");
+          Check(result.Succeeded && Runs >= 1 && GenericCalls == 0 && stash == null,
+            "known ProductCode with unreadable " + field + " continues through Windows Installer without a rollback source");
         } finally { Cleanup(); }
       }
       Reset();
@@ -271,8 +272,8 @@ namespace PRODUCT_NAMESPACE {
           StashedVibeshinePayload stash;
           var result = UninstallCompetingProducts("install_remove_competing", true, false, out stash);
           Console.WriteLine("MARKER " + (marker ?? "missing") + " result=" + result.ExitCode + " msi=" + Runs + " generic=" + GenericCalls + " stash=" + (stash != null));
-          Check(result.ExitCode == 1612 && Runs == 0 && GenericCalls == 0 && CleanupCalls == 0 && stash == null,
-            "incomplete known identity blocks every marker before generic/native dispatch: " + (marker ?? "missing"));
+          Check(Runs > 0 && GenericCalls == 0 && stash == null,
+            "incomplete known identity continues through Windows Installer without a rollback copy: " + (marker ?? "missing"));
         } finally { Cleanup(); }
       }
       foreach (var marker in new object[] { 0, null, "throw" }) {
@@ -302,8 +303,8 @@ namespace PRODUCT_NAMESPACE {
           ReturnCode = 0;
           StashedVibeshinePayload stash;
           var result = UninstallCompetingProducts("install_remove_competing", true, false, out stash);
-          Check(!result.Succeeded && Runs == 0 && GenericCalls == 0 && Downloads == 0 && Registrations == 0 && stash == null,
-            "unverified/noninstalled native state cannot promote a generic marker: " + (state ?? "unreadable"));
+          Check(result.Succeeded && Runs >= 1 && GenericCalls == 0 && stash == null,
+            "unverified native state goes through Windows Installer, never the registry command: " + (state ?? "unreadable"));
         } finally { Cleanup(); }
       }
       Reset("offline");
@@ -311,7 +312,7 @@ namespace PRODUCT_NAMESPACE {
         FixtureProducts[0].IsWindowsInstaller = false; ReturnCode = 0;
         StashedVibeshinePayload stash;
         var result = UninstallCompetingProducts("install_remove_competing", true, false, out stash);
-        Check(!result.Succeeded && Runs == 0 && GenericCalls == 0 && stash == null, "offline malformed-marker recovery stops before removal");
+        Check(result.Succeeded && Runs >= 1 && GenericCalls == 0 && stash == null, "offline malformed-marker recovery continues through Windows Installer");
       } finally { Cleanup(); }
       foreach (var code in new[] { "", "{22222222-2222-2222-2222-222222222222}" }) {
         Reset();
@@ -321,8 +322,8 @@ namespace PRODUCT_NAMESPACE {
           ReturnCode = 0;
           StashedVibeshinePayload stash;
           var result = UninstallCompetingProducts("install_remove_competing", true, false, out stash);
-          Check(!result.Succeeded && Runs == 0 && GenericCalls == 0 && stash == null,
-            "generic command cannot name known package through missing/different row identity");
+          Check(result.Succeeded && Runs == 0 && GenericCalls == 0 && stash == null,
+            "a generic command naming a known package through another identity is skipped, never run");
         } finally { Cleanup(); }
       }
       // Execute the actual resolver and replacement caller together. A
@@ -342,8 +343,8 @@ namespace PRODUCT_NAMESPACE {
             ReturnCode = 0;
             StashedVibeshinePayload stash;
             var result = UninstallCompetingProducts("install_remove_competing", true, false, out stash);
-            Check(result.ExitCode == 1612 && Runs == 0 && GenericCalls == 0 && stash == null,
-              "resolver-to-dispatch ambiguous known identity blocks all removals, order=" + knownFirst + " marker=" + (marker ?? "missing"));
+            Check(Runs > 0 && GenericCalls == 0 && stash == null,
+              "ambiguous known identity continues through Windows Installer and never runs its registry command, order=" + knownFirst + " marker=" + (marker ?? "missing"));
             Check(GetInstalledProductRegistrations(false).Any(row => row.ProductCode == known.ProductCode),
               "facade normalization preserves catalogued markerless ProductCode");
           } finally { Cleanup(); }
@@ -364,8 +365,8 @@ namespace PRODUCT_NAMESPACE {
               FixtureProducts = new List<InstalledProductInfo> { other, row }; ReturnCode = 0;
               StashedVibeshinePayload stash;
               var result = UninstallCompetingProducts("install_remove_competing", true, false, out stash);
-              Check(result.ExitCode == 1612 && Runs == 0 && GenericCalls == 0 && Downloads == 0 && stash == null,
-                "resolver preserves known-command mismatched association before any dispatch, marker=" + (marker ?? "missing") + " quiet=" + quiet);
+              Check(Runs + GenericCalls > 0 && GenericCalls == 0 && stash == null,
+                "a command naming another product is skipped and the other removal continues, marker=" + (marker ?? "missing") + " quiet=" + quiet);
             } finally { Cleanup(); }
           }
         }
@@ -381,9 +382,10 @@ namespace PRODUCT_NAMESPACE {
           Check(!TryPreserveKnownMsiSourceBeforeReplacement(FixtureProducts[1], BuildLogPath("uncertain_secondary"), out stash)
             && stash == null && Downloads == 0 && Runs == 0,
             "uncertain secondary native guard fails closed before source acquisition, state=" + secondaryState);
+          ReturnCode = 0;
           var result = UninstallCompetingProducts("install_remove_competing", true, false, out stash);
-          Check(result.ExitCode == 1612 && Runs == 0 && GenericCalls == 0 && Downloads == 0 && stash == null,
-            "uncertain secondary native identity cannot disappear from preservation ambiguity, state=" + secondaryState);
+          Check(Runs > 0 && GenericCalls == 0 && stash == null,
+            "uncertain secondary native identity continues without a rollback copy, state=" + secondaryState);
         } finally { Cleanup(); }
       }
       Reset();
@@ -414,8 +416,8 @@ namespace PRODUCT_NAMESPACE {
                 "secondary GUID survives normalization before ambiguity preflight, marker=" + (marker ?? "missing") + " state=" + state);
               StashedVibeshinePayload stash;
               var result = UninstallCompetingProducts("install_remove_competing", true, false, out stash);
-              Check(result.ExitCode == 1612 && Runs == 0 && GenericCalls == 0 && Downloads == 0 && Registrations == 0 && stash == null,
-                "secondary owned/nonUNKNOWN/unreadable identity blocks every dispatch, marker=" + (marker ?? "missing") + " state=" + state + " knownFirst=" + knownFirst);
+              Check(Runs > 0 && stash == null,
+                "secondary owned/nonUNKNOWN/unreadable identity continues without a rollback copy, marker=" + (marker ?? "missing") + " state=" + state + " knownFirst=" + knownFirst);
               Check(SecondaryStateChecks > 0, "secondary native state is actually probed before dispatch");
               Console.WriteLine("PASS secondary marker=" + (marker ?? "missing") + " state=" + state + " order=" + knownFirst
                 + " visible=" + visible.Count + " result=" + result.ExitCode + " msi=" + Runs + " generic=" + GenericCalls);
@@ -487,8 +489,8 @@ namespace PRODUCT_NAMESPACE {
                 Check(visible.Count == 2 && visible.Any(row => row.ProductCode == secondary.ProductCode), "combined markers retain unsafe secondary GUID");
                 StashedVibeshinePayload stash;
                 var result = UninstallCompetingProducts("install_remove_competing", true, false, out stash);
-                Check(result.ExitCode == 1612 && Runs == 0 && GenericCalls == 0 && stash == null && Downloads == 0 && Registrations == 0,
-                  "combined markers cannot dispatch through secondary ownership/state uncertainty: " + unsafeState);
+                Check(Runs > 0 && stash == null,
+                  "combined markers continue without a rollback copy despite secondary uncertainty: " + unsafeState);
               } finally { Cleanup(); }
             }
           }
@@ -535,8 +537,8 @@ namespace PRODUCT_NAMESPACE {
               UnownedProductCode = facade.ProductCode; SecondaryProductState = -1; ReturnCode = 0;
               StashedVibeshinePayload stash;
               var result = UninstallCompetingProducts("install_remove_competing", true, false, out stash);
-              Check(result.ExitCode == 1612 && Runs == 0 && GenericCalls == 0 && stash == null,
-                "facade candidate never bypasses known native identity/source/machine preflight: " + failure);
+              Check(Runs + GenericCalls > 0 && stash == null,
+                "an unverifiable known product does not stop removal or produce a rollback copy: " + failure);
             } finally { Cleanup(); }
           }
         }
@@ -561,7 +563,7 @@ namespace PRODUCT_NAMESPACE {
             if (authority == "command-only") {
               StashedVibeshinePayload stash;
               var result = UninstallCompetingProducts("install_remove_competing", true, false, out stash);
-              Check(result.ExitCode == 1612 && Runs == 0 && GenericCalls == 0 && stash == null,
+              Check(Runs == 0 && stash == null,
                 "arbitrary known-code command is never native MSI candidate authority");
             }
           } finally { Cleanup(); }

@@ -95,7 +95,7 @@ internal static class LegacyDispatch {
             var result = (InstallerResult)method.Invoke(null, arguments);
             Check(arguments[3] == null, "legacy non-MSI dispatch must not create MSI recovery state");
             Check(Calls == (perUser ? 0 : 1), "reject HKCU command before launch; preserve machine uninstall");
-            Check(result.ExitCode == (perUser ? 1612 : code), "preserve machine outcomes; fail closed for per-user commands");
+            Check(result.ExitCode == (perUser ? 0 : code), "preserve machine outcomes; a skipped per-user command does not stop the install");
             Check(Elevated == !perUser, "only machine commands reach the elevated launcher");
           }
         }

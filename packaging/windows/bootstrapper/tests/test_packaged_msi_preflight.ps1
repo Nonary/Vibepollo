@@ -23,8 +23,9 @@ $method = $runner.GetMethod('PreflightIncomingMsi', [Reflection.BindingFlags]'No
 if ($null -eq $method) { throw 'Production MSI preflight is missing' }
 $leaf = 'VibepolloPreflight-' + [Guid]::NewGuid().ToString('N')
 $validRoot = Join-Path $env:ProgramFiles $leaf
-$invalidRoot = Join-Path $OutputDirectory $leaf
-foreach ($case in @(@{ Root=$validRoot; Accepted=$true }, @{ Root=$invalidRoot; Accepted=$false })) {
+$customRoot = Join-Path $OutputDirectory $leaf
+$unusableRoot = "\\localhost\$leaf\host"  # a network path, which the guard always refuses
+foreach ($case in @(@{ Root=$validRoot; Accepted=$true }, @{ Root=$customRoot; Accepted=$true }, @{ Root=$unusableRoot; Accepted=$false })) {
     if (Test-Path -LiteralPath $case.Root) { throw 'Preflight test destination must not exist' }
     # Join-Path output can carry a PSObject wrapper. A typed array unwraps
     # every argument before it reaches the reflection binder (PowerShell 5.1).
@@ -36,4 +37,4 @@ foreach ($case in @(@{ Root=$validRoot; Accepted=$true }, @{ Root=$invalidRoot; 
     }
     if (Test-Path -LiteralPath $case.Root) { throw 'Preflight created the install directory' }
 }
-Write-Host 'Production preflight accepted Program Files and rejected an outside directory without installing.'
+Write-Host 'Production preflight accepted usable folders and rejected an unusable path without installing.'
