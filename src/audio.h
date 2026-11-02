@@ -67,6 +67,7 @@ namespace audio {
     bool input_only;
     bool use_ac3 {false};  ///< Encode audio as AC-3 instead of Opus for this streaming session.
     bool use_eac3 {false};  ///< Encode audio as E-AC-3 instead of Opus for this streaming session.
+    bool use_pcm {false};  ///< Send PCM audio instead of Opus for this streaming session.
     bool high_quality_dolby {false};  ///< Higher bitrate for Dolby only; ignored for Opus.
   };
 

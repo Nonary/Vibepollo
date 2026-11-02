@@ -6,8 +6,11 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
+#include <vector>
 
 namespace audio::policy {
   struct stream_layout_t {
@@ -19,6 +22,13 @@ namespace audio::policy {
 
   int stream_index(int channels, bool high_quality);
   stream_layout_t apply_custom_layout(stream_layout_t base, const std::optional<stream_layout_t> &custom);
+
+  /**
+   * @brief Convert one packet's captured float samples into a PCM audio packet payload.
+   * Each sample is scaled by 32768, rounded to nearest and clamped to the int16 range (no dither),
+   * then written as little-endian int16, keeping the samples' interleaved order.
+   */
+  std::vector<std::uint8_t> pcm_payload(std::span<const float> samples);
 
   struct sink_catalog_t {
     std::string host;

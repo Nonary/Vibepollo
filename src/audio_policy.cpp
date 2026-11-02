@@ -4,6 +4,9 @@
  */
 #include "audio_policy.h"
 
+#include <algorithm>
+#include <cmath>
+
 namespace audio::policy {
   int stream_index(int channels, bool high_quality) {
     const int quality_offset = high_quality ? 1 : 0;
@@ -21,6 +24,19 @@ namespace audio::policy {
 
   stream_layout_t apply_custom_layout(stream_layout_t base, const std::optional<stream_layout_t> &custom) {
     return custom.value_or(base);
+  }
+
+  std::vector<std::uint8_t> pcm_payload(std::span<const float> samples) {
+    std::vector<std::uint8_t> payload;
+    payload.reserve(samples.size() * sizeof(std::int16_t));
+    for (const auto sample : samples) {
+      // Clamping before rounding gives the same result and keeps lround() in range for any input.
+      const auto scaled = std::clamp(sample * 32768.0f, -32768.0f, 32767.0f);
+      const auto pcm = static_cast<std::uint16_t>(static_cast<std::int16_t>(std::lround(scaled)));
+      payload.push_back(static_cast<std::uint8_t>(pcm & 0xFF));
+      payload.push_back(static_cast<std::uint8_t>(pcm >> 8));
+    }
+    return payload;
   }
 
   std::string select_sink(const sink_catalog_t &catalog,

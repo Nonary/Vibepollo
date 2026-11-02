@@ -255,6 +255,26 @@ namespace audio {
     platf::set_thread_name("audio::encode");
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
+    if (config.use_pcm) {
+      // PCM audio skips both encoders: each captured packet's samples become its payload.
+      BOOST_LOG(info) << "PCM audio: "sv << stream.sampleRate / 1000 << " kHz, "sv
+                      << stream.channelCount << " channels, "sv
+                      << config.packetDuration << " ms packets"sv;
+
+      const auto frame_size = config.packetDuration * stream.sampleRate / 1000;
+      while (auto sample = samples->pop()) {
+        if (webrtc_stream::has_active_sessions() && channel_data == nullptr) {
+          webrtc_stream::submit_audio_frame(*sample, stream.sampleRate, stream.channelCount, frame_size);
+        }
+
+        const auto payload = policy::pcm_payload(*sample);
+        buffer_t packet {payload.size()};
+        std::copy(payload.begin(), payload.end(), std::begin(packet));
+        packets->raise(channel_data, std::move(packet));
+      }
+      return;
+    }
+
     if (config.use_ac3 || config.use_eac3) {
       const auto codec_id = config.use_eac3 ? AV_CODEC_ID_EAC3 : AV_CODEC_ID_AC3;
       const auto codec_name = config.use_eac3 ? "E-AC-3"sv : "AC-3"sv;
