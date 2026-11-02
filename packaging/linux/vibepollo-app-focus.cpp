@@ -77,7 +77,7 @@ namespace {
         return {};
       }
       const std::string name = "vibepollo-focus-" + std::to_string(getpid());
-      const std::string script = managed_app_focus::kwin_script(pids, g_dbus_connection_get_unique_name(bus_), activate);
+      const std::string script = managed_app_focus::kwin_script(pids, g_dbus_connection_get_unique_name(bus_), activate, ++call_);
       const bool written = write(fd, script.data(), script.size()) == static_cast<ssize_t>(script.size());
       close(fd);
       received_ = false;
@@ -115,7 +115,7 @@ namespace {
       const char *result = nullptr;
       g_variant_get(args, "(&s)", &result);
       auto parsed = nlohmann::json::parse(result ? result : "", nullptr, false);
-      if (parsed.is_object() && parsed.contains("focused") && parsed["focused"].is_boolean() &&
+      if (parsed.is_object() && parsed.value("call", std::uint64_t {0}) == self.call_ && parsed.contains("focused") && parsed["focused"].is_boolean() &&
           parsed.contains("windows") && parsed["windows"].is_array() &&
           std::all_of(parsed["windows"].begin(), parsed["windows"].end(), [](const auto &window) { return window.is_string(); })) {
         self.result_ = std::move(parsed);
@@ -138,6 +138,7 @@ namespace {
     GDBusNodeInfo *schema_ = nullptr;
     guint registration_ = 0;
     bool received_ = false;
+    std::uint64_t call_ = 0;
     nlohmann::json result_;
     int timeout_ms_;
   };
@@ -241,7 +242,8 @@ int main(int argc, char **argv) {
   std::optional<kwin_focus> kwin;
   managed_app_focus::hyprland::transport hyprland_ipc;
   if (bound_compositor) {
-    // The runtime directory the broker validated, not the inherited one.
+    // The broker only binds a session whose runtime is /run/user/<uid>; the
+    // inherited XDG_RUNTIME_DIR is not trusted.
     const auto runtime = "/run/user/" + std::to_string(geteuid());
     hyprland_ipc = managed_app_focus::hyprland::socket_transport(runtime, *bound_compositor, std::chrono::milliseconds(1000));
   } else {

@@ -84,10 +84,13 @@ namespace {
     return std::stoull(field);
   }
 
-  void wait_for(const std::atomic<int> &value, int expected) {
-    for (int attempt = 0; attempt < 200 && value < expected; ++attempt) {
+  // Requests are recorded before connections counts them, so a successful wait
+  // also makes them safe to read.
+  bool wait_for(const std::atomic<int> &value, int expected) {
+    for (int attempt = 0; attempt < 1000 && value < expected; ++attempt) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
+    return value >= expected;
   }
 
   // Shapes follow Hyprland 0.56 `j/clients` and `j/activewindow`. Titles are
@@ -250,7 +253,8 @@ int main() {
   for (const char *invalid : {"", "4242", "0-5", "4242-5 "}) assert(!parse_compositor(invalid));
 
   char pattern[] = "/tmp/vibepollo-hyprland-focus-XXXXXX";
-  const std::filesystem::path runtime = mkdtemp(pattern);
+  require(mkdtemp(pattern), "mkdtemp");
+  const std::filesystem::path runtime = pattern;
   const compositor self {getpid(), own_start_time()};
   const auto timeout = std::chrono::milliseconds(500);
   // The runtime has no hypr directory yet: nothing to connect to.
@@ -263,13 +267,13 @@ int main() {
     // A stale instance directory without a listener is skipped.
     fake_socket server(instances / "b-current-instance/.socket.sock", "[]");
     assert(socket_transport(runtime, self, timeout)("j/clients") == "[]");
-    wait_for(server.connections, 1);
+    assert(wait_for(server.connections, 1));
     assert((server.requests == std::vector<std::string> {"j/clients"}));
     // Another PID or a reused PID with a different start time is never sent
     // a request: Hyprland itself does not authenticate its IPC clients.
     assert(!socket_transport(runtime, {self.pid + 1, self.start}, timeout)("j/clients"));
     assert(!socket_transport(runtime, {self.pid, self.start + 1}, timeout)("j/clients"));
-    wait_for(server.connections, 3);
+    assert(wait_for(server.connections, 3));
     assert(server.connections == 3 && server.requests.size() == 1);
   }
   std::filesystem::remove_all(runtime);
