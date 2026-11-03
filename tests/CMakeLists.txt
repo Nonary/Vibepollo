@@ -1558,6 +1558,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
     target_link_libraries(test_linux_managed_focus_step PRIVATE nlohmann_json::nlohmann_json)
     add_test(NAME test_component_linux_managed_focus_step COMMAND test_linux_managed_focus_step)
     set_tests_properties(test_component_linux_managed_focus_step PROPERTIES LABELS "component")
+    add_executable(test_linux_kwin_focus_result
+        "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_kwin_focus_result.cpp")
+    target_compile_options(test_linux_kwin_focus_result PRIVATE -UNDEBUG)
+    target_link_libraries(test_linux_kwin_focus_result PRIVATE nlohmann_json::nlohmann_json)
+    add_test(NAME test_component_linux_kwin_focus_result COMMAND test_linux_kwin_focus_result)
+    set_tests_properties(test_component_linux_kwin_focus_result PROPERTIES LABELS "component")
     if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
         add_test(NAME test_component_linux_hyprland_backend
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_backend.py"

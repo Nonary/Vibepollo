@@ -114,11 +114,8 @@ namespace {
       auto &self = *static_cast<kwin_focus *>(data);
       const char *result = nullptr;
       g_variant_get(args, "(&s)", &result);
-      auto parsed = nlohmann::json::parse(result ? result : "", nullptr, false);
-      if (parsed.is_object() && parsed.value("call", std::uint64_t {0}) == self.call_ && parsed.contains("focused") && parsed["focused"].is_boolean() &&
-          parsed.contains("windows") && parsed["windows"].is_array() &&
-          std::all_of(parsed["windows"].begin(), parsed["windows"].end(), [](const auto &window) { return window.is_string(); })) {
-        self.result_ = std::move(parsed);
+      if (auto parsed = managed_app_focus::kwin_result(result ? result : "", self.call_)) {
+        self.result_ = std::move(*parsed);
         self.received_ = true;
       }
       g_dbus_method_invocation_return_value(invocation, nullptr);
