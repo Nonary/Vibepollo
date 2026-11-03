@@ -185,7 +185,7 @@ internal static class RollbackRegression {
         Recover(retained);
         Check(!Events.Contains("restore") && File.Exists(retained.MsiPath), mode + " retains conservative overwrite protection and rollback source");
       }
-      Reset(); retained = RemoveLegacy(); NativeRegistrationPresent = false;
+      Reset(); retained = RemoveLegacy(); NativeRegistrationPresent = false; RestoreMakesRegistration = true;
       Installed = Product(Other); Installed.IsPerUser = true;
       var perUserRow = Recover(retained);
       Check(Events.Contains("restore") && perUserRow.Message.Contains("automatically restored"),
