@@ -40,8 +40,10 @@ internal static class MigrationRegression {
       plan = InstallerRunner.ResolveInstalledProductFacades(new[] { Product(false, root, kind: kind), Product(true, root, kind: kind) }, code => true);
       Check(plan.Count == 2 && plan.Any(p => !p.IsWindowsInstaller), "external legacy uninstaller remains available: " + kind);
     }
-    plan = InstallerRunner.ResolveInstalledProductFacades(new[] { facade, msi, Product(true, root, Other) }, code => true);
-    Check(plan.Count == 2 && plan.All(p => p.IsWindowsInstaller), "an ambiguous facade is dropped and its command never runs");
+    try {
+      InstallerRunner.ResolveInstalledProductFacades(new[] { facade, msi, Product(true, root, Other) }, code => true);
+      throw new Exception("ambiguous MSI identity was accepted");
+    } catch (InvalidOperationException) { checks++; }
     Check(InstallerRunner.ResolveInstalledProductFacades(new InstallerRunner.InstalledProductInfo[0], code => true).Count == 0, "fresh install has no migration prerequisite");
     if (args.Length > 0) {
       var queried = false;

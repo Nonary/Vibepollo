@@ -1984,12 +1984,6 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
     add_test(NAME regression_playnite_duplicate_migration
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_duplicate_migration.py")
     find_program(SUNSHINE_TEST_DOTNET NAMES dotnet dotnet.exe)
-    if(SUNSHINE_TEST_DOTNET)
-        add_test(NAME regression_incoming_msi_preflight
-            COMMAND "${Python3_EXECUTABLE}" "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/windows/bootstrapper/tests/test_incoming_msi_preflight.py"
-                "${SUNSHINE_TEST_DOTNET}")
-        set_tests_properties(regression_incoming_msi_preflight PROPERTIES LABELS "component" TIMEOUT 120)
-    endif()
     add_test(NAME regression_playnite_connector_lifecycle
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/playnite_connector/test_lifecycle.py"
             --dotnet "${SUNSHINE_TEST_DOTNET}")
@@ -2041,9 +2035,6 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         add_test(NAME regression_touch_mapping_environment
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_touch_mapping_environment.py")
     endif()
-    add_test(NAME regression_install_root_guard
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_install_root_guard.py"
-            --compiler "${CMAKE_CXX_COMPILER}")
     add_test(NAME regression_display_helper_pipe_authority
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_pipe_authority.py"
             --compiler "${CMAKE_CXX_COMPILER}")

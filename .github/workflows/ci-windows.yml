@@ -520,10 +520,6 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Mandatory driver safety tests failed.' }
           & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\packaging\windows\test_driver_interop_environment.ps1
           if ($LASTEXITCODE -ne 0) { throw 'Driver interop environment regression failed.' }
-          python packaging/windows/bootstrapper/tests/test_incoming_msi_preflight.py
-          if ($LASTEXITCODE -ne 0) { throw 'Incoming MSI preflight regression failed.' }
-          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\packaging\windows\bootstrapper\tests\test_packaged_msi_invocation.ps1
-          if ($LASTEXITCODE -ne 0) { throw 'Packaged MSI reflection regression failed.' }
 
       - name: Test production bootstrap migration
         if: inputs.build_tests
@@ -1028,8 +1024,6 @@ jobs:
         run: |
           python packaging/windows/wix/tests/test_pr_validation_contract.py --msi "unsigned-signpath-msi/$env:MSI_NAME" --version "$env:BUILD_VERSION"
           if ($LASTEXITCODE -ne 0) { throw 'Packaged MSI version/validation contract failed.' }
-          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\packaging\windows\bootstrapper\tests\test_packaged_msi_preflight.ps1 -MsiPath "unsigned-signpath-msi/$env:MSI_NAME" -OutputDirectory (Join-Path $env:RUNNER_TEMP 'packaged-msi-preflight')
-          if ($LASTEXITCODE -ne 0) { throw 'Packaged MSI preflight failed.' }
 
       - name: Upload unsigned MSI for SignPath
         id: upload-unsigned-msi

@@ -2,7 +2,7 @@
 <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
   <!--
     Custom actions to implement the Windows installer behavior:
-    - Check the install directory and remove write access granted to every account
+    - Reset ACLs on install dir
     - Update PATH (add/remove)
     - Migrate config files
     - Add/remove firewall rules
@@ -37,6 +37,10 @@
 
     <!-- VBScript to show a final repair-complete notification (full UI only) -->
     <Binary Id="RepairCompleteVbs" SourceFile="$(sys.SOURCEFILEDIR)repair_complete.vbs"/>
+
+    <!-- VBScripts for legacy Sunshine handling -->
+    <Binary Id="AskUninstallLegacySunshineVbs" SourceFile="$(sys.SOURCEFILEDIR)ask_uninstall_legacy_sunshine.vbs"/>
+    <Binary Id="WaitForLegacyUninstallVbs" SourceFile="$(sys.SOURCEFILEDIR)wait_for_legacy_uninstall.vbs"/>
     <Binary Id="RemoveConflictingProductsVbs" SourceFile="$(sys.SOURCEFILEDIR)remove_conflicting_products.vbs"/>
 
   </Fragment>
@@ -136,18 +140,15 @@
   </Fragment>
 
   <Fragment>
-    <!-- The embedded native guard stops only for a path that cannot work, and
-         repair removes write access that every account on the PC would otherwise
-         have. Repair runs as SYSTEM, is best-effort, and can never fail an install. -->
-    <Binary Id="InstallRootGuard" SourceFile="$(var.BinDir)\sunshine_install_guard.dll" />
-    <CustomAction Id="ValidateInstallRootPreview" BinaryKey="InstallRootGuard" DllEntry="ValidateInstallRootPreview" Execute="immediate" Return="check" />
-    <CustomAction Id="ValidateInstallRoot" BinaryKey="InstallRootGuard" DllEntry="ValidateInstallRoot" Execute="immediate" Return="check" />
-    <CustomAction Id="SetRepairInstallRoot" Property="RepairInstallRoot" Value="[INSTALL_ROOT]" />
-    <CustomAction Id="RepairInstallRoot" BinaryKey="InstallRootGuard" DllEntry="RepairInstallRoot" Execute="deferred" Return="ignore" Impersonate="no" />
-
-    <!-- Post-install housekeeping runs after InstallFiles. Migration and optional
-         driver/Vulkan-layer failures remain best-effort because the core application
-         can still install and the bootstrapper reports component warnings from logs. -->
+    <!-- Post-install chores (ACL reset, config migration, installer migrations) run
+         AFTER InstallFiles. They are best-effort housekeeping, not prerequisites for
+         the app to boot: a failure here must NOT roll back / brick an otherwise complete
+         upgrade. Use Return="ignore" like the driver/Vulkan-layer actions below; Vibepollo
+         re-repairs config ACLs AND re-hardens the private credentials directory at startup
+         (statefile::repair_config_permissions / secure_private_directory, and create_creds
+         hardens it before writing the key), and the legacy config-key migrations are
+         idempotent on the next successful install. -->
+    <CustomAction Id="ResetAcls" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="MigrateConfig" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="RunInstallerMigrations" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <!-- Driver and Vulkan-layer installs stay Return="ignore" in Vibepollo: a failed
@@ -183,6 +184,10 @@
     <CustomAction Id="CleanupEmptyInstallRoot" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
 
     <!-- Immediate property setters to pass commands to deferred QuietExec actions -->
+    <CustomAction Id="SetResetAcls"
+                 Property="ResetAcls"
+                 Value="&quot;[SystemFolder]icacls.exe&quot; &quot;[INSTALL_ROOT].&quot; /reset"/>
+
     <CustomAction Id="SetMigrateConfig"
                  Property="MigrateConfig"
                  Value="&quot;[SystemFolder]cmd.exe&quot; /C &quot;&quot;[INSTALL_ROOT]scripts\migrate-config.bat&quot;&quot;"/>
@@ -278,9 +283,12 @@
                  Property="RemoveServiceQuiet"
                  Value="&quot;[SystemFolder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoP -EP Bypass -C &quot;sc.exe delete SunshineService | Out-Null; sc.exe delete VibeshineService | Out-Null; sc.exe delete sunshinesvc | Out-Null; sc.exe delete ApolloService | Out-Null; sc.exe delete ApolloSvc | Out-Null&quot;"/>
 
-    <!-- A direct MSI never elevates an executable from an opaque registry
-         command. The bootstrapper handles validated machine replacements. -->
-    <CustomAction Id="BlockLegacySunshine" Error="Legacy Sunshine is installed. Run the Vibepollo setup bootstrapper to replace it, or remove it using its trusted uninstaller before retrying this MSI." />
+    <!-- Legacy Sunshine handling actions -->
+    <CustomAction Id="AskUninstallLegacySunshine" BinaryKey="AskUninstallLegacySunshineVbs" VBScriptCall="AskUninstallLegacySunshine" Execute="immediate" Return="check" />
+    <CustomAction Id="WaitForLegacyUninstall" BinaryKey="WaitForLegacyUninstallVbs" VBScriptCall="WaitForLegacyUninstall" Execute="immediate" Return="check" />
+
+    <CustomAction Id="BlockLegacySunshineStillPresent" Error="Legacy Sunshine is still installed. It must be removed before installing Vibepollo; click OK to start the uninstallation." />
+    <CustomAction Id="BlockUserCancelledLegacy" Error="Installation cancelled. Legacy Sunshine must be removed before installing Vibepollo." />
 
     <!-- UI-only prompt at end of a successful Repair to inform no reboot is required -->
     <CustomAction Id="RepairCompletePrompt" BinaryKey="RepairCompleteVbs" VBScriptCall="ShowRepairComplete" Execute="immediate" Return="ignore" />

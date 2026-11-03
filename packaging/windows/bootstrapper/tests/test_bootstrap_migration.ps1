@@ -91,12 +91,10 @@ internal static class LegacyDispatch {
             Products = new List<InstallerRunner.InstalledProductInfo> { new InstallerRunner.InstalledProductInfo {
               Kind = kind, IsPerUser = perUser, IsWindowsInstaller = false, RegistryPath = kind.ToString(), UninstallString = "legacy.exe /S" } };
             Calls = 0; ExitCode = code; Elevated = false;
-            var arguments = new object[] { phase, true, true, null };
-            var result = (InstallerResult)method.Invoke(null, arguments);
-            Check(arguments[3] == null, "legacy non-MSI dispatch must not create MSI recovery state");
-            Check(Calls == (perUser ? 0 : 1), "reject HKCU command before launch; preserve machine uninstall");
-            Check(result.ExitCode == (perUser ? 0 : code), "preserve machine outcomes; a skipped per-user command does not stop the install");
-            Check(Elevated == !perUser, "only machine commands reach the elevated launcher");
+            var result = (InstallerResult)method.Invoke(null, new object[] { phase, true, true });
+            Check(Calls == 1, kind + " must reach its uninstaller during " + phase);
+            Check(result.ExitCode == code, "preserve success, reboot, and failure outcomes");
+            Check(Elevated == !perUser, "preserve HKCU command elevation restriction");
           }
         }
       }
@@ -142,10 +140,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Legacy uninstall dispatcher regression failed'
 [xml]$custom = Get-Content -LiteralPath (Join-Path $repo 'packaging/windows/wix/custom_actions.wxs') -Raw
 $ns = New-Object Xml.XmlNamespaceManager($custom.NameTable)
 $ns.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
-foreach ($action in @('BlockLegacySunshine','MigrateConfig','SetMigrateConfig','RunInstallerMigrations','SetRunInstallerMigrations','RemoveConflictingProducts')) {
+foreach ($action in @('AskUninstallLegacySunshine','WaitForLegacyUninstall','BlockUserCancelledLegacy','BlockLegacySunshineStillPresent','MigrateConfig','SetMigrateConfig','RunInstallerMigrations','SetRunInstallerMigrations','RemoveConflictingProducts')) {
     if ($patch.SelectNodes("//Custom[@Action='$action']").Count -ne 1 -or $custom.SelectNodes("//w:CustomAction[@Id='$action']", $ns).Count -ne 1) { throw "Existing MSI action must remain authored and scheduled: $action" }
 }
-foreach ($script in @('remove_conflicting_products.vbs')) {
+foreach ($script in @('ask_uninstall_legacy_sunshine.vbs','wait_for_legacy_uninstall.vbs','remove_conflicting_products.vbs')) {
     if (!(Test-Path -LiteralPath (Join-Path $repo "packaging/windows/wix/$script"))) { throw "Missing legacy script: $script" }
 }
 if ($sourceText.Contains('UpgradeSourcePreUninstallVersion') -or $sourceText.Contains('RunWithBootstrapMigration')) { throw 'Superseded broad migration/version workaround remains' }
