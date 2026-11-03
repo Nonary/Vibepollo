@@ -50,9 +50,10 @@ namespace {
         require(ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1) == 1);
         require(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -60) && X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600));
         require(X509_set_pubkey(certificate.get(), key.get()) == 1);
-        const auto subject = X509_get_subject_name(certificate.get());
-        require(X509_NAME_add_entry_by_txt(subject, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char *>("temporary-local-test"), -1, -1, 0) == 1);
-        require(X509_set_issuer_name(certificate.get(), subject) == 1 && X509_sign(certificate.get(), key.get(), EVP_sha256()) > 0);
+        std::unique_ptr<X509_NAME, decltype(&X509_NAME_free)> subject(X509_NAME_new(), X509_NAME_free);
+        require(subject && X509_NAME_add_entry_by_txt(subject.get(), "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char *>("temporary-local-test"), -1, -1, 0) == 1);
+        require(X509_set_subject_name(certificate.get(), subject.get()) == 1 && X509_set_issuer_name(certificate.get(), subject.get()) == 1);
+        require(X509_sign(certificate.get(), key.get(), EVP_sha256()) > 0);
         std::unique_ptr<BIO, decltype(&BIO_free)> cert_file(BIO_new_file((directory / "cert.pem").string().c_str(), "w"), BIO_free);
         std::unique_ptr<BIO, decltype(&BIO_free)> key_file(BIO_new_file((directory / "key.pem").string().c_str(), "w"), BIO_free);
         require(cert_file && key_file && PEM_write_bio_X509(cert_file.get(), certificate.get()) == 1 && PEM_write_bio_PrivateKey(key_file.get(), key.get(), nullptr, nullptr, 0, nullptr, nullptr) == 1);

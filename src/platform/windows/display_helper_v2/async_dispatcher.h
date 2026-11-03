@@ -1,5 +1,6 @@
 #pragma once
 
+#include "src/jthread.h"
 #include "src/platform/windows/display_helper_v2/operations.h"
 #include "src/platform/windows/display_helper_v2/runtime_support.h"
 
@@ -127,9 +128,9 @@ namespace display_helper::v2 {
   private:
     void enqueue_task(std::function<void()> task);
     void enqueue_operation(std::function<void()> task, std::function<void()> report_failure);
-    void enqueue_delayed_task(std::function<void(std::stop_token)> task);
-    void worker_loop(std::stop_token st);
-    void timer_loop(std::stop_token st);
+    void enqueue_delayed_task(std::function<void(util::stop_token)> task);
+    void worker_loop(util::stop_token st);
+    void timer_loop(util::stop_token st);
 
     ApplyOperation &apply_operation_;
     VerificationOperation &verification_operation_;
@@ -141,13 +142,13 @@ namespace display_helper::v2 {
     std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<std::function<void()>> tasks_;
-    std::jthread worker_;
+    util::jthread worker_;
 
     // Delays are scheduled off the serialized mutation worker. A disconnected
     // session's bounded verification must not block refresh or RESET commands.
     std::mutex timer_mutex_;
     std::condition_variable timer_cv_;
-    std::deque<std::function<void(std::stop_token)>> timer_tasks_;
-    std::jthread timer_worker_;
+    std::deque<std::function<void(util::stop_token)>> timer_tasks_;
+    util::jthread timer_worker_;
   };
 }  // namespace display_helper::v2

@@ -3,6 +3,14 @@ name: CI-macOS
 permissions: {}
 
 on:
+  # Build just the macOS DMGs by hand, for example on a fork with no Apple signing secrets.
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: Version to build, for example 2.0.0
+        required: false
+        default: '2.0.0'
+        type: string
   workflow_call:
     inputs:
       publish_release:
@@ -37,9 +45,11 @@ on:
 
 env:
   BRANCH: ${{ github.head_ref || github.ref_name }}
-  BUILD_VERSION: ${{ inputs.release_version }}
-  COMMIT: ${{ inputs.release_commit }}
+  BUILD_VERSION: ${{ inputs.release_version || '2.0.0' }}
+  COMMIT: ${{ inputs.release_commit || github.sha }}
   MACOSX_DEPLOYMENT_TARGET: 14.2
+  OPENSSL_VERSION: 3.6.5
+  OPENSSL_SHA256: a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98
 
 jobs:
   build_dmg:
@@ -81,15 +91,46 @@ jobs:
             doxygen \
             graphviz \
             pkgconf \
-            icu4c@78 \
             miniupnpc \
-            openssl@3 \
             opus
+          # Runner images ship icu4c@78 unlinked, and installing it again only warns about that.
+          # Configure finds it through brew --prefix, linked or not.
+          brew list --versions icu4c@78 > /dev/null || brew install icu4c@78
+
+      - name: Cache OpenSSL
+        id: openssl_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6.1.0
+        with:
+          path: ${{ runner.temp }}/openssl
+          key: openssl-${{ env.OPENSSL_VERSION }}-${{ matrix.arch }}-macos${{ env.MACOSX_DEPLOYMENT_TARGET }}
+
+      - name: Build OpenSSL
+        if: steps.openssl_cache.outputs.cache-hit != 'true'
+        env:
+          MATRIX_ARCH: ${{ matrix.arch }}
+        run: |
+          # Homebrew publishes no Intel macOS bottles of OpenSSL, and the runner images' copies
+          # target the runner's own macOS, which would raise the DMG's minimum above
+          # MACOSX_DEPLOYMENT_TARGET. Build a static OpenSSL for the deployment target instead.
+          src="${RUNNER_TEMP}/openssl-src"
+          mkdir -p "${src}"
+          curl -fsSL -o "${src}/openssl.tar.gz" \
+            "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
+          echo "${OPENSSL_SHA256}  ${src}/openssl.tar.gz" | shasum -a 256 -c -
+          tar -xzf "${src}/openssl.tar.gz" -C "${src}"
+          cd "${src}/openssl-${OPENSSL_VERSION}"
+          ./Configure "darwin64-${MATRIX_ARCH}-cc" no-shared no-tests no-docs \
+            "-mmacosx-version-min=${MACOSX_DEPLOYMENT_TARGET}" \
+            --prefix="${RUNNER_TEMP}/openssl"
+          make -j "$(sysctl -n hw.ncpu)" build_sw
+          make install_sw
 
       - name: Configure
         env:
           APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
         run: |
+          # Without a Developer ID identity, sign ad hoc ("-"): bundling rewrites the libraries,
+          # and an unsigned build won't launch on Apple Silicon.
           mkdir -p build
           cmake \
             -B build \
@@ -97,12 +138,13 @@ jobs:
             -DBUILD_WERROR=ON \
             -DCMAKE_BUILD_TYPE=Release \
             -DICU_ROOT="$(brew --prefix icu4c@78 2>/dev/null)" \
-            -DOPENSSL_ROOT_DIR="$(brew --prefix openssl@3 2>/dev/null)" \
+            -DOPENSSL_ROOT_DIR="${RUNNER_TEMP}/openssl" \
+            -DOPENSSL_USE_STATIC_LIBS=ON \
             -DOpus_ROOT_DIR="$(brew --prefix opus 2>/dev/null)" \
             -DSUNSHINE_PUBLISHER_NAME="${GITHUB_REPOSITORY_OWNER}" \
             -DSUNSHINE_PUBLISHER_WEBSITE="https://github.com/Nonary/Vibepollo" \
             -DSUNSHINE_PUBLISHER_ISSUE_URL="https://github.com/Nonary/Vibepollo/issues" \
-            -DAPPLE_CODESIGN_IDENTITY="${APPLE_CODESIGN_IDENTITY}"
+            -DAPPLE_CODESIGN_IDENTITY="${APPLE_CODESIGN_IDENTITY:--}"
 
       - name: Build
         run: |
@@ -114,7 +156,8 @@ jobs:
         env:
           APPLE_CODESIGN_IDENTITY: ${{ secrets.APPLE_CODESIGN_IDENTITY }}
           MATRIX_NAME: ${{ matrix.name }}
-          SHOULD_SIGN: ${{ inputs.publish_release }}
+          # Always sign: with the Developer ID identity when releasing, otherwise ad hoc.
+          SHOULD_SIGN: 'true'
         run: |
           # build DMG and sign everything (see cmake/packaging/macos.cmake)
           # cpack can rarely fail with "hdiutil: create failed - Resource busy"
@@ -137,6 +180,54 @@ jobs:
             exit 1
           fi
           cp "${dmg_path}" "artifacts/Vibepollo-${MATRIX_NAME}.dmg"
+
+      - name: Smoke test
+        env:
+          MATRIX_NAME: ${{ matrix.name }}
+        run: |
+          # Check the packaged app, not the build tree: its signature, the oldest macOS it
+          # supports, and that it starts and serves its web UI and serverinfo.
+          dmg="artifacts/Vibepollo-${MATRIX_NAME}.dmg"
+          mnt="$(mktemp -d)"
+          # The DMG shows a license agreement; answer it without a pager.
+          yes | PAGER=cat hdiutil attach -nobrowse -readonly -mountpoint "${mnt}" "${dmg}" > /dev/null
+          app="${mnt}/Vibepollo.app"
+          codesign --verify --deep --strict --verbose=2 "${app}"
+
+          min_macos="$(for f in "${app}"/Contents/MacOS/* "${app}"/Contents/Frameworks/*; do
+            vtool -show-build "${f}" 2>/dev/null | awk '/minos/ {print $2}'
+          done | sort -V | tail -1)"
+          echo "${MATRIX_NAME} requires macOS ${min_macos} or later"
+          echo "- ${MATRIX_NAME}: requires macOS ${min_macos} or later" >> "${GITHUB_STEP_SUMMARY}"
+          # A bundled library built for a newer macOS raises the whole app's minimum.
+          if [[ "$(printf '%s\n' "${min_macos}" "${MACOSX_DEPLOYMENT_TARGET}" | sort -V | tail -1)" != "${MACOSX_DEPLOYMENT_TARGET}" ]]; then
+            echo "::error::${MATRIX_NAME} requires macOS ${min_macos}, newer than the ${MACOSX_DEPLOYMENT_TARGET} deployment target"
+            hdiutil detach "${mnt}" -quiet || true
+            exit 1
+          fi
+
+          # A scratch HOME keeps the runner's state out of it; -1 skips loading saved state.
+          scratch_home="$(mktemp -d)"
+          HOME="${scratch_home}" "${app}/Contents/MacOS/Vibepollo" -1 > smoke.log 2>&1 &
+          pid=$!
+          started=false
+          for _ in $(seq 1 60); do
+            if curl -skf -o /dev/null https://localhost:47990/ && curl -sf -o /dev/null http://localhost:47989/serverinfo; then
+              started=true
+              break
+            fi
+            kill -0 "${pid}" 2>/dev/null || break
+            sleep 1
+          done
+          kill "${pid}" 2>/dev/null || true
+          wait "${pid}" 2>/dev/null || true
+          hdiutil detach "${mnt}" -quiet || true
+          if [[ "${started}" != "true" ]]; then
+            echo "Vibepollo didn't serve its web UI and serverinfo. Its output:"
+            cat smoke.log
+            exit 1
+          fi
+          echo "Vibepollo started and served its web UI and serverinfo."
 
       - name: Submit for notarization
         id: notarize_submit

@@ -13,7 +13,10 @@ struct CaptureSession {
   NSCondition *captureStopped;
 };
 
-static const int kMaxDisplays = 32;
+// An enum constant, so C code can size arrays with it too.
+enum {
+  kMaxDisplays = 32
+};
 
 @interface AVVideo: NSObject <AVCaptureVideoDataOutputSampleBufferDelegate>
 

@@ -3,10 +3,11 @@
  * @brief macOS implementation of @ref platf::host_stats_provider_t.
  *
  * Uses Mach + sysctl + getifaddrs for CPU%, RAM, network throughput, and
- * CPU/host model. GPU, GPU encoder utilization, GPU temperature, and VRAM
- * are not exposed by stable public APIs on modern macOS (especially Apple
- * Silicon, where IOReport is the only viable path and is private). Those
- * fields are left at the documented sentinels.
+ * CPU/host model. GPU utilization comes from the IORegistry, where Apple GPUs
+ * publish it without entitlements. GPU encoder utilization, GPU temperature,
+ * and VRAM are not exposed by stable public APIs on modern macOS (especially
+ * Apple Silicon, where IOReport is the only viable path and is private).
+ * Those fields are left at the documented sentinels.
  */
 // standard includes
 #include <algorithm>
@@ -17,7 +18,9 @@
 #include <string>
 
 // lib includes
+#include <CoreFoundation/CoreFoundation.h>
 #include <ifaddrs.h>
+#include <IOKit/IOKitLib.h>
 #include <mach/mach.h>
 #include <mach/mach_host.h>
 #include <net/if.h>
@@ -205,8 +208,9 @@ namespace {
       sample_cpu(out);
       sample_memory(out);
       sample_network(out);
-      // GPU / GPU encoder / GPU temp / VRAM: no stable public API on modern
-      // macOS. Leave at sentinels.
+      sample_gpu(out);
+      // GPU encoder / GPU temp / VRAM: no stable public API on modern macOS.
+      // Leave at sentinels.
       return out;
     }
 
@@ -238,6 +242,30 @@ namespace {
       }
       _last_cpu = *t;
       _have_cpu_baseline = true;
+    }
+
+    // IOAccelerator's PerformanceStatistics, as Activity Monitor-style tools read it. The hardware
+    // video encoder is a separate engine and isn't included.
+    void sample_gpu(platf::host_stats_t &out) {
+      io_iterator_t services;
+      if (IOServiceGetMatchingServices(kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &services) != KERN_SUCCESS) {
+        return;
+      }
+      for (io_object_t service; (service = IOIteratorNext(services)) != IO_OBJECT_NULL; IOObjectRelease(service)) {
+        auto stats = static_cast<CFDictionaryRef>(IORegistryEntryCreateCFProperty(service, CFSTR("PerformanceStatistics"), kCFAllocatorDefault, 0));
+        if (!stats) {
+          continue;
+        }
+        if (CFGetTypeID(stats) == CFDictionaryGetTypeID()) {
+          auto value = static_cast<CFNumberRef>(CFDictionaryGetValue(stats, CFSTR("Device Utilization %")));
+          int percent = 0;
+          if (value && CFGetTypeID(value) == CFNumberGetTypeID() && CFNumberGetValue(value, kCFNumberIntType, &percent)) {
+            out.gpu_percent = std::max(out.gpu_percent, std::clamp(static_cast<float>(percent), 0.f, 100.f));
+          }
+        }
+        CFRelease(stats);
+      }
+      IOObjectRelease(services);
     }
 
     void sample_memory(platf::host_stats_t &out) {

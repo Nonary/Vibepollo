@@ -38,6 +38,8 @@ find_program(SUNSHINE_NPM_EXECUTABLE NAMES npm.cmd npm)
 # web_ui depends on both entrypoints so deleting either rebuilds the bundle.
 # Makefile generators need a build rule for each dependency, not BYPRODUCTS.
 if(SUNSHINE_NPM_EXECUTABLE)
+    # The pages are outputs rather than byproducts: the Makefile generators write no rules for
+    # byproducts, so a parallel make fails on web_ui's dependency on pages that don't exist yet.
     add_custom_command(
         OUTPUT
             "${SUNSHINE_WEB_STAMP}"

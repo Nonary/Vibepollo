@@ -451,6 +451,14 @@ function selectVirtualDisplayLayout(v: unknown) {
                 </div>
               </n-radio-group>
 
+              <Checkbox
+                v-if="platform === 'macos'"
+                id="virtual_display_keep_while_paused"
+                v-model="config.virtual_display_keep_while_paused"
+                locale-prefix="config"
+                default="true"
+              />
+
               <!-- Warning for extended modes without primary -->
               <transition name="fade">
                 <div

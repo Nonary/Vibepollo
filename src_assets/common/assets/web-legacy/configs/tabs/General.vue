@@ -292,6 +292,13 @@ function removeServerCommand(index: number) {
     />
 
     <ConfigFieldRenderer
+      v-if="platform === 'macos'"
+      v-model="config.lid_close_ends_streams"
+      setting-key="lid_close_ends_streams"
+      class="mb-3"
+    />
+
+    <ConfigFieldRenderer
       v-if="config.system_tray"
       v-model="config.hide_tray_controls"
       setting-key="hide_tray_controls"
