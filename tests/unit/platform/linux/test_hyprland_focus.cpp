@@ -205,6 +205,34 @@ int main() {
     assert(applied["windows"] == nlohmann::json {"701:0x5a02"});
   }
   {
+    // A refused game focus does not fall through to its launcher: the step
+    // activates only the preferred window and spends nothing.
+    fake_hyprland hyprland;
+    hyprland.steal_back = true;
+    const auto now = managed_app_focus::budget::clock::now();
+    managed_app_focus::budget focus({1, 15, false}, now);
+    const auto ipc = hyprland.transport();
+    assert(!focus_step([&](const auto &activate, const auto &allowed) { return apply(ipc, {700, 701}, activate, allowed); }, focus, [now] { return now; }));
+    assert(std::ranges::count(hyprland.requests, std::string {"/dispatch focuswindow address:0x5a02"}) == 1);
+    assert(std::ranges::none_of(hyprland.requests, [](const auto &request) { return request.find("0x5a01") != std::string::npos; }));
+    assert(focus.can_focus(now));
+  }
+  {
+    // The game takes focus back during the adapter's second observation: no
+    // dispatch, and no attempt is spent.
+    fake_hyprland hyprland;
+    int listings = 0;
+    hyprland.on_request = [&](const std::string &request) {
+      if (request == "j/clients" && ++listings == 2) hyprland.active = R"({"address":"0x5a02","mapped":true,"hidden":false,"pid":701})";
+    };
+    const auto now = managed_app_focus::budget::clock::now();
+    managed_app_focus::budget focus({1, 15, false}, now);
+    const auto ipc = hyprland.transport();
+    assert(!focus_step([&](const auto &activate, const auto &allowed) { return apply(ipc, {700, 701}, activate, allowed); }, focus, [now] { return now; }));
+    assert(dispatched(hyprland) == 0);
+    assert(focus.can_focus(now));
+  }
+  {
     // Hyprland's replies block between the focus step's eligibility check and
     // the dispatch. A reply that carries an identity across its allowance, or
     // the hard cap, or a refused Lua dispatch that does, sends no focus request.

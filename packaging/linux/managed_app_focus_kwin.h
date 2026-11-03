@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
@@ -27,7 +28,7 @@ for (var i=0;i<windows.length;i++) {
   if (pids.indexOf(w.pid)<0 || !w.normalWindow || w.skipTaskbar || !w.internalId) continue;
   var identity=String(w.pid)+":"+String(w.internalId);
   result.windows.push(identity);
-  if (activate.indexOf(identity)<0 || result.focused) continue;
+  if (activate.indexOf(identity)<0 || result.focused || w===active) continue;
   w.minimized=false;
   workspace.activeWindow=w;
   result.focused=workspace.activeWindow===w;
@@ -42,9 +43,21 @@ result.call=)JS" + std::to_string(call) + ";callDBus(" + nlohmann::json(destinat
     const auto is_string = [](const nlohmann::json &window) { return window.is_string(); };
     if (!parsed.is_object() || !parsed.contains("call") || !parsed["call"].is_number_unsigned() || parsed["call"].get<std::uint64_t>() != call ||
         !parsed.contains("focused") || !parsed["focused"].is_boolean() || !parsed.contains("windows") || !parsed["windows"].is_array() ||
-        !std::ranges::all_of(parsed["windows"], is_string)) {
+        !std::ranges::all_of(parsed["windows"], is_string) || (parsed.contains("foreground") && !parsed["foreground"].is_string()) ||
+        (parsed.contains("foreground_pid") && !parsed["foreground_pid"].is_number_unsigned())) {
       return std::nullopt;
     }
     return parsed;
+  }
+
+  // Loading the script may block, and the script activates as soon as it
+  // runs, so its targets are rechecked between load and run. Returns the
+  // loaded script id for unloading.
+  inline int kwin_load_and_run(const std::vector<std::string> &activate, const std::function<bool(const std::string &)> &allowed, const std::function<int()> &load, const std::function<void(int)> &run) {
+    const int id = load();
+    if (id >= 0 && (activate.empty() || (allowed && std::ranges::all_of(activate, allowed)))) {
+      run(id);
+    }
+    return id;
   }
 }  // namespace managed_app_focus

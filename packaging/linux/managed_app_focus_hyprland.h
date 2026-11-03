@@ -211,6 +211,8 @@ namespace managed_app_focus::hyprland {
       const auto identity = detail::identity(window);
       result["windows"].push_back(identity);
       if (result["focused"].get<bool>() || std::ranges::find(activate, identity) == activate.end()) continue;
+      // Focus came back during this observation: nothing to activate.
+      if (identity == detail::identity(active)) continue;
       // Only activewindow confirms the activation.
       if (!allowed || !detail::focus_window(ipc, address, [&] { return allowed(identity); })) continue;
       const auto focused = detail::request_json(ipc, "j/activewindow");
