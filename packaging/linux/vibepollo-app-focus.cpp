@@ -82,18 +82,17 @@ namespace {
       close(fd);
       received_ = false;
       result_ = {};
-      GVariant *loaded = written ? call("/Scripting", "org.kde.kwin.Scripting", "loadScript", g_variant_new("(ss)", path.c_str(), name.c_str())) : nullptr;
-      int id = -1;
-      if (loaded) {
-        g_variant_get(loaded, "(i)", &id);
-        g_variant_unref(loaded);
-      }
-      // Writing and loading may block, and the script activates as soon as it
-      // runs: recheck every identity it may activate right before that.
-      const bool runnable = activate.empty() || (allowed && std::ranges::all_of(activate, allowed));
-      if (id >= 0) {
+      const auto load = [&] {
+        int id = -1;
+        if (GVariant *loaded = written ? call("/Scripting", "org.kde.kwin.Scripting", "loadScript", g_variant_new("(ss)", path.c_str(), name.c_str())) : nullptr) {
+          g_variant_get(loaded, "(i)", &id);
+          g_variant_unref(loaded);
+        }
+        return id;
+      };
+      const auto run = [&](int id) {
         const auto object = "/Scripting/Script" + std::to_string(id);
-        if (auto *reply = runnable ? call(object.c_str(), "org.kde.kwin.Script", "run", nullptr) : nullptr) {
+        if (auto *reply = call(object.c_str(), "org.kde.kwin.Script", "run", nullptr)) {
           g_variant_unref(reply);
           const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(std::min(500,timeout_ms_));
           while (!received_ && !cancelled && std::chrono::steady_clock::now() < deadline) {
@@ -101,6 +100,8 @@ namespace {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
           }
         }
+      };
+      if (managed_app_focus::kwin_load_and_run(activate, allowed, load, run) >= 0) {
         if (auto *reply = call("/Scripting", "org.kde.kwin.Scripting", "unloadScript", g_variant_new("(s)", name.c_str()))) {
           g_variant_unref(reply);
         }

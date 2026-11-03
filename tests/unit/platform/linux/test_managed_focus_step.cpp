@@ -128,6 +128,19 @@ int main() {
     assert(!focus_step(desktop, focus, [&] { return now; }));
     assert(desktop.activations == 0);
   }
+  {
+    // Adapter data of the wrong type is lost focus, never an exception, and
+    // only the preferred window is handed to the adapter.
+    budget focus({1, 15, false}, start);
+    std::vector<std::string> handed;
+    const auto odd = [&](const std::vector<std::string> &activate, const auto &) {
+      if (!activate.empty()) handed = activate;
+      return nlohmann::json {{"windows", {"701:0x5a02", "700:0x5a01"}}, {"focused", activate.empty() ? nlohmann::json(false) : nlohmann::json("yes")}, {"foreground", 1}};
+    };
+    assert(!focus_step(odd, focus, at(start)));
+    assert((handed == std::vector<std::string> {"701:0x5a02"}));
+    assert(focus.can_focus(start));
+  }
   std::cout << "PASS: managed focus spends attempts only when the game lost the foreground\n";
   return 0;
 }

@@ -13,6 +13,8 @@ namespace managed_app_focus {
   // the blocking observation, so a delayed reply cannot admit an expired window.
   // Adapters ask allowed(identity) immediately before each activation, so a
   // second blocking observation cannot carry it past the allowance either.
+  // Only the preferred window is activated: a launcher that takes focus
+  // instead is not a confirmed game focus.
   template<class Apply, class Now>
   bool focus_step(Apply &&apply, budget &focus, Now &&clock_now) {
     const std::function<bool(const std::string &)> still_allowed = [&](const std::string &identity) {
@@ -35,11 +37,12 @@ namespace managed_app_focus {
     }
     // The preferred eligible window comes first; any other window in front,
     // even one of the game's own process, is lost focus.
-    if (allowed.empty() || observed.value("foreground", std::string {}) == allowed.front()) {
+    const auto foreground = observed.contains("foreground") && observed["foreground"].is_string() ? observed["foreground"].get<std::string>() : std::string {};
+    if (allowed.empty() || foreground == allowed.front()) {
       return false;
     }
-    const nlohmann::json applied = apply(allowed, still_allowed);
-    if (!applied.is_object() || !applied.value("focused", false)) {
+    const nlohmann::json applied = apply(std::vector<std::string> {allowed.front()}, still_allowed);
+    if (!applied.is_object() || !applied.contains("focused") || applied["focused"] != true) {
       return false;
     }
     focus.confirmed();

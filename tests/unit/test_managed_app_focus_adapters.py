@@ -282,6 +282,8 @@ assert.strictEqual(run([native],[7],['7:wayland-game'],()=>false).result.focused
 assert.deepStrictEqual(run([native,xwayland],[8],[]).result.windows,['8:xwayland-game']);
 assert.deepStrictEqual(run([native,xwayland],[],[]).result.windows,[]);
 assert.deepStrictEqual(run([], [7],[]).result.windows,[]);
+// A target that is already active is not activated again.
+assert.strictEqual(run([native],[7],['7:wayland-game'],()=>{throw Error('active target activated again');},native).result.focused,false);
 let fallback=run([xwayland,native],[7,8],['8:xwayland-game','7:wayland-game'],w=>w===native);assert.strictEqual(fallback.active,native);assert.strictEqual(fallback.result.focused,true);
 // Read-only HDR observations must not unminimize or activate any window.
 native.minimized=false;
