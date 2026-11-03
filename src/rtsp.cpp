@@ -2129,14 +2129,9 @@ namespace rtsp_stream {
 
     std::stringstream ss;
 
-    // Offer only the configured Dolby codec when its FFmpeg encoder is available.
-    // ANNOUNCE must explicitly accept this exact offer before the encoder is selected.
-    session->audio_codec_offered.clear();
-    if (config::audio.format == "ac3"sv && audio::ac3_available()) {
-      session->audio_codec_offered = "AC3";
-    } else if (config::audio.format == "eac3"sv && audio::eac3_available()) {
-      session->audio_codec_offered = "EAC3";
-    }
+    // Offer only the audio codec the audio format selects, when it can be provided.
+    // ANNOUNCE must explicitly accept this exact offer before the codec is selected.
+    session->audio_codec_offered = audio::codec_offer(config::audio.format, audio::ac3_available(), audio::eac3_available());
     if (!session->audio_codec_offered.empty()) {
       ss << "a=x-ss-audio-codec-offer:"sv << session->audio_codec_offered << std::endl;
     }
@@ -2504,7 +2499,7 @@ namespace rtsp_stream {
       }
       config.audio.flags[audio::config_t::CUSTOM_SURROUND_PARAMS] = valid;
     }
-    // Select Dolby only when ANNOUNCE accepts the exact codec offered in DESCRIBE.
+    // Select an audio codec other than Opus only when ANNOUNCE accepts the exact codec offered in DESCRIBE.
     const auto audio_accept = args.find("x-ss-audio-codec-accept"sv);
     const std::string_view accepted_audio_codec =
       audio_accept == args.end() ? std::string_view {} : std::string_view {audio_accept->second};
@@ -2515,15 +2510,17 @@ namespace rtsp_stream {
     const bool eac3_encoder_available = session->audio_codec_offered == "EAC3"sv && audio::eac3_available();
     const bool selected_encoder_available = ac3_encoder_available || eac3_encoder_available;
     const bool supported_dolby_channel_count = config.audio.channels == 2 || config.audio.channels == 6;
+    // PCM audio needs no encoder and carries every channel layout, so only Dolby audio can be refused.
+    const bool dolby_offered = session->audio_codec_offered == "AC3"sv || session->audio_codec_offered == "EAC3"sv;
 
     // Once a client has explicitly accepted an advertised codec, do not silently
     // change the negotiated codec if its encoder or requested channel layout is unsupported.
-    if (client_accepted_audio_codec && (!selected_encoder_available || !supported_dolby_channel_count)) {
+    if (client_accepted_audio_codec && dolby_offered && (!selected_encoder_available || !supported_dolby_channel_count)) {
       BOOST_LOG(error) << "Client accepted a Dolby codec that cannot be provided for the requested stream";
       respond(socket->sock, *session, &option, 400, "BAD REQUEST", req->sequenceNumber, {});
       return false;
     }
-    const auto selected_audio_codec = audio::configure_dolby_audio(
+    const auto selected_audio_codec = audio::configure_codec(
       config.audio,
       session->audio_codec_offered,
       accepted_audio_codec,
@@ -2669,6 +2666,8 @@ namespace rtsp_stream {
           config.audio.high_quality_dolby,
           config.audio.channels
         );
+      } else if (config.audio.use_pcm) {
+        audioBitrateAdjustment = audio::pcm_bitrate_kbps(config.audio.channels);
       } else {
         audioBitrateAdjustment = (config.audio.flags[audio::config_t::HIGH_QUALITY] ? 256 : 96) * config.audio.channels;
       }
@@ -2820,7 +2819,7 @@ namespace rtsp_stream {
         // scope. A failed start can hold the last reference, and ~session_t may then run
         // end_broadcast(), which joins a control thread that itself waits on this gate.
         lifecycle_lock.unlock();
-        server->post([server, socket = std::move(socket), session = std::move(session), sequence_number, startup_failed, startup_status, startup_error = std::move(startup_error), virtual_display_guid_bytes = launch_session->virtual_display_guid_bytes, audio_codec_name = std::string(audio::dolby_codec_name(selected_audio_codec))]() mutable {
+        server->post([server, socket = std::move(socket), session = std::move(session), sequence_number, startup_failed, startup_status, startup_error = std::move(startup_error), virtual_display_guid_bytes = launch_session->virtual_display_guid_bytes, audio_codec_name = std::string(audio::codec_name(selected_audio_codec))]() mutable {
           OPTION_ITEM completion_option {};
           completion_option.option = const_cast<char *>("CSeq");
           auto completion_seqn = std::to_string(sequence_number);

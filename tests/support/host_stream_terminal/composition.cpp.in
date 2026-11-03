@@ -53,14 +53,17 @@ template<class F> guard<F> fail_guard(F f){return {f};}
 namespace audio {
 @AUDIO_PARAMS@
 @AUDIO_CONFIG@
-@DOLBY_CODEC@
+@PCM_PACKET_DURATION@
+@AUDIO_CODEC@
 // Encoder discovery is an external capability edge; negotiation stays production code.
 bool ac3_encoder=true,eac3_encoder=true;
 bool ac3_available(){return ac3_encoder;}
 bool eac3_available(){return eac3_encoder;}
-@DOLBY_CONFIGURE@
+@AUDIO_CONFIGURE@
 @DOLBY_BITRATE@
-@DOLBY_NAME@
+@PCM_BITRATE@
+@AUDIO_NAME@
+@AUDIO_OFFER@
 }
 namespace stream {
 struct monitor_t {
@@ -89,8 +92,8 @@ bool has_shared_runtime_owner() {return running!=0 || topology.managed_client_id
 struct shared_runtime_finalize_context_t {std::optional<std::array<std::uint8_t,16>> virtual_display_guid_bytes;};
 bool finalize_shared_runtime_if_idle(std::string_view, const shared_runtime_finalize_context_t & = {}) {++finalizer_calls; if(has_shared_runtime_owner()) return false; if(armed.exchange(false) && physical) late_ordinary=true; return true;}
 void join(session_t &s,bool=false) {join_pause.wait(); std::lock_guard lock(nvhttp::lifecycle);s.audio_context_guard.reset();s.display_power_guard.reset(); --running; finalize_shared_runtime_if_idle("natural_join");}
-audio::config_t allocated_audio{};
-std::shared_ptr<session_t> alloc(const config_t &config,auto &launch) {allocated_audio=config.audio;auto s=std::make_shared<session_t>();s->audio_context_guard=std::move(launch.audio_context_guard);s->display_power_guard=launch.display_power_guard;return s;}
+audio::config_t allocated_audio{};int allocated_bitrate=0;
+std::shared_ptr<session_t> alloc(const config_t &config,auto &launch) {allocated_audio=config.audio;allocated_bitrate=config.monitor.bitrate;auto s=std::make_shared<session_t>();s->audio_context_guard=std::move(launch.audio_context_guard);s->display_power_guard=launch.display_power_guard;return s;}
 int start_result=0;bool start_exception=false;
 int start(session_t &,const std::string &) {if(start_exception)throw std::runtime_error("partial registration");if(start_result)return start_result;++running;armed=true;return 0;}
 }
@@ -209,7 +212,7 @@ namespace nvhttp {
 void reset() {
  stream::session::start_result=0;stream::session::start_exception=false;monitor_lost=0;
  physical=false;terminal_entered=false;late_ordinary=false;armed=true;running=0;finalizer_calls=0;config_applies=0;
- audio::ac3_encoder=true;audio::eac3_encoder=true;config::audio={};stream::session::allocated_audio={};response_status=0;response_audio_codec.clear();
+ audio::ac3_encoder=true;audio::eac3_encoder=true;config::audio={};stream::session::allocated_audio={};stream::session::allocated_bitrate=0;response_status=0;response_audio_codec.clear();
  join_pause.reset(false);expiry_pause.reset(false);parser_pause.reset(false);peer_pause.reset(false);
  server._session_state->sessions.clear();server._launch_sessions.clear();server.startup_pool.queue.clear();server.io_context.queue.clear();
  topology.shutdown(true);topology.set_runtime_callbacks({});
@@ -347,37 +350,69 @@ int main() {
  check(topology.managed_client_identity_count()==0 && !topology.shutdown_complete(),"removed display retains pending physical restore");
  terminal();check(!physical,"empty-map pending restore failure prevents final physical cleanup");
  fail=false;terminal();check(physical && topology.shutdown_complete(),"empty-map pending restore succeeds on retry");
+ // DESCRIBE offers the codec the production offer function picks from the audio format and encoder discovery.
+ check(audio::codec_offer("opus",true,true).empty(),"opus audio format offers no audio codec");
+ check(audio::codec_offer("ac3",true,true)=="AC3" && audio::codec_offer("ac3",false,true).empty(),"ac3 audio format offers AC3 only with its encoder");
+ check(audio::codec_offer("eac3",true,true)=="EAC3" && audio::codec_offer("eac3",true,false).empty(),"eac3 audio format offers EAC3 only with its encoder");
+ check(audio::codec_offer("pcm",false,false)=="PCM","pcm audio format offers PCM without any encoder");
+ check(audio::pcm_bitrate_kbps(2)==1536 && audio::pcm_bitrate_kbps(6)==4608 && audio::pcm_bitrate_kbps(8)==6144,"PCM audio bitrate is 16-bit samples at 48 kHz per channel");
  // Exercise the unchanged ANNOUNCE parser and production negotiation helper,
  // controlling only FFmpeg encoder discovery. Each accepted session must still
  // transfer and retire its resource owner through the real terminal path.
- struct AudioCase {const char *offered,*accepted,*expected;int channels;bool encoder,quality;int status;};
- for(const auto &test:std::array<AudioCase,8>{{
-   {"AC3","AC3","AC3",2,true,false,200},
-   {"EAC3","EAC3","EAC3",6,true,true,200},
-   {"AC3","","Opus",2,true,false,200},
-   {"EAC3","AC3","Opus",6,true,false,200},
-   {"AC3","AC3","",2,false,false,400},
-   {"EAC3","EAC3","",6,false,false,400},
-   {"AC3","AC3","",8,true,false,400},
-   {"","EAC3","Opus",2,true,false,200},
+ // The client configures 100000 kbps with no FEC unless a case says otherwise;
+ // the adjusted video bitrate leaves room for the audio codec's bitrate and
+ // 500 kbps of overhead. The base payload asks for high quality Opus audio.
+ struct AudioCase {const char *offered,*accepted,*expected;int channels;bool encoder,quality;int status,bitrate;
+   int packet_duration=0;const char *surround_params="";int configured=100000;bool pyrowave=false;};
+ for(const auto &test:std::array<AudioCase,20>{{
+   {"AC3","AC3","AC3",2,true,false,200,99372},
+   {"EAC3","EAC3","EAC3",6,true,true,200,99116},
+   {"AC3","","Opus",2,true,false,200,98988},
+   {"EAC3","AC3","Opus",6,true,false,200,97964},
+   {"AC3","AC3","",2,false,false,400,0},
+   {"EAC3","EAC3","",6,false,false,400,0},
+   {"AC3","AC3","",8,true,false,400,0},
+   {"","EAC3","Opus",2,true,false,200,98988},
+   // PCM audio needs no encoder, carries every channel layout at 5 ms whatever the
+   // client sent, ignores the Opus-only flags, and reserves 48000 x 16 x channels.
+   {"PCM","PCM","PCM",2,false,false,200,97964,10},
+   {"PCM","PCM","PCM",6,false,false,200,94892,10,"642014523"},
+   {"PCM","PCM","PCM",8,false,false,200,93356,10,"85301234567"},
+   {"PCM","PCM","PCM",2,false,true,200,97964},
+   {"PCM","PCM","PCM",8,false,true,200,93356,0,"85301234567"},
+   {"PCM","","Opus",2,false,false,200,98988,10},
+   {"PCM","EAC3","Opus",6,true,false,200,97964},
+   {"AC3","PCM","Opus",2,true,false,200,98988},
+   // The normal reservation stays capped at 20%; PyroWave reserves 1.5 x in full.
+   {"PCM","PCM","PCM",8,false,false,200,7500,0,"",10000},
+   {"PCM","PCM","PCM",2,false,false,200,97196,0,"",100000,true},
+   {"PCM","PCM","PCM",8,false,false,200,90284,0,"",100000,true},
+   {"PCM","PCM","",8,false,false,400,0,0,"",9000,true},
  }}) {
    reset();audio::ac3_encoder=test.encoder;audio::eac3_encoder=test.encoder;config::audio.high_quality_audio=test.quality;
-   pending=std::make_shared<launch_session_t>();pending->audio_codec_offered=test.offered;
+   pending=std::make_shared<launch_session_t>();pending->audio_codec_offered=test.offered;pending->surround_params=test.surround_params;
    pending->audio_context_guard=std::make_shared<int>(1);resource=pending->audio_context_guard;
    server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
    auto audio_payload=payload;const auto channels=audio_payload.find("numChannels:2");audio_payload.replace(channels,13,"numChannels:"+std::to_string(test.channels));
+   audio_payload+="a=x-ml-video.configuredBitrateKbps:"+std::to_string(test.configured)+"\n";
+   if(test.packet_duration)audio_payload+="a=x-nv-aqos.packetDuration:"+std::to_string(test.packet_duration)+"\n";
+   if(test.pyrowave)audio_payload+="a=x-nv-vqos[0].bitStreamFormat:99\n";
    if(*test.accepted)audio_payload+="a=x-ss-audio-codec-accept:"+std::string(test.accepted)+"\n";
    auto audio_request=std::make_shared<Request>();audio_request->payload=audio_payload.data();audio_request->payloadLength=audio_payload.size();
    const bool admitted=cmd_announce(&server,std::make_shared<socket_t>(),pending,std::move(audio_request));
-   check(admitted==(test.status==200),"actual ANNOUNCE rejects accepted Dolby with unavailable encoder or unsupported channels");
+   check(admitted==(test.status==200),"actual ANNOUNCE rejects accepted Dolby with unavailable encoder or unsupported channels, or audio PyroWave cannot fit");
    server.startup_pool.run();server.io_context.run();
    check(response_status==test.status && response_audio_codec==test.expected,"actual ANNOUNCE response reports the negotiated codec or rejection");
    if(admitted) {
-     const auto &selected=stream::session::allocated_audio;const bool dolby=std::string_view(test.expected)!="Opus";
-     check(selected.use_ac3==(std::string_view(test.expected)=="AC3") && selected.use_eac3==(std::string_view(test.expected)=="EAC3") &&
-           selected.high_quality_dolby==(dolby && test.quality) && selected.packetDuration==(dolby?32:5) &&
-           (!dolby || (selected.flags[audio::config_t::HIGH_QUALITY] && !selected.flags[audio::config_t::CUSTOM_SURROUND_PARAMS])),
+     const auto &selected=stream::session::allocated_audio;const std::string_view expected=test.expected;
+     const bool pcm=expected=="PCM",dolby=expected=="AC3" || expected=="EAC3";
+     const int opus_packet_duration=test.packet_duration?test.packet_duration:5;
+     check(selected.use_ac3==(expected=="AC3") && selected.use_eac3==(expected=="EAC3") && selected.use_pcm==pcm &&
+           selected.high_quality_dolby==(dolby && test.quality) && selected.packetDuration==(dolby?32:pcm?5:opus_packet_duration) &&
+           (!dolby || (selected.flags[audio::config_t::HIGH_QUALITY] && !selected.flags[audio::config_t::CUSTOM_SURROUND_PARAMS])) &&
+           (!pcm || (!selected.flags[audio::config_t::HIGH_QUALITY] && !selected.flags[audio::config_t::CUSTOM_SURROUND_PARAMS])),
            "production negotiation reaches capture with exact codec, quality and packet duration");
+     check(stream::session::allocated_bitrate==test.bitrate,"production bitrate adjustment reserves the negotiated audio codec's bitrate");
      check(running==1 && !resource.expired(),"negotiated ANNOUNCE retains its active resource handoff");
    } else check(running==0 && server.startup_pool.queue.empty(),"rejected negotiation never queues capture");
    terminal();check(resource.expired() && running==0 && !late_ordinary,"terminal drains negotiated or rejected session resources before recovery");

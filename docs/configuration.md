@@ -1118,6 +1118,8 @@ dualsense_haptics_gain = 1.5
             AC-3 (Dolby Digital) and E-AC-3 (Dolby Digital Plus) are offered only when the linked FFmpeg build
             includes the selected encoder. The client must explicitly accept the exact codec offer; otherwise
             Vibepollo falls back to Opus. Dolby supports stereo and 5.1 channels.
+            PCM sends 16-bit samples at 48 kHz in stereo, 5.1 or 7.1 and needs no encoder. It uses about 1.5 Mbps
+            for stereo, 4.6 Mbps for 5.1 and 6.1 Mbps for 7.1, which is taken out of the video bitrate.
         </td>
     </tr>
     <tr>
@@ -1127,6 +1129,7 @@ dualsense_haptics_gain = 1.5
     <tr><td>Choices</td><td>opus</td><td>Use Opus encoding.</td></tr>
     <tr><td></td><td>ac3</td><td>Use Dolby Digital AC-3 encoding.</td></tr>
     <tr><td></td><td>eac3</td><td>Use Dolby Digital Plus E-AC-3 encoding.</td></tr>
+    <tr><td></td><td>pcm</td><td>Send PCM audio (16-bit, 48 kHz), including 7.1.</td></tr>
     <tr><td>Example</td><td colspan="2"><code>audio_format = ac3</code></td></tr>
 </table>
 
@@ -1138,7 +1141,7 @@ dualsense_haptics_gain = 1.5
         <td colspan="2">
             When AC-3 or E-AC-3 is accepted by the client, selects a higher Dolby bitrate at the cost of increased
             network bandwidth. Stereo uses 128 kbit/s by default or 192 kbit/s with high quality; AC-3 5.1 uses
-            384 or 640 kbit/s; E-AC-3 5.1 uses 192 or 384 kbit/s. This setting has no effect when Opus is selected.
+            384 or 640 kbit/s; E-AC-3 5.1 uses 192 or 384 kbit/s. This setting has no effect when Opus or PCM is selected.
         </td>
     </tr>
     <tr><td>Default</td><td colspan="2"><code>disabled</code></td></tr>

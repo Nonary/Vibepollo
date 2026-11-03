@@ -27,6 +27,7 @@ export interface SettingsVisibility {
   key: string;
   equals?: string | boolean;
   notEquals?: string | boolean;
+  oneOf?: (string | boolean)[];
 }
 
 export interface SettingsField {
@@ -934,8 +935,9 @@ export const settingsCategories: SettingsCategory[] = [
             option('opus', 'config.audio_format_opus'),
             option('ac3', 'config.audio_format_ac3'),
             option('eac3', 'config.audio_format_eac3'),
+            option('pcm', 'config.audio_format_pcm'),
           ]),
-          boolean('high_quality_audio', { visibleWhen: { key: 'audio_format', notEquals: 'opus' } }),
+          boolean('high_quality_audio', { visibleWhen: { key: 'audio_format', oneOf: ['ac3', 'eac3'] } }),
           text('audio_sink', { monospace: true, stacked: true }),
           boolean('audio_sink_capture_only', { platform: 'windows' }),
           text('virtual_sink', { monospace: true, stacked: true }),

@@ -255,6 +255,26 @@ namespace audio {
     platf::set_thread_name("audio::encode");
     platf::adjust_thread_priority(platf::thread_priority_e::high);
 
+    if (config.use_pcm) {
+      // PCM audio skips both encoders: each captured packet's samples become its payload.
+      BOOST_LOG(info) << "PCM audio: "sv << stream.sampleRate / 1000 << " kHz, "sv
+                      << stream.channelCount << " channels, "sv
+                      << config.packetDuration << " ms packets"sv;
+
+      const auto frame_size = config.packetDuration * stream.sampleRate / 1000;
+      while (auto sample = samples->pop()) {
+        if (webrtc_stream::has_active_sessions() && channel_data == nullptr) {
+          webrtc_stream::submit_audio_frame(*sample, stream.sampleRate, stream.channelCount, frame_size);
+        }
+
+        const auto payload = policy::pcm_payload(*sample);
+        buffer_t packet {payload.size()};
+        std::copy(payload.begin(), payload.end(), std::begin(packet));
+        packets->raise(channel_data, std::move(packet));
+      }
+      return;
+    }
+
     if (config.use_ac3 || config.use_eac3) {
       const auto codec_id = config.use_eac3 ? AV_CODEC_ID_EAC3 : AV_CODEC_ID_AC3;
       const auto codec_name = config.use_eac3 ? "E-AC-3"sv : "AC-3"sv;
@@ -515,7 +535,11 @@ namespace audio {
     return 0;
   }
 
-  dolby_codec_e configure_dolby_audio(
+  int pcm_bitrate_kbps(int channels) {
+    return 48000 * 16 * channels / 1000;
+  }
+
+  codec_e configure_codec(
     config_t &config,
     std::string_view offered,
     std::string_view accepted,
@@ -523,10 +547,19 @@ namespace audio {
     bool eac3_encoder_available,
     bool high_quality
   ) {
-    using enum audio::dolby_codec_e;
+    using enum audio::codec_e;
     config.use_ac3 = false;
     config.use_eac3 = false;
+    config.use_pcm = false;
     config.high_quality_dolby = false;
+    if (offered == "PCM" && accepted == offered) {
+      // PCM audio needs no encoder, carries every channel layout and ignores the Opus-only settings.
+      config.use_pcm = true;
+      config.packetDuration = PCM_PACKET_DURATION;
+      config.flags[config_t::HIGH_QUALITY] = false;
+      config.flags[config_t::CUSTOM_SURROUND_PARAMS] = false;
+      return pcm;
+    }
     const bool supported_channels = config.channels == 2 || config.channels == 6;
     auto selected = opus;
     if (supported_channels && offered == "AC3" && accepted == offered && ac3_encoder_available) {
@@ -545,14 +578,22 @@ namespace audio {
     return selected;
   }
 
-  std::string_view dolby_codec_name(dolby_codec_e codec) {
-    using enum audio::dolby_codec_e;
+  std::string_view codec_name(codec_e codec) {
+    using enum audio::codec_e;
     switch (codec) {
       case ac3: return "AC3";
       case eac3: return "EAC3";
+      case pcm: return "PCM";
       case opus:
       default: return "Opus";
     }
+  }
+
+  std::string_view codec_offer(std::string_view format, bool ac3_encoder_available, bool eac3_encoder_available) {
+    if (format == "ac3" && ac3_encoder_available) return "AC3";
+    if (format == "eac3" && eac3_encoder_available) return "EAC3";
+    if (format == "pcm") return "PCM";
+    return {};
   }
 
   bool is_audio_ctx_sink_available(const audio_ctx_t &ctx) {

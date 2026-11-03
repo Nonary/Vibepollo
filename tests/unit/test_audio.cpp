@@ -127,6 +127,35 @@ TEST(AudioStreamPolicy, SelectsChannelAndQualityVariant) {
   EXPECT_EQ(stream_index(3, true), 0);
 }
 
+TEST(AudioPcmPayload, WritesLittleEndianInt16InInterleavedOrder) {
+  // 4660 = 0x1234 and -4660 = 0xEDCC, as exact fractions of 32768
+  const std::vector<float> samples {4660.0f / 32768, -4660.0f / 32768, 0.0f};
+
+  EXPECT_EQ(pcm_payload(samples), (std::vector<std::uint8_t> {0x34, 0x12, 0xCC, 0xED, 0x00, 0x00}));
+}
+
+TEST(AudioPcmPayload, RoundsToNearestWithHalvesAwayFromZero) {
+  // 1.4, 1.5, -1.5, -0.4 and 0.5 steps of 1/32768
+  const std::vector<float> samples {1.4f / 32768, 1.5f / 32768, -1.5f / 32768, -0.4f / 32768, 0.5f / 32768};
+
+  // 1, 2, -2, 0, 1
+  EXPECT_EQ(pcm_payload(samples), (std::vector<std::uint8_t> {0x01, 0x00, 0x02, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x01, 0x00}));
+}
+
+TEST(AudioPcmPayload, ClampsFullScaleAndBeyondToInt16Range) {
+  const std::vector<float> samples {1.0f, -1.0f, 1.5f, -1.5f, 1e10f, -1e10f, 32767.0f / 32768, -32767.0f / 32768};
+
+  // 32767, -32768, 32767, -32768, 32767, -32768, 32767, -32767
+  EXPECT_EQ(pcm_payload(samples), (std::vector<std::uint8_t> {0xFF, 0x7F, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x80, 0xFF, 0x7F, 0x01, 0x80}));
+}
+
+TEST(AudioPcmPayload, FiveMillisecondsFillStereo51And71Packets) {
+  // 5 ms at 48 kHz is 240 samples per channel
+  EXPECT_EQ(pcm_payload(std::vector<float>(240 * 2)).size(), 960u);
+  EXPECT_EQ(pcm_payload(std::vector<float>(240 * 6)).size(), 2880u);
+  EXPECT_EQ(pcm_payload(std::vector<float>(240 * 8)).size(), 3840u);
+}
+
 TEST(AudioStreamPolicy, AppliesCustomSurroundLayoutWithoutMutatingDefault) {
   const stream_layout_t base {6, 4, 2, {0, 1, 4, 5, 2, 3, 0, 0}};
   const stream_layout_t custom {6, 6, 0, {0, 1, 4, 5, 2, 3, 0, 0}};

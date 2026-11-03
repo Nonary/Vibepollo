@@ -67,6 +67,7 @@ namespace audio {
     bool input_only;
     bool use_ac3 {false};  ///< Encode audio as AC-3 instead of Opus for this streaming session.
     bool use_eac3 {false};  ///< Encode audio as E-AC-3 instead of Opus for this streaming session.
+    bool use_pcm {false};  ///< Send PCM audio instead of Opus for this streaming session.
     bool high_quality_dolby {false};  ///< Higher bitrate for Dolby only; ignored for Opus.
   };
 
@@ -123,10 +124,14 @@ namespace audio {
   /** @brief Check whether the linked FFmpeg build provides the E-AC-3 encoder. */
   bool eac3_available();
 
-  enum class dolby_codec_e { opus, ac3, eac3 };
+  /** @brief PCM audio's packet duration in milliseconds, fixed by the host. */
+  constexpr int PCM_PACKET_DURATION = 5;
 
-  /** @brief Configure Dolby only after an exact offer/accept match; otherwise retain Opus. */
-  dolby_codec_e configure_dolby_audio(
+  /** @brief The audio codec a session uses; AC-3 and E-AC-3 are Dolby audio. */
+  enum class codec_e { opus, ac3, eac3, pcm };
+
+  /** @brief Select the offered audio codec only after an exact offer/accept match; otherwise retain Opus audio. */
+  codec_e configure_codec(
     config_t &config,
     std::string_view offered,
     std::string_view accepted,
@@ -136,7 +141,11 @@ namespace audio {
   );
 
   /** @brief Return the encoded format's RTSP response-header label. */
-  std::string_view dolby_codec_name(dolby_codec_e codec);
+  std::string_view codec_name(codec_e codec);
+  /** @brief Choose the audio codec DESCRIBE offers for the audio format; empty offers none (Opus audio). */
+  std::string_view codec_offer(std::string_view format, bool ac3_encoder_available, bool eac3_encoder_available);
   /** @brief Choose the AC-3/E-AC-3 bitrate for stereo or 5.1. */
   int dolby_bitrate_kbps(bool eac3, bool high_quality, int channels);
+  /** @brief PCM audio's bitrate: 16-bit samples at 48 kHz per channel. */
+  int pcm_bitrate_kbps(int channels);
 }  // namespace audio
