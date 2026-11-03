@@ -13,3 +13,9 @@ if(NOT CMAKE_INSTALL_PREFIX)
 endif()
 
 install(TARGETS sunshine RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+
+if(WEBRTC_RUNTIME_LIB)
+    install(FILES "${WEBRTC_RUNTIME_LIB}" DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+    # Resolve the installed copy relative to the binary so a staged tree runs before install.
+    set_target_properties(sunshine PROPERTIES INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+endif()
