@@ -271,6 +271,34 @@ printf 'DualSense installation failures cannot report installer success.\n'
 )
 printf 'Retired running kernels require a reboot, not mismatched header installation.\n'
 
+# An existing Hyprland KMS policy requires its UWSM session, not Plasma/KWin.
+(
+  machine_config="$workdir/machine.conf"
+  installed=''
+  pacman() { [[ "$1" == -Qq && " $installed " == *" $2 "* ]]; }
+  printf 'desktop_user=fixture\ndesktop_backend=hyprland-kms\n' > "$machine_config"
+  installed='hyprland uwsm sddm' check_failures=0
+  check_desktop "$machine_config" > "$workdir/desktop" 2>&1
+  ((check_failures == 0))
+  grep -F 'Hyprland and UWSM are installed' "$workdir/desktop"
+  ! grep -F 'KDE Plasma' "$workdir/desktop"
+  installed='sddm' check_failures=0
+  check_desktop "$machine_config" > "$workdir/desktop" 2>&1
+  ((check_failures == 1))
+  grep -F 'desktop_backend=hyprland-kms requires Hyprland and UWSM' "$workdir/desktop"
+  # Without the policy, or with an unreadable one, the default stays KWin.
+  for policy in 'desktop_user=fixture\n' 'desktop_user=fixture\ndesktop_backend=kwin\n'; do
+    printf "$policy" > "$machine_config"
+    installed='hyprland uwsm sddm' check_failures=0
+    check_desktop "$machine_config" > "$workdir/desktop" 2>&1 || true
+    grep -F 'KDE Plasma is not installed' "$workdir/desktop"
+  done
+  installed='hyprland uwsm sddm' check_failures=0
+  check_desktop "$workdir/absent.conf" > "$workdir/desktop" 2>&1 || true
+  grep -F 'KDE Plasma is not installed' "$workdir/desktop"
+)
+printf 'An existing Hyprland KMS policy checks Hyprland/UWSM instead of Plasma.\n'
+
 # First install must request a reboot even if driver status later reports loaded.
 (
   pacman() { [[ "$*" == '-Q vibepollo' ]] && return "$package_status"; }
