@@ -100,6 +100,8 @@ namespace platf {
           return "rtsp";
         case frame_limiter_owner::webrtc:
           return "webrtc";
+        case frame_limiter_owner::application:
+          return "application";
         default:
           return "unknown";
       }
@@ -515,6 +517,27 @@ namespace platf {
     }
 
     return rtss_warmup_process();
+  }
+
+  void frame_limiter_streaming_join(frame_limiter_owner owner) {
+    std::scoped_lock lock {g_lifecycle_mutex};
+    if (g_stream_owner_mask != 0) {
+      g_stream_owner_mask |= static_cast<std::uint8_t>(owner);
+    }
+  }
+
+  void frame_limiter_streaming_suspend(frame_limiter_owner owner) {
+    std::scoped_lock lock {g_lifecycle_mutex};
+    const auto owner_bit = static_cast<std::uint8_t>(owner);
+    if ((g_stream_owner_mask & owner_bit) == 0) {
+      return;
+    }
+    // Preserve both provider state and the original restoration snapshot. Keeping
+    // only the RTSS process alive would still restore its limit and NVCP settings.
+    g_stream_owner_mask |= static_cast<std::uint8_t>(frame_limiter_owner::application);
+    g_stream_owner_mask &= static_cast<std::uint8_t>(~owner_bit);
+    BOOST_LOG(debug) << "Frame limiter overrides retained for the resumable application after "
+                     << frame_limiter_owner_to_string(owner) << " suspended.";
   }
 
   void frame_limiter_streaming_stop(

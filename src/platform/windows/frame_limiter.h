@@ -18,6 +18,7 @@ namespace platf {
   enum class frame_limiter_owner : std::uint8_t {
     rtsp = 1u << 0,
     webrtc = 1u << 1,
+    application = 1u << 2,
   };
 
   enum class frame_limiter_provider {
@@ -45,10 +46,19 @@ namespace platf {
     frame_limiter_owner owner,
     const framegen::stream_start_policy_t &policy
   );
+  // Release an owner; the final release restores the pre-session settings.
+  // keep_rtss_running preserves only the process, not its applied overrides.
   void frame_limiter_streaming_stop(
     frame_limiter_owner owner,
     bool keep_rtss_running = false
   );
+  // Join an existing policy without applying the joining client's settings.
+  // Does nothing if no limiter lifetime has started.
+  void frame_limiter_streaming_join(frame_limiter_owner owner);
+  // Transfer a departing transport's policy to the resumable application.
+  // The caller holds the stream lifecycle gate and has verified the app is alive.
+  // terminate() releases the application owner, even with no connected clients.
+  void frame_limiter_streaming_suspend(frame_limiter_owner owner);
   void frame_limiter_streaming_refresh();
 
   bool frame_limiter_prepare_launch(const framegen::stream_start_policy_t &policy);

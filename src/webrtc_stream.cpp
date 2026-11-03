@@ -3778,12 +3778,14 @@ namespace webrtc_stream {
             BOOST_LOG(debug) << "WebRTC: stopped idle capture and is checking for final shared platform teardown.";
           }
 #ifdef _WIN32
-          const bool keep_rtss_running =
-            rtsp_owns_runtime || proc::proc.current_app_id() > 0;
-          platf::frame_limiter_streaming_stop(
-            platf::frame_limiter_owner::webrtc,
-            keep_rtss_running
-          );
+          if (proc::proc.current_app_id() > 0) {
+            platf::frame_limiter_streaming_suspend(platf::frame_limiter_owner::webrtc);
+          } else {
+            platf::frame_limiter_streaming_stop(
+              platf::frame_limiter_owner::webrtc,
+              rtsp_owns_runtime
+            );
+          }
 #elif defined(__linux__)
           platf::frame_limiter_streaming_stop(platf::frame_limiter_owner::webrtc);
 #endif

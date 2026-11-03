@@ -1983,6 +1983,12 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_rtss_trust_compile.py"
                 --compiler "${CMAKE_CXX_COMPILER}")
     endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME regression_windows_frame_limiter_lifecycle
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_frame_limiter_vsync.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+        set_tests_properties(regression_windows_frame_limiter_lifecycle PROPERTIES LABELS "component" TIMEOUT 60)
+    endif()
     add_test(NAME regression_display_policy_adapter
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_policy_adapter.py")
     add_library(sunshine_test_session_display_precedence_dependencies INTERFACE)

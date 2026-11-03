@@ -3463,6 +3463,10 @@ namespace proc {
     _app_launch_time = {};
     _app_id = -1;
 #ifdef _WIN32
+    // A suspended application owns its limiter independently of RTSP/WebRTC.
+    // Drop that lifetime under the stream lifecycle gate before restoring config;
+    // live transports still defer provider restoration until their final stop.
+    platf::frame_limiter_streaming_stop(platf::frame_limiter_owner::application);
     platf::dualsense_usbip_gamepad::set_application_active(false);
 #endif
     _app_name.clear();
