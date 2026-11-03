@@ -1,8 +1,11 @@
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace managed_app_focus {
@@ -30,5 +33,18 @@ for (var i=0;i<windows.length;i++) {
   result.focused=workspace.activeWindow===w;
 }
 result.call=)JS" + std::to_string(call) + ";callDBus(" + nlohmann::json(destination).dump() + ",'/Focus','dev.vibepollo.Focus','Result',JSON.stringify(result));";
+  }
+
+  // A Result counts only from the script of this call and in the shape the
+  // focus step reads; anything else, including malformed JSON, is dropped.
+  inline std::optional<nlohmann::json> kwin_result(std::string_view text, std::uint64_t call) {
+    auto parsed = nlohmann::json::parse(text, nullptr, false);
+    const auto is_string = [](const nlohmann::json &window) { return window.is_string(); };
+    if (!parsed.is_object() || !parsed.contains("call") || !parsed["call"].is_number_unsigned() || parsed["call"].get<std::uint64_t>() != call ||
+        !parsed.contains("focused") || !parsed["focused"].is_boolean() || !parsed.contains("windows") || !parsed["windows"].is_array() ||
+        !std::ranges::all_of(parsed["windows"], is_string)) {
+      return std::nullopt;
+    }
+    return parsed;
   }
 }  // namespace managed_app_focus
