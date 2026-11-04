@@ -66,6 +66,25 @@ def emit_outputs(info):
     print(json.dumps(info))
 
 
+def published_stable_anchor(releases):
+    """Return the highest published stable version and its exact release tag."""
+    candidates = []
+    for page in releases:
+        for release in page:
+            if (release.get("draft") is not False or release.get("prerelease") is not False
+                    or not release.get("published_at")):
+                continue
+            match = re.fullmatch(r"v?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-stable\.([0-9]+))?",
+                                 release.get("tag_name", ""))
+            if match:
+                version = tuple(map(int, match.groups()[:3]))
+                candidates.append((version, int(match[4] or 0), release["published_at"], release["tag_name"]))
+    if not candidates:
+        raise ValueError("No published stable release is available to anchor the nightly version")
+    version, _respin, _published, tag = max(candidates)
+    return version, tag
+
+
 def validate_invocation(branch):
     event = os.environ.get("GITHUB_EVENT_NAME")
     primary = os.environ.get("DAILY_PRIMARY_BRANCH")
@@ -104,12 +123,10 @@ def resolve():
     # GITHUB_TOKEN has no workflows:write capability. Do not select a target
     # with a different workflow tree and then discover that during publication.
     run("git", "diff", "--exit-code", os.environ["GITHUB_SHA"], commit, "--", ".github/workflows")
-    tags = run("git", "tag", "--merged", commit, "--sort=-version:refname", "--list", "[0-9]*.[0-9]*.[0-9]*").splitlines()
-    stable_tags = [tag for tag in tags if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+(?:-stable\.[0-9]+)?", tag)]
-    if not stable_tags:
-        raise ValueError("Source has no merged stable release anchor")
-    stable = max((tuple(map(int, re.match(r"[0-9]+\.[0-9]+\.[0-9]+", tag)[0].split("."))) for tag in stable_tags))
-    major, minor, patch = stable
+    tags = run("git", "tag", "--merged", commit, "--sort=-version:refname", "--list", "*").splitlines()
+    (major, minor, patch), stable_tag = published_stable_anchor(releases)
+    if stable_tag not in tags:
+        raise ValueError(f"Published stable {stable_tag} is not in the nightly source; reconcile the branches before publishing")
     # A nightly is development AFTER the released patch and BEFORE its successor.
     # Do not change SemVer precedence to place an old nightly above its final stable.
     base = f"{major}.{minor}.{patch + 1}"
@@ -175,6 +192,10 @@ def guard_publication(repository, commit, tag):
     if run("git", "rev-parse", f"refs/tags/{tag}^{{commit}}") != commit:
         raise ValueError("Reserved release tag no longer matches this build")
     releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
+    (major, minor, patch), _stable_tag = published_stable_anchor(releases)
+    expected_base = f"{major}.{minor}.{patch + 1}"
+    if tag.split("-", 1)[0] != expected_base:
+        raise ValueError("Published stable release changed during the build; rerun with a current nightly version")
     if any(r.get("tag_name") == tag for page in releases for r in page):
         raise ValueError("Release already exists; recovery must preserve its original assets")
     if published_source(commit, dt.datetime.now(dt.timezone.utc).date(), releases, tag):
