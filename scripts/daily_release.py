@@ -76,8 +76,9 @@ def emit_outputs(info):
     print(json.dumps(info))
 
 
-def latest_published_stable(releases):
-    stable_versions = []
+def published_stable_anchor(releases):
+    """Return the highest published stable version and its exact release tag."""
+    candidates = []
     for page in releases:
         for release in page:
             if (release.get("draft") is not False or release.get("prerelease") is not False
@@ -87,50 +88,17 @@ def latest_published_stable(releases):
                                  release.get("tag_name", ""))
             if match:
                 version = tuple(map(int, match.groups()[:3]))
-                stable_versions.append((version, int(match[4] or 0), release["published_at"], release["tag_name"]))
-    if not stable_versions:
+                candidates.append((version, int(match[4] or 0), release["published_at"], release["tag_name"]))
+    if not candidates:
         raise ValueError("No published stable release is available to anchor the nightly version")
-    version, _respin, _published, tag = max(stable_versions)
+    version, _respin, _published, tag = max(candidates)
     return version, tag
-
-
-def next_nightly_base(releases):
-    """Order nightlies after the highest published stable."""
-    (major, minor, patch), _tag = latest_published_stable(releases)
-    base = f"{major}.{minor}.{patch + 1}"
-    # Do not publish a backwards upgrade if a formerly higher stable was
-    # withdrawn or an earlier nightly intentionally used a higher base.
-    candidate = (major, minor, patch + 1)
-    for page in releases:
-        for release in page:
-            if (release.get("draft") is not False or release.get("prerelease") is not True
-                    or not release.get("published_at")):
-                continue
-            match = re.match(r"^v?([0-9]+)\.([0-9]+)\.([0-9]+)-(?:nightly|daily)\.",
-                             release.get("tag_name", ""))
-            if match and tuple(map(int, match.groups())) > candidate:
-                raise ValueError("A higher nightly base is already published; review the stable anchor")
-    return base
-
-
-def nightly_base(tag):
-    match = re.match(r"^v?([0-9]+)\.([0-9]+)\.([0-9]+)-(?:nightly|daily)\.", tag)
-    return tuple(map(int, match.groups())) if match else None
-
-
-def ensure_stable_in_source(releases, commit):
-    _version, tag = latest_published_stable(releases)
-    try:
-        stable_commit = run("git", "rev-parse", f"refs/tags/{tag}^{{commit}}")
-        run("git", "merge-base", "--is-ancestor", stable_commit, commit)
-    except subprocess.CalledProcessError as exc:
-        raise ValueError(f"Published stable {tag} is not in the nightly source; reconcile the branches before publishing") from exc
 
 
 def validate_live_stable_base(repository, tag):
     releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
-    base = tag.split("-", 1)[0]
-    if base != next_nightly_base(releases):
+    (major, minor, patch), _stable_tag = published_stable_anchor(releases)
+    if tag.split("-", 1)[0] != f"{major}.{minor}.{patch + 1}":
         raise ValueError("Published stable release changed during the build; rerun with a current nightly version")
 
 
@@ -147,16 +115,12 @@ def resolve():
     commit = run("git", "rev-parse", "refs/remotes/origin/daily-source^{commit}")
     run("git", "fetch", "--no-recurse-submodules", "origin", "refs/tags/*:refs/tags/*")
     releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
-    base = next_nightly_base(releases)
     previous = previous_successful_nightly(repository, releases)
     if previous and previous["source_commit"] == commit:
-        previous_base = nightly_base(previous["tag"])
-        if previous_base is None or previous_base >= tuple(map(int, base.split("."))):
-            # Unknown legacy bases remain conservative; a known older base
-            # needs a fresh build because its embedded version is now obsolete.
-            emit_outputs({"commit": commit, "should_build": "false", "skip_reason": f"Source unchanged since {previous['tag']}"})
-            return
-    ensure_stable_in_source(releases, commit)
+        # Each repository owns its baseline. Upstream advances cannot turn an
+        # unchanged target into a build or an assertion that migration happened.
+        emit_outputs({"commit": commit, "should_build": "false", "skip_reason": f"Source unchanged since {previous['tag']}"})
+        return
     if repository == "Nonary/Vibepollo":
         upstream = run("git", "ls-remote", "https://github.com/Nonary/vibeshine.git", "refs/heads/master").split()
         if len(upstream) != 2 or upstream[1] != "refs/heads/master":
@@ -165,7 +129,13 @@ def resolve():
     # GITHUB_TOKEN has no workflows:write capability. Do not select a target
     # with a different workflow tree and then discover that during publication.
     run("git", "diff", "--exit-code", os.environ["GITHUB_SHA"], commit, "--", ".github/workflows")
-    # Only build once the latest stable has been reconciled into the source.
+    tags = run("git", "tag", "--merged", commit, "--sort=-version:refname", "--list", "*").splitlines()
+    (major, minor, patch), stable_tag = published_stable_anchor(releases)
+    if stable_tag not in tags:
+        raise ValueError(f"Published stable {stable_tag} is not in the nightly source; reconcile the branches before publishing")
+    # A nightly is development AFTER the released patch and BEFORE its successor.
+    # Do not change SemVer precedence to place an old nightly above its final stable.
+    base = f"{major}.{minor}.{patch + 1}"
     day = dt.datetime.now(dt.timezone.utc).date()
     # A hex SHA is an identity, not an ordinal. Keep at most one published
     # new-style nightly per UTC day so installed clients and package managers
