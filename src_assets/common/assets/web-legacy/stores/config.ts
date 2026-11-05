@@ -11,6 +11,7 @@ export interface MetaInfo {
   version?: string;
   commit?: string;
   branch?: string;
+  channel?: 'stable' | 'nightly' | 'prerelease' | 'legacy';
   release_date?: string; // ISO 8601 when available
   gpus?: Array<{
     description?: string;

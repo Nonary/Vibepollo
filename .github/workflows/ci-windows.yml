@@ -15,6 +15,18 @@ on:
       release_version:
         required: true
         type: string
+      release_channel:
+        required: false
+        type: string
+        default: ''
+      stable_anchor_tag:
+        required: false
+        type: string
+        default: ''
+      stable_anchor_commit:
+        required: false
+        type: string
+        default: ''
       release_tag:
         required: false
         type: string
@@ -658,6 +670,9 @@ jobs:
           COMMIT: ${{ inputs.release_commit }}
           REQUIRE_TRUEHDR_RUNTIME: ${{ inputs.require_truehdr_runtime }}
           DAILY_UNSIGNED: ${{ inputs.daily_unsigned }}
+          BUILD_CHANNEL: ${{ inputs.daily_unsigned && 'nightly' || inputs.release_channel }}
+          STABLE_ANCHOR_TAG: ${{ inputs.stable_anchor_tag }}
+          STABLE_ANCHOR_COMMIT: ${{ inputs.stable_anchor_commit }}
         run: |
           echo "Using BUILD_VERSION=${BUILD_VERSION}"
 

@@ -3278,6 +3278,7 @@ namespace confighttp {
     output_tree["architecture"] = "unknown";
 #endif
     output_tree["version"] = PROJECT_VERSION;
+    output_tree["channel"] = PROJECT_BUILD_CHANNEL;
     output_tree["commit"] = PROJECT_VERSION_COMMIT;
 #ifdef PROJECT_VERSION_PRERELEASE
     output_tree["prerelease"] = PROJECT_VERSION_PRERELEASE;

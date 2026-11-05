@@ -123,11 +123,12 @@ namespace update {
   }
 
   bool download_nightly_metadata(const std::string &tag, std::string &out_json) {
-    if (!release_selection::daily_tag(tag)) return false;
+    if (!release_selection::daily_tag(tag) && !release_selection::numeric_tag(tag)) return false;
     // Kept for API compatibility; availability checks never fetch assets.
     std::string data;
     if (!download_json("https://api.github.com/repos/" SUNSHINE_REPO_OWNER "/" SUNSHINE_REPO_NAME "/releases/tags/" + tag, data)) return false;
     const auto release = nlohmann::json::parse(data, nullptr, false);
+    if (!release_selection::verified_nightly_release(release, tag)) return false;
     const auto metadata = release_selection::api_metadata(release);
     if (metadata.is_null()) return false;
     out_json = metadata.dump();
