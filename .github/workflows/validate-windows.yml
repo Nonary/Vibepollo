@@ -31,7 +31,69 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      numeric_nightly: ${{ steps.identity.outputs.numeric_nightly }}
+      stable_anchor_tag: ${{ steps.identity.outputs.stable_anchor_tag }}
+      stable_anchor_commit: ${{ steps.identity.outputs.stable_anchor_commit }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Test numeric qualification workflow contract
+        run: python -m unittest discover -s .github/scripts -p test_validate_windows_numeric_anchor.py
+      - name: Resolve numeric nightly stable anchor
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+          QUALIFY_NIGHTLY: ${{ inputs.qualify_nightly_installer }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_SOURCE_COMMIT: ${{ github.sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          import re
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          numeric_nightly = (os.environ["QUALIFY_NIGHTLY"] == "true" and
+                             re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", os.environ["RELEASE_VERSION"]))
+          if numeric_nightly and os.environ.get("RELEASE_TAG") not in ("", os.environ["RELEASE_VERSION"]):
+              raise SystemExit("Numeric nightly qualification release_tag must equal release_version")
+          values = {"numeric_nightly": "true" if numeric_nightly else "false",
+                    "stable_anchor_tag": "", "stable_anchor_commit": ""}
+          if numeric_nightly:
+              spec = __import__("importlib.util", fromlist=["spec_from_file_location"])
+              module_spec = spec.spec_from_file_location("numeric_release", Path("scripts/numeric_release.py"))
+              numeric = spec.module_from_spec(module_spec)
+              module_spec.loader.exec_module(numeric)
+              releases = numeric.release_pages(os.environ["GITHUB_REPOSITORY"])
+              refs, _channels = numeric.read_refs()
+              stable = numeric.latest_stable_release(releases)
+              anchor_tag = stable["tag_name"]
+              anchor_commit = numeric._commit_for_tag(anchor_tag, refs)
+              try:
+                  subprocess.run(["git", "merge-base", "--is-ancestor", anchor_commit,
+                                  os.environ["RELEASE_SOURCE_COMMIT"]], check=True)
+              except subprocess.CalledProcessError as exc:
+                  raise SystemExit("Qualification source does not contain the published stable anchor") from exc
+              values.update(stable_anchor_tag=anchor_tag, stable_anchor_commit=anchor_commit)
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              for key, value in values.items():
+                  output.write(f"{key}={value}\n")
+          PY
+
   windows:
+    needs: prepare
     permissions:
       actions: read
       contents: read
@@ -43,7 +105,11 @@ jobs:
       daily_unsigned: ${{ inputs.qualify_nightly_installer }}
       release_commit: ${{ github.sha }}
       release_version: ${{ inputs.release_version }}
-      release_tag: ${{ inputs.release_tag }}
+      release_tag: ${{ inputs.release_tag || (needs.prepare.outputs.numeric_nightly == 'true' && inputs.release_version) || '' }}
+      release_channel: ${{ needs.prepare.outputs.numeric_nightly == 'true' && 'nightly' || '' }}
+      stable_anchor_tag: ${{ needs.prepare.outputs.stable_anchor_tag }}
+      stable_anchor_commit: ${{ needs.prepare.outputs.stable_anchor_commit }}
+      daily_validation_only: ${{ needs.prepare.outputs.numeric_nightly == 'true' }}
       require_truehdr_runtime: ${{ inputs.qualify_nightly_installer }}
       symbol_product_name: Vibepollo
       symbol_release_prefix: polo
