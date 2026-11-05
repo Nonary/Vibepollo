@@ -1096,7 +1096,7 @@ namespace config {
     #endif
 
     int default_min_log_level() {
-      if (version_compare::is_prerelease_channel(PROJECT_VERSION)) {
+      if (version_compare::is_prerelease_build(PROJECT_BUILD_CHANNEL, PROJECT_VERSION)) {
         return 1;
       }
       return 2;

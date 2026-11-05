@@ -24,6 +24,10 @@ namespace release_selection {
     static const std::regex nightly(R"(^[0-9]+\.[0-9]+\.[0-9]+-nightly\.d[0-9]{8}\.(r\.[1-9][0-9]{0,2}\.)?[0-9a-f]{12}$)");
     return std::regex_match(tag, pattern) || std::regex_match(tag, semver) || std::regex_match(tag, nightly);
   }
+  inline bool numeric_tag(const std::string &tag) {
+    static const std::regex pattern(R"(^[0-9]+\.[0-9]+\.[0-9]+$)");
+    return std::regex_match(tag, pattern);
+  }
   inline bool asset(const json &release, const std::string &name) {
     if (!release.contains("assets") || !release["assets"].is_array()) return false;
     for (const auto &item : release["assets"]) {
@@ -74,7 +78,17 @@ namespace release_selection {
     return package && (!nightly || (release["prerelease"].get<bool>() && asset(release, "SHA256SUMS")));
   }
   inline bool valid_metadata(const std::string &tag, const json &metadata) {
-    if (!daily_tag(tag) || !metadata.is_object()) return false;
+    if (!metadata.is_object()) return false;
+    // Current numeric nightly tags carry their channel identity in the
+    // release metadata. Do not derive a date or revision from the tag.
+    if (numeric_tag(tag)) {
+      const auto source = metadata.value("source_commit", "");
+      static const std::regex sha(R"(^[0-9a-f]{40}$)");
+      return metadata.value("schema_version", 0) == 1 && metadata.value("channel", "") == "nightly" &&
+             metadata.value("tag", "") == tag && metadata.value("version", "") == tag &&
+             std::regex_match(source, sha);
+    }
+    if (!daily_tag(tag)) return false;
     static const std::regex new_nightly(R"(^([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d([0-9]{4})([0-9]{2})([0-9]{2})\.(?:r\.([1-9][0-9]{0,2})\.)?([0-9a-f]{12})$)");
     std::smatch nightly_match;
     if (std::regex_match(tag, nightly_match, new_nightly)) {
@@ -132,8 +146,23 @@ namespace release_selection {
       return metadata;
     } catch (const json::exception &) { return nullptr; }
   }
+  inline bool verified_nightly_release(const json &release, const std::string &tag) {
+    if ((!daily_tag(tag) && !numeric_tag(tag)) || !release.is_object() ||
+        !release.contains("tag_name") || !release["tag_name"].is_string() || release["tag_name"] != tag ||
+        !release.contains("draft") || !release["draft"].is_boolean() || release["draft"].get<bool>() ||
+        !release.contains("published_at") || !release["published_at"].is_string() || release["published_at"].get<std::string>().empty() ||
+        !release.contains("prerelease") || !release["prerelease"].is_boolean() || !release["prerelease"].get<bool>() ||
+        !asset(release, "SHA256SUMS")) return false;
+    return !api_metadata(release).is_null();
+  }
   inline std::string identity(const json &release) {
     const auto tag = release.value("tag_name", "");
+    const bool prerelease = release.value("prerelease", false);
+    if (numeric_tag(tag) && prerelease) {
+      const auto metadata = api_metadata(release);
+      if (metadata.is_null()) return "";
+      return metadata["version"].get<std::string>();
+    }
     if (!daily_tag(tag)) {
       // Malformed nightly identities must not fall back to an unqualified
       // ordinary prerelease and bypass metadata verification.
@@ -186,7 +215,8 @@ namespace release_selection {
       try {
         if (!release.is_object() || !release.contains("tag_name") || !release["tag_name"].is_string()) continue;
         const auto tag = release["tag_name"].get<std::string>();
-        if (!complete(release, daily_tag(tag)) || (release["prerelease"].get<bool>() && !allow_prereleases)) continue;
+        const bool nightly = daily_tag(tag) || (numeric_tag(tag) && release["prerelease"].get<bool>());
+        if (!complete(release, nightly) || (release["prerelease"].get<bool>() && !allow_prereleases)) continue;
         const auto version = identity(release);
         // A manual prerelease on the same numeric base cannot prove it is newer
         // than an installed nightly without source lineage metadata. Fail closed.

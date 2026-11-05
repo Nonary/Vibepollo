@@ -3229,6 +3229,7 @@ namespace confighttp {
     output_tree["status"] = true;
     output_tree["platform"] = SUNSHINE_PLATFORM;
     output_tree["version"] = PROJECT_VERSION;
+    output_tree["channel"] = PROJECT_BUILD_CHANNEL;
 #ifdef _WIN32
     output_tree["vdisplayStatus"] = static_cast<int>(proc::vDisplayDriverStatus.load(std::memory_order_acquire));
 #endif

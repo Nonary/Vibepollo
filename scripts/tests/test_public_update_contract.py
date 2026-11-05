@@ -75,7 +75,8 @@ curl() { if [[ "$FIXTURE_AVAILABLE" == 0 ]]; then return 1; fi; printf '%s' "$FI
 die() { echo "$*" >&2; exit 1; }
 ok() { :; }
 REPO_URL=https://example.invalid/repository
-tag=2.0.1-daily.d20261012.1
+tag="${FIXTURE_TAG:-2.0.1-daily.d20261012.1}"
+release_is_prerelease="${FIXTURE_PRERELEASE:-false}"
 asset_name=fixture.pkg.tar.zst
 check() {
 """ + block + "\n}\ncheck\n"
@@ -95,6 +96,11 @@ check() {
                     env.update(FIXTURE_SUMS=sums, FIXTURE_AVAILABLE=available)
                     result = subprocess.run([bash, '-c', script], env=env, capture_output=True, text=True)
                     self.assertEqual(result.returncode, expected, result.stderr)
+            for prerelease, expected in [('true', 1), ('false', 0)]:
+                env.update(FIXTURE_TAG='2.0.16', FIXTURE_PRERELEASE=prerelease,
+                           FIXTURE_SUMS='', FIXTURE_AVAILABLE='0')
+                result = subprocess.run([bash, '-c', script], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, expected, result.stderr)
 
 if __name__ == '__main__':
     unittest.main()
