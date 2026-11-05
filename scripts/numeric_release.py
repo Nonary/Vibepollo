@@ -318,7 +318,8 @@ def resolve(releases, refs, source_commit, source_branch, channel, tag_channels=
 
 
 def validate_tag(releases, refs, tag_channels, tag, source_commit, source_branch,
-                 primary_branch, confirmation, channel, qualified_nightly=None):
+                 primary_branch, confirmation, channel, qualified_nightly=None,
+                 source_branch_commit=None):
     """Recompute a numeric release tag against live GitHub state before signing."""
     validate_source(os.environ.get("GITHUB_REPOSITORY", ""), source_branch, confirmation)
     validate_channel_branch(channel, source_branch, primary_branch)
@@ -330,6 +331,12 @@ def validate_tag(releases, refs, tag_channels, tag, source_commit, source_branch
         raise ValueError("Numeric signing currently accepts stable tags only; nightly prereleases use the daily publisher")
     if _commit_for_tag(tag, refs) != source_commit:
         raise ValueError("Numeric release tag target does not match the exact release source commit")
+    if not source_branch_commit:
+        raise ValueError("Exact confirmed source branch tip is required to validate a numeric tag")
+    try:
+        run("git", "merge-base", "--is-ancestor", source_commit, source_branch_commit)
+    except subprocess.CalledProcessError as error:
+        raise ValueError("Numeric release tag source is not reachable from the confirmed source branch") from error
     matching = [release for page in releases for release in page if release.get("tag_name") == tag]
     for release in matching:
         expected_prerelease = channel in {"prerelease", "nightly"}
@@ -354,13 +361,20 @@ def validate_tag(releases, refs, tag_channels, tag, source_commit, source_branch
 
 
 def generate_notes(version, source_commit, channel, previous_sources, output_path):
-    fields = run("git", "log", "--reverse", "--format=%H%x00%s%x00%b%x00",
-                 source_commit, "--not", *previous_sources).split("\0")
+    raw = run("git", "log", "--reverse", "-z", "--format=%H%x00%s%x00%b",
+              source_commit, "--not", *previous_sources)
     commits = []
-    for index in range(0, len(fields) - 2, 3):
-        sha, subject, body = fields[index:index + 3]
-        if not sha:
+    for record in raw.split("\0\0"):
+        if not record:
             continue
+        fields = record.split("\0", 2)
+        if len(fields) == 2:
+            fields.append("")
+        if len(fields) != 3:
+            raise ValueError("Could not parse exact NUL-framed release notes commit data")
+        sha, subject, body = fields
+        if not re.fullmatch(r"[0-9a-f]{40}", sha):
+            raise ValueError("Release notes commit data contains an invalid full SHA")
         commits.append((sha, subject, body))
     product = "Vibeshine"
     lines = [f"# {product} {version}", "", f"Channel: {channel}.", "",
@@ -443,13 +457,18 @@ if __name__ == "__main__":
         repository = os.environ["GITHUB_REPOSITORY"]
         releases = release_pages(repository)
         refs, channels = read_refs()
+        source_branch = os.environ["RELEASE_SOURCE_BRANCH"]
+        run("git", "fetch", "--no-tags", "origin",
+            f"+refs/heads/{source_branch}:refs/remotes/origin/numeric-release-source")
+        source_branch_commit = run("git", "rev-parse", "refs/remotes/origin/numeric-release-source^{commit}")
         result = validate_tag(releases, refs, channels, os.environ["RELEASE_TAG"],
                               os.environ["RELEASE_SOURCE_COMMIT"],
-                              os.environ["RELEASE_SOURCE_BRANCH"],
+                              source_branch,
                               os.environ["RELEASE_PRIMARY_BRANCH"],
                               os.environ["RELEASE_SOURCE_CONFIRMED"],
                               os.environ["RELEASE_CHANNEL"],
-                              latest_qualified_nightly(repository, releases))
+                              latest_qualified_nightly(repository, releases),
+                              source_branch_commit)
         if args.command == "generate-notes":
             prior_releases = [[release for release in page
                                if release.get("tag_name") != os.environ["RELEASE_TAG"]]

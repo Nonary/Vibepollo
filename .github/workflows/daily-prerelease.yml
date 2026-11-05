@@ -100,6 +100,7 @@ jobs:
       release_channel: nightly
       stable_anchor_tag: ${{ needs.prepare.outputs.stable_anchor_tag }}
       stable_anchor_commit: ${{ needs.prepare.outputs.stable_anchor_commit }}
+      daily_validation_only: ${{ vars.DAILY_RELEASE_ENABLED != 'true' || inputs.publish != true }}
       daily_unsigned: true
       build_only: false
       build_tests: true
@@ -232,7 +233,7 @@ jobs:
                       for p in Path("public-assets").iterdir() if p.is_file()}
           assets = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
           actual = {a.get("name"): a.get("digest") for a in assets}
-          if set(actual) != set(expected):
+          if len(actual) != len(assets) or set(actual) != set(expected):
               raise SystemExit(f"Uploaded nightly asset set mismatch: expected={sorted(expected)}, actual={sorted(actual)}")
           for name, digest in expected.items():
               if actual[name] != f"sha256:{digest}":

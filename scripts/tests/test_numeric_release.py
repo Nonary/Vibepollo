@@ -136,6 +136,30 @@ class NumericReleaseTests(unittest.TestCase):
             self.assertEqual(result["version"], "2.0.7")
             self.assertEqual(result["previous_source_commit"], nightly_commit)
 
+    def test_generated_notes_keep_valid_full_sha_for_every_commit(self):
+        with tempfile.TemporaryDirectory() as temp:
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=temp, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            git("init", "-q", "-b", "main")
+            git("config", "user.name", "Notes test")
+            git("config", "user.email", "notes@example.invalid")
+            git("commit", "--allow-empty", "-m", "chore: baseline")
+            baseline = git("rev-parse", "HEAD")
+            git("commit", "--allow-empty", "-m", "fix: first note")
+            first = git("rev-parse", "HEAD")
+            git("commit", "--allow-empty", "-m", "feat: second note")
+            second = git("rev-parse", "HEAD")
+            scoped_run = lambda *args: subprocess.run(
+                args, cwd=temp, check=True, capture_output=True, text=True).stdout.strip()
+            with patch.object(release, "run", side_effect=scoped_run):
+                output = Path(temp) / "notes.md"
+                release.generate_notes("2.1.0", second, "stable", [baseline], output)
+            notes = output.read_text(encoding="utf-8")
+            self.assertIn(f"{first[:12]}](https://github.com/Nonary/vibeshine/commit/{first}) fix: first note", notes)
+            self.assertIn(f"{second[:12]}](https://github.com/Nonary/vibeshine/commit/{second}) feat: second note", notes)
+            self.assertNotIn("\n" + second[:12], notes)
+
     def test_unrelated_imported_date_tags_do_not_reserve_product_versions(self):
         refs = {**REFS, "v2025.814.190855": "foreign-a", "v2026.221.41532": "foreign-b"}
         self.assertEqual(release.published_numeric_max(RELEASES, refs), (2, 0, 6))
@@ -179,7 +203,8 @@ class NumericReleaseTests(unittest.TestCase):
              patch.object(release, "run", side_effect=self.fake_git("fix: one\n", refs)):
             result = release.validate_tag(RELEASES, refs, {"2.0.7": "stable"},
                                            "2.0.7", SOURCE, "master", "master",
-                                           "Nonary/vibeshine:master", "stable")
+                                           "Nonary/vibeshine:master", "stable",
+                                           source_branch_commit=SOURCE)
         self.assertEqual(result["stable_anchor_tag"], "2.0.6")
         self.assertEqual(result["stable_anchor_commit"], BASE)
         with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/vibeshine"):
@@ -191,7 +216,8 @@ class NumericReleaseTests(unittest.TestCase):
                 with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", refs)):
                     release.validate_tag(RELEASES, refs, {"2.0.7": "stable"},
                                          "2.0.7", BASE, "master", "master",
-                                         "Nonary/vibeshine:master", "stable")
+                                         "Nonary/vibeshine:master", "stable",
+                                         source_branch_commit=SOURCE)
 
     def test_actual_annotated_tag_channel_and_source_validate_end_to_end(self):
         with tempfile.TemporaryDirectory() as temp:
@@ -215,9 +241,15 @@ class NumericReleaseTests(unittest.TestCase):
                 refs, channels = release.read_refs()
                 result = release.validate_tag(
                     RELEASES, refs, channels, "2.0.7", source, "master", "master",
-                    "Nonary/vibeshine:master", "stable")
+                    "Nonary/vibeshine:master", "stable", source_branch_commit=source)
             self.assertEqual(channels["2.0.7"], "stable")
             self.assertEqual(result["tag"], "2.0.7")
+            with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/vibeshine"), \
+                 patch.object(release, "run", side_effect=scoped_run):
+                with self.assertRaisesRegex(ValueError, "not reachable from the confirmed source branch"):
+                    release.validate_tag(RELEASES, refs, channels, "2.0.7", source,
+                                         "master", "master", "Nonary/vibeshine:master",
+                                         "stable", source_branch_commit=stable_commit)
             with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/vibeshine"), \
                  patch.object(release, "run", side_effect=scoped_run):
                 with self.assertRaisesRegex(ValueError, "immutable channel"):
