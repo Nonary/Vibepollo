@@ -149,6 +149,10 @@ foreach ($script in @('remove_conflicting_products.vbs')) {
     if (!(Test-Path -LiteralPath (Join-Path $repo "packaging/windows/wix/$script"))) { throw "Missing legacy script: $script" }
 }
 if ($sourceText.Contains('UpgradeSourcePreUninstallVersion') -or $sourceText.Contains('RunWithBootstrapMigration')) { throw 'Superseded broad migration/version workaround remains' }
+$migrationScript = Get-Content -LiteralPath (Join-Path $repo 'src_assets/windows/misc/migration/migrate-config.bat') -Raw -Encoding UTF8
+if ($migrationScript -match '(?im)^\s*(?:if\s+exist\s+"[^"]+"\s+)?del\s+"%OLD_DIR%\\\*\.(txt|log)"') { throw 'Legacy config migration must not delete every .txt or .log file' }
+if (!$migrationScript.Contains('if exist "%OLD_DIR%\sunshine.log" del "%OLD_DIR%\sunshine.log"')) { throw 'Legacy config migration must retain the targeted sunshine.log cleanup' }
+if (!$migrationScript.Contains("Join-Path `$env:NEW_DIR 'apps.json'") -or $migrationScript.Contains("'%NEW_DIR%\apps.json'")) { throw 'Legacy apps.json migration must compose its path safely through the inherited environment variable' }
 if ($namespace -eq 'VibepolloInstaller') {
     if ($custom.SelectNodes('//w:Component[@Id="RemoveLegacyApolloUninstallKey"]', $ns).Count -ne 1 -or $patch.SelectNodes('//ComponentRef[@Id="RemoveLegacyApolloUninstallKey"]').Count -ne 1) { throw 'Existing Apollo ARP cleanup must remain authored and referenced' }
 }

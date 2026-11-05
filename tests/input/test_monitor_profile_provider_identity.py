@@ -20,7 +20,7 @@ def fixture(root):
  code=api.fixture(root).replace('int main(int argc,char**argv)','int original_json_main(int argc,char**argv)',1)
  code=code.replace('json fixture_disk; int fixture_writes=0;', 'std::string fixture_raw; int fixture_refreshes=0; json fixture_disk; int fixture_writes=0;')
  code=code.replace('namespace file_handler {std::string read_file(const char*) {return fixture_disk.dump();}}',r'''namespace file_handler {std::string read_file(const char*) {return fixture_raw.empty()?fixture_disk.dump():fixture_raw;}
- void write_file(const char*,const std::string& value){++fixture_writes;fixture_raw=value;fixture_disk=json::parse(value);}}
+ int write_file(const char*,const std::string& value){++fixture_writes;fixture_raw=value;fixture_disk=json::parse(value);return 0;}}
  namespace proc {void refresh(const std::string&,bool=false){++fixture_refreshes;}}
  ''')
  http=(root/'src/confighttp.cpp').read_text()

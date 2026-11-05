@@ -28,6 +28,7 @@ import urllib.request
 CONTROLLER = "vibepollo-session-controller.service"
 HOST = "vibepollo.service"
 SCOPES = {"/api/session/status": "GET", "/api/apps/close": "POST"}
+ICON_PREFIX = "io.github.Nonary.vibepollo"
 RELEASES_API = "https://api.github.com/repos/Nonary/Vibepollo/releases"
 RELEASES_PAGE = "https://github.com/Nonary/Vibepollo/releases"
 
@@ -168,21 +169,21 @@ def presentation(services, session=None, error=""):
     host = services.get(HOST, "unknown")
     controller = services.get(CONTROLLER, "unknown")
     if "failed" in (host, controller):
-        return "Failed", "apollo-locked", "#e74c3c"
+        return "Failed", f"{ICON_PREFIX}-locked", "#e74c3c"
     if host == "inactive" and controller == "inactive":
-        return "Stopped", "apollo-locked", "#e74c3c"
+        return "Stopped", f"{ICON_PREFIX}-locked", "#e74c3c"
     if host != "active" or controller != "active":
-        return "Starting / unavailable", "apollo-locked", "#f5b041"
+        return "Starting / unavailable", f"{ICON_PREFIX}-locked", "#f5b041"
     if error:
-        return "Running — stream status unavailable", "apollo-tray", "#f5b041"
+        return "Running — stream status unavailable", f"{ICON_PREFIX}-tray", "#f5b041"
     if session is not None:
         name = str(session.get("appName") or "Desktop")[:160]
         if session.get("activeSessions", 0) > 0:
-            return f"Streaming: {name}", "apollo-playing", "#2ecc71"
+            return f"Streaming: {name}", f"{ICON_PREFIX}-playing", "#2ecc71"
         if session.get("appRunning"):
-            return f"Paused: {name}", "apollo-pausing", "#f5b041"
-        return "Ready", "apollo-tray", "#2ecc71"
-    return "Running — connect a token for stream status", "apollo-tray", "#2ecc71"
+            return f"Paused: {name}", f"{ICON_PREFIX}-pausing", "#f5b041"
+        return "Ready", f"{ICON_PREFIX}-tray", "#2ecc71"
+    return "Running — connect a token for stream status", f"{ICON_PREFIX}-tray", "#2ecc71"
 
 
 def poll_status(port, settings):
@@ -526,7 +527,7 @@ def main(argv=None):
             return
         if error is not None:
             if kind == "poll":
-                show("Status unavailable", "apollo-locked", "#f5b041", "Could not read system service status")
+                show("Status unavailable", f"{ICON_PREFIX}-locked", "#f5b041", "Could not read system service status")
                 for action in (start_action, restart_action, stop_action, close_action):
                     action.setEnabled(False)
             else:
@@ -602,7 +603,7 @@ def main(argv=None):
     timer = QTimer()
     timer.timeout.connect(poll)
     timer.start(5000)
-    show("Checking", "apollo-tray", "#f5b041")
+    show("Checking", f"{ICON_PREFIX}-tray", "#f5b041")
     tray.show()
     poll()
     return app.exec()

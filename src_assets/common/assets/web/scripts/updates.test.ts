@@ -2,13 +2,41 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
   selectAvailableUpdate as selectWireUpdate,
+  completeRelease,
   prereleasesEnabled,
   validNightlyMetadata,
   fetchUpdateReleases,
   dismissUpdate,
   dismissedUpdate,
+  installedBuildIsPrerelease,
   type UpdateRelease,
 } from '../utils/updates.ts';
+
+test('compiled build channel determines dashboard prerelease status offline', () => {
+  assert.equal(installedBuildIsPrerelease('nightly', '2.0.3', 'main', false), true);
+  assert.equal(installedBuildIsPrerelease('prerelease', '2.0.3', 'main', false), true);
+  assert.equal(installedBuildIsPrerelease('stable', '2.0.3-nightly.d20261105', 'canary', true), false);
+  assert.equal(installedBuildIsPrerelease('legacy', '2.0.3', 'canary', false), true);
+  assert.equal(installedBuildIsPrerelease(undefined, '2.0.3-beta.1', 'main', false), true);
+  assert.equal(installedBuildIsPrerelease(undefined, '2.0.3', 'main', false), false);
+});
+
+test('numeric prerelease tags require verified nightly metadata and checksums', () => {
+  const tag = '2.0.3';
+  const source = 'a'.repeat(40);
+  const numericNightly: UpdateRelease = {
+    ...release(tag, true),
+    body: `<!-- nightly-identity: ${JSON.stringify({
+      schema_version: 1, channel: 'nightly', tag, version: tag, source_commit: source,
+    })} -->\nNightly build`,
+    assets: [...assets, { name: 'SHA256SUMS', state: 'uploaded', size: 100 }],
+  };
+  assert.equal(completeRelease(numericNightly), true);
+  assert.equal(selectAvailableUpdate('2.0.2', [numericNightly], true)?.tag, tag);
+  assert.equal(completeRelease({ ...numericNightly, body: 'unverified' }), false);
+  assert.equal(completeRelease({ ...numericNightly, assets }), false);
+  assert.equal(completeRelease({ ...numericNightly, prerelease: false }), true);
+});
 
 // Convert semantic-order fixtures to the release API wire contract.
 function selectAvailableUpdate(...args: Parameters<typeof selectWireUpdate>) {

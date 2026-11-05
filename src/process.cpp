@@ -1508,17 +1508,34 @@ namespace proc {
     }
 
     if (!has_resolution_override && scale_factor != 100) {
-      render_width *= ((float) scale_factor / 100);
-      render_height *= ((float) scale_factor / 100);
-
-      // Chop the last bit to ensure the scaled resolution is even numbered
-      // Most odd resolutions won't work well
-      render_width &= ~1;
-      render_height &= ~1;
+      const auto scale_dimension = [scale_factor](uint32_t dimension) -> std::optional<uint32_t> {
+        const auto scaled = static_cast<uint64_t>(dimension) * static_cast<uint64_t>(scale_factor) / 100u;
+        const auto even = scaled & ~uint64_t {1};
+        if (even == 0 || even > static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+          return std::nullopt;
+        }
+        return static_cast<uint32_t>(even);
+      };
+      const auto width = scale_dimension(client_width);
+      const auto height = scale_dimension(client_height);
+      if (width && height) {
+        render_width = *width;
+        render_height = *height;
+      }
     }
 
-    launch_session->width = render_width;
-    launch_session->height = render_height;
+    // Display size is separate from the negotiated stream viewport. Launches
+    // without an NVHTTP override (for example WebRTC) still need to pass the
+    // app-scaled or fallback size to display helpers without changing width/height.
+    if (!has_resolution_override &&
+        (render_width != launch_session->width || render_height != launch_session->height) &&
+        render_width <= static_cast<uint32_t>(std::numeric_limits<int>::max()) &&
+        render_height <= static_cast<uint32_t>(std::numeric_limits<int>::max())) {
+      launch_session->resolution_override = rtsp_stream::launch_session_t::resolution_override_t {
+        .width = static_cast<int>(render_width),
+        .height = static_cast<int>(render_height),
+      };
+    }
 
     this->initial_display = config::video.output_name;
 
@@ -1839,8 +1856,8 @@ namespace proc {
     _env["APOLLO_CLIENT_NAME"] = launch_session->device_name;
     _env["APOLLO_CLIENT_WIDTH"] = std::to_string(render_width);
     _env["APOLLO_CLIENT_HEIGHT"] = std::to_string(render_height);
-    _env["APOLLO_CLIENT_RENDER_WIDTH"] = std::to_string(launch_session->width);
-    _env["APOLLO_CLIENT_RENDER_HEIGHT"] = std::to_string(launch_session->height);
+    _env["APOLLO_CLIENT_RENDER_WIDTH"] = std::to_string(render_width);
+    _env["APOLLO_CLIENT_RENDER_HEIGHT"] = std::to_string(render_height);
     _env["APOLLO_CLIENT_SCALE_FACTOR"] = std::to_string(scale_factor);
     _env["APOLLO_CLIENT_FPS"] = fps_scaled_str;
     _env["APOLLO_CLIENT_HDR"] = rtsp_stream::effective_hdr_requested(*launch_session) ? "true" : "false";
@@ -4445,7 +4462,7 @@ namespace proc {
     }
   }
 
-  void migrate(nlohmann::json &fileTree, const std::string &fileName) {
+  void migrate(nlohmann::json &fileTree, const std::string &fileName, bool persist = true, bool *migrated = nullptr) {
     int last_version = 2;
 
     int file_version = 0;
@@ -4460,7 +4477,12 @@ namespace proc {
       if (const auto error = monitor_profile_changes_error(previous, fileTree, previous_file); !error.empty()) {
         throw std::invalid_argument(std::string {error});
       }
-      file_handler::write_file(fileName.c_str(), fileTree.dump(4));
+      if (persist && file_handler::write_file(fileName.c_str(), fileTree.dump(4)) != 0) {
+        throw std::runtime_error("Failed to persist migrated application list");
+      }
+      if (migrated) {
+        *migrated = true;
+      }
     }
   }
 
@@ -4493,20 +4515,31 @@ namespace proc {
     int i = 0;
 
     bool apps_parsed_ok = false;
+    bool migration_pending = false;
     size_t fail_count = 0;
-    do {
-      // Read the JSON file into a tree.
-      nlohmann::json tree;
-      try {
-        std::string content = file_handler::read_file(file_name.c_str());
-        tree = nlohmann::json::parse(content);
-      } catch (const std::exception &e) {
-        BOOST_LOG(warning) << "Couldn't read apps.json properly! Apps will not be loaded."sv;
-        break;
-      }
+    const auto initial_env = this_env;
+    const auto initial_alias_state = app_id_alias_state;
+    nlohmann::json tree;
+    try {
+      const auto content = file_handler::read_file(file_name.c_str());
+      tree = nlohmann::json::parse(content);
+    } catch (const std::exception &e) {
+      BOOST_LOG(warning) << "Couldn't read apps.json properly! Apps will not be loaded."sv;
+      return std::nullopt;
+    }
 
+    // Validate the original document before migration: legacy migration
+    // otherwise replaces a missing or non-array apps field with an empty array.
+    if (!tree.is_object() || !tree.contains("apps") || !tree["apps"].is_array()) {
+      BOOST_LOG(warning) << "The apps.json document has no valid apps array."sv;
+      return std::nullopt;
+    }
+
+    do {
       try {
-        migrate(tree, file_name);
+        // Stage migration only. The file is written after every app has been
+        // parsed, so a failed retry cannot commit a partial conversion.
+        migrate(tree, file_name, false, &migration_pending);
 
         if (tree.contains("env") && tree["env"].is_object()) {
           for (auto &item : tree["env"].items()) {
@@ -4864,19 +4897,15 @@ namespace proc {
 
         BOOST_LOG(warning) << "App format is still invalid! Trying to re-migrate the app list..."sv;
 
-        // Always try migrating from scratch when error happened
+        // Retry the staged tree without modifying the source file. Clear all
+        // partial catalog and alias state before parsing the next attempt.
         tree["version"] = 0;
-
-        try {
-          migrate(tree, file_name);
-        } catch (std::exception &e) {
-          BOOST_LOG(error) << "Error happened during migration: "sv << e.what();
-          break;
-        }
-
-        this_env = bp::this_process::env();
+        this_env = initial_env;
         ids.clear();
         apps.clear();
+        app_id_alias_state = initial_alias_state;
+        active_app_uuids.clear();
+        app_id_alias_state_changed = false;
         i = 0;
 
         continue;
@@ -4885,30 +4914,16 @@ namespace proc {
       break;
     } while (fail_count < 3);
 
-    if (fail_count > 0) {
-      BOOST_LOG(warning) << "No applications configured, adding fallback Desktop entry.";
-      proc::ctx_t ctx {};
-      ctx.idx = std::to_string(i);
-      ctx.uuid = FALLBACK_DESKTOP_UUID;  // Placeholder UUID
-      ctx.name = "Desktop (fallback)";
-      ctx.image_path = parse_env_val(this_env, "desktop-alt.png");
-      ctx.virtual_display = false;
-      ctx.scale_factor = 100;
-      ctx.use_app_identity = false;
-      ctx.per_client_app_identity = false;
-      ctx.allow_client_commands = false;
-      ctx.terminate_on_pause = false;
-
-      ctx.elevated = false;
-      ctx.auto_detach = true;
-      ctx.wait_all = false;  // Desktop doesn't have a specific command to wait for
-      ctx.exit_timeout = 5s;
-
-      // Calculate unique ID
-      assign_unique_generated_app_id(ctx, i++, ids, apps);
-
-      apps.emplace_back(std::move(ctx));
+    // Never replace the active catalog with built-in or partially parsed
+    // entries when reading, parsing, or migration failed. A valid empty apps
+    // array still succeeds and receives the normal built-in entries below.
+    if (!apps_parsed_ok) {
+      return std::nullopt;
     }
+
+    // Generated IDs become visible only after the staged file is persisted.
+    std::optional<std::string> staged_input_only_id;
+    std::string staged_terminate_id;
 
     // Virtual Display entry
 #ifdef _WIN32
@@ -4946,8 +4961,7 @@ namespace proc {
 
         assign_unique_generated_app_id(ctx, i++, ids, apps);
 
-        input_only_app_id_str = ctx.id;
-        input_only_app_id = util::from_view(ctx.id);
+        staged_input_only_id = ctx.id;
 
         apps.emplace_back(std::move(ctx));
       }
@@ -4974,11 +4988,30 @@ namespace proc {
 
       assign_unique_generated_app_id(ctx, i++, ids, apps);
 
-      terminate_app_id_str = ctx.id;
-      terminate_app_id = util::from_view(ctx.id);
+      staged_terminate_id = ctx.id;
 
       apps.emplace_back(std::move(ctx));
     }
+
+    // Persist only the fully parsed staged migration. The caller holds the
+    // apps-file lock, and a failed write must not publish the new catalog.
+    if (migration_pending) {
+      try {
+        if (file_handler::write_file(file_name.c_str(), tree.dump(4)) != 0) {
+          throw std::runtime_error("Failed to persist migrated application list");
+        }
+      } catch (const std::exception &e) {
+        BOOST_LOG(error) << "Could not persist migrated apps.json: "sv << e.what();
+        return std::nullopt;
+      }
+    }
+
+    if (staged_input_only_id) {
+      input_only_app_id_str = *staged_input_only_id;
+      input_only_app_id = util::from_view(*staged_input_only_id);
+    }
+    terminate_app_id_str = staged_terminate_id;
+    terminate_app_id = util::from_view(staged_terminate_id);
 
     // Only reconcile the persisted alias map when apps.json actually parsed. A failed or partial
     // parse leaves active_app_uuids empty or incomplete, so pruning here would erase the aliases of

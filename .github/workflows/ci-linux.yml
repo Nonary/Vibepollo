@@ -11,6 +11,10 @@ on:
       release_version:
         required: true
         type: string
+      release_channel:
+        required: false
+        type: string
+        default: ''
 
 jobs:
   build_linux:
@@ -86,6 +90,7 @@ jobs:
         env:
           BRANCH: ${{ github.head_ref || github.ref_name }}
           BUILD_VERSION: ${{ inputs.release_version }}
+          BUILD_CHANNEL: ${{ inputs.release_channel }}
           COMMIT: ${{ inputs.release_commit }}
         run: |
           chmod +x ./scripts/linux_build.sh

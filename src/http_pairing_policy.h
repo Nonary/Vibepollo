@@ -60,6 +60,17 @@ namespace nvhttp::pairing_policy {
     std::size_t index = 0;
   };
 
+  enum class paired_client_admission_e {
+    reject,
+    reauthorize,
+    append,
+  };
+
+  struct paired_client_admission_t {
+    paired_client_admission_e status = paired_client_admission_e::reject;
+    std::size_t index = 0;
+  };
+
   struct admission_decision_t {
     bool accepted = false;
     std::string_view failure_message;
@@ -79,6 +90,10 @@ namespace nvhttp::pairing_policy {
   bool valid_paired_client_uuid(std::string_view value);
   bool paired_client_state_valid(std::span<const paired_client_record_view_t> clients);
   paired_client_resolution_t resolve_paired_client(
+    std::span<const paired_client_record_view_t> clients,
+    std::string_view presented_certificate_identity
+  );
+  paired_client_admission_t admit_paired_client(
     std::span<const paired_client_record_view_t> clients,
     std::string_view presented_certificate_identity
   );

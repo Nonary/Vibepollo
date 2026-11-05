@@ -101,6 +101,70 @@ TEST(HttpPairingAuthorization, CertificateIdentityMatchIsExact) {
   ASSERT_EQ(case_variant.status, pairing_policy::paired_client_resolution_e::unknown_certificate);
 }
 
+TEST(HttpPairingAuthorization, ReauthorizesExistingCertificateWithoutReplacingItsRecord) {
+  const std::array clients {
+    pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-a", false},
+  };
+
+  const auto admission = pairing_policy::admit_paired_client(clients, "cert-a");
+  ASSERT_EQ(admission.status, pairing_policy::paired_client_admission_e::reauthorize);
+  ASSERT_EQ(admission.index, 0u);
+}
+
+TEST(HttpPairingAuthorization, AppendsNewCertificateUntilTheDatabaseIsFull) {
+  const std::array clients {
+    pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-a", true},
+  };
+
+  const auto admission = pairing_policy::admit_paired_client(clients, "cert-b");
+  ASSERT_EQ(admission.status, pairing_policy::paired_client_admission_e::append);
+  ASSERT_EQ(admission.index, 0u);
+
+  std::vector<std::string> uuids;
+  std::vector<std::string> certificates;
+  std::vector<pairing_policy::paired_client_record_view_t> full;
+  uuids.reserve(pairing_policy::max_paired_clients);
+  certificates.reserve(pairing_policy::max_paired_clients);
+  full.reserve(pairing_policy::max_paired_clients);
+  for (std::size_t index = 0; index < pairing_policy::max_paired_clients; ++index) {
+    const auto suffix = std::to_string(index);
+    uuids.emplace_back(
+      "00000000-0000-0000-0000-" + std::string(12 - suffix.size(), '0') + suffix
+    );
+    certificates.emplace_back("cert-" + suffix);
+    full.push_back({uuids.back(), certificates.back(), true});
+  }
+
+  ASSERT_EQ(
+    pairing_policy::admit_paired_client(full, certificates.front()).status,
+    pairing_policy::paired_client_admission_e::reauthorize
+  );
+  ASSERT_EQ(
+    pairing_policy::admit_paired_client(full, "new-certificate").status,
+    pairing_policy::paired_client_admission_e::reject
+  );
+}
+
+TEST(HttpPairingAuthorization, AdmissionRejectsInvalidStateAndIdentity) {
+  const std::array duplicate_uuid {
+    pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-a", true},
+    pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-b", false},
+  };
+  const std::array duplicate_cert {
+    pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-a", true},
+    pairing_policy::paired_client_record_view_t {"FDC285EF-3F84-B123-2690-6741DC8065F8", "cert-a", false},
+  };
+  const std::array malformed {
+    pairing_policy::paired_client_record_view_t {"invalid", "cert-a", false},
+  };
+  for (const auto records : {std::span(duplicate_uuid), std::span(duplicate_cert)}) {
+    EXPECT_EQ(pairing_policy::admit_paired_client(records, "cert-a").status, pairing_policy::paired_client_admission_e::reject);
+  }
+  EXPECT_EQ(pairing_policy::admit_paired_client(malformed, "cert-a").status, pairing_policy::paired_client_admission_e::reject);
+  EXPECT_EQ(pairing_policy::admit_paired_client({}, "").status, pairing_policy::paired_client_admission_e::reject);
+  EXPECT_EQ(pairing_policy::admit_paired_client({}, std::string(pairing_policy::max_paired_certificate_length + 1, 'x')).status, pairing_policy::paired_client_admission_e::reject);
+}
+
 TEST(HttpPairingAuthorization, AmbiguousOrMalformedPairingStateFailsClosed) {
   const std::array duplicate_uuid {
     pairing_policy::paired_client_record_view_t {"2474C237-8089-AB2B-0793-E0367530227B", "cert-a", true},

@@ -39,6 +39,67 @@ class NightlyNotesTests(unittest.TestCase):
         for bad_version, bad_source in ((tag + '+extra', A), (tag, B)):
             with self.assertRaises(ValueError): n.sequence(REPO, tag, bad_version, bad_source)
 
+    def test_numeric_vibepollo_prerelease_uses_explicit_channel_without_sequence(self):
+        tag = version = '2.0.16'
+        repository = 'Nonary/Vibepollo'
+        self.assertIsNone(n.sequence(repository, tag, version, A))
+        body, metadata = n.make_notes(
+            repository, tag, version, A, {'tag': '2.0.6', 'source_commit': B},
+            [(A, 'fix: repair numeric release flow')],
+        )
+        self.assertEqual(metadata['channel'], 'nightly')
+        self.assertEqual(metadata['tag'], tag)
+        self.assertEqual(metadata['version'], version)
+        self.assertEqual(metadata['source_commit'], A)
+        self.assertNotIn('nightly_sequence', metadata)
+        self.assertIn('preceding published release', body)
+        with self.assertRaises(ValueError): n.sequence(repository, tag, '2.0.17', A)
+        with self.assertRaises(ValueError): n.sequence(repository, '2.0.16-stable.1', '2.0.16-stable.1', A)
+
+    def test_vibepollo_nightly_claim_requires_exact_metadata_for_numeric_and_legacy(self):
+        repository = 'Nonary/Vibepollo'
+        numeric = release('2.0.16')
+        numeric['assets'] = []
+        numeric['prerelease'] = True
+        with self.assertRaisesRegex(ValueError, 'requires exactly one valid metadata'):
+            n.previous_release(repository, [numeric], lambda asset: {}, lambda tag: A)
+        numeric['assets'] = [{'name': 'nightly-metadata.json', 'id': 1}]
+        with self.assertRaisesRegex(ValueError, 'identity mismatch'):
+            n.previous_release(repository, [numeric], lambda asset: {
+                'schema_version': 1, 'channel': 'stable', 'tag': '2.0.16',
+                'version': '2.0.16', 'source_commit': A,
+            }, lambda tag: A)
+
+        legacy_tag = f'2.0.1-nightly.d20261011.{A[:12]}'
+        legacy = release(legacy_tag)
+        legacy['assets'] = [{'name': 'nightly-metadata.json', 'id': 2}]
+        with self.assertRaisesRegex(ValueError, 'exact metadata source'):
+            n.previous_release(repository, [legacy], lambda asset: {
+                'schema_version': 1, 'channel': 'nightly', 'tag': legacy_tag,
+                'version': legacy_tag, 'source_commit': B,
+            }, lambda tag: A)
+
+        legacy['assets'].append({'name': 'nightly-metadata.json', 'id': 3})
+        with self.assertRaisesRegex(ValueError, 'duplicate metadata assets'):
+            n.previous_release(repository, [legacy], lambda asset: {}, lambda tag: A)
+
+        legacy['assets'] = [{'name': 'nightly-metadata.json', 'id': 2}]
+        with self.assertRaisesRegex(ValueError, 'version/sequence mismatch'):
+            n.previous_release(repository, [legacy], lambda asset: {
+                'schema_version': 1, 'channel': 'nightly', 'tag': legacy_tag,
+                'version': legacy_tag, 'source_commit': A, 'nightly_sequence': 1,
+            }, lambda tag: A)
+
+        old_dated = release('2.0.1-nightly.d20261010.' + B[:12])
+        old_dated['assets'] = []
+        found = n.previous_release(repository, [old_dated], lambda asset: {}, lambda tag: B)
+        self.assertEqual(found['source_commit'], B)
+
+        old_calendar = release('daily-2026-10-09')
+        old_calendar['assets'] = []
+        found = n.previous_release(repository, [old_calendar], lambda asset: {}, lambda tag: B)
+        self.assertEqual(found, {'tag': 'daily-2026-10-09', 'source_commit': B, 'version': None})
+
     def test_semver_tags_preserve_legacy_sequence_and_bind_exact_core(self):
         tag = '2.0.1-daily.d20261011.3'
         version = tag + '+' + A[:12]

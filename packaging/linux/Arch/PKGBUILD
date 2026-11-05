@@ -151,6 +151,7 @@ prepare() {
 build() {
     export BRANCH="@GITHUB_BRANCH@"
     export BUILD_VERSION="@BUILD_VERSION@"
+    export BUILD_CHANNEL="@PROJECT_BUILD_CHANNEL@"
     export COMMIT="${_commit}"
 
     export CC="gcc${_gcc_env_suffix}"

@@ -42,6 +42,7 @@
   #include "src/platform/windows/display_helper_reactivation.h"
   #include "src/globals.h"
   #include "src/logging.h"
+  #include "src/version_compare.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
@@ -908,11 +909,7 @@ namespace {
       default:
         break;
     }
-#ifdef PROJECT_VERSION_PRERELEASE
-    return std::string_view(PROJECT_VERSION_PRERELEASE).empty();
-#else
-    return true;
-#endif
+    return !version_compare::is_prerelease_build(PROJECT_BUILD_CHANNEL, PROJECT_VERSION);
   }
   static std::atomic<std::uint64_t> g_restore_generation {0};
   static std::atomic<std::uint64_t> g_final_restore_cleanup_generation {0};

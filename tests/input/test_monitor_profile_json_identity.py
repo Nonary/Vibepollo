@@ -333,8 +333,10 @@ void migration_regressions() {
 """
  native_tests='void native_identity_regressions() {}\n'
  if (root/'src/legacy_generated_app_identities.h').exists():
-  generated=[]
-  for token in ['FALLBACK_DESKTOP_UUID','REMOTE_INPUT_UUID','TERMINATE_APP_UUID']:
+  # The fallback desktop is no longer created on failed loads, but its old
+  # identity remains reserved for existing clients and saved state.
+  generated=['ctx.uuid = FALLBACK_DESKTOP_UUID;']
+  for token in ['REMOTE_INPUT_UUID','TERMINATE_APP_UUID']:
    a=p.index('ctx.uuid = '+token+';');generated.append(p[a:p.index(';',a)+1])
   virtual=(root/'src/builtin_virtual_display.h').read_text();a=virtual.index('ctx.uuid = VIRTUAL_DISPLAY_UUID;');generated.append(virtual[a:virtual.index(';',a)+1])
   native_tests='#include "src/legacy_generated_app_identities.h"\nvoid native_identity_regressions() {std::vector<proc::ctx_t> generated;\n'
@@ -352,7 +354,7 @@ void migration_regressions() {
     assert(remote_session::identify(0,uuid)==remote_session::control_e::none);
    }
   }
-  std::cout<<"PASS actual target generated UUID assignments: Virtual Display/fallback Desktop/legacy Input/Terminate, both cases; marked API/load/projection rejection and unchanged ordinary identity routing\n";
+  std::cout<<"PASS active generated UUID assignments and reserved legacy fallback Desktop, both cases; marked API/load/projection rejection and unchanged ordinary identity routing\n";
  }
 """
  windows_prelude=''

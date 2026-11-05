@@ -11,6 +11,20 @@ export interface UpdateRelease extends GitHubReleaseLike {
   nightly_metadata?: Record<string, unknown>;
 }
 
+/** Resolve the installed build channel offline when the host reports it. */
+export function installedBuildIsPrerelease(
+  channel: unknown,
+  version: string,
+  branch: string,
+  releaseIsPrerelease: boolean,
+): boolean {
+  if (channel === 'stable') return false;
+  if (channel === 'nightly' || channel === 'prerelease') return true;
+  if (branch && !['master', 'main'].includes(branch)) return true;
+  if (releaseIsPrerelease) return true;
+  return /-(?:alpha|beta|rc|daily|nightly)(?:\.|\b)/i.test(version);
+}
+
 export function prereleasesEnabled(value: unknown): boolean {
   // A missing key is the migration path. Every explicit disabled form wins,
   // including when the installed version itself is a prerelease.
@@ -58,7 +72,14 @@ export function validNightlyMetadata(
   tag: string,
   metadata: Record<string, unknown> | undefined,
 ): boolean {
-  if (!isDailyTag(tag) || !metadata || typeof metadata !== 'object') return false;
+  if (!metadata || typeof metadata !== 'object') return false;
+  if (/^\d+\.\d+\.\d+$/.test(tag)) {
+    const source = metadata['source_commit'];
+    return metadata['schema_version'] === 1 && metadata['channel'] === 'nightly' &&
+      metadata['tag'] === tag && metadata['version'] === tag &&
+      typeof source === 'string' && /^[0-9a-f]{40}$/.test(source);
+  }
+  if (!isDailyTag(tag)) return false;
   const nightly = tag.match(/^\d+\.\d+\.\d+-nightly\.d(\d{8})\.(?:r\.([1-9][0-9]{0,2})\.)?([0-9a-f]{12})$/);
   if (nightly) {
     const source = metadata['source_commit'];
@@ -151,7 +172,9 @@ export function completeRelease(
     !!packageAvailable &&
     (!isDailyTag(release.tag_name) ||
       (release.prerelease &&
-        asset(release, 'SHA256SUMS')))
+        asset(release, 'SHA256SUMS'))) &&
+    (!release.prerelease || !/^\d+\.\d+\.\d+$/.test(release.tag_name) ||
+      (asset(release, 'SHA256SUMS') && !!apiNightlyMetadata(release)))
   );
 }
 

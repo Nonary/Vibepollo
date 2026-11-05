@@ -15,6 +15,18 @@ on:
       release_version:
         required: true
         type: string
+      release_channel:
+        required: false
+        type: string
+        default: ''
+      stable_anchor_tag:
+        required: false
+        type: string
+        default: ''
+      stable_anchor_commit:
+        required: false
+        type: string
+        default: ''
       release_tag:
         required: false
         type: string
@@ -25,6 +37,11 @@ on:
         default: ''
       daily_unsigned:
         description: Enforce unsigned daily driver safety and execute mandatory tests
+        required: false
+        type: boolean
+        default: false
+      daily_validation_only:
+        description: Create a local-only numeric tag for a nonpublishing daily validation build
         required: false
         type: boolean
         default: false
@@ -180,8 +197,8 @@ jobs:
             echo "::error::Source CI run ${SOURCE_RUN_ID} built ${source_sha}, not release commit ${RELEASE_COMMIT}."
             exit 1
           fi
-          if [[ "${source_event}" != "push" ]]; then
-            echo "::error::Source run must be a push run of .github/workflows/ci.yml (optionally @ref); got ${source_event} / ${source_path}."
+          if [[ "${source_event}" != "push" && "${source_event}" != "workflow_dispatch" ]]; then
+            echo "::error::Source run must be a push or workflow_dispatch run of .github/workflows/ci.yml (optionally @ref); got ${source_event} / ${source_path}."
             exit 1
           fi
           if [[ "${source_path}" != ".github/workflows/ci.yml" && "${source_path}" != ".github/workflows/ci.yml@"* ]]; then
@@ -346,6 +363,37 @@ jobs:
           fetch-depth: ${{ inputs.daily_unsigned && '0' || '1' }}
           fetch-tags: ${{ inputs.daily_unsigned }}
           submodules: recursive
+
+      - name: Create local-only validation tag
+        if: inputs.daily_validation_only
+        shell: pwsh
+        env:
+          DAILY_UNSIGNED_INPUT: ${{ inputs.daily_unsigned }}
+          CHANNEL_INPUT: ${{ inputs.release_channel }}
+          TAG_INPUT: ${{ inputs.release_tag }}
+          VERSION_INPUT: ${{ inputs.release_version }}
+          SOURCE_INPUT: ${{ inputs.release_commit }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:DAILY_UNSIGNED_INPUT -ne 'true' -or $env:CHANNEL_INPUT -ne 'nightly' -or
+              $env:TAG_INPUT -cne $env:VERSION_INPUT -or $env:TAG_INPUT -cnotmatch '^[0-9]+\.[0-9]+\.[0-9]+$' -or
+              $env:SOURCE_INPUT -cnotmatch '^[0-9a-f]{40}$') {
+            throw 'A local validation tag requires an unsigned nightly with an exact numeric version and source.'
+          }
+          $head = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0 -or $head -cne $env:SOURCE_INPUT) { throw 'Validation source does not match the checkout.' }
+          git show-ref --verify --quiet "refs/tags/$env:TAG_INPUT"
+          if ($LASTEXITCODE -eq 0) {
+            $kind = (git cat-file -t "refs/tags/$env:TAG_INPUT").Trim()
+            $target = (git rev-parse "refs/tags/$($env:TAG_INPUT)^{commit}").Trim()
+            if ($kind -ne 'tag' -or $target -cne $head) { throw 'Existing validation tag is not an exact annotated reservation.' }
+            $message = (git for-each-ref --format='%(contents)' "refs/tags/$env:TAG_INPUT" | Out-String).Replace("`r`n", "`n").Trim()
+            if ($message -cne "Vibepollo release channel: nightly`nsource: $head" -and $message -cne 'Local-only nightly validation') { throw 'Existing validation tag does not identify the nightly channel and source.' }
+          } else {
+            git -c user.name='Validation Only' -c user.email='validation@example.invalid' tag -a $env:TAG_INPUT -m 'Local-only nightly validation'
+            if ($LASTEXITCODE -ne 0) { throw 'Unable to create local validation tag.' }
+          }
+          Write-Host 'Created or verified a local-only tag; validation artifacts cannot be published by this run.'
 
       - name: Enforce unsigned daily build policy
         if: inputs.daily_unsigned
@@ -530,6 +578,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          python -m unittest discover -s packaging/windows/bootstrapper/tests -p test_migration_script.py
+          if ($LASTEXITCODE -ne 0) { throw 'Portable migration script regression failed.' }
           $outputDirectory = Join-Path $env:RUNNER_TEMP 'bootstrap-migration-regression'
           & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\packaging\windows\bootstrapper\tests\test_bootstrap_migration.ps1 -OutputDirectory $outputDirectory
           if ($LASTEXITCODE -ne 0) { throw 'Production bootstrap migration regression failed.' }
@@ -662,6 +712,9 @@ jobs:
           COMMIT: ${{ inputs.release_commit }}
           REQUIRE_TRUEHDR_RUNTIME: ${{ inputs.require_truehdr_runtime }}
           DAILY_UNSIGNED: ${{ inputs.daily_unsigned }}
+          BUILD_CHANNEL: ${{ inputs.daily_unsigned && 'nightly' || inputs.release_channel }}
+          STABLE_ANCHOR_TAG: ${{ inputs.stable_anchor_tag }}
+          STABLE_ANCHOR_COMMIT: ${{ inputs.stable_anchor_commit }}
         run: |
           echo "Using BUILD_VERSION=${BUILD_VERSION}"
 
@@ -742,6 +795,7 @@ jobs:
           echo "::remove-matcher owner=gcc::"
 
       - name: Test native AMF lifecycle behavior
+        if: inputs.build_tests
         shell: msys2 {0}
         run: |
           set -euo pipefail

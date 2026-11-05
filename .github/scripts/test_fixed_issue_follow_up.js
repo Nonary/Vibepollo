@@ -439,9 +439,39 @@ test("workflow eligibility accepts legacy daily and commit-bound nightly tags", 
   const literal = workflow.match(/const dailyTag = (\/[^\n]+\/);/);
   assert.ok(literal, "workflow must retain its release tag gate");
   const gate = new Function(`return ${literal[1]}`)();
+  const numericLiteral = workflow.match(/const numericTag = (\/[^\n]+\/);/);
+  assert.ok(numericLiteral, "workflow must accept numeric candidates for later metadata verification");
+  const numericGate = new Function(`return ${numericLiteral[1]}`)();
+  assert.ok(numericGate.test("2.1.0"));
+  assert.ok(!numericGate.test("2.1.0-beta"));
   assert.ok(gate.test("2.0.2-daily.d20261020.4"));
   assert.ok(gate.test("2.0.2-nightly.d20261025.r.2.aaaaaaaaaaaa"));
   assert.ok(!gate.test("2.0.2-nightly.d20261025.r.0.aaaaaaaaaaaa"));
   assert.ok(gate.test("2.0.2-nightly.d20261022.aaaaaaaaaaaa"));
   assert.equal(gate.test("2.0.2-nightly.d20261022.invalid"), false);
+});
+
+
+test("numeric releases require verified nightly metadata bound to the tag source", async () => {
+  const release = makeDaily({ tag_name: "2.1.0", assets: [{ name: "nightly-metadata.json" }] });
+  const metadata = { schema_version: 1, channel: "nightly", tag: "2.1.0", version: "2.1.0", source_commit: RELEASE_COMMIT };
+  const fetchFor = (published, data, unavailable = false) => async (url) => ({
+    ok: !(unavailable && url.includes("/releases/download/")),
+    json: async () => url.includes("/releases/download/") ? data : published,
+  });
+  const valid = await runDaily({ release, fetchImpl: fetchFor(release, metadata) });
+  assert.equal(valid.result.comments_created, 1);
+  for (const [published, data, unavailable] of [
+    [{ ...release, prerelease: false }, metadata, false],
+    [{ ...release, assets: [] }, metadata, false],
+    [{ ...release, assets: [...release.assets, ...release.assets] }, metadata, false],
+    [release, { ...metadata, channel: "stable" }, false],
+    [release, { ...metadata, tag: "2.1.1" }, false],
+    [release, { ...metadata, version: "2.1.1" }, false],
+    [release, { ...metadata, source_commit: SOURCE_COMMIT }, false],
+    [release, metadata, true],
+  ]) {
+    const result = await runDaily({ release, fetchImpl: fetchFor(published, data, unavailable) });
+    assert.equal(result.result.comments_created, 0);
+  }
 });

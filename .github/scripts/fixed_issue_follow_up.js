@@ -5,6 +5,7 @@ const { execFileSync } = require("node:child_process");
 
 const TRUSTED_ASSOCIATIONS = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
 const DAILY_TAG = /^\d+\.\d+\.\d+-(?:daily\.d\d{8}(?:\.\d+)?|nightly\.d\d{8}\.(?:r\.[1-9]\d{0,2}\.)?[0-9a-f]{12})$/;
+const NUMERIC_TAG = /^\d+\.\d+\.\d+$/;
 const SOURCE_SHA = /^[0-9a-f]{40}$/i;
 const ARCHIVE_SHA256 = /^[0-9a-f]{64}$/i;
 const NOTICE_PREFIX = "<!-- fixed-candidate-notice:v1:";
@@ -178,11 +179,11 @@ async function handleFixedLabel({ github, context }) {
 
 function isPublishedDaily(release) {
   return !!release && release.draft === false && release.prerelease === true &&
-    DAILY_TAG.test(release.tag_name || "") && asTime(release.published_at) !== null;
+    (DAILY_TAG.test(release.tag_name || "") || NUMERIC_TAG.test(release.tag_name || "")) && asTime(release.published_at) !== null;
 }
 
 async function getPublishedDailyRelease({ owner, repo, tagName, fetchImpl = globalThis.fetch }) {
-  if (!DAILY_TAG.test(tagName || "") || typeof fetchImpl !== "function") return null;
+  if (!(DAILY_TAG.test(tagName || "") || NUMERIC_TAG.test(tagName || "")) || typeof fetchImpl !== "function") return null;
   const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}` +
     `/releases/tags/${encodeURIComponent(tagName)}`;
   try {
@@ -229,7 +230,7 @@ async function handleDailyReleaseFollowUp({
   git = execFileSync,
   fetchImpl = globalThis.fetch,
 }) {
-  if (!DAILY_TAG.test(release?.tag_name || "")) {
+  if (!(DAILY_TAG.test(release?.tag_name || "") || NUMERIC_TAG.test(release?.tag_name || ""))) {
     return { comments_created: 0, reason: "release-not-a-published-daily" };
   }
 
@@ -244,6 +245,30 @@ async function handleDailyReleaseFollowUp({
   });
   if (!publishedRelease) {
     return { comments_created: 0, reason: "release-not-a-published-daily" };
+  }
+
+  // Numeric tags do not identify a channel. Require the published release's
+  // own metadata asset and bind it to the independently resolved tag target.
+  if (NUMERIC_TAG.test(publishedRelease.tag_name)) {
+    const assets = (publishedRelease.assets || []).filter((asset) => asset.name === "nightly-metadata.json");
+    if (assets.length !== 1 || !SOURCE_SHA.test(releaseCommit || "")) {
+      return { comments_created: 0, reason: "release-not-a-published-daily" };
+    }
+    const url = `https://github.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}` +
+      `/releases/download/${encodeURIComponent(publishedRelease.tag_name)}/nightly-metadata.json`;
+    try {
+      const response = await fetchImpl(url, { headers: { Accept: "application/json" } });
+      if (!response.ok) throw new Error("metadata unavailable");
+      const metadata = await response.json();
+      if (metadata?.schema_version !== 1 || metadata.channel !== "nightly" ||
+          metadata.tag !== publishedRelease.tag_name || metadata.version !== publishedRelease.tag_name ||
+          !SOURCE_SHA.test(metadata.source_commit || "") ||
+          metadata.source_commit.toLowerCase() !== releaseCommit.toLowerCase()) {
+        throw new Error("metadata identity mismatch");
+      }
+    } catch {
+      return { comments_created: 0, reason: "release-not-a-published-daily" };
+    }
   }
 
   const issues = await github.paginate(github.rest.issues.listForRepo, {

@@ -737,7 +737,7 @@ install_from_repo() {
 }
 
 download_release_package() {
-  local releases tag asset_url asset_name selector
+  local releases tag asset_url asset_name selector release_is_prerelease
   log 'Looking up the newest Vibepollo release on GitHub'
   command -v curl >/dev/null 2>&1 || die 'curl is required to download the release'
   if ! command -v jq >/dev/null 2>&1; then
@@ -758,11 +758,11 @@ download_release_package() {
     selector='.[] | select(.draft == false and .prerelease == false)'
   fi
   # Releases are listed newest first; pick the first one that carries an Arch package.
-  read -r tag asset_name asset_url < <(jq -r "
+  read -r tag asset_name asset_url release_is_prerelease < <(jq -r "
     [${selector} | . as \$r | .assets[]
       | select(.name | test(\"^vibepollo-.*\\\\.pkg\\\\.tar\\\\.zst\$\"))
       | select(.name | test(\"-debug-\") | not)
-      | [\$r.tag_name, .name, .browser_download_url] | @tsv] | first // empty" <<<"$releases")
+      | [\$r.tag_name, .name, .browser_download_url, \$r.prerelease] | @tsv] | first // empty" <<<"$releases")
   [[ -n "${asset_url:-}" ]] ||
     die "no release with an Arch package was found (see ${REPO_URL}/releases)"
   log "Downloading ${asset_name} from release ${tag}"
@@ -778,7 +778,7 @@ download_release_package() {
     checksum_actual=$(sha256sum "$local_package" | awk '{print $1}')
     [[ "$checksum_actual" == "$checksum_expected" ]] || die "checksum mismatch for ${asset_name}; refusing to install"
     ok "Package checksum matches SHA256SUMS."
-  elif [[ "$tag" == daily-* || "$tag" == *-daily.d* || "$tag" == *-nightly.d* ]]; then
+  elif [[ "$tag" == daily-* || "$tag" == *-daily.d* || "$tag" == *-nightly.d* || ( "${release_is_prerelease:-false}" == true && "$tag" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ) ]]; then
     die "nightly checksums unavailable; refusing to install"
   fi
 

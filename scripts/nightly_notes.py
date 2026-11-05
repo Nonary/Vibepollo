@@ -7,6 +7,11 @@ import subprocess
 from pathlib import Path
 from urllib.parse import quote
 
+try:
+    import numeric_release
+except ModuleNotFoundError:  # tests load this file directly
+    from scripts import numeric_release
+
 REPOSITORIES = {'Nonary/vibeshine', 'Nonary/Vibepollo', 'Nonary/moonlight-qt'}
 
 
@@ -28,6 +33,14 @@ def sequence(repo, tag, version=None, source=None):
         if not match or (version is not None and tag != 'v' + version):
             raise ValueError('Invalid Moonlight nightly identity')
         return int(match[1])
+    if repo == 'Nonary/Vibepollo' and re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', tag):
+        if version is not None and version != tag:
+            raise ValueError('Numeric prerelease tag and version must match exactly')
+        if source is not None:
+            exact_sha(source)
+        # Numeric host identities deliberately have no date-derived sequence.
+        # The explicit channel field and GitHub prerelease flag identify them.
+        return None
     nightly = re.fullmatch(r'([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d(20[0-9]{2})([0-9]{2})([0-9]{2})\.(?:r\.([1-9][0-9]{0,2})\.)?([0-9a-f]{12})', tag)
     if nightly:
         import datetime
@@ -56,13 +69,93 @@ def sequence(repo, tag, version=None, source=None):
     return int(day) * 1000 + revision if match[4] else int(day)
 
 
+def vibepollo_nightly_tag(tag):
+    """Recognize only legacy dated nightlies and new bare numeric nightlies."""
+    return (re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', tag) is not None
+            or re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-nightly\.d[0-9]{8}(?:\.r\.[1-9][0-9]{0,2})?\.[0-9a-f]{12}', tag) is not None
+            or re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-daily\.d[0-9]{8}(?:\.[1-9][0-9]{0,2})?', tag) is not None
+            or re.fullmatch(r'daily-20[0-9]{2}-[0-9]{2}-[0-9]{2}(?:\.[1-9][0-9]{0,2})?', tag) is not None)
 def previous_release(repo, releases, metadata_reader, tag_resolver):
     """Published release state is the baseline; build runs never advance it."""
+    if repo == 'Nonary/Vibepollo':
+        candidates = []
+        for release in releases:
+            if release.get('draft') is not False or not release.get('published_at'):
+                continue
+            tag = release.get('tag_name', '')
+            metadata = None
+            version = tag
+            key = numeric_release.version_key(version)
+            if release.get('prerelease') is True and vibepollo_nightly_tag(tag):
+                assets = [asset for asset in release.get('assets', [])
+                          if asset.get('name') == 'nightly-metadata.json']
+                if len(assets) == 1:
+                    metadata = metadata_reader(assets[0])
+                elif len(assets) > 1:
+                    raise ValueError('Published Vibepollo nightly has duplicate metadata assets')
+                else:
+                    marker = re.search(r'<!-- nightly-identity: (\{.*?\}) -->', release.get('body', ''), re.S)
+                    if marker:
+                        metadata = json.loads(marker[1])
+                if metadata is None:
+                    if re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', tag):
+                        raise ValueError('Published numeric Vibepollo nightly requires exactly one valid metadata identity')
+                    # Earlier dated releases predate the stronger metadata
+                    # contract. Preserve them as published source anchors, but
+                    # never qualify them as a current nightly publication.
+                    if key is not None:
+                        source = exact_sha(tag_resolver(tag))
+                        candidates.append((key, release['published_at'], int(release.get('id', 0)),
+                                           {'tag': tag, 'source_commit': source, 'version': version}))
+                    elif re.fullmatch(r'daily-20[0-9]{2}-[0-9]{2}-[0-9]{2}(?:\.[1-9][0-9]{0,2})?', tag):
+                        source = exact_sha(tag_resolver(tag))
+                        candidates.append(((0,), release['published_at'], int(release.get('id', 0)),
+                                           {'tag': tag, 'source_commit': source, 'version': None}))
+                    continue
+                if (metadata.get('schema_version') != 1 or metadata.get('channel') != 'nightly'
+                        or metadata.get('tag') != tag):
+                    raise ValueError('Published Vibepollo prerelease metadata identity mismatch')
+                version = metadata.get('version', '')
+                key = numeric_release.version_key(version)
+                source = exact_sha(metadata.get('source_commit'))
+                if source != exact_sha(tag_resolver(tag)):
+                    raise ValueError('Published Vibepollo prerelease tag differs from exact metadata source')
+                if key is None:
+                    raise ValueError('Published Vibepollo nightly metadata version has no numeric ordering')
+                expected_sequence = sequence(repo, tag, version, source)
+                if expected_sequence is None:
+                    if 'nightly_sequence' in metadata:
+                        raise ValueError('Numeric Vibepollo nightly must not carry a date-derived sequence')
+                elif metadata.get('nightly_sequence') != expected_sequence:
+                    raise ValueError('Published Vibepollo nightly version/sequence mismatch')
+            if key is None:
+                continue
+            source = exact_sha(tag_resolver(tag))
+            candidates.append((key, release['published_at'], int(release.get('id', 0)),
+                               {'tag': tag, 'source_commit': source, 'version': version}))
+        if not candidates:
+            return None
+        latest_time = max(candidate[1] for candidate in candidates)
+        latest = [candidate for candidate in candidates if candidate[1] == latest_time]
+        if len(latest) != 1:
+            raise ValueError('Multiple Vibepollo releases share the latest publication timestamp')
+        return latest[0][3]
     candidates = []
     for release in releases:
-        if release.get('draft') is not False or release.get('prerelease') is not True or not release.get('published_at'):
+        if release.get('draft') is not False or not release.get('published_at'):
             continue
         tag = release.get('tag_name', '')
+        if repo == 'Nonary/Vibepollo':
+            try:
+                numeric_host = sequence(repo, tag) is None
+            except ValueError:
+                continue
+            if numeric_host:
+                if release.get('prerelease') is True:
+                    candidates.append(release)
+                continue
+        if release.get('prerelease') is not True:
+            continue
         try:
             sequence(repo, tag)
         except ValueError:
@@ -70,6 +163,18 @@ def previous_release(repo, releases, metadata_reader, tag_resolver):
         candidates.append(release)
     for release in sorted(candidates, key=lambda r: (r['published_at'], r.get('id', 0)), reverse=True):
         tag = release['tag_name']
+        if repo == 'Nonary/Vibepollo' and sequence(repo, tag) is None:
+            sha = exact_sha(tag_resolver(tag))
+            if release.get('prerelease') is True:
+                assets = [a for a in release.get('assets', []) if a.get('name') == 'nightly-metadata.json']
+                if len(assets) != 1:
+                    raise ValueError('Numeric Vibepollo prerelease requires exactly one metadata asset')
+                metadata = metadata_reader(assets[0])
+                if (metadata.get('schema_version') != 1 or metadata.get('channel') != 'nightly'
+                        or metadata.get('tag') != tag or metadata.get('version') != tag
+                        or exact_sha(metadata.get('source_commit')) != sha):
+                    raise ValueError('Numeric Vibepollo prerelease metadata identity mismatch')
+            return {'tag': tag, 'source_commit': sha}
         assets = [a for a in release.get('assets', []) if a.get('name') == 'nightly-metadata.json']
         if assets:
             if len(assets) != 1:
@@ -101,11 +206,13 @@ def make_notes(repo, tag, version, source, previous, commits, ancestor=True):
     compare = f'https://github.com/{repo}/compare/{old}...{source}' if old else None
     unchanged = old == source
     metadata = dict(schema_version=1, channel='nightly', tag=tag, version=version,
-                    source_commit=source, nightly_sequence=seq,
+                    source_commit=source,
                     previous_successful_tag=previous['tag'] if previous else None,
                     previous_source_commit=old, changelog_range=f'{old}..{source}' if old else None,
                     compare_url=compare, first_nightly=first, no_source_changes=unchanged,
                     commits_total=len(commits), commits_listed=len(commits))
+    if seq is not None:
+        metadata['nightly_sequence'] = seq
     if repo == 'Nonary/moonlight-qt':
         metadata['windows_product_version'] = f'6.2.{seq}'
     product = {'Nonary/vibeshine': 'Vibeshine', 'Nonary/Vibepollo': 'Vibepollo', 'Nonary/moonlight-qt': 'Moonlight'}[repo]
@@ -118,7 +225,8 @@ def make_notes(repo, tag, version, source, previous, commits, ancestor=True):
     elif unchanged:
         notes += [f'No source changes since `{previous["tag"]}`; this nightly rebuilds the same source.']
     else:
-        notes += [f'Since the preceding successfully published nightly `{previous["tag"]}`: [compare exact sources]({compare}).']
+        baseline_label = 'published release' if repo == 'Nonary/Vibepollo' and seq is None else 'successfully published nightly'
+        notes += [f'Since the preceding {baseline_label} `{previous["tag"]}`: [compare exact sources]({compare}).']
         if not ancestor:
             notes += ['', '**Warning: source history diverged or was rewound.** The list is the exact newly reachable commit set `previous_source_commit..source_commit`, not a forward ancestry claim.']
         if not commits:
@@ -149,7 +257,7 @@ def generate(repo, tag, version, source, assets, notes):
     previous = previous_release(repo, releases, read_metadata, resolve)
     # The first nightly still needs an honest, useful commit log. A published
     # stable release supplies its initial baseline; drafts never do.
-    if previous is None:
+    if previous is None and repo != 'Nonary/Vibepollo':
         stable = [r for r in releases if r.get('draft') is False and r.get('prerelease') is False and r.get('published_at')]
         if stable:
             baseline = max(stable, key=lambda r: (r['published_at'], r.get('id', 0)))

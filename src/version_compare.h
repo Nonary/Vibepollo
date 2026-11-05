@@ -103,6 +103,12 @@ namespace version_compare {
     return !parsed.prerelease.empty() && !is_stable_channel(parsed);
   }
 
+  // Explicit compiled channel takes precedence. Empty channel preserves the
+  // suffix interpretation used by older builds and callers.
+  inline bool is_prerelease_build(std::string_view channel, std::string_view version) {
+    return (channel.empty() || channel == "legacy") ? is_prerelease_channel(version) : channel != "stable";
+  }
+
   inline int compare_identifier_lists(
     const std::vector<prerelease_identifier_t> &lhs,
     const std::vector<prerelease_identifier_t> &rhs,

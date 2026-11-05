@@ -759,7 +759,7 @@ for invariant in (
     "request->set_connection_context(authority)",
     "std::vector<std::weak_ptr<authority_t>> authorities",
     "authority->authorized.load(std::memory_order_acquire)",
-    "client_root.named_devices.size() >= pairing_policy::max_paired_clients",
+    "pairing_policy::admit_paired_client(records, *candidate_identity)",
     "if (!add_authorized_client",
 ):
     require(nvhttp + tls_identity, invariant, "exact enabled-pairing TLS authorization")

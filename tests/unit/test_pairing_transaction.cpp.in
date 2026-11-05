@@ -1,0 +1,138 @@
+// Exercise the real add_authorized_client body with deterministic storage and
+// certificate adapters. Real X.509 parsing has separate TLS identity tests.
+#include <gtest/gtest.h>
+#include <array>
+#include <atomic>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+#include <vector>
+#include "src/http_pairing_policy.h"
+
+namespace config {
+  enum flag { FRESH_STATE };
+  struct { std::array<bool, 1> flags {}; } sunshine;
+}
+namespace statefile {
+  std::mutex state;
+  std::mutex &state_mutex() { return state; }
+  void migrate_recent_state_keys() {}
+}
+namespace nvhttp {
+  enum class PERM { _no, _default, custom };
+  struct named_cert_t { std::string uuid, cert, name; PERM perm = PERM::_default; bool enabled = true; };
+  using p_named_cert_t = std::shared_ptr<named_cert_t>;
+  struct client_t { std::vector<p_named_cert_t> named_devices; } client_root;
+  std::mutex client_mutex;
+  std::atomic<bool> authorization_state_ready {true};
+  bool save_succeeds = true;
+  int save_calls = 0;
+  struct { int count = 0; void add(const p_named_cert_t &) { ++count; } } cert_chain;
+  namespace crypto {
+    std::optional<std::string> x509(const std::string &cert) {
+      if (cert.empty() || cert == "invalid") return std::nullopt;
+      return cert;
+    }
+  }
+  std::optional<std::string> exact_certificate_identity(const std::optional<std::string> &cert) { return cert; }
+  bool build_paired_client_records(const client_t &client, std::vector<std::string> &identities,
+                                   std::vector<pairing_policy::paired_client_record_view_t> &records) {
+    identities.clear(); records.clear();
+    identities.reserve(client.named_devices.size()); records.reserve(client.named_devices.size());
+    for (const auto &item : client.named_devices) {
+      if (!item || !crypto::x509(item->cert)) return false;
+      identities.push_back(item->cert);
+      records.push_back({item->uuid, identities.back(), item->enabled});
+    }
+    return pairing_policy::paired_client_state_valid(records);
+  }
+  bool save_state_snapshot_locked(const client_t &) { ++save_calls; return save_succeeds; }
+@FUNCTION@
+}
+namespace {
+  using namespace nvhttp;
+  p_named_cert_t record(unsigned n, std::string cert, PERM perm = PERM::_default, bool enabled = true) {
+    const auto suffix = std::to_string(n);
+    return std::make_shared<named_cert_t>(named_cert_t {
+      "00000000-0000-0000-0000-" + std::string(12 - suffix.size(), '0') + suffix,
+      std::move(cert), "original", perm, enabled
+    });
+  }
+  class PairingTransaction : public testing::Test {
+    void SetUp() override {
+      client_root.named_devices.clear(); cert_chain.count = 0; save_calls = 0; save_succeeds = true;
+      authorization_state_ready = true; config::sunshine.flags[config::FRESH_STATE] = false;
+    }
+  };
+  TEST_F(PairingTransaction, RePairAtCapacityPreservesIdentityAndRestoresGrant) {
+    for (unsigned i = 0; i < 256; ++i) client_root.named_devices.push_back(record(i, "cert-" + std::to_string(i)));
+    client_root.named_devices[0]->perm = PERM::_no;
+    client_root.named_devices[0]->enabled = false;
+    auto candidate = record(1000, "cert-0"); candidate->name = "new name";
+    ASSERT_TRUE(add_authorized_client(candidate));
+    EXPECT_EQ(candidate->uuid, record(0, "cert-0")->uuid);
+    EXPECT_EQ(candidate->name, "original"); EXPECT_EQ(candidate->perm, PERM::_default);
+    EXPECT_TRUE(candidate->enabled); EXPECT_EQ(client_root.named_devices.size(), 256u);
+    EXPECT_EQ(save_calls, 1); EXPECT_EQ(cert_chain.count, 0);
+    EXPECT_FALSE(add_authorized_client(record(1001, "new-cert")));
+    EXPECT_EQ(client_root.named_devices.size(), 256u);
+  }
+  TEST_F(PairingTransaction, InvalidCurrentRecordsAndCandidateFailClosed) {
+    auto a = record(1, "cert-a"); auto b = record(2, "cert-a");
+    client_root.named_devices = {a, b};
+    EXPECT_FALSE(add_authorized_client(record(3, "cert-a")));
+    EXPECT_FALSE(add_authorized_client(record(3, "cert-new")));
+    b->cert = "cert-b"; b->uuid = a->uuid;
+    EXPECT_FALSE(add_authorized_client(record(3, "cert-a")));
+    b->uuid = "not-a-uuid";
+    EXPECT_FALSE(add_authorized_client(record(3, "cert-a")));
+    b->uuid = record(2, "cert-b")->uuid; b->cert = "invalid";
+    EXPECT_FALSE(add_authorized_client(record(3, "cert-a")));
+    EXPECT_FALSE(add_authorized_client(record(3, "invalid")));
+    EXPECT_EQ(save_calls, 0); EXPECT_EQ(cert_chain.count, 0);
+  }
+  TEST_F(PairingTransaction, PersistenceFailureRollsBackBothBranches) {
+    auto old = record(1, "cert-a", PERM::_no, false); client_root.named_devices = {old};
+    save_succeeds = false;
+    auto candidate = record(2, "cert-a");
+    EXPECT_FALSE(add_authorized_client(candidate));
+    EXPECT_EQ(old->perm, PERM::_no); EXPECT_FALSE(old->enabled);
+    EXPECT_FALSE(add_authorized_client(record(3, "cert-b")));
+    ASSERT_EQ(client_root.named_devices.size(), 1u); EXPECT_EQ(cert_chain.count, 0);
+  }
+  TEST_F(PairingTransaction, ExistingCustomPermissionsAndTransientStateArePreserved) {
+    auto old = record(1, "cert-a", PERM::custom, false); client_root.named_devices = {old};
+    config::sunshine.flags[config::FRESH_STATE] = true; authorization_state_ready = false;
+    auto candidate = record(2, "cert-a");
+    ASSERT_TRUE(add_authorized_client(candidate));
+    EXPECT_EQ(candidate->perm, PERM::custom); EXPECT_TRUE(candidate->enabled); EXPECT_EQ(save_calls, 0);
+  }
+  TEST_F(PairingTransaction, DurableStateMustBeReadyAndSuccessfulAppendIsPublishedOnce) {
+    auto candidate = record(2, "cert-b");
+    authorization_state_ready = false;
+    EXPECT_FALSE(add_authorized_client(candidate));
+    EXPECT_TRUE(client_root.named_devices.empty()); EXPECT_EQ(save_calls, 0);
+    authorization_state_ready = true;
+    ASSERT_TRUE(add_authorized_client(candidate));
+    ASSERT_EQ(client_root.named_devices.size(), 1u);
+    EXPECT_EQ(client_root.named_devices[0], candidate);
+    EXPECT_EQ(save_calls, 1); EXPECT_EQ(cert_chain.count, 1);
+    ASSERT_TRUE(add_authorized_client(record(3, "cert-b")));
+    EXPECT_EQ(save_calls, 1); EXPECT_EQ(cert_chain.count, 1);
+  }
+  TEST_F(PairingTransaction, UnpairBeforeBlockedRePairSerializesAsNewAdmission) {
+    auto old = record(1, "cert-a", PERM::_no, false); client_root.named_devices = {old};
+    auto candidate = record(2, "cert-a");
+    std::unique_lock state(statefile::state_mutex());
+    std::unique_lock client(client_mutex);
+    std::atomic<bool> started {false}; bool result = false;
+    std::thread pairing([&] { started = true; result = add_authorized_client(candidate); });
+    while (!started.load()) std::this_thread::yield();
+    client_root.named_devices.clear();
+    client.unlock(); state.unlock(); pairing.join();
+    EXPECT_TRUE(result); ASSERT_EQ(client_root.named_devices.size(), 1u);
+    EXPECT_EQ(client_root.named_devices[0]->uuid, candidate->uuid); EXPECT_EQ(cert_chain.count, 1);
+  }
+}
