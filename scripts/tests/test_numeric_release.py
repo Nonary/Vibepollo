@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -146,17 +147,20 @@ class NumericReleaseTests(unittest.TestCase):
             git("config", "user.email", "notes@example.invalid")
             git("commit", "--allow-empty", "-m", "chore: baseline")
             baseline = git("rev-parse", "HEAD")
-            git("commit", "--allow-empty", "-m", "fix: first note")
+            git("commit", "--allow-empty", "-m", "fix: first note", "-m", "body for first note")
             first = git("rev-parse", "HEAD")
             git("commit", "--allow-empty", "-m", "feat: second note")
             second = git("rev-parse", "HEAD")
-            scoped_run = lambda *args: subprocess.run(
-                args, cwd=temp, check=True, capture_output=True, text=True).stdout.strip()
-            with patch.object(release, "run", side_effect=scoped_run):
+            previous_cwd = os.getcwd()
+            try:
+                os.chdir(temp)
                 output = Path(temp) / "notes.md"
                 release.generate_notes("2.1.0", second, "stable", [baseline], output)
+            finally:
+                os.chdir(previous_cwd)
             notes = output.read_text(encoding="utf-8")
             self.assertIn(f"{first[:12]}](https://github.com/Nonary/vibeshine/commit/{first}) fix: first note", notes)
+            self.assertIn("body for first note", notes)
             self.assertIn(f"{second[:12]}](https://github.com/Nonary/vibeshine/commit/{second}) feat: second note", notes)
             self.assertNotIn("\n" + second[:12], notes)
 

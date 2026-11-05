@@ -684,6 +684,44 @@ esac
                 text=True, capture_output=True, check=True)
             self.assertIn("channel=stable allocated_numeric=true", executed.stdout)
 
+            # Execute the actual draft-resume gate with API responses that have
+            # a wrong channel or wrong release body. Neither may be mutated.
+            script = create_step["run"]
+            start = script.index('if [[ -n "${release_id}" ]]; then',
+                                 script.index("allocated_numeric=false"))
+            end = script.index("\n\nrelease_make_latest=", start)
+            draft_gate = script[start:end]
+
+            def run_draft_gate(release_json: dict[str, object], notes: str) -> subprocess.CompletedProcess[str]:
+                with tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    fake_bin = root / "bin"
+                    fake_bin.mkdir()
+                    fake_gh = fake_bin / "gh"
+                    fake_gh.write_text("#!/bin/sh\ncat \"$MOCK_RELEASE_JSON\"\n", encoding="utf-8")
+                    fake_gh.chmod(0o755)
+                    response = root / "release.json"
+                    response.write_text(json.dumps(release_json), encoding="utf-8")
+                    notes_path = root / "notes.md"
+                    notes_path.write_text(notes, encoding="utf-8")
+                    env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
+                               MOCK_RELEASE_JSON=str(response), RUNNER_TEMP=temp,
+                               GITHUB_REPOSITORY="Nonary/vibeshine", release_id="123",
+                               publish_tag="2.0.7", release_title="v2.0.7",
+                               PRERELEASE="false", NOTES_FILE=str(notes_path))
+                    return subprocess.run(
+                        ["bash", "-euo", "pipefail", "-c",
+                         "set -euo pipefail;\n" + draft_gate],
+                        env=env, text=True, capture_output=True, check=False)
+
+            valid_draft = {"id": 123, "draft": True, "tag_name": "2.0.7",
+                           "prerelease": False, "name": "v2.0.7", "body": "expected notes\n"}
+            self.assertEqual(run_draft_gate(valid_draft, "expected notes\n").returncode, 0)
+            wrong_channel = dict(valid_draft, prerelease=True)
+            self.assertNotEqual(run_draft_gate(wrong_channel, "expected notes\n").returncode, 0)
+            wrong_body = dict(valid_draft, body="unqualified notes\n")
+            self.assertNotEqual(run_draft_gate(wrong_body, "expected notes\n").returncode, 0)
+
         self.assertIn("workflow_dispatch", workflow["on"])
         self.assertEqual(dispatch_inputs["build_run_id"]["required"], "false")
         self.assertIn("Optional recovery override", dispatch_inputs["build_run_id"]["description"])

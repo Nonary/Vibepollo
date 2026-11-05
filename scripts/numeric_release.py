@@ -361,18 +361,18 @@ def validate_tag(releases, refs, tag_channels, tag, source_commit, source_branch
 
 
 def generate_notes(version, source_commit, channel, previous_sources, output_path):
-    raw = run("git", "log", "--reverse", "-z", "--format=%H%x00%s%x00%b",
-              source_commit, "--not", *previous_sources)
+    raw = subprocess.run(
+        ["git", "log", "--reverse", "-z", "--format=%H%x00%s%x00%b",
+         source_commit, "--not", *previous_sources],
+        check=True, capture_output=True, text=True).stdout
+    fields = raw.split("\0")
+    if len(fields) % 3 == 1 and fields[-1] == "":
+        fields.pop()
+    if len(fields) % 3:
+        raise ValueError("Could not parse exact NUL-framed release notes commit data")
     commits = []
-    for record in raw.split("\0\0"):
-        if not record:
-            continue
-        fields = record.split("\0", 2)
-        if len(fields) == 2:
-            fields.append("")
-        if len(fields) != 3:
-            raise ValueError("Could not parse exact NUL-framed release notes commit data")
-        sha, subject, body = fields
+    for index in range(0, len(fields), 3):
+        sha, subject, body = fields[index:index + 3]
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise ValueError("Release notes commit data contains an invalid full SHA")
         commits.append((sha, subject, body))

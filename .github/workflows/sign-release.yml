@@ -805,7 +805,7 @@ jobs:
               exit 1
             fi
             existing_body="${RUNNER_TEMP}/existing-release-body.md"
-            jq -r '.body' <<< "${current_existing}" > "${existing_body}"
+            jq -j '.body' <<< "${current_existing}" > "${existing_body}"
             if ! cmp -s "${NOTES_FILE}" "${existing_body}"; then
               echo "::error::Existing draft release notes do not match this candidate."
               exit 1
@@ -943,7 +943,7 @@ jobs:
             echo "::error::Release draft identity changed before publication."
             exit 1
           fi
-          jq -r '.body' <<< "${current_release}" > "${RUNNER_TEMP}/current-release-body.md"
+          jq -j '.body' <<< "${current_release}" > "${RUNNER_TEMP}/current-release-body.md"
           cmp -s "${NOTES_FILE}" "${RUNNER_TEMP}/current-release-body.md"
           tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${publish_tag}" --jq .object.sha)"
           tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}" 2>/dev/null || true)"
