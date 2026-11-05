@@ -1997,6 +1997,12 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_session_display_precedence.py"
             --compiler "${CMAKE_CXX_COMPILER}"
             --include-dir "$<TARGET_PROPERTY:sunshine_test_session_display_precedence_dependencies,INTERFACE_INCLUDE_DIRECTORIES>")
+    add_library(sunshine_test_virtual_display_applet_dependencies INTERFACE)
+    target_link_libraries(sunshine_test_virtual_display_applet_dependencies INTERFACE nlohmann_json::nlohmann_json)
+    add_test(NAME regression_virtual_display_applet
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_virtual_display_applet.py"
+            --compiler "${CMAKE_CXX_COMPILER}"
+            --include-dir "$<TARGET_PROPERTY:sunshine_test_virtual_display_applet_dependencies,INTERFACE_INCLUDE_DIRECTORIES>")
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME regression_touch_mapping_environment
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_touch_mapping_environment.py")

@@ -1871,7 +1871,7 @@ namespace nvhttp {
             proc::initVDisplayDriver();
             const auto driver_status = proc::vDisplayDriverStatus.load(std::memory_order_acquire);
             if (driver_status != VDISPLAY::DRIVER_STATUS::OK) {
-              BOOST_LOG(warning) << "SudaVDA driver unavailable (status=" << static_cast<int>(driver_status) << "). Continuing with best-effort virtual display creation.";
+              BOOST_LOG(warning) << "Selected virtual display driver unavailable (status=" << static_cast<int>(driver_status) << "). Continuing with best-effort virtual display creation.";
             }
           }
 
@@ -3359,6 +3359,7 @@ namespace nvhttp {
               launch_session->output_name_override = *app_ctx->output_name_override;
             }
             launch_session->app_metadata = std::move(metadata);
+            proc::display_policy::apply_builtin_virtual_display(*launch_session, app_ctx->uuid, config::video);
           }
         } catch (...) {
         }
@@ -5636,6 +5637,10 @@ launch_session->exact_target_hold.reset();
         false,
         dispatch::include_request_identity_log_fields(trace_id)
       );
+      if (requested_app && !launch_session->normal_vdd_capacity_rejected && launch_session->virtual_display_catalog_error.empty()) {
+        launch_session->virtual_display_catalog_error = proc::display_policy::builtin_virtual_display_error(
+          requested_app->uuid, launch_session->virtual_display && !launch_session->virtual_display_failed, config::video);
+      }
       if (!launch_session->virtual_display_catalog_error.empty()) {
         BOOST_LOG(error) << launch_session->virtual_display_catalog_error;
         tree.put("root.<xmlattr>.status_code", 503);
@@ -6251,6 +6256,7 @@ launch_session->exact_target_hold.reset();
             launch_session->output_name_override = *app_ctx->output_name_override;
           }
           launch_session->app_metadata = std::move(metadata);
+          proc::display_policy::apply_builtin_virtual_display(*launch_session, app_ctx->uuid, config::video);
           if (dispatch::include_request_identity_log_fields(trace_id)) {
             BOOST_LOG(debug) << "Resume request carried no app id; applying settings from running app ["sv
                              << app_ctx->name << "] (id " << app_ctx->id << ")."sv;
@@ -6429,6 +6435,12 @@ launch_session->exact_target_hold.reset();
         retained_resume_owner_eligible,
         dispatch::include_request_identity_log_fields(trace_id)
       );
+    }
+    if (!joining_existing_game_output && !launch_session->normal_vdd_capacity_rejected && launch_session->virtual_display_catalog_error.empty()) {
+      if (const auto app = proc::proc.resolve_app(current_appid)) {
+        launch_session->virtual_display_catalog_error = proc::display_policy::builtin_virtual_display_error(
+          app->uuid, launch_session->virtual_display && !launch_session->virtual_display_failed, config::video);
+      }
     }
     if (!launch_session->virtual_display_catalog_error.empty()) {
       BOOST_LOG(error) << launch_session->virtual_display_catalog_error;

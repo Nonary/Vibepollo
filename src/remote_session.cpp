@@ -295,7 +295,7 @@ namespace remote_session {
       }
       const auto control = identify(0, app.uuid);
       return app.catalogue_visible && control != control_e::input && control != control_e::monitor &&
-             (app.monitor_profile || !reserved_name(app.title));
+             (app.uuid == VIRTUAL_DISPLAY_UUID || app.monitor_profile || !reserved_name(app.title));
     });
     if (owner.role == role_e::monitor) {
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_monitor)};

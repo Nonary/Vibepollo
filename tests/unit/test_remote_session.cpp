@@ -779,3 +779,17 @@ TEST(RemoteSession, MarkedProfilesRejectLegacyGeneratedUUIDsWithoutChangingOrdin
     EXPECT_EQ(remote_session::identify(0, uuid), remote_session::control_e::none);
   }
 }
+
+TEST(RemoteSession, ApolloVirtualDisplayKeepsItsNormalCatalogueAndRouting) {
+  const remote_session::app_t desktop {31, VIRTUAL_DISPLAY_UUID, "Virtual Display", false};
+  const std::vector<remote_session::app_t> configured {desktop, {32, "game", "Game", false}};
+  const remote_session::game_t active {.running = true, .owner_uuid = "owner", .app = desktop};
+  for (const auto &projection : {
+         remote_session::project(caller("owner"), {}, {}, configured, false),
+         remote_session::project(caller("owner"), active, {}, configured, false)}) {
+    EXPECT_EQ(std::count_if(projection.catalogue.begin(), projection.catalogue.end(), [](const auto &app) { return app.uuid == VIRTUAL_DISPLAY_UUID; }), 1);
+    EXPECT_TRUE(std::any_of(projection.catalogue.begin(), projection.catalogue.end(), [](const auto &app) { return app.id == 32; }));
+    EXPECT_FALSE(std::any_of(projection.catalogue.begin(), projection.catalogue.end(), [](const auto &app) { return app.id == remote_session::disconnect_monitor_id; }));
+  }
+  EXPECT_EQ(remote_session::identify(desktop.id, desktop.uuid), remote_session::control_e::none);
+}

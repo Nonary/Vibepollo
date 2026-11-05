@@ -3120,6 +3120,7 @@ namespace webrtc_stream {
               launch_session->output_name_override = *app_ctx->output_name_override;
             }
             launch_session->app_metadata = std::move(metadata);
+            proc::display_policy::apply_builtin_virtual_display(*launch_session, app_ctx->uuid, config::video);
           }
         } catch (...) {
         }

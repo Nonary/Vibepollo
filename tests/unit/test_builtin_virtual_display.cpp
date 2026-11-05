@@ -21,6 +21,8 @@ namespace {
     EXPECT_EQ(app.name, "Virtual Display");
     EXPECT_EQ(app.image_path, "virtual_desktop.png");
     EXPECT_TRUE(app.virtual_display);
+    EXPECT_TRUE(app.virtual_screen);
+    EXPECT_EQ(app.output_name_override, "sunshine:virtual_display");
     EXPECT_EQ(app.scale_factor, 100);
     EXPECT_TRUE(app.auto_detach);
     EXPECT_EQ(app.exit_timeout, std::chrono::seconds(5));

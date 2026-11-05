@@ -98,6 +98,7 @@
   #include <unistd.h>
 #endif
 #include "builtin_virtual_display.h"
+#include "session_display_policy.h"
 #include "httpcommon.h"
 #include "nvhttp.h"
 #include "prep_command_lifetime.h"
@@ -1543,6 +1544,7 @@ namespace proc {
     // resolve the same app/client display policy locally before any VDD exists.
     bool should_use_virtual_display = launch_session->virtual_display;
     if (!launch_session->virtual_display_request_resolved) {
+      proc::display_policy::apply_builtin_virtual_display(*launch_session, _app.uuid, config::video);
       using dd_config_option_e = config::video_t::dd_t::config_option_e;
       const auto dd_config_option =
         launch_session->dd_config_option_override.value_or(config::video.dd.configuration_option);
