@@ -6267,6 +6267,14 @@ launch_session->exact_target_hold.reset();
       } catch (...) {
       }
     }
+    // A synthetic Resume tile carries its own id, so the seeding above is
+    // skipped. The built-in Virtual Display must still request its own screen,
+    // or the create-failure check below rejects a screen it never asked for.
+    if (current_appid > 0) {
+      if (const auto running_app = proc::proc.resolve_app(current_appid)) {
+        proc::display_policy::apply_builtin_virtual_display(*launch_session, running_app->uuid, config::video);
+      }
+    }
 
     // Resume may have populated the app policy after initial session construction.
     finalize_display_preparation(*launch_session, verified_client);
