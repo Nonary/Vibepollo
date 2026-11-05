@@ -197,8 +197,8 @@ jobs:
             echo "::error::Source CI run ${SOURCE_RUN_ID} built ${source_sha}, not release commit ${RELEASE_COMMIT}."
             exit 1
           fi
-          if [[ "${source_event}" != "push" ]]; then
-            echo "::error::Source run must be a push run of .github/workflows/ci.yml (optionally @ref); got ${source_event} / ${source_path}."
+          if [[ "${source_event}" != "push" && "${source_event}" != "workflow_dispatch" ]]; then
+            echo "::error::Source run must be a push or workflow_dispatch run of .github/workflows/ci.yml (optionally @ref); got ${source_event} / ${source_path}."
             exit 1
           fi
           if [[ "${source_path}" != ".github/workflows/ci.yml" && "${source_path}" != ".github/workflows/ci.yml@"* ]]; then
@@ -387,6 +387,8 @@ jobs:
             $kind = (git cat-file -t "refs/tags/$env:TAG_INPUT").Trim()
             $target = (git rev-parse "refs/tags/$($env:TAG_INPUT)^{commit}").Trim()
             if ($kind -ne 'tag' -or $target -cne $head) { throw 'Existing validation tag is not an exact annotated reservation.' }
+            $message = (git for-each-ref --format='%(contents)' "refs/tags/$env:TAG_INPUT" | Out-String).Replace("`r`n", "`n").Trim()
+            if ($message -cne "Vibeshine release channel: nightly`nSource branch: canary" -and $message -cne 'Local-only nightly validation') { throw 'Existing validation tag does not identify the nightly channel and source.' }
           } else {
             git -c user.name='Validation Only' -c user.email='validation@example.invalid' tag -a $env:TAG_INPUT -m 'Local-only nightly validation'
             if ($LASTEXITCODE -ne 0) { throw 'Unable to create local validation tag.' }
