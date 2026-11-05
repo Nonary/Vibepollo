@@ -357,7 +357,7 @@ class ReleaseGuardTests(unittest.TestCase):
         self.assertEqual(workflow["jobs"]["nightly-anchor"]["if"],
                          "needs.classify-qualification.outputs.nightly_qualification == 'true'")
         self.assertIn("run: python scripts/daily_release.py stable-anchor", text)
-        self.assertIn("daily_validation_only: ${{ needs.classify-qualification.outputs.daily_validation_only }}", text)
+        self.assertIn("daily_validation_only: ${{ needs.classify-qualification.outputs.daily_validation_only == 'true' }}", text)
         self.assertIn("stable_anchor_tag: ${{ needs.nightly-anchor.outputs.stable_anchor_tag }}", text)
         self.assertIn("stable_anchor_commit: ${{ needs.nightly-anchor.outputs.stable_anchor_commit }}", text)
         self.assertIn("release_tag: ${{ inputs.release_tag || (needs.classify-qualification.outputs.daily_validation_only == 'true' && inputs.release_version || '') }}", text)

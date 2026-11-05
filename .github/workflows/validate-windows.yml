@@ -86,7 +86,7 @@ jobs:
       build_only: ${{ !inputs.qualify_nightly_installer }}
       build_tests: ${{ inputs.qualify_nightly_installer || inputs.build_tests }}
       daily_unsigned: ${{ inputs.qualify_nightly_installer }}
-      daily_validation_only: ${{ needs.classify-qualification.outputs.daily_validation_only }}
+      daily_validation_only: ${{ needs.classify-qualification.outputs.daily_validation_only == 'true' }}
       release_commit: ${{ github.sha }}
       release_version: ${{ inputs.release_version }}
       release_tag: ${{ inputs.release_tag || (needs.classify-qualification.outputs.daily_validation_only == 'true' && inputs.release_version || '') }}
