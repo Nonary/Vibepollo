@@ -59,6 +59,43 @@ class WindowsValidationWorkflow(unittest.TestCase):
         self.assertIn("if: inputs.build_tests", execute)
         self.assertIn("ctest --test-dir build --output-on-failure --no-tests=error", execute)
 
+    def test_numeric_nightly_qualification_resolves_exact_stable_anchor(self):
+        prepare = re.search(r"(?ms)^  prepare:\n.*?(?=^  windows:)", self.wrapper)
+        self.assertIsNotNone(prepare, "Validation must classify the requested nightly identity first")
+        prepare = prepare.group(0)
+        self.assertIn("numeric_nightly: ${{ steps.identity.outputs.numeric_nightly }}", prepare)
+        self.assertIn("Resolve numeric nightly stable anchor", prepare)
+        self.assertIn("QUALIFY_NIGHTLY: ${{ inputs.qualify_nightly_installer }}", prepare)
+        self.assertIn("RELEASE_VERSION: ${{ inputs.release_version }}", prepare)
+        self.assertIn(r're.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", os.environ["RELEASE_VERSION"])', prepare)
+        self.assertIn('os.environ.get("RELEASE_TAG") not in ("", os.environ["RELEASE_VERSION"])', prepare)
+        self.assertIn("if numeric_nightly:", prepare)
+        self.assertIn("numeric.latest_stable_release(releases)", prepare)
+        self.assertIn("git\", \"merge-base\", \"--is-ancestor\"", prepare)
+        self.assertIn("contents: read", prepare)
+        self.assertNotIn("contents: write", prepare)
+
+        windows = re.search(r"(?ms)^  windows:\n.*?(?=\Z)", self.wrapper).group(0)
+        self.assertIn("release_channel: ${{ needs.prepare.outputs.numeric_nightly == 'true' && 'nightly' || '' }}", windows)
+        self.assertIn("daily_validation_only: ${{ needs.prepare.outputs.numeric_nightly == 'true' }}", windows)
+        self.assertIn("stable_anchor_tag: ${{ needs.prepare.outputs.stable_anchor_tag }}", windows)
+        self.assertIn("stable_anchor_commit: ${{ needs.prepare.outputs.stable_anchor_commit }}", windows)
+
+    def test_legacy_qualification_does_not_claim_numeric_nightly_identity(self):
+        prepare = re.search(r"(?ms)^  prepare:\n.*?(?=^  windows:)", self.wrapper).group(0)
+        self.assertIn('values = {"numeric_nightly": "true" if numeric_nightly else "false"', prepare)
+        self.assertIn('"stable_anchor_tag": "", "stable_anchor_commit": ""', prepare)
+        self.assertIn("if numeric_nightly:", prepare)
+
+        windows = re.search(r"(?ms)^  windows:\n.*?(?=\Z)", self.wrapper).group(0)
+        self.assertIn("release_tag: ${{ inputs.release_tag || (needs.prepare.outputs.numeric_nightly == 'true' && inputs.release_version) || '' }}", windows)
+        self.assertIn("release_channel: ${{ needs.prepare.outputs.numeric_nightly == 'true' && 'nightly' || '' }}", windows)
+        self.assertIn("daily_validation_only: ${{ needs.prepare.outputs.numeric_nightly == 'true' }}", windows)
+        # A qualified non-numeric legacy build may run required tests and use
+        # daily driver safeguards, but it gets no numeric tag or nightly channel.
+        self.assertIn("build_tests: ${{ inputs.qualify_nightly_installer || inputs.build_tests }}", windows)
+        self.assertIn("daily_unsigned: ${{ inputs.qualify_nightly_installer }}", windows)
+
     def test_signing_is_confined_to_nightly_and_production_signing_workflow(self):
         daily_gamepad = step(self.reusable, "Self-sign only the daily gamepad catalog and setup tool")
         self.assertIn("if: inputs.daily_unsigned", daily_gamepad)
