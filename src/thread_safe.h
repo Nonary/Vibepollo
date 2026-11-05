@@ -609,6 +609,11 @@ namespace safe {
       return _poll_state.running();
     }
 
+    [[nodiscard]] std::size_t size() {
+      std::lock_guard lg {_lock};
+      return _queue.size();
+    }
+
   private:
     detail::poll_state_t _poll_state;
     std::uint32_t _max_elements;

@@ -171,6 +171,7 @@ namespace stream {
     double encode_latency_ms;  // last frame encode latency in ms
     std::int64_t last_frame_index;
     double uptime_seconds;
+    video::packet_raw_t::frame_metrics_t frame_metrics;
   };
 
   std::vector<session_info_t> get_all_session_info();

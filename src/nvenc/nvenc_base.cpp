@@ -1035,18 +1035,29 @@ namespace nvenc {
     }
 #endif
 
+    const auto encode_call_started = std::chrono::steady_clock::now();
     if (nvenc_failed(nvenc->nvEncEncodePicture(encoder, &pic_params))) {
       BOOST_LOG(error) << "NvEnc: NvEncEncodePicture() failed: " << last_nvenc_error_string;
       return {};
     }
+    const auto encode_ms = std::chrono::duration<double, std::milli>(
+      std::chrono::steady_clock::now() - encode_call_started
+    ).count();
 
     NV_ENC_LOCK_BITSTREAM lock_bitstream = {api::lock_bitstream_version(selected_api_version)};
     lock_bitstream.outputBitstream = output_bitstream;
     lock_bitstream.doNotWait = async_event_handle ? 1 : 0;
 
-    if (async_event_handle && !wait_for_async_event(100)) {
-      BOOST_LOG(error) << "NvEnc: frame " << frame_index << " encode completion wait unsuccessful";
-      return {};
+    double encode_wait_ms = 0;
+    if (async_event_handle) {
+      const auto wait_started = std::chrono::steady_clock::now();
+      if (!wait_for_async_event(100)) {
+        BOOST_LOG(error) << "NvEnc: frame " << frame_index << " encode completion wait unsuccessful";
+        return {};
+      }
+      encode_wait_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - wait_started
+      ).count();
     }
 
     if (nvenc_failed(nvenc->nvEncLockBitstream(encoder, &lock_bitstream))) {
@@ -1060,6 +1071,9 @@ namespace nvenc {
       lock_bitstream.outputTimeStamp,
       lock_bitstream.pictureType == NV_ENC_PIC_TYPE_IDR,
       encoder_state.rfi_needs_confirmation,
+      encode_wait_ms,
+      encode_ms,
+      0,
     };
 
     if (encoder_state.rfi_needs_confirmation) {

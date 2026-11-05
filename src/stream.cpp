@@ -778,6 +778,7 @@ namespace stream {
       std::atomic<std::int64_t> wire_frame_index {-1};
       /// Frames abandoned by a socket send failure; adaptive pacing treats a rise as loss.
       std::atomic<std::uint64_t> video_send_failures {0};
+      video::packet_raw_t::frame_metrics_t last_frame_metrics;
       std::chrono::steady_clock::time_point start_time {std::chrono::steady_clock::now()};
     } stats;
 
@@ -956,6 +957,7 @@ namespace stream {
         info.uuid = session->history_uuid;
         info.device_name = !session->history_device_name.empty() ? session->history_device_name : session->device_name;
         info.stream_gpu_model = session->stream_gpu_model;
+        info.frame_metrics = session->stats.last_frame_metrics;
       }
       info.width = session->config.monitor.width;
       info.height = session->config.monitor.height;
@@ -2441,6 +2443,8 @@ namespace stream {
         continue;
       }
       const auto packet_pop_timestamp = std::chrono::steady_clock::now();
+      packet->metrics.send_queue_depth = static_cast<std::int32_t>(packets->size());
+      packet->metrics.frame_size_bytes = packet->data_size();
       auto wire_state_it = wire_timeline_by_session.find(session);
       if (wire_state_it == wire_timeline_by_session.end()) {
         // Bound diagnostic state even if many sessions are created during one
@@ -2989,6 +2993,11 @@ namespace stream {
               // Do pacing within the frame.
               // Also trigger pacing before the first send_batch() of the frame
               // to account for the last send_batch() of the previous frame.
+              if (packet->metrics.packetize_ms == 0) {
+                packet->metrics.packetize_ms = std::chrono::duration<double, std::milli>(
+                  std::chrono::steady_clock::now() - packet_pop_timestamp
+                ).count();
+              }
               if (pacing_ceiling > 0 || ratecontrol_group_packets_sent >= ratecontrol_packets_in_1ms ||
                   ratecontrol_frame_packets_sent == 0) {
                 auto due = ratecontrol_frame_start + frame_pacing_delay(ratecontrol_frame_packets_sent);
@@ -3006,11 +3015,17 @@ namespace stream {
                   } else {
                     timer->sleep_for(sleep_time);
                   }
+                  const auto waited = std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - sleep_start
+                  ).count();
+                  packet->metrics.send_wait_ms += waited;
                   if (burst_first_send) {
-                    burst_sleep_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - sleep_start).count();
+                    burst_sleep_ms += waited;
                   }
                 } else {
-                  ratecontrol_late_logger.collect_and_log(std::chrono::duration<double, std::milli>(now - due).count());
+                  const auto late = std::chrono::duration<double, std::milli>(now - due).count();
+                  ratecontrol_late_logger.collect_and_log(late);
+                  packet->metrics.pacing_lag_ms += late;
                 }
 
                 ratecontrol_group_packets_sent = 0;
@@ -3026,6 +3041,7 @@ namespace stream {
               if (!burst_first_send) {
                 burst_first_send = send_start;
               }
+              const auto socket_send_started = std::chrono::steady_clock::now();
               const auto send_result = send_video_batch(
                 current_batch_size,
                 batch_info.allow_fallback,
@@ -3050,6 +3066,9 @@ namespace stream {
               frame_packets_accepted += send_result.packets_accepted;
               ratecontrol_group_packets_sent += send_result.packets_accepted;
               ratecontrol_frame_packets_sent += send_result.packets_accepted;
+              packet->metrics.socket_send_blocked_ms += std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - socket_send_started
+              ).count();
               // Keep pacing debt from accepted batches even if this block or
               // frame aborts before its final shard.
               ratecontrol_next_frame_start = ratecontrol_frame_start +
@@ -3116,6 +3135,10 @@ namespace stream {
         }
 
         const auto send_complete_timestamp = std::chrono::steady_clock::now();
+        {
+          std::lock_guard lg {session->metadata_mutex};
+          session->stats.last_frame_metrics = packet->metrics;
+        }
 #ifdef __linux__
         {
           const auto source_timestamp = packet->capture_timestamp.value_or(*packet->frame_timestamp);

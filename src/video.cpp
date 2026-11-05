@@ -3759,6 +3759,11 @@ namespace video {
       webrtc_stream::submit_video_packet(*packet);
     }
     packet->packet_enqueue_timestamp = std::chrono::steady_clock::now();
+    packet->metrics.frame_id = encoded_frame.frame_index;
+    packet->metrics.encode_wait_ms = encoded_frame.encode_wait_ms;
+    packet->metrics.encode_ms = encoded_frame.encode_ms;
+    packet->metrics.encode_queue_depth = encoded_frame.encode_queue_depth;
+    packet->metrics.frame_size_bytes = packet->data_size();
     packets->raise(std::move(packet));
 
     return 0;

@@ -804,6 +804,17 @@ namespace confighttp {
     output["encode_latency_ms"] = round_to(info.encode_latency_ms, 10.0);
     output["last_frame_index"] = info.last_frame_index;
     output["uptime_seconds"] = round_to(info.uptime_seconds, 10.0);
+    const auto &m = info.frame_metrics;
+    output["frame_id"] = m.frame_id;
+    output["encode_wait_ms"] = round_to(m.encode_wait_ms, 100.0);
+    output["encode_ms"] = round_to(m.encode_ms, 100.0);
+    output["packetize_ms"] = round_to(m.packetize_ms, 100.0);
+    output["send_wait_ms"] = round_to(m.send_wait_ms, 100.0);
+    output["encode_queue_depth"] = m.encode_queue_depth;
+    output["send_queue_depth"] = m.send_queue_depth;
+    output["pacing_lag_ms"] = round_to(m.pacing_lag_ms, 100.0);
+    output["socket_send_blocked_ms"] = round_to(m.socket_send_blocked_ms, 100.0);
+    output["frame_size_bytes"] = m.frame_size_bytes;
     return output;
   }
 

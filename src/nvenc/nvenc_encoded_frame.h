@@ -18,6 +18,9 @@ namespace nvenc {
     uint64_t frame_index = 0;
     bool idr = false;
     bool after_ref_frame_invalidation = false;
+    double encode_wait_ms = 0;
+    double encode_ms = 0;
+    std::int32_t encode_queue_depth = 0;
   };
 
 }  // namespace nvenc

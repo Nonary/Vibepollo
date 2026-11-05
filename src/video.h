@@ -380,6 +380,18 @@ namespace video {
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp;
     std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp;
     std::chrono::steady_clock::time_point packet_enqueue_timestamp = std::chrono::steady_clock::now();
+    struct frame_metrics_t {
+      std::int64_t frame_id = 0;
+      double encode_wait_ms = 0;
+      double encode_ms = 0;
+      double packetize_ms = 0;
+      double send_wait_ms = 0;
+      std::int32_t encode_queue_depth = 0;
+      std::int32_t send_queue_depth = 0;
+      double pacing_lag_ms = 0;
+      double socket_send_blocked_ms = 0;
+      std::uint64_t frame_size_bytes = 0;
+    } metrics;
   };
 
   struct packet_raw_avcodec: packet_raw_t {

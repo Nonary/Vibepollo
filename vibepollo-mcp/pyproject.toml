@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vibepollo-mcp"
+version = "0.1.0"
+description = "MCP management server for Vibepollo"
+requires-python = ">=3.11"
+dependencies = ["mcp>=2.0,<3", "httpx>=0.27"]
+
+[tool.setuptools]
+py-modules = ["server"]
+
+[project.scripts]
+vibepollo-mcp = "server:main"
