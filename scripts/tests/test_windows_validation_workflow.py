@@ -81,7 +81,7 @@ class WindowsValidationWorkflow(unittest.TestCase):
         windows = re.search(r"(?ms)^  windows:\n.*?(?=\Z)", self.wrapper).group(0)
         self.assertIn("needs: [classify-qualification, nightly-anchor]", windows)
         self.assertIn("needs.nightly-anchor.result == 'success'", windows)
-        self.assertIn("daily_validation_only: ${{ needs.classify-qualification.outputs.daily_validation_only }}", windows)
+        self.assertIn("daily_validation_only: ${{ needs.classify-qualification.outputs.daily_validation_only == 'true' }}", windows)
         self.assertIn("stable_anchor_tag: ${{ needs.nightly-anchor.outputs.stable_anchor_tag }}", windows)
         self.assertIn("stable_anchor_commit: ${{ needs.nightly-anchor.outputs.stable_anchor_commit }}", windows)
 
@@ -90,7 +90,7 @@ class WindowsValidationWorkflow(unittest.TestCase):
         self.assertIn("needs.classify-qualification.outputs.nightly_qualification != 'true' || needs.nightly-anchor.result == 'success'", windows)
         self.assertIn("release_channel: ${{ inputs.qualify_nightly_installer && 'nightly' || 'legacy' }}", windows)
         self.assertIn("release_tag: ${{ inputs.release_tag || (needs.classify-qualification.outputs.daily_validation_only == 'true' && inputs.release_version || '') }}", windows)
-        self.assertIn("daily_validation_only: ${{ needs.classify-qualification.outputs.daily_validation_only }}", windows)
+        self.assertIn("daily_validation_only: ${{ needs.classify-qualification.outputs.daily_validation_only == 'true' }}", windows)
         classify = re.search(r"(?ms)^  classify-qualification:\n.*?(?=^  nightly-anchor:)", self.wrapper).group(0)
         self.assertIn("numeric = os.environ['QUALIFY_NIGHTLY'] == 'true' and bool(", classify)
         self.assertIn("nightly_qualification={str(numeric).lower()}", classify)
