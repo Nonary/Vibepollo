@@ -752,6 +752,36 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(error) << "Platform failed to initialize"sv;
   }
 
+  // Startup returns (e.g. a shutdown request during the encoder probe) skip the
+  // ordered teardown at the end of main. proc::refresh above has already started
+  // the virtual display lease thread, which lives in static storage; if it is
+  // still joinable when CRT on-exit handlers run, std::thread's destructor
+  // terminates the process. Run the same teardown here. The normal path performs
+  // these steps itself and disables this guard once they are done.
+  auto runtime_teardown_guard = util::fail_guard([&shutdown_deadline, &shutdown_phase_state]() {
+    shutdown_deadline.arm();
+#ifdef _WIN32
+    shutdown_phase_state.set(shutdown_phase::phase_e::deferred_virtual_output_shutdown);
+    config::request_deferred_virtual_output_reapply_shutdown();
+    shutdown_phase_state.set(shutdown_phase::phase_e::virtual_display_recovery_shutdown);
+    VDISPLAY::request_virtual_display_recovery_shutdown();
+    shutdown_phase_state.set(shutdown_phase::phase_e::deferred_virtual_output_worker_join);
+    config::join_deferred_virtual_output_reapply_worker();
+    shutdown_phase_state.set(shutdown_phase::phase_e::virtual_display_recovery_monitor_join);
+    VDISPLAY::join_virtual_display_recovery_monitors();
+    shutdown_phase_state.set(shutdown_phase::phase_e::display_helper_watchdog_stop);
+    display_helper_integration::stop_watchdog(true);
+    shutdown_phase_state.set(shutdown_phase::phase_e::retained_display_cleanup);
+    VDISPLAY::cleanup_retained_ensure_display();
+    shutdown_phase_state.set(shutdown_phase::phase_e::virtual_display_device_close);
+    VDISPLAY::closeVDisplayDevice();
+#endif
+    shutdown_phase_state.set(shutdown_phase::phase_e::task_pool_stop);
+    task_pool.stop();
+    shutdown_phase_state.set(shutdown_phase::phase_e::task_pool_join);
+    task_pool.join();
+  });
+
 #ifdef _WIN32
   display_helper_integration::start_orphan_recovery_monitor();
   auto orphan_recovery_monitor_guard = util::fail_guard([]() {
@@ -1142,6 +1172,7 @@ int main(int argc, char *argv[]) {
   task_pool.stop();
   shutdown_phase_state.set(shutdown_phase::phase_e::task_pool_join);
   task_pool.join();
+  runtime_teardown_guard.disable();
 
   // stop system tray
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
