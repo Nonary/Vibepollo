@@ -4,8 +4,13 @@ This checks target/library composition, not a native Apple linker invocation.
 """
 
 import argparse
+import hashlib
+import io
 from pathlib import Path
+import re
+import shutil
 import subprocess
+import tarfile
 import tempfile
 
 
@@ -36,6 +41,29 @@ endfunction()
 '''
     with tempfile.TemporaryDirectory() as temporary:
         directory = Path(temporary)
+        # Exercise the real dependency module against a controlled release pin.
+        # The archive is intentionally minimal: this test configures link lists,
+        # but never links or executes a Darwin binary.
+        archive = directory / 'Darwin-arm64-ffmpeg.tar.gz'
+        with tarfile.open(archive, 'w:gz') as tar:
+            content = b'FFmpeg link fixture\n'
+            entry = tarfile.TarInfo('ffmpeg/lib/libavcodec.a')
+            entry.size = len(content)
+            tar.addfile(entry, io.BytesIO(content))
+        digest = hashlib.sha256(archive.read_bytes()).hexdigest()
+
+        fragments = directory / 'cmake-dependencies'
+        fragments.mkdir()
+        shutil.copyfile(root / 'cmake/dependencies/ffmpeg.cmake', fragments / 'ffmpeg.cmake')
+        release = (root / 'cmake/dependencies/ffmpeg-release.cmake').read_text()
+        release, count = re.subn(
+            r'(?m)^(set\(FFMPEG_SHA256_Darwin_arm64 ")[0-9a-f]{64}("\))$',
+            lambda match: match.group(1) + digest + match.group(2), release,
+        )
+        if count != 1:
+            raise AssertionError('Expected exactly one Darwin arm64 FFmpeg pin')
+        (fragments / 'ffmpeg-release.cmake').write_text(release)
+
         for mode in ('automatic', 'supplied', 'override', 'linux', 'windows'):
             source = directory / mode
             source.mkdir()
@@ -43,6 +71,10 @@ endfunction()
             archives = build / '_deps/ffmpeg'
             (archives / 'lib').mkdir(parents=True)
             (archives / 'lib/libavcodec.a').touch()
+            if mode == 'automatic':
+                pinned = build / '_deps' / f'ffmpeg-{digest}'
+                pinned.mkdir(parents=True)
+                shutil.copyfile(archive, pinned / archive.name)
             code = common
             if mode != 'automatic':
                 code += f'set(FFMPEG_PREPARED_BINARIES "{archives}")\n'
@@ -52,7 +84,7 @@ endfunction()
                 code += 'set(APPLE FALSE)\n'
             elif mode == 'windows':
                 code += 'set(APPLE FALSE)\nset(WIN32 TRUE)\n'
-            code += f'include("{root}/cmake/dependencies/ffmpeg.cmake")\n'
+            code += f'include("{fragments}/ffmpeg.cmake")\n'
             code += preamble
             if mode in ('automatic', 'supplied'):
                 code += r'''
@@ -78,6 +110,16 @@ endif()
 '''
             (source / 'CMakeLists.txt').write_text(code)
             subprocess.run([args.cmake, '-S', str(source), '-B', str(build)], check=True)
+            if mode == 'automatic':
+                # Cached archives must still be checked; a stale or tampered
+                # cache may not satisfy the production release pin.
+                (pinned / archive.name).write_bytes(b'tampered archive')
+                result = subprocess.run(
+                    [args.cmake, '-S', str(source), '-B', str(build)],
+                    capture_output=True, text=True,
+                )
+                if result.returncode == 0 or 'FFmpeg archive checksum mismatch' not in result.stderr:
+                    raise AssertionError('Tampered FFmpeg archive was not rejected by its checksum')
 
         source = directory / 'zlib'
         source.mkdir()

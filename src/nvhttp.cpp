@@ -2742,13 +2742,16 @@ namespace nvhttp {
       std::lock_guard<std::mutex> state_lock(statefile::state_mutex());
       std::lock_guard<std::mutex> client_lock(client_mutex);
       if (!transient && !authorization_state_ready.load(std::memory_order_acquire)) return false;
-      auto candidate = crypto::x509(named_cert_p->cert);
-      if (!candidate) return false;
-      auto existing = std::find_if(client_root.named_devices.begin(), client_root.named_devices.end(), [&](const auto &record) {
-        auto certificate = crypto::x509(record->cert);
-        return certificate && X509_cmp(candidate.get(), certificate.get()) == 0;
-      });
-      if (existing != client_root.named_devices.end()) {
+      if (!named_cert_p) return false;
+      const auto candidate_identity = exact_certificate_identity(crypto::x509(named_cert_p->cert));
+      if (!candidate_identity) return false;
+      std::vector<std::string> identities;
+      std::vector<pairing_policy::paired_client_record_view_t> records;
+      if (!build_paired_client_records(client_root, identities, records)) return false;
+      const auto admission = pairing_policy::admit_paired_client(records, *candidate_identity);
+      if (admission.status == pairing_policy::paired_client_admission_e::reject) return false;
+      if (admission.status == pairing_policy::paired_client_admission_e::reauthorize) {
+        auto existing = client_root.named_devices.begin() + admission.index;
         // A verified re-pair restores a disabled client's default access while
         // retaining its stable UUID, commands and display preferences.
         if ((*existing)->perm == PERM::_no || !(*existing)->enabled) {
@@ -2765,10 +2768,7 @@ namespace nvhttp {
         *named_cert_p = **existing;
         return true;
       }
-      if (client_root.named_devices.size() >= pairing_policy::max_paired_clients) return false;
       client_root.named_devices.push_back(named_cert_p);
-      std::vector<std::string> identities;
-      std::vector<pairing_policy::paired_client_record_view_t> records;
       if (!build_paired_client_records(client_root, identities, records)) {
         client_root.named_devices.pop_back();
         return false;
@@ -4088,6 +4088,7 @@ namespace nvhttp {
             std::getline(std::cin, pin);
 
             getservercert(ptr->second, tree, pin);
+            return;
           } else {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
             system_tray::update_tray_require_pin();

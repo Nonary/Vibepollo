@@ -130,7 +130,7 @@ class ArchiveTests(unittest.TestCase):
 
     def test_native_apollo_icons_with_or_without_tray(self):
         with package() as archive:
-            self.assertIn('usr/share/icons/hicolor/scalable/apps/apollo.svg',
+            self.assertIn('usr/share/icons/hicolor/scalable/apps/io.github.Nonary.vibepollo.svg',
                           deploy.inspect_archive(archive, VERSION))
         with package([tarfile.TarInfo(name) for name in deploy.OPTIONAL]) as archive:
             self.assertTrue(deploy.OPTIONAL <= deploy.inspect_archive(archive, VERSION).keys())

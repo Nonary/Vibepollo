@@ -27,7 +27,7 @@ def block(text,start):
 parser=block(policy,policy.index('inline unsigned steam_haptic_stop_key'))
 helpers=block(common,common.index('  inline unsigned gamepad_feedback_state_key'))+'\n'+block(common,common.index('  inline bool raise_gamepad_feedback'))
 if '--baseline' in sys.argv:
-    helpers=block(common,common.index('  inline unsigned gamepad_feedback_state_key'))+'''\ninline bool raise_gamepad_feedback(safe::queue_t<gamepad_feedback_msg_t>& q,gamepad_feedback_msg_t m){q.raise(std::move(m));return true;}\n''' 
+    helpers=block(common,common.index('  inline unsigned gamepad_feedback_state_key'))+'''\ninline bool raise_gamepad_feedback(safe::queue_t<gamepad_feedback_msg_t>& q,gamepad_feedback_msg_t m){q.raise(std::move(m));return true;}\n'''
 code=r'''
 #include <array>
 #include <chrono>

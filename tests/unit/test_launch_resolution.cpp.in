@@ -1,0 +1,77 @@
+// Exercise the production process launch resolution block with a small session
+// boundary; display hardware and RTSP/WebRTC transports are not initialized.
+#include <gtest/gtest.h>
+#include <cstdint>
+#include <limits>
+#include <map>
+#include <optional>
+#include <string>
+namespace rtsp_stream {
+  struct launch_session_t {
+    struct resolution_override_t { int width; int height; };
+    uint32_t width, height, scale_factor;
+    std::optional<resolution_override_t> resolution_override;
+  };
+}
+namespace {
+  struct app_t { int scale_factor = 100; };
+  struct result_t { uint32_t render_width, render_height; std::map<std::string, std::string> env; };
+  result_t run(rtsp_stream::launch_session_t &session, app_t app) {
+    auto *launch_session = &session;
+    auto _app = app;
+@BLOCK@
+    std::map<std::string, std::string> _env;
+@ENV@
+    return {render_width, render_height, _env};
+  }
+  TEST(LaunchResolution, PrecomputedClientScalePreservesViewportAndEnvironment) {
+    rtsp_stream::launch_session_t session {1920, 1080, 150, {{2880, 1620}}};
+    const auto result = run(session, {100});
+    EXPECT_EQ(session.width, 1920u); EXPECT_EQ(session.height, 1080u);
+    ASSERT_TRUE(session.resolution_override);
+    EXPECT_EQ(session.resolution_override->width, 2880); EXPECT_EQ(session.resolution_override->height, 1620);
+    EXPECT_EQ(result.env.at("SUNSHINE_CLIENT_WIDTH"), "2880");
+    EXPECT_EQ(result.env.at("SUNSHINE_CLIENT_HEIGHT"), "1620");
+    EXPECT_EQ(result.env.at("APOLLO_CLIENT_RENDER_WIDTH"), "2880");
+    EXPECT_EQ(result.env.at("APOLLO_CLIENT_RENDER_HEIGHT"), "1620");
+  }
+  TEST(LaunchResolution, AppScaleTakesPrecedenceWithoutChangingViewport) {
+    rtsp_stream::launch_session_t session {1920, 1080, 150, std::nullopt};
+    const auto result = run(session, {125});
+    EXPECT_EQ(session.width, 1920u); EXPECT_EQ(session.height, 1080u);
+    ASSERT_TRUE(session.resolution_override);
+    EXPECT_EQ(session.resolution_override->width, 2400); EXPECT_EQ(session.resolution_override->height, 1350);
+    EXPECT_EQ(result.render_width, 2400u); EXPECT_EQ(result.render_height, 1350u);
+  }
+  TEST(LaunchResolution, ExistingAppOverrideIsNotScaledAgainOnReconnect) {
+    rtsp_stream::launch_session_t session {1920, 1080, 150, {{2400, 1350}}};
+    const auto first = run(session, {125});
+    const auto resumed = run(session, {125});
+    ASSERT_TRUE(session.resolution_override);
+    EXPECT_EQ(session.width, 1920u); EXPECT_EQ(session.height, 1080u);
+    EXPECT_EQ(session.resolution_override->width, 2400); EXPECT_EQ(session.resolution_override->height, 1350);
+    EXPECT_EQ(first.render_width, resumed.render_width); EXPECT_EQ(first.render_height, resumed.render_height);
+  }
+  TEST(LaunchResolution, WebRtcStyleClientScaleCreatesDisplayOverride) {
+    rtsp_stream::launch_session_t session {1280, 720, 150, std::nullopt};
+    run(session, {100});
+    EXPECT_EQ(session.width, 1280u); EXPECT_EQ(session.height, 720u);
+    ASSERT_TRUE(session.resolution_override);
+    EXPECT_EQ(session.resolution_override->width, 1920); EXPECT_EQ(session.resolution_override->height, 1080);
+  }
+  TEST(LaunchResolution, UnscaledAndFallbackDimensionsRemainSeparate) {
+    rtsp_stream::launch_session_t normal {1920, 1080, 100, std::nullopt};
+    run(normal, {100}); EXPECT_FALSE(normal.resolution_override);
+    rtsp_stream::launch_session_t missing {0, 0, 100, std::nullopt};
+    run(missing, {100}); EXPECT_EQ(missing.width, 0u); EXPECT_EQ(missing.height, 0u);
+    ASSERT_TRUE(missing.resolution_override);
+    EXPECT_EQ(missing.resolution_override->width, 1920); EXPECT_EQ(missing.resolution_override->height, 1080);
+  }
+  TEST(LaunchResolution, ExcessiveOrZeroScaleDoesNotCreateInvalidOverride) {
+    rtsp_stream::launch_session_t excessive {1920, 1080, 100, std::nullopt};
+    run(excessive, {std::numeric_limits<int>::max()});
+    EXPECT_FALSE(excessive.resolution_override); EXPECT_EQ(excessive.width, 1920u);
+    rtsp_stream::launch_session_t tiny {1, 1, 1, std::nullopt};
+    run(tiny, {100}); EXPECT_FALSE(tiny.resolution_override);
+  }
+}

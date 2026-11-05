@@ -578,6 +578,8 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+          python -m unittest discover -s packaging/windows/bootstrapper/tests -p test_migration_script.py
+          if ($LASTEXITCODE -ne 0) { throw 'Portable migration script regression failed.' }
           $outputDirectory = Join-Path $env:RUNNER_TEMP 'bootstrap-migration-regression'
           & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File .\packaging\windows\bootstrapper\tests\test_bootstrap_migration.ps1 -OutputDirectory $outputDirectory
           if ($LASTEXITCODE -ne 0) { throw 'Production bootstrap migration regression failed.' }
@@ -793,6 +795,7 @@ jobs:
           echo "::remove-matcher owner=gcc::"
 
       - name: Test native AMF lifecycle behavior
+        if: inputs.build_tests
         shell: msys2 {0}
         run: |
           set -euo pipefail

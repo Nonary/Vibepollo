@@ -60,10 +60,9 @@ if exist "%OLD_DIR%\covers\" (
         rem Preserve UTF-8 application names; Windows PowerShell otherwise reads UTF-8 without a BOM as ANSI.
         rem Only rewrite a file that exists and was read; writing an unread value would leave a
         rem zero-byte apps.json that hides the legacy file from every later migration.
-        "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -c "$appsPath = '%NEW_DIR%\apps.json'; if (Test-Path -LiteralPath $appsPath) { $utf8 = New-Object System.Text.UTF8Encoding($false); $appsJson = [System.IO.File]::ReadAllText($appsPath, $utf8); if ($null -ne $appsJson) { $updatedAppsJson = $appsJson.Replace('.\/covers\/', '.\/config\/covers\/'); [System.IO.File]::WriteAllText($appsPath, $updatedAppsJson, $utf8) } }"
+        "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -c "$appsPath = Join-Path $env:NEW_DIR 'apps.json'; if (Test-Path -LiteralPath $appsPath) { $utf8 = New-Object System.Text.UTF8Encoding($false); $appsJson = [System.IO.File]::ReadAllText($appsPath, $utf8); if ($null -ne $appsJson) { $updatedAppsJson = $appsJson.Replace('.\/covers\/', '.\/config\/covers\/'); [System.IO.File]::WriteAllText($appsPath, $updatedAppsJson, $utf8) } }"
     )
 )
 
-rem Remove log files
-del "%OLD_DIR%\*.txt"
-del "%OLD_DIR%\*.log"
+rem Remove the legacy log. Never use a wildcard: this folder may hold other files.
+if exist "%OLD_DIR%\sunshine.log" del "%OLD_DIR%\sunshine.log"

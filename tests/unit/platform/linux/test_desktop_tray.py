@@ -307,9 +307,9 @@ class TrayTests(unittest.TestCase):
     def test_stream_paused_ready_stopped_and_auth_failure_states(self):
         active = {tray.HOST: "active", tray.CONTROLLER: "active"}
         self.assertEqual(tray.presentation(active, {"activeSessions": 1, "appName": "Game"})[:2],
-                         ("Streaming: Game", "apollo-playing"))
+                         ("Streaming: Game", "io.github.Nonary.vibepollo-playing"))
         self.assertEqual(tray.presentation(active, {"appRunning": True, "appName": "Game"})[:2],
-                         ("Paused: Game", "apollo-pausing"))
+                         ("Paused: Game", "io.github.Nonary.vibepollo-pausing"))
         self.assertEqual(tray.presentation(active, {})[0], "Ready")
         self.assertEqual(tray.presentation(active, error="Denied")[2], "#f5b041")
         self.assertEqual(tray.presentation({tray.HOST: "inactive", tray.CONTROLLER: "inactive"})[0], "Stopped")
@@ -708,6 +708,37 @@ class TrayPackagingTests(unittest.TestCase):
                                   capture_output=True, text=True, check=True)
         self.assertIn("pyside6", metadata.stdout.splitlines())
 
+    def test_icon_stage_matches_desktop_and_tray_for_all_package_types(self):
+        packaging = (ROOT / "cmake/packaging/linux.cmake").read_text()
+        start = packaging.index("# Application and status icons")
+        end = packaging.index("    set(CPACK_DEBIAN_PACKAGE_DEPENDS", start)
+        icon_rules = packaging[start:end] + "endif()\n"
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            project = base / "project"
+            project.mkdir()
+            shutil.copy(ROOT / "apollo.svg", project / "apollo.svg")
+            (project / "CMakeLists.txt").write_text(
+                "cmake_minimum_required(VERSION 3.20)\nproject(icon_stage NONE)\n"
+                "include(GNUInstallDirs)\n"
+                'set(PROJECT_FQDN "io.github.Nonary.vibepollo")\n'
+                f'set(SUNSHINE_SOURCE_ASSETS_DIR "{ROOT}/src_assets")\n'
+                + icon_rules)
+            for mode in ("native", "appimage", "flatpak"):
+                build, stage = base / ("build-" + mode), base / ("stage-" + mode)
+                subprocess.run(["cmake", "-S", str(project), "-B", str(build),
+                                "-DCMAKE_INSTALL_PREFIX=/usr", "-DSUNSHINE_TRAY=1",
+                                f"-DSUNSHINE_BUILD_APPIMAGE={'ON' if mode == 'appimage' else 'OFF'}",
+                                f"-DSUNSHINE_BUILD_FLATPAK={'ON' if mode == 'flatpak' else 'OFF'}"],
+                               check=True, capture_output=True)
+                subprocess.run(["cmake", "--install", str(build)], check=True,
+                               env={**os.environ, "DESTDIR": str(stage)}, capture_output=True)
+                icons = stage / "usr/share/icons/hicolor/scalable"
+                self.assertTrue((icons / "apps" / f"{tray.ICON_PREFIX}.svg").is_file())
+                for state in ("tray", "playing", "pausing", "locked"):
+                    self.assertTrue((icons / "status" / f"{tray.ICON_PREFIX}-{state}.svg").is_file())
+                self.assertFalse((icons / "apps/apollo.svg").exists())
+
     def test_native_cmake_stage_installs_companion_and_login_entry(self):
         with tempfile.TemporaryDirectory() as directory:
             base = Path(directory)
@@ -743,7 +774,7 @@ class TrayPackagingTests(unittest.TestCase):
                 values = entry["Desktop Entry"]
                 self.assertEqual(values["Exec"], "/usr/bin/vibepollo-tray")
                 self.assertEqual(values["TryExec"], values["Exec"])
-                self.assertEqual(values["Icon"], "apollo")
+                self.assertEqual(values["Icon"], "io.github.Nonary.vibepollo")
                 self.assertEqual(values["Type"], "Application")
                 self.assertEqual(values["Terminal"], "false")
                 if shutil.which("desktop-file-validate"):

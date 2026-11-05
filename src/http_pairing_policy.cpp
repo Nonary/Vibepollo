@@ -136,6 +136,30 @@ namespace nvhttp::pairing_policy {
     return {paired_client_resolution_e::unknown_certificate, 0};
   }
 
+  paired_client_admission_t admit_paired_client(
+    const std::span<const paired_client_record_view_t> clients,
+    const std::string_view presented_certificate_identity
+  ) {
+    if (!paired_client_state_valid(clients) ||
+        presented_certificate_identity.empty() ||
+        presented_certificate_identity.size() > max_paired_certificate_length) {
+      return {paired_client_admission_e::reject, 0};
+    }
+
+    for (std::size_t index = 0; index < clients.size(); ++index) {
+      if (clients[index].certificate_identity == presented_certificate_identity) {
+        // Re-pairing is an explicit authorization decision. Reuse the existing
+        // record so its UUID and per-client display settings remain stable.
+        return {paired_client_admission_e::reauthorize, index};
+      }
+    }
+
+    if (clients.size() >= max_paired_clients) {
+      return {paired_client_admission_e::reject, 0};
+    }
+    return {paired_client_admission_e::append, 0};
+  }
+
   admission_decision_t admit_pending_session(
     const std::string_view unique_id,
     const std::string_view client_certificate_hex,

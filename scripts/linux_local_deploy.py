@@ -68,8 +68,8 @@ FIXED.update(f'usr/libexec/vibeshine/{name}' for name in
 FIXED.update(f'usr/lib/systemd/system/{name}' for name in UNITS)
 FIXED.update(f'usr/share/applications/io.github.Nonary.vibepollo{suffix}.desktop'
              for suffix in ('', '.kwin', '.terminal'))
-FIXED.add('usr/share/icons/hicolor/scalable/apps/apollo.svg')
-OPTIONAL = {f'usr/share/icons/hicolor/scalable/status/apollo-{state}.svg'
+FIXED.add('usr/share/icons/hicolor/scalable/apps/io.github.Nonary.vibepollo.svg')
+OPTIONAL = {f'usr/share/icons/hicolor/scalable/status/io.github.Nonary.vibepollo-{state}.svg'
             for state in ('locked', 'pausing', 'playing', 'tray')}
 FIXED.update(f'usr/lib/systemd/user/{unit}.service.d/{dropin}.conf'
              for unit in ('plasma-kwin_wayland', 'plasma-login-kwin_wayland')

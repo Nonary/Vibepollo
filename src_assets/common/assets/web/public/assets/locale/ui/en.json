@@ -1681,7 +1681,7 @@
           "label": "@:config.virtual_display_scale_label"
         },
         "virtual_display_outputs": {
-          "description": "Optional comma-separated DRM connector names reserved for private streams. Leave empty to use the four-output managed pool. On Linux 7.1+, Vibepollo provides GPU-attached HDR10 and 10-bit output; HDR uses direct KMS capture, KWin is recommended for SDR, and managed display creation fails if the custom driver is unavailable.",
+          "description": "Optional comma-separated DRM connector names reserved for private streams. Leave empty to use the managed pool (eight outputs for new pools; four retained during upgrades). On Linux 6.16+, the bundled vibeshine_drm module provides GPU-attached HDR10 and 10-bit output; HDR uses direct KMS capture, KWin is recommended for SDR, and managed display creation fails if the custom driver is unavailable.",
           "label": "Linux private display connectors"
         },
         "virtual_display_max_clients": {

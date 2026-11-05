@@ -213,6 +213,13 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
                     actual = eval(expression.replace("&&", "and").replace("||", "or").strip(), {"__builtins__": {}})
                     self.assertEqual(actual, expected)
 
+    def test_native_amf_regression_is_limited_to_test_builds(self) -> None:
+        steps = load_workflow("ci-windows.yml")["jobs"]["build_windows"]["steps"]
+        native_amf = next(step for step in steps if step.get("name") == "Test native AMF lifecycle behavior")
+        self.assertEqual(native_amf["if"], "inputs.build_tests")
+        self.assertIn("test_native_amf_review.cpp", native_amf["run"])
+        self.assertIn("test_component_native_amf_policy", (ROOT / "tests/CMakeLists.txt").read_text())
+
     def test_installer_regressions_run_after_wix_for_all_test_builds(self) -> None:
         steps = load_workflow("ci-windows.yml")["jobs"]["build_windows"]["steps"]
         named_steps = {step["name"]: step for step in steps}
