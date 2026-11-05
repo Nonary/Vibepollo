@@ -1,0 +1,74 @@
+---
+name: Allocate stable release
+permissions: {}
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: vibepollo-numeric-release
+  cancel-in-progress: false
+
+jobs:
+  allocate:
+    if: github.repository == 'Nonary/Vibepollo' && github.ref_type == 'branch' && github.ref_name == 'master'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    outputs:
+      should_release: ${{ steps.identity.outputs.should_release }}
+      tag: ${{ steps.identity.outputs.tag }}
+      commit: ${{ steps.identity.outputs.commit }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Test release allocation contracts
+        run: |
+          python -m unittest discover -s scripts/tests -p 'test_numeric_release.py'
+          python -m unittest discover -s scripts/tests -p 'test_daily_release.py'
+          python -m unittest discover -s scripts/tests -p 'test_release_guards.py'
+          cmake -DSOURCE_ROOT="$GITHUB_WORKSPACE" -P scripts/tests/test_build_channel.cmake
+          cmake -DSOURCE_ROOT="$GITHUB_WORKSPACE" -P packaging/windows/wix/tests/test_windows_version_numbers.cmake
+      - name: Resolve the next shared numeric version
+        id: identity
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/daily_release.py allocate-stable
+      - name: Create or verify the immutable annotated stable tag
+        if: steps.identity.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.identity.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.identity.outputs.commit }}
+        run: |
+          set -euo pipefail
+          message=$'Vibepollo release channel: stable\nsource: '"${RELEASE_COMMIT}"
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" 2>/dev/null || true)"
+          if [[ -z "${ref_json}" ]]; then
+            tagger_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            tag_object="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/git/tags" \
+              -f "tag=${RELEASE_TAG}" -f "message=${message}" \
+              -f "object=${RELEASE_COMMIT}" -f "type=commit" \
+              -f "tagger[name]=github-actions[bot]" -f "tagger[email]=41898282+github-actions[bot]@users.noreply.github.com" \
+              -f "tagger[date]=${tagger_date}" --jq .sha)"
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f "ref=refs/tags/${RELEASE_TAG}" -f "sha=${tag_object}" >/dev/null
+            ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          fi
+          test "$(jq -r '.object.type' <<<"${ref_json}")" = tag
+          tag_object="$(jq -r '.object.sha' <<<"${ref_json}")"
+          tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}")"
+          test "$(jq -r '.tag' <<<"${tag_json}")" = "${RELEASE_TAG}"
+          test "$(jq -r '.object.type' <<<"${tag_json}")" = commit
+          test "$(jq -r '.object.sha' <<<"${tag_json}")" = "${RELEASE_COMMIT}"
+          test "$(jq -r '.message' <<<"${tag_json}")" = "${message}"
+      - name: Dispatch the exact tagged CI build
+        if: steps.identity.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.identity.outputs.tag }}
+        run: gh workflow run ci.yml --ref "${RELEASE_TAG}" -f "release_tag=${RELEASE_TAG}"

@@ -33,8 +33,8 @@ on:
       - canary
 
 concurrency:
-  group: "${{ github.workflow }}-${{ github.ref }}"
-  cancel-in-progress: true
+  group: "${{ github.repository == 'Nonary/Vibepollo' && (github.ref_type == 'tag' || github.ref_name == 'canary' || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')) && 'vibepollo-numeric-release' || format('{0}-{1}', github.workflow, github.ref) }}"
+  cancel-in-progress: false
 
 jobs:
   release-candidate:
@@ -48,6 +48,8 @@ jobs:
       release_version: ${{ steps.release-candidate.outputs.release_version }}
       should_release: ${{ steps.release-candidate.outputs.should_release }}
       tag_name: ${{ steps.release-candidate.outputs.tag_name }}
+      stable_anchor_tag: ${{ steps.release-candidate.outputs.stable_anchor_tag }}
+      stable_anchor_commit: ${{ steps.release-candidate.outputs.stable_anchor_commit }}
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -135,6 +137,8 @@ jobs:
                 stderr=subprocess.DEVNULL,
               ).returncode == 0:
                 return notes_path
+            if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", release_version):
+              return "<generated-from-verified-source-range>"
             return None
 
           event_name = os.environ["EVENT_NAME"]
@@ -198,6 +202,10 @@ jobs:
             ).returncode != 0:
               print(f"Skipping {tag}: tag commit {release_commit} is not reachable from this run ref.")
               continue
+            validation_env = dict(os.environ, GITHUB_REPOSITORY=REPO,
+                                 RELEASE_TAG=tag, RELEASE_COMMIT=release_commit)
+            subprocess.run([sys.executable, "scripts/daily_release.py", "validate-stable"],
+                           check=True, env=validation_env)
             notes_file = release_notes_for(tag, release_commit)
             if notes_file is None:
               print(f"Skipping {tag}: no exact matching release_notes file in the tag commit.")
@@ -243,6 +251,9 @@ jobs:
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
       release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0-pr-validation' }}
       release_tag: ${{ needs.release-candidate.outputs.tag_name }}
+      release_channel: ${{ needs.release-candidate.outputs.should_release == 'true' && 'stable' || 'legacy' }}
+      stable_anchor_tag: ${{ needs.release-candidate.outputs.stable_anchor_tag }}
+      stable_anchor_commit: ${{ needs.release-candidate.outputs.stable_anchor_commit }}
       release_artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       symbol_product_name: Vibepollo
       publish_symbols: ${{ needs.release-candidate.outputs.should_release == 'true' }}
@@ -271,6 +282,7 @@ jobs:
       artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
       release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0-pr-validation' }}
+      release_channel: ${{ needs.release-candidate.outputs.should_release == 'true' && 'stable' || 'legacy' }}
 
   awaiting-signing:
     name: Awaiting manual signing

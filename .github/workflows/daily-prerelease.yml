@@ -13,7 +13,7 @@ on:
 # The default branch owns the cron launcher. This workflow owns qualification
 # and publication, whether dispatched by that launcher or manually from Canary.
 concurrency:
-  group: daily-windows-prerelease
+  group: vibepollo-numeric-release
   cancel-in-progress: false
 
 jobs:
@@ -32,6 +32,8 @@ jobs:
       commit: ${{ steps.identity.outputs.commit }}
       tag: ${{ steps.identity.outputs.tag }}
       version: ${{ steps.identity.outputs.version }}
+      stable_anchor_tag: ${{ steps.identity.outputs.stable_anchor_tag }}
+      stable_anchor_commit: ${{ steps.identity.outputs.stable_anchor_commit }}
       should_build: ${{ steps.identity.outputs.should_build }}
       skip_reason: ${{ steps.identity.outputs.skip_reason }}
     steps:
@@ -45,7 +47,11 @@ jobs:
       - name: Test daily release contracts
         run: |
           python -m unittest discover -s scripts/tests -p test_daily_release.py
+          python -m unittest discover -s scripts/tests -p test_numeric_release.py
+          python -m unittest discover -s scripts/tests -p test_release_guards.py
           python -m unittest discover -s .github/scripts -p test_vhf_release_identity.py
+          cmake -DSOURCE_ROOT="$GITHUB_WORKSPACE" -P scripts/tests/test_build_channel.cmake
+          cmake -DSOURCE_ROOT="$GITHUB_WORKSPACE" -P packaging/windows/wix/tests/test_windows_version_numbers.cmake
       - name: Test nightly notes and immutable metadata
         run: python -m unittest discover -s scripts/tests -p test_nightly_notes.py
       - name: Resolve explicitly confirmed remote source and immutable identity
@@ -64,13 +70,25 @@ jobs:
           DAILY_COMMIT: ${{ steps.identity.outputs.commit }}
         run: |
           set -euo pipefail
-          # A failed run may already have reserved this exact immutable ref.
-          # Reuse it only when it still names the identical qualified commit.
-          if ! gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha > reserved-sha.txt 2>/dev/null; then
-            gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$DAILY_TAG" -f sha="$DAILY_COMMIT"
-            gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha > reserved-sha.txt
+          message=$'Vibepollo release channel: nightly\nsource: '"${DAILY_COMMIT}"
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${DAILY_TAG}" 2>/dev/null || true)"
+          if [[ -z "${ref_json}" ]]; then
+            tagger_date="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            tag_object="$(gh api --method POST "repos/${GITHUB_REPOSITORY}/git/tags" \
+              -f "tag=${DAILY_TAG}" -f "message=${message}" -f "object=${DAILY_COMMIT}" -f "type=commit" \
+              -f "tagger[name]=github-actions[bot]" -f "tagger[email]=41898282+github-actions[bot]@users.noreply.github.com" \
+              -f "tagger[date]=${tagger_date}" --jq .sha)"
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+              -f "ref=refs/tags/${DAILY_TAG}" -f "sha=${tag_object}" >/dev/null
+            ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${DAILY_TAG}")"
           fi
-          test "$(cat reserved-sha.txt)" = "$DAILY_COMMIT"
+          test "$(jq -r '.object.type' <<<"${ref_json}")" = tag
+          tag_object="$(jq -r '.object.sha' <<<"${ref_json}")"
+          tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}")"
+          test "$(jq -r '.tag' <<<"${tag_json}")" = "${DAILY_TAG}"
+          test "$(jq -r '.object.type' <<<"${tag_json}")" = commit
+          test "$(jq -r '.object.sha' <<<"${tag_json}")" = "${DAILY_COMMIT}"
+          test "$(jq -r '.message' <<<"${tag_json}")" = "${message}"
 
   build:
     needs: prepare
@@ -83,6 +101,10 @@ jobs:
       release_commit: ${{ needs.prepare.outputs.commit }}
       release_version: ${{ needs.prepare.outputs.version }}
       release_tag: ${{ needs.prepare.outputs.tag }}
+      release_channel: nightly
+      stable_anchor_tag: ${{ needs.prepare.outputs.stable_anchor_tag }}
+      stable_anchor_commit: ${{ needs.prepare.outputs.stable_anchor_commit }}
+      daily_validation_only: ${{ vars.DAILY_RELEASE_ENABLED != 'true' || inputs.publish != true }}
       daily_unsigned: true
       build_only: false
       build_tests: true
@@ -109,6 +131,7 @@ jobs:
     with:
       release_commit: ${{ needs.prepare.outputs.commit }}
       release_version: ${{ needs.prepare.outputs.version }}
+      release_channel: nightly
       use_self_hosted: false
       validation_only: true
       build_tests: true
@@ -129,6 +152,8 @@ jobs:
       DAILY_COMMIT: ${{ needs.prepare.outputs.commit }}
       DAILY_TAG: ${{ needs.prepare.outputs.tag }}
       DAILY_VERSION: ${{ needs.prepare.outputs.version }}
+      STABLE_ANCHOR_TAG: ${{ needs.prepare.outputs.stable_anchor_tag }}
+      STABLE_ANCHOR_COMMIT: ${{ needs.prepare.outputs.stable_anchor_commit }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -186,14 +211,62 @@ jobs:
       - name: Create once, upload all assets, then expose prerelease
         run: |
           set -euo pipefail
-          # Partial reruns must not publish a duplicate or older qualified source.
-          python scripts/daily_release.py publication
           # The reserved tag pins the tested source even if canary advances.
-          test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha)" = "$DAILY_COMMIT"
-          gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$DAILY_TAG" --notes-file daily-notes.md --draft --prerelease --latest=false
-          gh release upload "$DAILY_TAG" public-assets/* --repo "$GITHUB_REPOSITORY"
-          gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '[.assets[].name] | sort' > uploaded-assets.json
+          tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha)"
+          tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")"
+          expected_message=$'Vibepollo release channel: nightly\nsource: '"${DAILY_COMMIT}"
+          test "$(jq -r '.tag' <<<"${tag_json}")" = "${DAILY_TAG}"
+          test "$(jq -r '.object.type' <<<"${tag_json}")" = commit
+          test "$(jq -r '.object.sha' <<<"${tag_json}")" = "${DAILY_COMMIT}"
+          test "$(jq -r '.message' <<<"${tag_json}")" = "${expected_message}"
+          existing_release="$(gh api "repos/$GITHUB_REPOSITORY/releases/tags/$DAILY_TAG" 2>/dev/null || true)"
+          if [[ -n "${existing_release}" ]]; then
+            if [[ "$(jq -r '.tag_name' <<<"${existing_release}")" != "$DAILY_TAG" ||
+                  "$(jq -r '.draft' <<<"${existing_release}")" != "true" ||
+                  "$(jq -r '.prerelease' <<<"${existing_release}")" != "true" ]]; then
+              echo "::error::Nightly release exists with a different identity or is already published."
+              exit 1
+            fi
+            jq -j '.body // ""' <<<"${existing_release}" > existing-nightly-notes.md
+            if ! cmp -s daily-notes.md existing-nightly-notes.md; then
+              echo "::error::Existing nightly draft notes do not match this exact source/channel candidate."
+              exit 1
+            fi
+            release_id="$(jq -r '.id' <<<"${existing_release}")"
+            RELEASE_ID="$release_id" EXPECTED_RELEASE_NOTES=daily-notes.md python scripts/daily_release.py publication-draft
+          else
+            # Partial reruns still recompute the shared allocator immediately
+            # before creating the immutable draft.
+            python scripts/daily_release.py publication
+            gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$DAILY_TAG" --notes-file daily-notes.md --draft --prerelease --latest=false
+            release_id="$(gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json id --jq .id)"
+          fi
+          while IFS= read -r asset; do
+            asset_name="$(basename "$asset")"
+            existing_asset="$(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
+              --jq --arg name "$asset_name" '[.[] | select(.name == $name)] | first // {}')"
+            if [[ "$(jq -r '.id // empty' <<<"${existing_asset}")" != "" ]]; then
+              expected_digest="sha256:$(sha256sum "$asset" | cut -d' ' -f1)"
+              if [[ "$(jq -r '.digest // empty' <<<"${existing_asset}")" != "$expected_digest" ]]; then
+                echo "::error::Existing nightly asset differs from the exact candidate: ${asset_name}."
+                exit 1
+              fi
+              continue
+            fi
+            gh release upload "$DAILY_TAG" "$asset" --repo "$GITHUB_REPOSITORY"
+          done < <(find public-assets -maxdepth 1 -type f -print | sort)
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
+            --jq '[.[].name] | sort' > uploaded-assets.json
           python -c 'import json; from pathlib import Path; assert json.loads(Path("uploaded-assets.json").read_text()) == sorted(p.name for p in Path("public-assets").iterdir()), "Uploaded release asset set is incomplete"'
+          while IFS=$'\t' read -r asset_name asset_digest; do
+            local_digest="sha256:$(sha256sum "public-assets/${asset_name}" | cut -d' ' -f1)"
+            if [[ "$asset_digest" != "$local_digest" ]]; then
+              echo "::error::Nightly uploaded asset checksum mismatch: ${asset_name}."
+              exit 1
+            fi
+          done < <(gh api "repos/$GITHUB_REPOSITORY/releases/$release_id/assets" \
+            --jq '.[] | [.name, (.digest // "")] | @tsv')
+          RELEASE_ID="$release_id" EXPECTED_RELEASE_NOTES=daily-notes.md python scripts/daily_release.py publication-draft
           gh release edit "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
           release_json="$(gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,isPrerelease,publishedAt)"
           jq -e --arg tag "$DAILY_TAG" '.tagName == $tag and .isPrerelease == true and .isDraft == false and (.publishedAt | type == "string" and length > 0)' <<< "$release_json" >/dev/null
@@ -204,7 +277,7 @@ jobs:
             --arg tag "$DAILY_TAG" \
             --arg source_commit "$DAILY_COMMIT" \
             --arg published_at "$(jq -r '.publishedAt' <<< "$release_json")" \
-            '{event_type:"daily-release-published",client_payload:{tag_name:$tag,source_commit:$source_commit,published_at:$published_at,draft:false,prerelease:true}}' \
+            '{event_type:"daily-release-published",client_payload:{tag_name:$tag,source_commit:$source_commit,release_channel:"nightly",published_at:$published_at,draft:false,prerelease:true}}' \
             > "$dispatch_payload"
           if ! gh api --method POST "repos/$GITHUB_REPOSITORY/dispatches" --input "$dispatch_payload" >/dev/null; then
             echo "::warning::Could not queue the verification-only issue follow-up. The issue remains open; inspect the published daily and complete the reporter follow-up manually if needed."
