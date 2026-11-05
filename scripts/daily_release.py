@@ -208,19 +208,25 @@ def published_release_baseline(repository, releases):
                     and nightly_notes.vibepollo_nightly_tag(tag)):
                 assets = [asset for asset in release.get("assets", [])
                           if asset.get("name") == "nightly-metadata.json"]
-                if len(assets) != 1 or not isinstance(assets[0].get("id"), int):
-                    raise ValueError("Published nightly metadata asset is missing or ambiguous")
-                metadata = json.loads(run("gh", "api", "-H", "Accept: application/octet-stream",
-                                          f"repos/{repository}/releases/assets/{assets[0]['id']}"))
-                if (metadata.get("schema_version") != 1 or metadata.get("channel") != "nightly"
-                        or metadata.get("tag") != tag):
-                    raise ValueError("Published legacy prerelease metadata identity mismatch")
-                metadata_version = metadata.get("version", "")
-                metadata_key = numeric_release.version_key(metadata_version)
-                if metadata_key is None or (key is not None and key != metadata_key):
-                    raise ValueError("Published prerelease metadata version differs from its tag")
-                version = metadata_version
-                key = metadata_key
+                numeric_tag = numeric_release.parse_version(tag) is not None
+                if len(assets) > 1:
+                    raise ValueError("Published nightly metadata assets are ambiguous")
+                if numeric_tag and (len(assets) != 1 or not isinstance(assets[0].get("id"), int)):
+                    raise ValueError("Published numeric nightly metadata asset is missing")
+                if assets:
+                    if not isinstance(assets[0].get("id"), int):
+                        raise ValueError("Published nightly metadata asset ID is invalid")
+                    metadata = json.loads(run("gh", "api", "-H", "Accept: application/octet-stream",
+                                              f"repos/{repository}/releases/assets/{assets[0]['id']}"))
+                    if (metadata.get("schema_version") != 1 or metadata.get("channel") != "nightly"
+                            or metadata.get("tag") != tag):
+                        raise ValueError("Published legacy prerelease metadata identity mismatch")
+                    metadata_version = metadata.get("version", "")
+                    metadata_key = numeric_release.version_key(metadata_version)
+                    if metadata_key is None or (key is not None and key != metadata_key):
+                        raise ValueError("Published prerelease metadata version differs from its tag")
+                    version = metadata_version
+                    key = metadata_key
             if key is None:
                 continue
             if subprocess.run(["git", "check-ref-format", f"refs/tags/{tag}"], check=False,
@@ -240,6 +246,8 @@ def published_release_baseline(repository, releases):
                 key = numeric_release.version_key(version)
                 if key is None:
                     raise ValueError("Published legacy prerelease has no numeric version core")
+            if key is None:
+                continue
             candidates.append((key, release["published_at"], int(release.get("id", 0)),
                                tuple(map(int, key[:3])), tag, source))
     if not candidates:
@@ -558,7 +566,10 @@ def resolve_stable_anchor():
     source = run("git", "rev-parse", f"refs/tags/{tag}^{{commit}}")
     subprocess.run(["git", "merge-base", "--is-ancestor", source, commit], check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
-    emit_outputs({"stable_anchor_tag": tag, "stable_anchor_commit": source})
+    version = os.environ.get("RELEASE_VERSION", "")
+    numeric = re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) is not None
+    emit_outputs({"stable_anchor_tag": tag, "stable_anchor_commit": source,
+                  "daily_validation_only": str(numeric).lower()})
 
 
 def generate_stable_notes(repository, tag, commit, output_path):

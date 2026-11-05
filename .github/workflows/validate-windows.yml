@@ -31,8 +31,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  classify-qualification:
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      nightly_qualification: ${{ steps.classify.outputs.nightly_qualification }}
+      daily_validation_only: ${{ steps.classify.outputs.daily_validation_only }}
+    steps:
+      - name: Classify numeric versus legacy qualification
+        id: classify
+        env:
+          QUALIFY_NIGHTLY: ${{ inputs.qualify_nightly_installer }}
+          RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          python - <<'PY'
+          import os, re
+          numeric = os.environ['QUALIFY_NIGHTLY'] == 'true' and bool(
+              re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', os.environ['RELEASE_VERSION']))
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as out:
+              out.write(f"nightly_qualification={str(numeric).lower()}\n")
+              out.write(f"daily_validation_only={str(numeric).lower()}\n")
+          PY
+
   nightly-anchor:
-    if: inputs.qualify_nightly_installer
+    needs: [classify-qualification]
+    if: needs.classify-qualification.outputs.nightly_qualification == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -52,8 +75,8 @@ jobs:
         run: python scripts/daily_release.py stable-anchor
 
   windows:
-    needs: [nightly-anchor]
-    if: ${{ always() && (!inputs.qualify_nightly_installer || needs.nightly-anchor.result == 'success') }}
+    needs: [classify-qualification, nightly-anchor]
+    if: ${{ always() && needs.classify-qualification.result == 'success' && (needs.classify-qualification.outputs.nightly_qualification != 'true' || needs.nightly-anchor.result == 'success') }}
     permissions:
       actions: read
       contents: read
@@ -63,10 +86,10 @@ jobs:
       build_only: ${{ !inputs.qualify_nightly_installer }}
       build_tests: ${{ inputs.qualify_nightly_installer || inputs.build_tests }}
       daily_unsigned: ${{ inputs.qualify_nightly_installer }}
-      daily_validation_only: ${{ inputs.qualify_nightly_installer }}
+      daily_validation_only: ${{ needs.classify-qualification.outputs.daily_validation_only }}
       release_commit: ${{ github.sha }}
       release_version: ${{ inputs.release_version }}
-      release_tag: ${{ inputs.release_tag || inputs.release_version }}
+      release_tag: ${{ inputs.release_tag || (needs.classify-qualification.outputs.daily_validation_only == 'true' && inputs.release_version || '') }}
       release_channel: ${{ inputs.qualify_nightly_installer && 'nightly' || 'legacy' }}
       stable_anchor_tag: ${{ needs.nightly-anchor.outputs.stable_anchor_tag }}
       stable_anchor_commit: ${{ needs.nightly-anchor.outputs.stable_anchor_commit }}

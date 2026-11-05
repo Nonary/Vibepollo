@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from contextlib import contextmanager
 from unittest.mock import patch
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 sys_path = str(ROOT)
@@ -131,6 +132,15 @@ class ReleaseGuardTests(unittest.TestCase):
             self.assertEqual(latest_tag, legacy_tag)
             self.assertEqual(sources, [stable, legacy])
 
+            legacy_without_metadata = [[dict(releases[0][0]), dict(releases[0][1], assets=[])]]
+            with self.in_directory(repo), patch.object(
+                    daily, "run", side_effect=self.real_history_run(repo, legacy_without_metadata, {}, legacy)):
+                base, base_tag, base_source = daily.published_release_baseline(
+                    "Nonary/Vibepollo", legacy_without_metadata)
+                latest_tag, _ = daily.latest_published_release(legacy_without_metadata)
+            self.assertEqual((base, base_tag, base_source), ((2, 0, 6), "2.0.6", stable))
+            self.assertEqual(latest_tag, legacy_tag)
+
             with self.in_directory(repo), patch.object(
                     daily, "run", side_effect=self.real_history_run(repo, releases, metadata, numeric)):
                 base, base_tag, base_source = daily.published_release_baseline("Nonary/Vibepollo", releases)
@@ -160,7 +170,8 @@ class ReleaseGuardTests(unittest.TestCase):
                             repo, stable_only_releases, {}, stable)), \
                          patch.object(daily, "emit_outputs") as emit:
                         daily.resolve_stable_anchor()
-                emit.assert_called_once_with({"stable_anchor_tag": "2.0.6", "stable_anchor_commit": stable})
+                emit.assert_called_once_with({"stable_anchor_tag": "2.0.6", "stable_anchor_commit": stable,
+                                              "daily_validation_only": "false"})
 
     def test_resolve_skips_an_exact_source_already_released(self):
         with self.synthetic_history() as (repo, git, root, stable, legacy, numeric,
@@ -340,14 +351,31 @@ class ReleaseGuardTests(unittest.TestCase):
         self.assertIn("jq -j '.body // \"\"'", workflow)
 
     def test_nightly_validation_wrapper_resolves_and_passes_stable_anchor(self):
-        workflow = (ROOT.parent / ".github/workflows/validate-windows.yml").read_text()
-        self.assertIn("name: Resolve exact published stable anchor", workflow)
-        self.assertIn("run: python scripts/daily_release.py stable-anchor", workflow)
-        self.assertIn("daily_validation_only: ${{ inputs.qualify_nightly_installer }}", workflow)
-        self.assertIn("stable_anchor_tag: ${{ needs.nightly-anchor.outputs.stable_anchor_tag }}", workflow)
-        self.assertIn("stable_anchor_commit: ${{ needs.nightly-anchor.outputs.stable_anchor_commit }}", workflow)
-        self.assertIn("release_tag: ${{ inputs.release_tag || inputs.release_version }}", workflow)
-        self.assertIn("release_channel: ${{ inputs.qualify_nightly_installer && 'nightly' || 'legacy' }}", workflow)
+        workflow_text = (ROOT.parent / ".github/workflows/validate-windows.yml").read_text()
+        workflow = yaml.safe_load(workflow_text)
+        text = workflow_text
+        self.assertEqual(workflow["jobs"]["nightly-anchor"]["if"],
+                         "needs.classify-qualification.outputs.nightly_qualification == 'true'")
+        self.assertIn("run: python scripts/daily_release.py stable-anchor", text)
+        self.assertIn("daily_validation_only: ${{ needs.classify-qualification.outputs.daily_validation_only }}", text)
+        self.assertIn("stable_anchor_tag: ${{ needs.nightly-anchor.outputs.stable_anchor_tag }}", text)
+        self.assertIn("stable_anchor_commit: ${{ needs.nightly-anchor.outputs.stable_anchor_commit }}", text)
+        self.assertIn("release_tag: ${{ inputs.release_tag || (needs.classify-qualification.outputs.daily_validation_only == 'true' && inputs.release_version || '') }}", text)
+        self.assertIn("release_channel: ${{ inputs.qualify_nightly_installer && 'nightly' || 'legacy' }}", text)
+
+        classifier = workflow["jobs"]["classify-qualification"]["steps"][0]["run"]
+        for qualify, version, expected in (("true", "2.0.16", "true"),
+                                           ("true", "2.0.16-nightly.d20261101.abc123abc123", "false"),
+                                           ("false", "2.0.16", "false")):
+            with self.subTest(qualify=qualify, version=version), tempfile.TemporaryDirectory() as temp:
+                output = Path(temp) / "github-output"
+                env = dict(os.environ, QUALIFY_NIGHTLY=qualify, RELEASE_VERSION=version,
+                           GITHUB_OUTPUT=str(output))
+                subprocess.run(["bash", "-e", "-o", "pipefail", "-c", classifier],
+                               env=env, check=True, capture_output=True, text=True)
+                values = dict(line.split("=", 1) for line in output.read_text().splitlines())
+                self.assertEqual(values["nightly_qualification"], expected)
+                self.assertEqual(values["daily_validation_only"], expected)
 
 
 if __name__ == "__main__":
