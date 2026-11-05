@@ -22,6 +22,8 @@ class ValidateWindowsNumericAnchorTests(unittest.TestCase):
         self.assertIn("latest_stable_release(releases)", script)
         self.assertIn('"git", "merge-base", "--is-ancestor"', script)
         self.assertIn('Numeric nightly qualification release_tag must equal release_version', script)
+        self.assertLess(script.index("if numeric_nightly:"), script.index("release_pages("),
+                        "Legacy suffix qualification must not resolve or require the numeric stable anchor")
         self.assertNotIn('git tag', script)
         self.assertNotIn('git push', script)
 
@@ -33,6 +35,7 @@ class ValidateWindowsNumericAnchorTests(unittest.TestCase):
         self.assertEqual(call["release_channel"], "${{ needs.prepare.outputs.numeric_nightly == 'true' && 'nightly' || '' }}")
         self.assertEqual(call["daily_validation_only"], "${{ needs.prepare.outputs.numeric_nightly == 'true' }}")
         self.assertEqual(call["release_tag"], "${{ inputs.release_tag || (needs.prepare.outputs.numeric_nightly == 'true' && inputs.release_version) || '' }}")
+        self.assertIn("|| ''", call["release_tag"], "Legacy suffix qualification keeps an empty release_tag when omitted")
 
 
 if __name__ == "__main__":
