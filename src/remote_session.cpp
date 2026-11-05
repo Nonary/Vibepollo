@@ -298,7 +298,15 @@ namespace remote_session {
              (app.uuid == VIRTUAL_DISPLAY_UUID || app.monitor_profile || !reserved_name(app.title));
     });
     if (owner.role == role_e::monitor) {
+      // Moonlight caches the list it fetches as the Monitor stream ends and
+      // only reloads it on a timer. Keep the configured apps beside the Monitor
+      // controls so that cached list never strands the client. Launch admission
+      // still decides what may start while the Monitor is kept. Other Monitor
+      // profiles conflict until Disconnect Monitor, so they stay hidden here.
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_monitor)};
+      std::copy_if(visible_configured.begin(), visible_configured.end(), std::back_inserter(result.catalogue), [](const app_t &app) {
+        return !app.monitor_profile;
+      });
       return result;
     }
     // Moonlight refreshes the catalogue before asynchronous input teardown

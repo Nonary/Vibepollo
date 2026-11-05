@@ -81,10 +81,14 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   EXPECT_EQ(observer.catalogue[5].id, remote_session::secondary_input_id);
   EXPECT_EQ(observer.catalogue[6].id, remote_session::secondary_monitor_id);
 
+  // A kept Monitor must not hide the other apps: Moonlight caches this list
+  // when the Monitor stream ends, so a controls-only list strands the client.
   const auto monitor = remote_session::project(caller("monitor"), {}, {.role = remote_session::role_e::monitor, .retained = true}, configured, true);
-  ASSERT_EQ(monitor.catalogue.size(), 2);
+  ASSERT_EQ(monitor.catalogue.size(), 4);
   EXPECT_EQ(monitor.catalogue[0].id, remote_session::resume_id);
   EXPECT_EQ(monitor.catalogue[1].id, remote_session::disconnect_monitor_id);
+  EXPECT_EQ(monitor.catalogue[2].title, "One");
+  EXPECT_EQ(monitor.catalogue[3].title, "Two");
 
   const auto input = remote_session::project(caller("input"), {}, {.role = remote_session::role_e::input}, configured, true);
   ASSERT_EQ(input.catalogue.size(), 4);
@@ -104,9 +108,14 @@ TEST(RemoteSession, CatalogueProjectionMatchesCallerOwnershipMatrix) {
   EXPECT_EQ(input_during_game.catalogue[6].id, remote_session::secondary_monitor_id);
 
   const auto game_owner_monitor = remote_session::project(caller("owner"), game(), {.role = remote_session::role_e::monitor, .retained = true}, configured, true);
-  ASSERT_EQ(game_owner_monitor.catalogue.size(), 2);
+  ASSERT_EQ(game_owner_monitor.catalogue.size(), 4);
   EXPECT_EQ(game_owner_monitor.catalogue[0].id, remote_session::resume_id);
   EXPECT_EQ(game_owner_monitor.catalogue[1].id, remote_session::disconnect_monitor_id);
+  EXPECT_EQ(game_owner_monitor.catalogue[2].title, "One");
+  EXPECT_EQ(game_owner_monitor.catalogue[3].title, "Two");
+  EXPECT_FALSE(std::any_of(game_owner_monitor.catalogue.begin(), game_owner_monitor.catalogue.end(), [](const auto &app) {
+    return app.id == remote_session::input_id || app.id == remote_session::monitor_id;
+  }));
 }
 
 TEST(RemoteSession, InputTileSurvivesTeardownForBothGameOwnersAndSecondaryClients) {
@@ -702,7 +711,8 @@ TEST(RemoteSession, ExplicitProfilesKeepDistinctCatalogueIdentitiesBesideBuiltin
   EXPECT_EQ(catalogue.catalogue[1].id, 42);
   EXPECT_EQ(catalogue.catalogue.back().id, remote_session::monitor_id);
   EXPECT_EQ(remote_session::identify(41, "a1234567-1234-4234-8234-123456789abc"), remote_session::control_e::none);
-  // A retained owner still sees exactly the generic Resume/Disconnect pair.
+  // A retained owner sees the generic Resume/Disconnect pair and ordinary apps,
+  // never another Monitor profile (those conflict until Disconnect Monitor).
   const auto retained = remote_session::project(caller("client"), {}, {.role = remote_session::role_e::monitor, .retained = true}, configured, true);
   ASSERT_EQ(retained.catalogue.size(), 2);
   EXPECT_EQ(retained.catalogue[0].id, remote_session::resume_id);
