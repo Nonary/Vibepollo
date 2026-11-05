@@ -59,6 +59,46 @@ class WindowsValidationWorkflow(unittest.TestCase):
         self.assertIn("if: inputs.build_tests", execute)
         self.assertIn("ctest --test-dir build --output-on-failure --no-tests=error", execute)
 
+    def test_nightly_qualification_resolves_read_only_stable_anchor(self):
+        anchor = re.search(r"(?ms)^  nightly-anchor:\n.*?(?=^  windows:)", self.wrapper)
+        self.assertIsNotNone(anchor, "Nightly qualification must resolve its stable anchor first")
+        anchor = anchor.group(0)
+        self.assertIn("needs: [classify-qualification]", anchor)
+        self.assertIn("needs.classify-qualification.outputs.nightly_qualification == 'true'", anchor)
+        self.assertIn("contents: read", anchor)
+        self.assertIn("Resolve exact published stable anchor", anchor)
+        self.assertIn("python scripts/daily_release.py stable-anchor", anchor)
+        self.assertNotIn("contents: write", anchor)
+
+        classify = re.search(r"(?ms)^  classify-qualification:\n.*?(?=^  nightly-anchor:)", self.wrapper)
+        self.assertIsNotNone(classify, "The numeric versus legacy identity must be resolved first")
+        classify = classify.group(0)
+        self.assertIn("permissions: {}", classify)
+        self.assertIn("Classify numeric versus legacy qualification", classify)
+        self.assertIn(r"re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', os.environ['RELEASE_VERSION'])", classify)
+        self.assertIn("daily_validation_only={str(numeric).lower()}", classify)
+
+        windows = re.search(r"(?ms)^  windows:\n.*?(?=\Z)", self.wrapper).group(0)
+        self.assertIn("needs: [classify-qualification, nightly-anchor]", windows)
+        self.assertIn("needs.nightly-anchor.result == 'success'", windows)
+        self.assertIn("daily_validation_only: ${{ needs.classify-qualification.outputs.daily_validation_only }}", windows)
+        self.assertIn("stable_anchor_tag: ${{ needs.nightly-anchor.outputs.stable_anchor_tag }}", windows)
+        self.assertIn("stable_anchor_commit: ${{ needs.nightly-anchor.outputs.stable_anchor_commit }}", windows)
+
+    def test_legacy_validation_keeps_non_nightly_identity_and_skips_anchor(self):
+        windows = re.search(r"(?ms)^  windows:\n.*?(?=\Z)", self.wrapper).group(0)
+        self.assertIn("needs.classify-qualification.outputs.nightly_qualification != 'true' || needs.nightly-anchor.result == 'success'", windows)
+        self.assertIn("release_channel: ${{ inputs.qualify_nightly_installer && 'nightly' || 'legacy' }}", windows)
+        self.assertIn("release_tag: ${{ inputs.release_tag || (needs.classify-qualification.outputs.daily_validation_only == 'true' && inputs.release_version || '') }}", windows)
+        self.assertIn("daily_validation_only: ${{ needs.classify-qualification.outputs.daily_validation_only }}", windows)
+        classify = re.search(r"(?ms)^  classify-qualification:\n.*?(?=^  nightly-anchor:)", self.wrapper).group(0)
+        self.assertIn("numeric = os.environ['QUALIFY_NIGHTLY'] == 'true' and bool(", classify)
+        self.assertIn("nightly_qualification={str(numeric).lower()}", classify)
+        # A qualified legacy version can run the mandatory daily safeguards,
+        # while only a dotted numeric version receives an anchor and numeric tag.
+        self.assertIn("build_tests: ${{ inputs.qualify_nightly_installer || inputs.build_tests }}", windows)
+        self.assertIn("daily_unsigned: ${{ inputs.qualify_nightly_installer }}", windows)
+
     def test_signing_is_confined_to_nightly_and_production_signing_workflow(self):
         daily_gamepad = step(self.reusable, "Self-sign only the daily gamepad catalog and setup tool")
         self.assertIn("if: inputs.daily_unsigned", daily_gamepad)
