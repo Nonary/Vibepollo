@@ -498,13 +498,15 @@ def validate_stable_candidate(repository, tag, commit, expected_draft_release_id
 
 
 def validate_stable_publication(repository, tag, commit, draft_release_id,
-                                expected_stable_tag, expected_stable_commit, expected_notes_path):
+                                expected_stable_tag, expected_stable_commit, expected_notes_path,
+                                expected_title):
     """Revalidate one exact uploaded draft immediately before exposing it."""
     if not draft_release_id.isdigit():
         raise ValueError("Stable publication requires an exact draft release ID")
     validate_stable_candidate(repository, tag, commit, expected_draft_release_id=int(draft_release_id))
     live_release = json.loads(run("gh", "api", f"repos/{repository}/releases/{draft_release_id}"))
-    if (live_release.get("tag_name") != tag or live_release.get("draft") is not True
+    if (live_release.get("tag_name") != tag or live_release.get("name") != expected_title
+            or live_release.get("draft") is not True
             or live_release.get("prerelease") is not False
             or Path(expected_notes_path).read_text(encoding="utf-8").rstrip("\n") != live_release.get("body", "").rstrip("\n")):
         raise ValueError("Stable draft notes or identity changed before publication")
@@ -516,6 +518,47 @@ def validate_stable_publication(repository, tag, commit, draft_release_id,
     live_commit = run("git", "rev-parse", f"refs/tags/{live_anchor[1]}^{{commit}}")
     if live_anchor[1] != expected_stable_tag or live_commit != expected_stable_commit:
         raise ValueError("Stable anchor changed while signed assets were being prepared")
+
+
+def validate_release_draft(repository, release_id, tag, title, prerelease, notes_path,
+                           artifact_dir, require_complete):
+    """Allow recovery only for the exact draft and immutable assets we built."""
+    if not release_id.isdigit() or not isinstance(prerelease, bool):
+        raise ValueError("Release draft recovery requires an exact release ID and channel")
+    release = json.loads(run("gh", "api", f"repos/{repository}/releases/{release_id}"))
+    expected_body = Path(notes_path).read_text(encoding="utf-8").rstrip("\n")
+    if (str(release.get("id")) != release_id or release.get("tag_name") != tag
+            or release.get("name") != title or release.get("draft") is not True
+            or release.get("prerelease") is not prerelease
+            or release.get("body", "").rstrip("\n") != expected_body):
+        raise ValueError("Existing release draft tag, title, channel or notes do not match this build")
+    assets = json.loads(run("gh", "api", f"repos/{repository}/releases/{release_id}/assets"))
+    expected = {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in Path(artifact_dir).iterdir()
+                if path.is_file() and path.name != "release-provenance.json"}
+    names = [asset.get("name") for asset in assets]
+    if len(names) != len(set(names)) or any(name not in expected for name in names):
+        raise ValueError("Existing draft has duplicate or unexpected release assets")
+    for asset in assets:
+        if asset.get("digest") != f"sha256:{expected[asset['name']]}" or not asset.get("digest"):
+            raise ValueError(f"Existing draft asset differs from this exact build: {asset['name']}")
+    if require_complete and set(names) != set(expected):
+        raise ValueError("Release draft is missing one or more exact candidate assets")
+
+
+def resolve_stable_anchor():
+    """Resolve the exact current stable source for validation-only nightlies."""
+    repository = os.environ.get("GITHUB_REPOSITORY", "")
+    commit = os.environ.get("GITHUB_SHA", "")
+    if repository != "Nonary/Vibepollo" or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Stable anchor lookup requires an exact Vibepollo source SHA")
+    run("git", "fetch", "--no-recurse-submodules", "origin", "refs/tags/*:refs/tags/*")
+    releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
+    _version, tag = published_stable_anchor(releases)
+    source = run("git", "rev-parse", f"refs/tags/{tag}^{{commit}}")
+    subprocess.run(["git", "merge-base", "--is-ancestor", source, commit], check=True,
+                   stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    emit_outputs({"stable_anchor_tag": tag, "stable_anchor_commit": source})
 
 
 def generate_stable_notes(repository, tag, commit, output_path):
@@ -707,7 +750,7 @@ def stage_public_assets(root, destination, product):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["resolve", "verify", "linux", "public", "publication", "publication-draft", "validate-stable", "validate-stable-publication", "allocate-stable", "stable-notes"])
+    parser.add_argument("command", choices=["resolve", "verify", "linux", "public", "publication", "publication-draft", "validate-release-draft", "validate-stable", "validate-stable-publication", "allocate-stable", "stable-anchor", "stable-notes"])
     parser.add_argument("--assets")
     parser.add_argument("--linux-assets")
     parser.add_argument("--destination")
@@ -730,9 +773,16 @@ if __name__ == "__main__":
         validate_stable_publication(os.environ["GITHUB_REPOSITORY"], os.environ["RELEASE_TAG"],
                                     os.environ["RELEASE_COMMIT"], os.environ["RELEASE_ID"],
                                     os.environ["STABLE_ANCHOR_TAG"], os.environ["STABLE_ANCHOR_COMMIT"],
-                                    os.environ["NOTES_FILE"])
+                                    os.environ["NOTES_FILE"], os.environ["RELEASE_TITLE"])
+    elif args.command == "validate-release-draft":
+        validate_release_draft(os.environ["GITHUB_REPOSITORY"], os.environ["RELEASE_ID"],
+                               os.environ["RELEASE_TAG"], os.environ["RELEASE_TITLE"],
+                               os.environ["RELEASE_PRERELEASE"] == "true", os.environ["NOTES_FILE"],
+                               args.assets, os.environ.get("REQUIRE_COMPLETE_ASSETS") == "true")
     elif args.command == "allocate-stable":
         allocate_stable()
+    elif args.command == "stable-anchor":
+        resolve_stable_anchor()
     elif args.command == "stable-notes":
         generate_stable_notes(os.environ["GITHUB_REPOSITORY"], os.environ["RELEASE_TAG"],
                               os.environ["RELEASE_COMMIT"], args.output)

@@ -31,7 +31,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  nightly-anchor:
+    if: inputs.qualify_nightly_installer
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      stable_anchor_tag: ${{ steps.anchor.outputs.stable_anchor_tag }}
+      stable_anchor_commit: ${{ steps.anchor.outputs.stable_anchor_commit }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Resolve exact published stable anchor
+        id: anchor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python scripts/daily_release.py stable-anchor
+
   windows:
+    needs: [nightly-anchor]
+    if: ${{ always() && (!inputs.qualify_nightly_installer || needs.nightly-anchor.result == 'success') }}
     permissions:
       actions: read
       contents: read
@@ -41,9 +63,13 @@ jobs:
       build_only: ${{ !inputs.qualify_nightly_installer }}
       build_tests: ${{ inputs.qualify_nightly_installer || inputs.build_tests }}
       daily_unsigned: ${{ inputs.qualify_nightly_installer }}
+      daily_validation_only: ${{ inputs.qualify_nightly_installer }}
       release_commit: ${{ github.sha }}
       release_version: ${{ inputs.release_version }}
-      release_tag: ${{ inputs.release_tag }}
+      release_tag: ${{ inputs.release_tag || inputs.release_version }}
+      release_channel: ${{ inputs.qualify_nightly_installer && 'nightly' || 'legacy' }}
+      stable_anchor_tag: ${{ needs.nightly-anchor.outputs.stable_anchor_tag }}
+      stable_anchor_commit: ${{ needs.nightly-anchor.outputs.stable_anchor_commit }}
       require_truehdr_runtime: ${{ inputs.qualify_nightly_installer }}
       symbol_product_name: Vibepollo
       symbol_release_prefix: polo

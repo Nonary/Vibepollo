@@ -1,4 +1,5 @@
 import importlib.util
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -118,6 +119,18 @@ class ReleaseGuardTests(unittest.TestCase):
     def test_release_selectors_validate_mixed_stable_legacy_and_numeric_history(self):
         with self.synthetic_history() as (repo, git, root, stable, legacy, numeric,
                                           legacy_tag, releases, metadata):
+            # Match the live transition chronology: stable 2.0.6 was released
+            # first, then legacy nightly 2.0.2 was published from another line.
+            chronological = [releases[0][:2]]
+            with self.in_directory(repo), patch.object(
+                    daily, "run", side_effect=self.real_history_run(repo, chronological, metadata, legacy)):
+                base, base_tag, base_source = daily.published_release_baseline("Nonary/Vibepollo", chronological)
+                latest_tag, _ = daily.latest_published_release(chronological)
+                sources = daily.published_source_commits("Nonary/Vibepollo", chronological)
+            self.assertEqual((base, base_tag, base_source), ((2, 0, 6), "2.0.6", stable))
+            self.assertEqual(latest_tag, legacy_tag)
+            self.assertEqual(sources, [stable, legacy])
+
             with self.in_directory(repo), patch.object(
                     daily, "run", side_effect=self.real_history_run(repo, releases, metadata, numeric)):
                 base, base_tag, base_source = daily.published_release_baseline("Nonary/Vibepollo", releases)
@@ -134,6 +147,20 @@ class ReleaseGuardTests(unittest.TestCase):
                     daily, "run", side_effect=self.real_history_run(repo, wrong, bad_metadata, numeric)):
                 with self.assertRaisesRegex(ValueError, "does not match its immutable tag"):
                     daily.published_source_commits("Nonary/Vibepollo", wrong)
+
+    def test_stable_anchor_resolver_returns_exact_peeled_tag_source(self):
+        with self.synthetic_history() as (repo, git, root, stable, legacy, numeric,
+                                          legacy_tag, releases, metadata), self.in_directory(repo):
+            stable_only_releases = [[releases[0][0]]]
+            with tempfile.TemporaryDirectory() as temp:
+                output = Path(temp) / "output"
+                with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/Vibepollo", GITHUB_SHA=stable,
+                                GITHUB_OUTPUT=str(output)):
+                    with patch.object(daily, "run", side_effect=self.real_history_run(
+                            repo, stable_only_releases, {}, stable)), \
+                         patch.object(daily, "emit_outputs") as emit:
+                        daily.resolve_stable_anchor()
+                emit.assert_called_once_with({"stable_anchor_tag": "2.0.6", "stable_anchor_commit": stable})
 
     def test_resolve_skips_an_exact_source_already_released(self):
         with self.synthetic_history() as (repo, git, root, stable, legacy, numeric,
@@ -237,6 +264,42 @@ class ReleaseGuardTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "changed version, channel or exact source"):
                     daily.verify_remote_numeric_reservation("Nonary/Vibepollo", tag, source, "nightly")
 
+    def test_existing_legacy_draft_recovery_is_exact_and_non_destructive(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            notes = root / "notes.md"
+            notes.write_text("Reviewed legacy notes\n", encoding="utf-8")
+            artifacts = root / "artifacts"
+            artifacts.mkdir()
+            payload = artifacts / "VibepolloSetup.exe"
+            payload.write_bytes(b"signed installer")
+            (artifacts / "release-provenance.json").write_text("{}", encoding="utf-8")
+            digest = "sha256:" + hashlib.sha256(payload.read_bytes()).hexdigest()
+            release = {"id": 71, "tag_name": "2.0.6-beta.1", "name": "v2.0.6-beta.1",
+                       "draft": True, "prerelease": True, "body": "Reviewed legacy notes\n"}
+            assets = [{"name": "VibepolloSetup.exe", "digest": digest}]
+
+            def run(*args):
+                return json.dumps(release if args[-1].endswith("/releases/71") else assets)
+
+            with patch.object(daily, "run", side_effect=run):
+                daily.validate_release_draft("Nonary/Vibepollo", "71", release["tag_name"],
+                                             release["name"], True, str(notes), str(artifacts), True)
+
+            for field, value in (("draft", False), ("name", "wrong title"),
+                                 ("body", "different notes\n"), ("prerelease", False)):
+                altered = dict(release, **{field: value})
+                with self.subTest(field=field), patch.object(daily, "run", side_effect=lambda *args, altered=altered: json.dumps(altered if args[-1].endswith("/releases/71") else assets)):
+                    with self.assertRaises(ValueError):
+                        daily.validate_release_draft("Nonary/Vibepollo", "71", release["tag_name"],
+                                                     release["name"], True, str(notes), str(artifacts), True)
+
+            wrong_assets = [{"name": "VibepolloSetup.exe", "digest": "sha256:" + "0" * 64}]
+            with patch.object(daily, "run", side_effect=[json.dumps(release), json.dumps(wrong_assets)]):
+                with self.assertRaisesRegex(ValueError, "differs from this exact build"):
+                    daily.validate_release_draft("Nonary/Vibepollo", "71", release["tag_name"],
+                                                 release["name"], True, str(notes), str(artifacts), True)
+
     def test_signing_auto_discovery_accepts_only_validated_ci_triggers(self):
         workflow = (ROOT.parent / ".github/workflows/sign-release.yml").read_text()
         self.assertIn('and (.event == "push" or .event == "workflow_dispatch")', workflow)
@@ -247,6 +310,7 @@ class ReleaseGuardTests(unittest.TestCase):
     def test_numeric_signing_release_is_created_hidden_then_verified_before_publish(self):
         workflow = (ROOT.parent / ".github/workflows/sign-release.yml").read_text()
         self.assertIn('Numeric release ${TAG_NAME} exists with a different state or identity', workflow)
+        self.assertIn("jq -r '.name' <<<\"${release_match}\"", workflow)
         self.assertIn('create_draft=true', workflow)
         self.assertIn('if [[ "${numeric_identity}" != "true" ]]; then', workflow)
         self.assertIn('if [[ "${actual_names}" != "${expected_names}" ]]', workflow)
@@ -261,8 +325,10 @@ class ReleaseGuardTests(unittest.TestCase):
 
     def test_signing_cannot_create_new_suffixed_release_identities(self):
         workflow = (ROOT.parent / ".github/workflows/sign-release.yml").read_text()
-        self.assertIn('New suffixed Vibepollo release identities are disabled', workflow)
-        self.assertIn('existing_legacy_releases', workflow)
+        self.assertIn('New suffixed Vibepollo identities and recovery of published legacy releases are disabled', workflow)
+        self.assertIn('legacy_release', workflow)
+        self.assertIn('python scripts/daily_release.py validate-release-draft --assets artifacts', workflow)
+        self.assertNotIn('gh api --method DELETE', workflow)
 
     def test_daily_validation_only_skips_remote_tag_reservation(self):
         workflow = (ROOT.parent / ".github/workflows/daily-prerelease.yml").read_text()
@@ -272,6 +338,16 @@ class ReleaseGuardTests(unittest.TestCase):
         self.assertIn("release_channel: nightly", reservation_step + workflow.split("  build:", 1)[1])
         self.assertIn('Existing nightly draft notes do not match this exact source/channel candidate', workflow)
         self.assertIn("jq -j '.body // \"\"'", workflow)
+
+    def test_nightly_validation_wrapper_resolves_and_passes_stable_anchor(self):
+        workflow = (ROOT.parent / ".github/workflows/validate-windows.yml").read_text()
+        self.assertIn("name: Resolve exact published stable anchor", workflow)
+        self.assertIn("run: python scripts/daily_release.py stable-anchor", workflow)
+        self.assertIn("daily_validation_only: ${{ inputs.qualify_nightly_installer }}", workflow)
+        self.assertIn("stable_anchor_tag: ${{ needs.nightly-anchor.outputs.stable_anchor_tag }}", workflow)
+        self.assertIn("stable_anchor_commit: ${{ needs.nightly-anchor.outputs.stable_anchor_commit }}", workflow)
+        self.assertIn("release_tag: ${{ inputs.release_tag || inputs.release_version }}", workflow)
+        self.assertIn("release_channel: ${{ inputs.qualify_nightly_installer && 'nightly' || 'legacy' }}", workflow)
 
 
 if __name__ == "__main__":

@@ -83,10 +83,11 @@ jobs:
             RELEASE_TAG="${source_tag}" RELEASE_COMMIT="${release_commit}" GH_TOKEN="${GH_TOKEN}" \
               python scripts/daily_release.py validate-stable
           else
-            existing_legacy_releases="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" |
-              jq -s --arg source_tag "${source_tag}" '[.[][]? | select(.tag_name == $source_tag or .tag_name == ("v" + $source_tag))] | length')"
-            if [[ "${existing_legacy_releases}" != "1" ]]; then
-              echo "::error::New suffixed Vibepollo release identities are disabled; legacy signing is limited to recovery of one existing release."
+            legacy_release="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" |
+              jq -s --arg source_tag "${source_tag}" '[.[][]? | select(.tag_name == $source_tag or .tag_name == ("v" + $source_tag))] | first // {}')"
+            if [[ "$(jq -r '.id // empty' <<<"${legacy_release}")" == "" ||
+                  "$(jq -r '.draft' <<<"${legacy_release}")" != "true" ]]; then
+              echo "::error::New suffixed Vibepollo identities and recovery of published legacy releases are disabled. Only an existing draft may be resumed."
               exit 1
             fi
           fi
@@ -718,11 +719,16 @@ jobs:
           )"
           release_id="$(jq -r '.id // empty' <<< "${release_match}")"
           publish_tag="$(jq -r --arg source_tag "${TAG_NAME}" '.tag_name // $source_tag' <<< "${release_match}")"
+          had_existing_release=false
+          if [[ -n "${release_id}" ]]; then
+            had_existing_release=true
+          fi
           numeric_identity=false
           if [[ "${TAG_NAME}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             numeric_identity=true
             if [[ -n "${release_id}" ]]; then
               if [[ "$(jq -r '.tag_name' <<<"${release_match}")" != "${TAG_NAME}" ||
+                    "$(jq -r '.name' <<<"${release_match}")" != "${release_title}" ||
                     "$(jq -r '.draft' <<<"${release_match}")" != "true" ||
                     "$(jq -r '.prerelease' <<<"${release_match}")" != "${PRERELEASE}" ]]; then
                 echo "::error::Numeric release ${TAG_NAME} exists with a different state or identity."
@@ -735,6 +741,14 @@ jobs:
               fi
             fi
             publish_tag="${TAG_NAME}"
+          elif [[ -n "${release_id}" ]]; then
+            if [[ "$(jq -r '.draft' <<<"${release_match}")" != "true" ]]; then
+              echo "::error::Published legacy releases cannot be modified by signing recovery."
+              exit 1
+            fi
+            RELEASE_ID="${release_id}" RELEASE_TAG="${TAG_NAME}" RELEASE_TITLE="${release_title}" \
+              RELEASE_PRERELEASE="${PRERELEASE}" NOTES_FILE="${NOTES_FILE}" \
+              python scripts/daily_release.py validate-release-draft --assets artifacts
           fi
 
           release_make_latest="${MAKE_LATEST}"
@@ -743,7 +757,7 @@ jobs:
           fi
 
           create_draft="${RELEASE_DRAFT}"
-          if [[ "${numeric_identity}" == "true" ]]; then
+          if [[ "${numeric_identity}" == "true" || -z "${release_id}" ]]; then
             create_draft=true
           fi
           release_payload="$(
@@ -764,18 +778,15 @@ jobs:
               }'
           )"
 
-          if [[ "${numeric_identity}" == "true" && -n "${release_id}" ]]; then
+          if [[ -n "${release_id}" ]]; then
             # Resume only this exact draft. Do not patch metadata before the
             # immutable asset set is checked below.
             release_json="${release_match}"
-          elif [[ -n "${release_id}" ]]; then
-            release_json="$(
-              gh api \
-                --method PATCH \
-                "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-                --input - <<< "${release_payload}"
-            )"
           else
+            if [[ "${numeric_identity}" != "true" ]]; then
+              echo "::error::New suffixed Vibepollo release identities are disabled."
+              exit 1
+            fi
             release_json="$(
               gh api \
                 --method POST \
@@ -803,22 +814,11 @@ jobs:
             echo "release_url=${release_url}"
           } >> "${GITHUB_OUTPUT}"
 
-          if [[ "${numeric_identity}" != "true" ]]; then
-            existing_asset_ids="$(
-              gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
-                --jq '.[].id'
-            )"
-            while IFS= read -r asset_id; do
-              [[ -z "${asset_id}" ]] && continue
-              gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >/dev/null
-            done <<< "${existing_asset_ids}"
-          fi
-
           for asset in artifacts/*; do
             [[ -f "${asset}" ]] || continue
             asset_name="$(basename "${asset}")"
             [[ "${asset_name}" == "release-provenance.json" ]] && continue
-            if [[ "${numeric_identity}" == "true" ]]; then
+            if [[ "${had_existing_release}" == "true" ]]; then
               existing_asset="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
                 --jq --arg name "${asset_name}" '[.[] | select(.name == $name)] | first // {}')"
               if [[ "$(jq -r '.id // empty' <<<"${existing_asset}")" != "" ]]; then
@@ -839,7 +839,7 @@ jobs:
               >/dev/null
           done
 
-          if [[ "${numeric_identity}" == "true" ]]; then
+          if [[ "${numeric_identity}" == "true" || "${had_existing_release}" == "true" ]]; then
             expected_names="$(find artifacts -maxdepth 1 -type f ! -name release-provenance.json -printf '%f\n' | sort)"
             actual_names="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" --jq '.[].name' | sort)"
             if [[ "${actual_names}" != "${expected_names}" ]]; then
@@ -858,9 +858,16 @@ jobs:
             done < <(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
               --jq '.[] | [.name, (.digest // "")] | @tsv')
 
-            RELEASE_TAG="${TAG_NAME}" RELEASE_COMMIT="${RELEASE_COMMIT}" RELEASE_ID="${release_id}" \
-              STABLE_ANCHOR_TAG="${STABLE_ANCHOR_TAG}" STABLE_ANCHOR_COMMIT="${STABLE_ANCHOR_COMMIT}" \
-              python scripts/daily_release.py validate-stable-publication
+            if [[ "${numeric_identity}" == "true" ]]; then
+              RELEASE_TAG="${TAG_NAME}" RELEASE_COMMIT="${RELEASE_COMMIT}" RELEASE_ID="${release_id}" \
+                STABLE_ANCHOR_TAG="${STABLE_ANCHOR_TAG}" STABLE_ANCHOR_COMMIT="${STABLE_ANCHOR_COMMIT}" \
+                RELEASE_TITLE="${release_title}" \
+                python scripts/daily_release.py validate-stable-publication
+            else
+              REQUIRE_COMPLETE_ASSETS=true RELEASE_ID="${release_id}" RELEASE_TAG="${TAG_NAME}" \
+                RELEASE_TITLE="${release_title}" RELEASE_PRERELEASE="${PRERELEASE}" NOTES_FILE="${NOTES_FILE}" \
+                python scripts/daily_release.py validate-release-draft --assets artifacts
+            fi
 
             final_payload="$(jq -n \
               --argjson draft "${RELEASE_DRAFT}" \
