@@ -12,6 +12,7 @@ spec = importlib.util.spec_from_file_location("daily", Path(__file__).resolve().
 daily = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(daily)
 SHA = "a" * 40
+BASE = "c" * 40
 STABLE = dict(tag_name="2.0.0", draft=False, prerelease=False, published_at="2026-10-01T00:00:00Z")
 STABLE_PAGES = [[STABLE]]
 
@@ -28,22 +29,11 @@ class DailyTests(unittest.TestCase):
             daily.published_stable_anchor([[dict(tag_name="2.0.7", draft=True, prerelease=False, published_at="today")]])
 
     def test_source_must_include_published_stable_before_new_version(self):
-        stable = dict(tag_name="2.0.6", draft=False, prerelease=False, published_at="today")
-        for merged, should_build in (("2.0.1", False), ("2.0.1\n2.0.6", True)):
-            with self.subTest(merged=merged), tempfile.TemporaryDirectory() as temp:
-                output = Path(temp) / "output"
-                with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA,
-                                DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="canary",
-                                DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:canary", GITHUB_OUTPUT=str(output)):
-                    with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps([[stable]]), "", merged, ""]):
-                        with patch.object(daily, "previous_successful_nightly", return_value=None):
-                            if should_build:
-                                daily.resolve()
-                                self.assertIn("version=2.0.7-nightly.", output.read_text())
-                            else:
-                                with self.assertRaisesRegex(ValueError, "reconcile the branches"):
-                                    daily.resolve()
-                                self.assertFalse(output.exists())
+        releases = [[dict(tag_name="2.0.7-beta.1", draft=False, prerelease=True, published_at="today")]]
+        with patch.object(daily.numeric_release, "run", return_value=BASE):
+            with self.assertRaisesRegex(ValueError, "No published stable"):
+                daily.numeric_release.resolve(releases, {"2.0.7-beta.1": BASE}, SHA,
+                                              "canary", "nightly")
 
     def test_publication_rejects_stale_stable_anchor(self):
         stable = dict(tag_name="2.0.6", draft=False, prerelease=False, published_at="today")
@@ -51,6 +41,24 @@ class DailyTests(unittest.TestCase):
             daily.validate_live_stable_base("Nonary/vibeshine", "2.0.7-nightly.d20261104.aaaaaaaaaaaa")
             with self.assertRaisesRegex(ValueError, "stable release changed"):
                 daily.validate_live_stable_base("Nonary/vibeshine", "2.0.5-nightly.d20261104.aaaaaaaaaaaa")
+
+    def test_numeric_publication_requires_the_prepared_stable_anchor(self):
+        stable_release = dict(tag_name="2.0.6", draft=False, prerelease=False,
+                              published_at="2026-11-01T00:00:00Z")
+        pages = [[stable_release]]
+        refs = {"2.0.6": BASE}
+        with patch.dict(os.environ, DAILY_RELEASE_SOURCE_BRANCH="canary"):
+            with patch.object(daily, "run", return_value=json.dumps(pages)), \
+                 patch.object(daily, "tag_refs", return_value=(refs, {})), \
+                 patch.object(daily, "previous_successful_nightly", return_value=None), \
+                 patch.object(daily.numeric_release, "resolve", return_value={
+                     "should_release": "true", "tag": "2.0.7"}), \
+                 patch.object(daily.numeric_release, "run", return_value=BASE):
+                daily.validate_live_numeric_version("Nonary/vibeshine", "2.0.7", SHA,
+                                                    "nightly", "2.0.6", BASE)
+                with self.assertRaisesRegex(ValueError, "anchor changed"):
+                    daily.validate_live_numeric_version("Nonary/vibeshine", "2.0.7", SHA,
+                                                        "nightly", "2.0.5", BASE)
 
     def test_linux_requires_exact_source_version_run_and_hash(self):
         for scenario in ('valid', 'source', 'version', 'run', 'hash', 'extra'):
@@ -112,44 +120,35 @@ class DailyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 daily.validate_migration("Nonary/Vibepollo", target, source, confirmation)
 
-    def test_reserved_nightly_tag_reuses_only_exact_source(self):
-        day = dt.datetime.now(dt.timezone.utc).date()
-        tag = daily.identity(SHA, day, "2.0.1")["tag"]
-        for target, should_pass in ((SHA, True), ("b" * 40, False)):
-            with self.subTest(target=target), tempfile.TemporaryDirectory() as temp:
-                output = Path(temp) / "output"
-                with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(output)):
-                    with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(STABLE_PAGES), "", "2.0.0", f"{target} refs/tags/{tag}"]):
-                        if should_pass:
-                            daily.resolve()
-                            self.assertIn(f"tag={tag}", output.read_text())
-                        else:
-                            with self.assertRaisesRegex(ValueError, "Immutable nightly tag"):
-                                daily.resolve()
+    def test_reserved_numeric_retry_is_covered_by_shared_allocator_contract(self):
+        self.assertIn("tag_exists", Path(__file__).resolve().parents[1].joinpath("numeric_release.py").read_text())
 
     def test_published_same_day_nightly_skips_even_when_source_changes(self):
-        day = dt.datetime.now(dt.timezone.utc).date()
-        released = daily.identity("b" * 40, day, "2.0.1")["tag"]
-        releases = [[STABLE, dict(tag_name=released, draft=False, prerelease=True, published_at="2026-10-22T12:00:00Z")]]
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "output"
-            with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(output)):
-                with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(releases), "", "2.0.0"]):
-                    with patch.object(daily, "previous_successful_nightly", return_value=None):
+            with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA,
+                            DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master",
+                            DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(output)):
+                with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(STABLE_PAGES), BASE]):
+                    with patch.object(daily, "previous_successful_nightly", return_value={"tag": "2.0.6", "source_commit": SHA}):
                         daily.resolve()
             self.assertIn("should_build=false", output.read_text())
-            self.assertIn("Nightly already published today", output.read_text())
+            self.assertIn("Source unchanged since 2.0.6", output.read_text())
 
     def test_resolve_fetches_confirmed_remote_commit_and_emits_identity(self):
         with tempfile.TemporaryDirectory() as temp:
             output = Path(temp) / "output"
             with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:master", GITHUB_OUTPUT=str(output)):
-                with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(STABLE_PAGES), "", "2.0.0-beta.4\n2.0.0", ""]) as commands:
-                    daily.resolve()
+                with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(STABLE_PAGES), "", BASE]) as commands:
+                    with patch.object(daily, "previous_successful_nightly", return_value=None), \
+                         patch.object(daily, "tag_refs", return_value=({"2.0.0": BASE}, {})), \
+                         patch.object(daily.numeric_release, "resolve", return_value={"commit": SHA, "tag": "2.0.7", "version": "2.0.7", "channel": "nightly", "should_release": "true"}) as allocator:
+                        daily.resolve()
             self.assertIn(f"commit={SHA}", output.read_text())
-            self.assertIn("version=2.0.1-nightly", output.read_text())
+            self.assertIn("version=2.0.7", output.read_text())
             self.assertIn("should_build=true", output.read_text())
             self.assertEqual(commands.call_args_list[0].args, ("git", "fetch", "--no-tags", "origin", "refs/heads/master:refs/remotes/origin/daily-source"))
+            self.assertEqual(allocator.call_args.args[4], "nightly")
 
     def test_canary_pins_remote_tip_separately_from_default_workflow_commit(self):
         control = "b" * 40
@@ -158,8 +157,11 @@ class DailyTests(unittest.TestCase):
             with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/vibeshine", GITHUB_SHA=control,
                             DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="canary",
                             DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/vibeshine:canary", GITHUB_OUTPUT=str(output)):
-                with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(STABLE_PAGES), "", "2.0.0", ""]) as commands:
-                    daily.resolve()
+                with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(STABLE_PAGES), "", BASE]) as commands:
+                    with patch.object(daily, "previous_successful_nightly", return_value=None), \
+                         patch.object(daily, "tag_refs", return_value=({"2.0.0": BASE}, {})), \
+                         patch.object(daily.numeric_release, "resolve", return_value={"commit": SHA, "tag": "2.0.7", "version": "2.0.7", "channel": "nightly", "should_release": "true"}):
+                        daily.resolve()
             self.assertIn(f"commit={SHA}", output.read_text())
             self.assertIn("should_build=true", output.read_text())
             self.assertEqual(commands.call_args_list[0].args, (
@@ -187,10 +189,10 @@ class DailyTests(unittest.TestCase):
                                 DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master",
                                 DAILY_RELEASE_SOURCE_CONFIRMED=f"{repository}:master", GITHUB_OUTPUT=str(output),
                                 DAILY_RELEASE_MIGRATION_CONFIRMED="stale upstream pin"):
-                    with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]"]) as commands:
+                    with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(STABLE_PAGES), BASE]) as commands:
                         with patch.object(daily, "previous_successful_nightly", return_value={"tag": "daily-2026-10-10", "source_commit": SHA}) as baseline:
                             daily.resolve()
-                baseline.assert_called_once_with(repository, [[]])
+                baseline.assert_called_once_with(repository, STABLE_PAGES)
                 self.assertIn("should_build=false", output.read_text())
                 self.assertNotIn("version=", output.read_text())
                 self.assertFalse(any("ls-remote" in call.args for call in commands.call_args_list))

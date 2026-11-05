@@ -45,7 +45,10 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release_commit: ${{ steps.release-candidate.outputs.release_commit }}
+      release_channel: ${{ steps.release-candidate.outputs.release_channel }}
       release_version: ${{ steps.release-candidate.outputs.release_version }}
+      stable_anchor_tag: ${{ steps.release-candidate.outputs.stable_anchor_tag }}
+      stable_anchor_commit: ${{ steps.release-candidate.outputs.stable_anchor_commit }}
       should_release: ${{ steps.release-candidate.outputs.should_release }}
       tag_name: ${{ steps.release-candidate.outputs.tag_name }}
     steps:
@@ -54,12 +57,19 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Test version, channel and installer contracts
+        run: |
+          python -m unittest discover -s scripts/tests -p test_numeric_release.py
+          cmake -DSOURCE_ROOT="$GITHUB_WORKSPACE" -P scripts/tests/test_build_channel.cmake
+          cmake -DSOURCE_ROOT="$GITHUB_WORKSPACE" -P packaging/windows/wix/tests/test_windows_version_numbers.cmake
+
       - name: Resolve release candidate
         id: release-candidate
         env:
           EVENT_NAME: ${{ github.event_name }}
           RELEASE_TAG: ${{ github.event.inputs.release_tag || '' }}
           GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          PRIMARY_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
 
@@ -137,6 +147,27 @@ jobs:
                 return notes_path
             return None
 
+          def validate_numeric(tag, commit, channel, source_branch):
+            output_path = os.path.join(os.environ["RUNNER_TEMP"], "numeric-release-output")
+            env = os.environ.copy()
+            env.update(
+              RELEASE_TAG=tag,
+              RELEASE_SOURCE_COMMIT=commit,
+              RELEASE_SOURCE_BRANCH=source_branch,
+              RELEASE_PRIMARY_BRANCH=os.environ["PRIMARY_BRANCH"],
+              RELEASE_SOURCE_CONFIRMED=f"{REPO}:{source_branch}",
+              RELEASE_CHANNEL=channel,
+              GITHUB_OUTPUT=output_path,
+            )
+            subprocess.run([sys.executable, "scripts/numeric_release.py", "validate-tag"],
+                           check=True, env=env)
+            values = {}
+            with open(output_path, encoding="utf-8") as fh:
+              for line in fh:
+                key, value = line.rstrip("\n").split("=", 1)
+                values[key] = value
+            return values
+
           event_name = os.environ["EVENT_NAME"]
           if event_name not in {"push", "workflow_dispatch"}:
             skip("Release gate only applies to push and manual workflow_dispatch events.")
@@ -158,7 +189,7 @@ jobs:
               skip("Manual release dispatch requires the release_tag input.")
             candidate_tags = [release_tag_input]
           else:
-            candidate_tags = run("git", "tag", "--points-at", "HEAD").splitlines()
+            candidate_tags = run("git", "tag", "--list").splitlines()
 
           valid_candidates = []
           for tag in candidate_tags:
@@ -185,6 +216,21 @@ jobs:
               print(f"Skipping {tag}: not newer than the current release.")
               continue
             release_commit = run("git", "rev-list", "-n", "1", tag)
+            if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", tag):
+              tag_message = run("git", "for-each-ref", "--format=%(contents)", f"refs/tags/{tag}")
+              channel_match = re.match(r"^Vibeshine release channel: (stable|prerelease|nightly)$", tag_message.splitlines()[0] if tag_message else "")
+              branch_match = re.match(r"^Source branch: ([A-Za-z0-9._/-]+)$", tag_message.splitlines()[1] if len(tag_message.splitlines()) > 1 else "")
+              if not channel_match or channel_match[1] != "stable" or not branch_match:
+                print(f"Skipping {tag}: numeric CI signing currently accepts stable allocation tags only.")
+                continue
+              try:
+                metadata = validate_numeric(tag, release_commit, channel_match[1], branch_match[1])
+              except subprocess.CalledProcessError as error:
+                print(f"Skipping {tag}: numeric allocator validation failed: {error}.")
+                continue
+              valid_candidates.append((key, tag, "generated from published source range", release_commit,
+                                       channel_match[1], metadata["stable_anchor_tag"], metadata["stable_anchor_commit"]))
+              continue
             if event_name == "push":
               head_commit = run("git", "rev-parse", "HEAD")
               if release_commit != head_commit:
@@ -205,12 +251,12 @@ jobs:
             # Preserve the exact source tag. Release titles and artifact names may
             # use a display-only v prefix, but the GitHub Release must stay attached
             # to the existing tag instead of asking the API to synthesize another.
-            valid_candidates.append((key, tag, notes_file, release_commit))
+            valid_candidates.append((key, tag, notes_file, release_commit, "legacy", "", ""))
 
           if not valid_candidates:
             skip("No unreleased newer tag with exact matching release notes was found.")
 
-          _, tag_name, notes_file, release_commit = max(valid_candidates, key=lambda item: item[0])
+          _, tag_name, notes_file, release_commit, release_channel, stable_anchor_tag, stable_anchor_commit = max(valid_candidates, key=lambda item: item[0])
           release_version = tag_name[1:] if tag_name.startswith("v") else tag_name
 
           print(f"Release candidate: {tag_name} ({release_commit}) using {notes_file}")
@@ -219,6 +265,9 @@ jobs:
             tag_name=tag_name,
             release_version=release_version,
             release_commit=release_commit,
+            release_channel=release_channel,
+            stable_anchor_tag=stable_anchor_tag,
+            stable_anchor_commit=stable_anchor_commit,
           )
           PY
 
@@ -243,6 +292,9 @@ jobs:
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
       release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0-pr-validation' }}
       release_tag: ${{ needs.release-candidate.outputs.tag_name }}
+      release_channel: ${{ needs.release-candidate.outputs.release_channel || 'legacy' }}
+      stable_anchor_tag: ${{ needs.release-candidate.outputs.stable_anchor_tag }}
+      stable_anchor_commit: ${{ needs.release-candidate.outputs.stable_anchor_commit }}
       release_artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       symbol_product_name: Vibepollo
       publish_symbols: ${{ needs.release-candidate.outputs.should_release == 'true' }}
@@ -271,6 +323,7 @@ jobs:
       artifact_retention_days: ${{ needs.release-candidate.outputs.should_release == 'true' && 14 || 1 }}
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
       release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0-pr-validation' }}
+      release_channel: ${{ needs.release-candidate.outputs.release_channel || 'legacy' }}
 
   awaiting-signing:
     name: Awaiting manual signing

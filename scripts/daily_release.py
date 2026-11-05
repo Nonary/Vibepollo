@@ -10,6 +10,11 @@ import re
 import subprocess
 import shutil
 
+_numeric_spec = importlib.util.spec_from_file_location(
+    "numeric_release", Path(__file__).with_name("numeric_release.py"))
+numeric_release = importlib.util.module_from_spec(_numeric_spec)
+_numeric_spec.loader.exec_module(numeric_release)
+
 
 def identity(commit, day, base):
     if not re.fullmatch(r"[0-9a-f]{40}", commit):
@@ -102,6 +107,40 @@ def validate_live_stable_base(repository, tag):
         raise ValueError("Published stable release changed during the build; rerun with a current nightly version")
 
 
+def tag_refs():
+    refs = {}
+    channels = {}
+    for line in run("git", "for-each-ref",
+                    "--format=%(refname:strip=2)%09%(objectname)%09%(contents:subject)",
+                    "refs/tags").splitlines():
+        tag, object_id, subject = line.split("\t", 2)
+        refs[tag] = object_id
+        match = re.match(r"^Vibeshine release channel: (stable|prerelease|nightly)(?:\s|$)", subject)
+        if match:
+            channels[tag] = match[1]
+    return refs, channels
+
+
+def validate_live_numeric_version(repository, tag, commit, channel="nightly",
+                                  stable_anchor_tag=None, stable_anchor_commit=None):
+    """Re-resolve immediately before publication so a newer release cannot race the build."""
+    releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
+    refs, channels = tag_refs()
+    previous = previous_successful_nightly(repository, releases)
+    expected = numeric_release.resolve(releases, refs, commit,
+                                       os.environ["DAILY_RELEASE_SOURCE_BRANCH"], channel, channels,
+                                       previous)
+    if expected.get("should_release") != "true" or expected.get("tag") != tag:
+        raise ValueError("Published release state changed during the build; rerun with a current numeric version")
+    stable = numeric_release.latest_stable_release(releases)
+    live_stable_tag = stable["tag_name"]
+    live_stable_commit = numeric_release._commit_for_tag(live_stable_tag, refs)
+    if (stable_anchor_tag is None or stable_anchor_commit is None
+            or live_stable_tag != stable_anchor_tag
+            or live_stable_commit != stable_anchor_commit):
+        raise ValueError("Stable release anchor changed during the build; discard these artifacts and rerun")
+
+
 def resolve():
     repository = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ.get("DAILY_RELEASE_SOURCE_BRANCH", "")
@@ -117,9 +156,11 @@ def resolve():
     releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
     previous = previous_successful_nightly(repository, releases)
     if previous and previous["source_commit"] == commit:
-        # Each repository owns its baseline. Upstream advances cannot turn an
-        # unchanged target into a build or an assertion that migration happened.
-        emit_outputs({"commit": commit, "should_build": "false", "skip_reason": f"Source unchanged since {previous['tag']}"})
+        stable_version, stable_tag = published_stable_anchor(releases)
+        stable_commit = run("git", "rev-parse", f"refs/tags/{stable_tag}^{{commit}}")
+        emit_outputs({"commit": commit, "channel": "nightly", "should_build": "false",
+                      "skip_reason": f"Source unchanged since {previous['tag']}",
+                      "stable_anchor_tag": stable_tag, "stable_anchor_commit": stable_commit})
         return
     if repository == "Nonary/Vibepollo":
         upstream = run("git", "ls-remote", "https://github.com/Nonary/vibeshine.git", "refs/heads/master").split()
@@ -129,32 +170,23 @@ def resolve():
     # GITHUB_TOKEN has no workflows:write capability. Do not select a target
     # with a different workflow tree and then discover that during publication.
     run("git", "diff", "--exit-code", os.environ["GITHUB_SHA"], commit, "--", ".github/workflows")
-    tags = run("git", "tag", "--merged", commit, "--sort=-version:refname", "--list", "*").splitlines()
     (major, minor, patch), stable_tag = published_stable_anchor(releases)
-    if stable_tag not in tags:
-        raise ValueError(f"Published stable {stable_tag} is not in the nightly source; reconcile the branches before publishing")
-    # A nightly is development AFTER the released patch and BEFORE its successor.
-    # Do not change SemVer precedence to place an old nightly above its final stable.
-    base = f"{major}.{minor}.{patch + 1}"
-    day = dt.datetime.now(dt.timezone.utc).date()
-    # A hex SHA is an identity, not an ordinal. Keep at most one published
-    # new-style nightly per UTC day so installed clients and package managers
-    # never need to guess same-day upgrade order from lexical SHA values.
-    published_today = [r for page in releases for r in page
-                       if r.get("draft") is False and r.get("prerelease") is True and
-                       r.get("published_at") and re.fullmatch(
-                           r"[0-9]+\.[0-9]+\.[0-9]+-nightly\.d" + f"{day:%Y%m%d}" + r"\.[0-9a-f]{12}",
-                           r.get("tag_name", ""))]
-    if published_today:
-        emit_outputs({"commit": commit, "should_build": "false",
-                      "skip_reason": f"Nightly already published today: {published_today[0]['tag_name']}"})
+    stable_commit = run("git", "rev-parse", f"refs/tags/{stable_tag}^{{commit}}")
+    if previous:
+        try:
+            run("git", "merge-base", "--is-ancestor", previous["source_commit"], commit)
+        except subprocess.CalledProcessError as exc:
+            raise ValueError("Latest qualified nightly source is not an ancestor of the release source; reconcile before publishing") from exc
+    refs, tag_channels = tag_refs()
+    info = numeric_release.resolve(releases, refs, commit, branch, "nightly", tag_channels,
+                                   previous)
+    if info.get("should_release") != "true":
+        info.update({"stable_anchor_tag": stable_tag, "stable_anchor_commit": stable_commit})
+        emit_outputs(info)
         return
-    info = identity(commit, day, base)
-    reserved = run("git", "ls-remote", "--tags", "origin", f"refs/tags/{info['tag']}")
-    for line in reserved.splitlines():
-        target, ref = line.split()
-        if ref == f"refs/tags/{info['tag']}" and target != commit:
-            raise ValueError("Immutable nightly tag is reserved at another source commit")
+    info["stable_anchor_tag"] = stable_tag
+    info["stable_anchor_commit"] = stable_commit
+    info["version"] = info["tag"]
     info["should_build"] = "true"
     emit_outputs(info)
 
@@ -165,12 +197,18 @@ def verify_assets(root, product, commit, tag, version):
     actual = {p.name for p in root.iterdir()}
     if actual != expected or any(not p.is_file() or p.is_symlink() or p.stat().st_size == 0 for p in root.iterdir()):
         raise ValueError(f"Expected exactly the finalized nonempty assets {sorted(expected)}; got {sorted(actual)}")
-    match = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d([0-9]{8})\.([0-9a-f]{12})", tag)
-    if not match:
-        raise ValueError("New releases require a commit-bound nightly tag")
-    info = identity(commit, dt.datetime.strptime(match[2], "%Y%m%d").date(), match[1])
-    if info["tag"] != tag or info["version"] != version:
-        raise ValueError("Release tag/version/source identity is incoherent")
+    if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", tag):
+        if tag != version:
+            raise ValueError("Release tag/version/source identity is incoherent")
+    else:
+        # Preserve exact historical daily artifacts during recovery. New
+        # allocations use numeric tags, while old identities remain readable.
+        legacy = re.fullmatch(r"([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d([0-9]{8})\.([0-9a-f]{12})", tag)
+        if not legacy:
+            raise ValueError("Unsupported prerelease tag identity")
+        info = identity(commit, dt.datetime.strptime(legacy[2], "%Y%m%d").date(), legacy[1])
+        if info["tag"] != tag or info["version"] != version:
+            raise ValueError("Legacy release tag/version/source identity is incoherent")
     provenance = json.loads((root / "release-provenance.json").read_text(encoding="utf-8-sig"))
     if provenance.get("schema_version") != 1 or provenance.get("release_commit") != commit or provenance.get("release_tag") != tag:
         raise ValueError("Finalized artifact provenance does not match this source/tag")
@@ -237,7 +275,7 @@ def stage_public_assets(root, destination, product):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=["resolve", "verify", "linux", "public"])
+    parser.add_argument("command", choices=["resolve", "verify", "linux", "public", "validate-live"])
     parser.add_argument("--assets")
     parser.add_argument("--linux-assets")
     parser.add_argument("--destination")
@@ -248,7 +286,15 @@ if __name__ == "__main__":
     elif args.command == 'verify':
         verify_assets(args.assets, args.product, os.environ["DAILY_COMMIT"], os.environ["DAILY_TAG"], os.environ["DAILY_VERSION"])
     elif args.command == 'public':
-        validate_live_stable_base(os.environ["GITHUB_REPOSITORY"], os.environ["DAILY_TAG"])
+        validate_live_numeric_version(os.environ["GITHUB_REPOSITORY"], os.environ["DAILY_TAG"],
+                                      os.environ["DAILY_COMMIT"], "nightly",
+                                      os.environ.get("DAILY_STABLE_ANCHOR_TAG"),
+                                      os.environ.get("DAILY_STABLE_ANCHOR_COMMIT"))
         stage_public_assets(args.assets, args.destination, args.product)
+    elif args.command == 'validate-live':
+        validate_live_numeric_version(os.environ["GITHUB_REPOSITORY"], os.environ["DAILY_TAG"],
+                                      os.environ["DAILY_COMMIT"], "nightly",
+                                      os.environ.get("DAILY_STABLE_ANCHOR_TAG"),
+                                      os.environ.get("DAILY_STABLE_ANCHOR_COMMIT"))
     else:
         include_linux(args.assets, args.linux_assets, args.product, os.environ['DAILY_COMMIT'], os.environ['DAILY_VERSION'])

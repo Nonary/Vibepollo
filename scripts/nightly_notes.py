@@ -28,6 +28,16 @@ def sequence(repo, tag, version=None, source=None):
         if not match or (version is not None and tag != 'v' + version):
             raise ValueError('Invalid Moonlight nightly identity')
         return int(match[1])
+    # Numeric nightly releases share the stable version namespace. Their
+    # channel is established by the published release metadata, so there is
+    # no date-based sequence to encode in the tag or metadata.
+    numeric = re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag)
+    if numeric:
+        if version is not None:
+            if tag != version:
+                raise ValueError('Numeric nightly tag/version must match the exact source')
+            exact_sha(source)
+        return None
     nightly = re.fullmatch(r'([0-9]+\.[0-9]+\.[0-9]+)-nightly\.d(20[0-9]{2})([0-9]{2})([0-9]{2})\.(?:r\.([1-9][0-9]{0,2})\.)?([0-9a-f]{12})', tag)
     if nightly:
         import datetime
@@ -77,10 +87,17 @@ def previous_release(repo, releases, metadata_reader, tag_resolver):
             metadata = metadata_reader(assets[0])
             if metadata.get('channel') != 'nightly':
                 continue
-            if metadata.get('schema_version') != 1 or metadata.get('tag') != tag:
+            if type(metadata.get('schema_version')) is not int or metadata.get('schema_version') != 1 or metadata.get('tag') != tag:
                 raise ValueError('Published nightly metadata identity mismatch')
             sha = exact_sha(metadata.get('source_commit'))
-            if not isinstance(metadata.get('version'), str) or metadata.get('nightly_sequence') != sequence(repo, tag, metadata['version'], sha):
+            version = metadata.get('version')
+            if not isinstance(version, str):
+                raise ValueError('Published nightly version/sequence mismatch')
+            numeric = re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag)
+            if numeric:
+                if version != tag:
+                    raise ValueError('Published numeric nightly version/tag mismatch')
+            elif metadata.get('nightly_sequence') != sequence(repo, tag, version, sha):
                 raise ValueError('Published nightly version/sequence mismatch')
             if repo == 'Nonary/moonlight-qt' and 'windows_product_version' in metadata and metadata['windows_product_version'] != f'6.2.{metadata["nightly_sequence"]}':
                 raise ValueError('Published nightly Windows product version mismatch')
@@ -88,8 +105,17 @@ def previous_release(repo, releases, metadata_reader, tag_resolver):
                 raise ValueError('Published nightly tag does not match metadata source')
         else:
             # Migration: older published daily tags are authoritative exact targets.
+            if re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)', tag):
+                # A plain numeric tag alone does not identify its channel.
+                continue
             sha = exact_sha(tag_resolver(tag))
-        return {'tag': tag, 'source_commit': sha}
+            version = None
+        result = {'tag': tag, 'source_commit': sha}
+        if assets:
+            result['version'] = version
+        elif version:
+            result['version'] = version
+        return result
     return None
 
 
@@ -101,11 +127,13 @@ def make_notes(repo, tag, version, source, previous, commits, ancestor=True):
     compare = f'https://github.com/{repo}/compare/{old}...{source}' if old else None
     unchanged = old == source
     metadata = dict(schema_version=1, channel='nightly', tag=tag, version=version,
-                    source_commit=source, nightly_sequence=seq,
+                    source_commit=source,
                     previous_successful_tag=previous['tag'] if previous else None,
                     previous_source_commit=old, changelog_range=f'{old}..{source}' if old else None,
                     compare_url=compare, first_nightly=first, no_source_changes=unchanged,
                     commits_total=len(commits), commits_listed=len(commits))
+    if seq is not None:
+        metadata['nightly_sequence'] = seq
     if repo == 'Nonary/moonlight-qt':
         metadata['windows_product_version'] = f'6.2.{seq}'
     product = {'Nonary/vibeshine': 'Vibeshine', 'Nonary/Vibepollo': 'Vibepollo', 'Nonary/moonlight-qt': 'Moonlight'}[repo]

@@ -1,0 +1,90 @@
+---
+name: Allocate numeric release version
+permissions: {}
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: vibeshine-release-version-allocation
+  cancel-in-progress: false
+
+jobs:
+  allocate:
+    if: github.repository == 'Nonary/vibeshine' && github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: write
+    outputs:
+      should_release: ${{ steps.version.outputs.should_release }}
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      commit: ${{ steps.version.outputs.commit }}
+      channel: ${{ steps.version.outputs.channel }}
+      source_branch: ${{ steps.version.outputs.source_branch }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Test numeric version allocation contracts
+        run: python -m unittest discover -s scripts/tests -p test_numeric_release.py
+      - name: Resolve immutable numeric candidate
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_PRIMARY_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SOURCE_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SOURCE_CONFIRMED: ${{ github.repository }}:${{ github.event.repository.default_branch }}
+          RELEASE_CHANNEL: stable
+        run: python scripts/numeric_release.py resolve
+      - name: Revalidate live release state before reserving the tag
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_PRIMARY_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SOURCE_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SOURCE_CONFIRMED: ${{ github.repository }}:${{ github.event.repository.default_branch }}
+          RELEASE_CHANNEL: stable
+          EXPECTED_TAG: ${{ steps.version.outputs.tag }}
+          EXPECTED_COMMIT: ${{ steps.version.outputs.commit }}
+        run: |
+          set -euo pipefail
+          recheck="$RUNNER_TEMP/release-recheck"
+          GITHUB_OUTPUT="$recheck" python scripts/numeric_release.py resolve
+          grep -Fx "tag=$EXPECTED_TAG" "$recheck"
+          grep -Fx "commit=$EXPECTED_COMMIT" "$recheck"
+          grep -Fx 'should_release=true' "$recheck"
+      - name: Create or verify annotated channel tag
+        if: steps.version.outputs.should_release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.version.outputs.commit }}
+          RELEASE_CHANNEL: ${{ steps.version.outputs.channel }}
+          RELEASE_SOURCE_BRANCH: ${{ steps.version.outputs.source_branch }}
+        run: |
+          set -euo pipefail
+          expected_message="$(printf 'Vibeshine release channel: %s\nSource branch: %s' "$RELEASE_CHANNEL" "$RELEASE_SOURCE_BRANCH")"
+          if tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" 2>/dev/null)"; then
+            test "$(jq -r '.object.type' <<< "$tag_json")" = tag
+            tag_object="$(jq -r '.object.sha' <<< "$tag_json")"
+            object_json="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")"
+            test "$(jq -r '.object.sha' <<< "$object_json")" = "$RELEASE_COMMIT"
+            test "$(jq -r '.message' <<< "$object_json")" = "$expected_message"
+          else
+            tag_object="$(gh api --method POST "repos/$GITHUB_REPOSITORY/git/tags" \
+              -f tag="$RELEASE_TAG" -f message="$expected_message" \
+              -f object="$RELEASE_COMMIT" -f type=commit --jq .sha)"
+            gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/$RELEASE_TAG" -f sha="$tag_object" >/dev/null
+          fi
+          # GITHUB_TOKEN-created tags do not start tag-push workflows. Dispatch
+          # CI explicitly against the same immutable tag.
+          gh api --method POST "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/dispatches" \
+            -f ref="$RELEASE_TAG"
+          echo "Reserved $RELEASE_TAG for $RELEASE_COMMIT on channel $RELEASE_CHANNEL and dispatched CI against that immutable tag. Use Sign and publish release for the exact validated artifacts." >> "$GITHUB_STEP_SUMMARY"

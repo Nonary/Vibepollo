@@ -1,5 +1,13 @@
 # Release Vibepollo
 
+## Allocate a new numeric release
+
+New Vibepollo stable releases and nightly prereleases use immutable plain numeric tags and share one version sequence. Run **Allocate numeric release version** from the repository default branch; the workflow automatically uses that branch and records its source. Numeric signing allocations are stable-only; nightly prereleases are allocated and published by the daily workflow. The allocator derives the next version from the highest qualified published numeric version and counts `feat`/`fix` commits not reachable from any previously published release source. It skips unchanged sources and sources without eligible commits. Divergent ancestry, missing or ambiguous release state, collisions, and Windows installer version overflow fail closed.
+
+The allocator creates an annotated tag whose message records the channel and source branch, then explicitly dispatches CI against that tag because a `GITHUB_TOKEN` tag push does not start a tag workflow. The CI candidate gate revalidates the tag against live published releases and carries the verified channel and stable anchor into the build. Numeric release notes are generated from the exact previously unpublished source range during signing, so a predicted `release_notes/<next-version>.md` file is not needed. Run **Sign and publish release** with that exact tag after the CI artifacts complete; it revalidates the live allocation, immutable tag object, source ancestry, and stable anchor before signing/publishing. A numeric tag cannot be moved to another source or channel. Nightly tags are allocated and published by the daily workflow and are not handled by the stable signing path.
+
+The legacy suffix-tag procedure below remains for already existing releases and recovery. New releases should use the allocator workflow.
+
 Vibepollo releases are built from an existing, v-less semantic-version tag such as `1.19.0-beta.4`
 or `1.19.0`. The tagged commit must contain the matching version-scoped release notes file, for
 example `release_notes/1.19.0-beta.4.md`.
