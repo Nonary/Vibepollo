@@ -52,7 +52,14 @@ precedence = r'''
    pt::ptree refused; refused.put("root.<xmlattr>.status_code", 503); refused.put("root.gamesession", 0);
    add_client_warning(refused, "code", "Message.");
    assert(!refused.get_child_optional("root.clientWarning") && !refused.get_child_optional("root.clientWarningMessage"));
-   checks += 2;
+   // Characters XML forbids are removed; an over-long message is left out.
+   pt::ptree cleaned; cleaned.put("root.<xmlattr>.status_code", 200); cleaned.put("root.resume", 1);
+   add_client_warning(cleaned, "code", "Line one\n\tLine\x01 two");
+   assert(cleaned.get<std::string>("root.clientWarningMessage") == "Line one\n Line two");
+   pt::ptree oversized; oversized.put("root.<xmlattr>.status_code", 200); oversized.put("root.resume", 1);
+   add_client_warning(oversized, "code", std::string(513, 'x'));
+   assert(oversized.get<std::string>("root.clientWarning") == "code" && !oversized.get_child_optional("root.clientWarningMessage"));
+   checks += 4;
  }
 ''' if host_message else ''
 program = (f'constexpr bool host_message = {"true" if host_message else "false"};\n') + r'''

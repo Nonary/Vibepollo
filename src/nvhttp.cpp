@@ -2992,7 +2992,8 @@ namespace nvhttp {
      * @brief Add one nonfatal warning to the response of a stream that is starting.
      * @param tree Launch or resume response; any status other than 200 is left alone.
      * @param code Stable identifier a client may map to its own translated text.
-     * @param message Plain text a client may show as-is; older clients ignore it.
+     * @param message Plain text for clients without their own text for the code;
+     *        older clients ignore it. Keep it short: at most 512 UTF-8 bytes.
      * @note A warning never changes whether the stream starts. Clients accept one
      *       warning per response, so the first one added wins.
      */
@@ -3001,7 +3002,22 @@ namespace nvhttp {
         return;
       }
       tree.put("root.clientWarning", std::string {code});
-      tree.put("root.clientWarningMessage", std::string {message});
+      // XML 1.0 forbids most control characters, and a strict client could reject
+      // the whole response for one. Keep line breaks; tabs and CRs become spaces.
+      std::string text;
+      text.reserve(message.size());
+      for (const char ch : message) {
+        if (ch == '\n' || static_cast<unsigned char>(ch) >= 0x20) {
+          text.push_back(ch);
+        } else if (ch == '\t' || ch == '\r') {
+          text.push_back(' ');
+        }
+      }
+      // Clients drop longer text, so send only a message they can show.
+      constexpr std::size_t max_message_bytes = 512;
+      if (!text.empty() && text.size() <= max_message_bytes) {
+        tree.put("root.clientWarningMessage", text);
+      }
     }
 
     /**
