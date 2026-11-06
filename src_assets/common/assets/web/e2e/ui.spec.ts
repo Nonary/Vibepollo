@@ -427,6 +427,17 @@ test('V2 switch to Classic saves only the separate host UI preference', async ({
   await expect.poll(() => new URL(page.url()).pathname).toBe('/');
 });
 
+test('V2 preference save failure stays on V2 with a visible retry message', async ({ page }) => {
+  await host(page, 'windows');
+  await localRoute(page, '**/api/web-ui-preference', async (route) => {
+    await route.fulfill({ status: 503, json: { status: false } });
+  });
+  await page.goto('/v2/');
+  await page.locator('.sidebar__legacy').click();
+  await expect(page.getByRole('alert').getByText('Could not save the interface preference.')).toBeVisible();
+  await expect.poll(() => new URL(page.url()).pathname).toBe('/v2/');
+});
+
 test('Windows maintenance uses server-directed download markup', async ({ page }) => {
   await host(page, 'windows');
   await page.goto('/v2/maintenance');
