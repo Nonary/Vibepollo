@@ -54,6 +54,31 @@ namespace {
     struct transport_t {
       std::shared_ptr<connection_t> connection;
       std::unique_ptr<boost::asio::ip::tcp::socket> peer;
+
+      transport_t() = default;
+      transport_t(std::shared_ptr<connection_t> connection_, std::unique_ptr<boost::asio::ip::tcp::socket> peer_):
+          connection(std::move(connection_)), peer(std::move(peer_)) {}
+      transport_t(transport_t &&) = default;
+      transport_t &operator=(transport_t &&) = default;
+      transport_t(const transport_t &) = delete;
+      transport_t &operator=(const transport_t &) = delete;
+
+      ~transport_t() {
+        close();
+      }
+
+      void close() {
+        boost::system::error_code ec;
+        boost::asio::socket_base::linger linger_option(true, 0);
+        if (peer && peer->is_open()) {
+          peer->set_option(linger_option, ec);
+          peer->close(ec);
+        }
+        if (connection && connection->socket && connection->socket->lowest_layer().is_open()) {
+          connection->socket->lowest_layer().set_option(linger_option, ec);
+          connection->socket->lowest_layer().close(ec);
+        }
+      }
     };
 
     transport_factory_t():
@@ -64,6 +89,10 @@ namespace {
       transport_t transport {create_connection(io, context), std::make_unique<boost::asio::ip::tcp::socket>(io)};
       transport.peer->connect(listener.local_endpoint());
       listener.accept(transport.connection->socket->lowest_layer());
+      boost::asio::socket_base::linger linger_option(true, 0);
+      boost::system::error_code ec;
+      transport.peer->set_option(linger_option, ec);
+      transport.connection->socket->lowest_layer().set_option(linger_option, ec);
       return transport;
     }
 
@@ -186,7 +215,15 @@ namespace {
     auto retained = factory.connect();
     const auto request = factory.request(retained);
     ASSERT_TRUE(authenticate(request).identity);
-    for (std::size_t i = 0; i < 4096; ++i) {
+#if defined(__APPLE__)
+    // macOS has a smaller default ephemeral port range (~16k) and enforces stricter
+    // kernel PCB churn limits than Linux. 512 iterations thoroughly exercises
+    // transient authority expiration and cleanup without exhausting loopback ports.
+    constexpr std::size_t churn_count = 512;
+#else
+    constexpr std::size_t churn_count = 4096;
+#endif
+    for (std::size_t i = 0; i < churn_count; ++i) {
       auto completed = factory.connect();
       ASSERT_TRUE(authenticate(factory.request(completed)).identity);
     }

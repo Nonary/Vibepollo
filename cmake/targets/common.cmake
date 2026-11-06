@@ -34,7 +34,7 @@ target_compile_definitions(sunshine PUBLIC ${SUNSHINE_DEFINITIONS})
 
 # Logging integration flags are provided via SUNSHINE_DEFINITIONS to avoid duplicates
 set_target_properties(sunshine PROPERTIES CXX_STANDARD 23)
-if(NOT SUNSHINE_BUILD_STEAMOS)
+if(NOT APPLE AND NOT SUNSHINE_BUILD_STEAMOS)
     set_target_properties(sunshine PROPERTIES
             VERSION ${PROJECT_VERSION}
             SOVERSION ${PROJECT_VERSION_MAJOR})

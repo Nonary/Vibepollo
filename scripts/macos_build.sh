@@ -34,6 +34,9 @@ required_formulas=(
   "miniupnpc"
   "openssl@3"
   "opus"
+  "webp"
+  "jpeg-turbo"
+  "libpng"
   "llvm"
 )
 

@@ -1,12 +1,12 @@
 # macos specific packaging
 
+# copy assets to build directory, for running without install
+file(COPY "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/assets/"
+     DESTINATION "${CMAKE_BINARY_DIR}/assets")
+
 if (SUNSHINE_BUILD_HOMEBREW)
     install(DIRECTORY "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/assets/"
             DESTINATION "${SUNSHINE_ASSETS_DIR}")
-
-    # copy assets to build directory, for running without install
-    file(COPY "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/assets/"
-         DESTINATION "${CMAKE_BINARY_DIR}/assets")
 else()
     # .app build
     set(APPLE_CODESIGN_IDENTITY "" CACHE STRING "Codesign identity, e.g. 'Developer ID Application: Name (TEAMID)'")
