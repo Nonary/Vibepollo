@@ -128,7 +128,8 @@ namespace web_ui_preference {
       }
       // Non-destructive compatibility with earlier builds. The old file remains
       // a fallback until the first successful write to web-ui-preference.conf.
-      const auto previous = trim(reader_(path_.parent_path() / "web-ui-preference"));
+      const auto previous_file = reader_(path_.parent_path() / "web-ui-preference");
+      const auto previous = trim(previous_file);
       return valid(previous) ? std::string(previous) : "legacy";
     }
 
