@@ -342,6 +342,11 @@ code can show as-is. It writes only to a 200 response, keeps the first warning,
 removes characters XML forbids and leaves out a message over 512 UTF-8 bytes.
 Clients that do not know either field ignore it, and the stream is unchanged.
 
+Vibepollo also sends `clientWarning=virtual_display_unavailable` when the built-in
+Virtual Display app starts on the existing display because its own screen could
+not be created, for example while another stream is ending or a display restore is
+running. Launch and resume still succeed; the message gives the host's reason.
+
 A session flag does not certify the later capture target or physical scanout;
 the warning describes the suppressed request and continued existing-display stream.
 Only a client implementing this optional code can display the warning. Nonary
