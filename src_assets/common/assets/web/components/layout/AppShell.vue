@@ -66,15 +66,19 @@ const statusIcon = computed(() => {
   return 'check-circle';
 });
 
+const preferenceSaveError = ref(false);
 async function selectLegacyWebUi(event: MouseEvent): Promise<void> {
   if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
+  preferenceSaveError.value = false;
   try {
-    await apiPost('/api/web-ui-preference', { preference: 'legacy' });
+    const result = await apiPost<{ status: boolean }>('/api/web-ui-preference', { preference: 'legacy' });
+    if (result?.status !== true) throw new Error('Preference save was not confirmed by the host');
+    window.location.assign('/');
   } catch (error) {
     console.warn('Could not save the legacy web UI preference:', error);
+    preferenceSaveError.value = true;
   }
-  window.location.assign('/');
 }
 function isCurrent(path: string): boolean {
   if (path === '/') return route.path === '/';
@@ -271,6 +275,9 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
+        <p v-if="preferenceSaveError" class="sidebar__preference-error" role="alert">
+          {{ t('ui.shell.preference_save_failed') }}
+        </p>
         <a class="sidebar__legacy" href="/" :title="t('ui.shell.classic_interface')" @click="selectLegacyWebUi">
           <UiIcon name="external-link" :size="16" />
           <span class="sidebar__label">{{ t('ui.shell.classic_interface') }}</span>
