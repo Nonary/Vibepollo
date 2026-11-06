@@ -2989,6 +2989,22 @@ namespace nvhttp {
     }
 
     /**
+     * @brief Add one nonfatal warning to the response of a stream that is starting.
+     * @param tree Launch or resume response; any status other than 200 is left alone.
+     * @param code Stable identifier a client may map to its own translated text.
+     * @param message Plain text a client may show as-is; older clients ignore it.
+     * @note A warning never changes whether the stream starts. Clients accept one
+     *       warning per response, so the first one added wins.
+     */
+    void add_client_warning(pt::ptree &tree, const std::string_view code, const std::string_view message) {
+      if (tree.get<int>("root.<xmlattr>.status_code", 0) != 200 || tree.get_child_optional("root.clientWarning")) {
+        return;
+      }
+      tree.put("root.clientWarning", std::string {code});
+      tree.put("root.clientWarningMessage", std::string {message});
+    }
+
+    /**
      * @brief Append the captured warning only after successful normal RTSP admission.
      * @param tree Successful response; existing fields remain unchanged.
      * @param session Prepared session with immutable request-time warning intent.
@@ -3004,7 +3020,12 @@ namespace nvhttp {
       // An existing compositor scene ignores virtual-display requests altogether.
       if (!platf::linux_display::backend().capabilities().independent_outputs) return;
   #endif
-      tree.put("root.clientWarning", "virtual_display_disabled_by_client");
+      add_client_warning(
+        tree,
+        "virtual_display_disabled_by_client",
+        "Your client disabled the virtual display requested by the host. Streaming continues with the existing display. "
+        "To use a virtual display, enable it in your client."
+      );
     }
 
     /**
