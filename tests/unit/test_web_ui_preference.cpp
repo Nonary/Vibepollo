@@ -94,7 +94,7 @@ TEST(WebUiPreference, OnlyRecognizesExplicitWebuiSetting) {
 
 TEST(WebUiPreference, ReadsPreviousSingleValueAndMigratesOnFirstWrite) {
   fake_files_t files;
-  files.legacy_preference = "v2";
+  files.legacy_preference = "  v2\r\n";
   auto store = store_for(files);
   EXPECT_EQ(store.read(), "v2");
   EXPECT_TRUE(files.preference_conf.empty());
