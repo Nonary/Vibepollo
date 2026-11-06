@@ -90,10 +90,13 @@ int main() {
     assert(!ordinary.virtual_display && ordinary.output_name_override=="physical" && !ordinary.virtual_display_mode_override);
    }
   }
-  const auto error=proc::display_policy::builtin_virtual_display_error(VIRTUAL_DISPLAY_UUID,false,config::video);
-  assert(error.find(bundled ? "Vibepollo" : "SudoVDA")!=std::string::npos);
-  assert(proc::display_policy::builtin_virtual_display_error(VIRTUAL_DISPLAY_UUID,true,config::video).empty());
-  assert(proc::display_policy::builtin_virtual_display_error("game",false,config::video).empty());
+  // A missing screen never blocks the stream: it falls back and only warns.
+  const auto fallback=proc::display_policy::builtin_virtual_display_fallback(VIRTUAL_DISPLAY_UUID,false,config::video);
+  assert(fallback.find(bundled ? "Vibepollo" : "SudoVDA")!=std::string::npos);
+  assert(fallback.find("streaming the existing display")!=std::string::npos);
+  assert(proc::display_policy::builtin_virtual_display_fallback(VIRTUAL_DISPLAY_UUID,true,config::video).empty());
+  assert(proc::display_policy::builtin_virtual_display_fallback("game",false,config::video).empty());
+  assert(proc::display_policy::virtual_display_unavailable_warning=="virtual_display_unavailable");
  }
  std::cout << "PASS Virtual Display: catalog in idle/running and input-only modes; explicit virtual target; shared/per-client modes; preparation; selected provider; failure messages\n";
 }

@@ -28,13 +28,21 @@ namespace proc::display_policy {
     }
   }
 
-  inline std::string builtin_virtual_display_error(const std::string_view app_uuid, const bool created, const config::video_t &video) {
+  // Launch/resume never fail because this screen is missing: the stream starts
+  // on the existing display and the client receives this warning code instead.
+  inline constexpr std::string_view virtual_display_unavailable_warning = "virtual_display_unavailable";
+
+  /**
+   * @brief Describe a built-in Virtual Display stream that starts without its own screen.
+   * @return Host log text, or empty when the app is not the built-in desktop or its screen exists.
+   */
+  inline std::string builtin_virtual_display_fallback(const std::string_view app_uuid, const bool created, const config::video_t &video) {
     if (app_uuid != VIRTUAL_DISPLAY_UUID || created) return {};
     // Creation also fails while another stream is ending or a display restore
     // is running, so do not present a driver repair as the only cause.
     return video.dd.use_sunshine_virtual_display_driver ?
-      "Virtual Display could not create a virtual screen with the Vibepollo display driver. Wait for any other stream or display restore to finish, then try again. If it keeps failing, repair the driver." :
-      "Virtual Display could not create a virtual screen with the SudoVDA driver. Wait for any other stream or display restore to finish, then try again. If it keeps failing, check that SudoVDA is installed or select the Vibepollo display driver.";
+      "Virtual Display could not create a virtual screen with the Vibepollo display driver; streaming the existing display instead. Wait for any other stream or display restore to finish, then launch it again. If it keeps happening, repair the driver." :
+      "Virtual Display could not create a virtual screen with the SudoVDA driver; streaming the existing display instead. Wait for any other stream or display restore to finish, then launch it again. If it keeps happening, check that SudoVDA is installed or select the Vibepollo display driver.";
   }
 
   /**

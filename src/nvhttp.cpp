@@ -3008,6 +3008,19 @@ namespace nvhttp {
     }
 
     /**
+     * @brief Tell the client its built-in Virtual Display stream uses the existing display.
+     * @param tree Successful response; an earlier warning code keeps precedence.
+     * @param fell_back Whether the built-in Virtual Display started without its own screen.
+     */
+    void add_virtual_display_fallback_warning(pt::ptree &tree, const bool fell_back) {
+      // Clients accept exactly one warning code, and only on a started stream.
+      if (!fell_back || tree.get<int>("root.<xmlattr>.status_code", 0) != 200 || tree.get_child_optional("root.clientWarning")) {
+        return;
+      }
+      tree.put("root.clientWarning", std::string {proc::display_policy::virtual_display_unavailable_warning});
+    }
+
+    /**
      * @brief Resolve preparation after all launch or resumed-app display fields are present.
      * @param session Session carrying the original client display-policy choice.
      * @param client Verified paired-client snapshot for this request.
@@ -5574,6 +5587,7 @@ launch_session->exact_target_hold.reset();
     }
 #endif
     request_audio_hold.attach(launch_session->audio_context_guard);
+      bool virtual_display_fallback_warning = false;
       std::optional<std::string> pending_output_override;
       auto output_override_guard = util::fail_guard([&]() {
         if (pending_output_override) {
@@ -5638,8 +5652,14 @@ launch_session->exact_target_hold.reset();
         dispatch::include_request_identity_log_fields(trace_id)
       );
       if (requested_app && !launch_session->normal_vdd_capacity_rejected && launch_session->virtual_display_catalog_error.empty()) {
-        launch_session->virtual_display_catalog_error = proc::display_policy::builtin_virtual_display_error(
+        // The stream can still start on the existing display, so never refuse
+        // it here. Log why and warn the client once the stream is admitted.
+        const auto fallback = proc::display_policy::builtin_virtual_display_fallback(
           requested_app->uuid, launch_session->virtual_display && !launch_session->virtual_display_failed, config::video);
+        if (!fallback.empty()) {
+          BOOST_LOG(warning) << fallback;
+          virtual_display_fallback_warning = true;
+        }
       }
       if (!launch_session->virtual_display_catalog_error.empty()) {
         BOOST_LOG(error) << launch_session->virtual_display_catalog_error;
@@ -5947,6 +5967,7 @@ launch_session->exact_target_hold.reset();
       output_override_guard.disable();
       runtime_overrides_guard.disable();
       add_client_display_warning(tree, *launch_session, !no_active_sessions || is_input_only);
+      add_virtual_display_fallback_warning(tree, virtual_display_fallback_warning);
     }
 
   void resume(bool &host_audio, resp_https_t response, req_https_t request, int current_appid, const bool normal_app_transition, const bool launched_from_applist, const std::uint64_t trace_id) {
@@ -6269,7 +6290,7 @@ launch_session->exact_target_hold.reset();
     }
     // A synthetic Resume tile carries its own id, so the seeding above is
     // skipped. The built-in Virtual Display must still request its own screen,
-    // or the create-failure check below rejects a screen it never asked for.
+    // or the fallback warning below reports a screen it never asked for.
     if (current_appid > 0) {
       if (const auto running_app = proc::proc.resolve_app(current_appid)) {
         proc::display_policy::apply_builtin_virtual_display(*launch_session, running_app->uuid, config::video);
@@ -6382,6 +6403,7 @@ launch_session->exact_target_hold.reset();
       launch_session->client_uuid, display_owner.client_uuid, display_owner.normal_vdd_identity_token
     );
 #endif
+    bool virtual_display_fallback_warning = false;
     std::optional<std::string> pending_output_override;
     auto output_override_guard = util::fail_guard([&]() {
       if (pending_output_override) {
@@ -6446,8 +6468,14 @@ launch_session->exact_target_hold.reset();
     }
     if (!joining_existing_game_output && !launch_session->normal_vdd_capacity_rejected && launch_session->virtual_display_catalog_error.empty()) {
       if (const auto app = proc::proc.resolve_app(current_appid)) {
-        launch_session->virtual_display_catalog_error = proc::display_policy::builtin_virtual_display_error(
+        // The stream can still start on the existing display, so never refuse
+        // it here. Log why and warn the client once the stream is admitted.
+        const auto fallback = proc::display_policy::builtin_virtual_display_fallback(
           app->uuid, launch_session->virtual_display && !launch_session->virtual_display_failed, config::video);
+        if (!fallback.empty()) {
+          BOOST_LOG(warning) << fallback;
+          virtual_display_fallback_warning = true;
+        }
       }
     }
     if (!launch_session->virtual_display_catalog_error.empty()) {
@@ -6716,6 +6744,7 @@ launch_session->exact_target_hold.reset();
     runtime_overrides_guard.disable();
     revert_display_configuration = false;
     add_client_display_warning(tree, *launch_session, joining_existing_game_output || is_input_only);
+    add_virtual_display_fallback_warning(tree, virtual_display_fallback_warning);
 
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
     system_tray::update_tray_client_connected(verified_client->name);
