@@ -109,7 +109,7 @@ namespace web_ui_preference {
   }
 
   // The real host uses atomic file replacement via file_handler. Injected I/O
-  // keeps the storage, migration, and concurrent tray/open contract testable.
+  // keeps the storage and concurrent tray/open contract testable.
   class store_t {
   public:
     using reader_t = std::function<std::string(const std::filesystem::path &)>;
@@ -122,15 +122,7 @@ namespace web_ui_preference {
 
     std::string read() const {
       std::lock_guard lock(mutex_);
-      const auto saved = reader_(path_);
-      if (!saved.empty()) {
-        return parse_conf(saved);
-      }
-      // Non-destructive compatibility with earlier builds. The old file remains
-      // a fallback until the first successful write to web-ui-preference.conf.
-      const auto previous_file = reader_(path_.parent_path() / "web-ui-preference");
-      const auto previous = trim(previous_file);
-      return valid(previous) ? std::string(previous) : "legacy";
+      return parse_conf(reader_(path_));
     }
 
     bool write(const std::string_view choice) {
