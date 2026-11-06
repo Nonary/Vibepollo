@@ -2553,7 +2553,8 @@
       "monitor": "Monitor",
       "manage": "Manage",
       "host_console": "Host console",
-      "classic_interface": "Classic interface"
+      "classic_interface": "Classic interface",
+      "preference_save_failed": "Could not save the interface preference. You are still in V2; please try again."
     },
     "status": {
       "needs_attention": "Needs attention",

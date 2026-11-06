@@ -292,6 +292,27 @@ editing the `conf` file in a text editor. Use the examples as reference.
     </tr>
 </table>
 
+### Web UI preference
+
+Choosing **Use V2 Web UI** or **Classic interface** saves the host-wide
+interface choice independently of the main configuration. The system tray's
+**Open Vibepollo** action reads it and opens `/v2/` or `/` accordingly.
+
+The choice is stored in `web-ui-preference.conf` within Vibepollo's
+application data directory, separate from `sunshine.conf`:
+
+```ini
+# Preferred Web UI for the system tray (legacy or v2).
+webui = v2
+```
+
+The `webui` value must be `v2` or `legacy`, with Classic (`legacy`) the
+default. Switching preserves unrelated lines and comments in the preference
+file. Saving never hot-applies pending configuration, changes the listening port, or
+rewrites `sunshine.conf`. A failed save displays an error in the web interface
+without navigating away, so the user can retry. The separate preference uses
+the authenticated, CSRF-protected `POST /api/web-ui-preference` endpoint.
+
 ### system_tray
 
 <table>

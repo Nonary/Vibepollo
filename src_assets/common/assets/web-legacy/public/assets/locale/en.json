@@ -1177,6 +1177,7 @@
     "title": "Resources"
   },
   "navbar": {
+    "web_ui_preference_save_failed": "Could not save the interface preference. Please try again.",
     "applications": "Applications",
     "configuration": "Configuration",
     "featured": "Featured Apps",

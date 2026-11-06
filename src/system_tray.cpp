@@ -51,6 +51,7 @@
   // local includes
   #include "config.h"
   #include "confighttp.h"
+  #include "web_ui_preference.h"
   #include "logging.h"
   #include "network.h"
   #include "platform/common.h"
@@ -99,8 +100,11 @@ namespace system_tray {
   }
 
   void tray_open_ui_cb([[maybe_unused]] struct tray_menu *item) {
-    BOOST_LOG(info) << "Opening UI from system tray"sv;
-    launch_ui();
+    // The isolated store serializes this read with the preference API's writes.
+    // Never copy config::sunshine strings concurrently with a full config reload.
+    const auto preference = web_ui_preference::host().read();
+    BOOST_LOG(info) << "Opening "sv << (preference == "v2" ? "V2" : "legacy") << " UI from system tray"sv;
+    launch_ui(preference == "v2" ? "/v2/" : "/");
   }
 
   void

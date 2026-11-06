@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n';
 import { useRoute } from 'vue-router';
 
 import { UiIcon } from '@/components/ui';
+import { apiPost } from '@/api/client';
 import { useSystemStore } from '@/stores/system';
 import UpdateNotice from './UpdateNotice.vue';
 
@@ -65,6 +66,20 @@ const statusIcon = computed(() => {
   return 'check-circle';
 });
 
+const preferenceSaveError = ref(false);
+async function selectLegacyWebUi(event: MouseEvent): Promise<void> {
+  if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+  event.preventDefault();
+  preferenceSaveError.value = false;
+  try {
+    const result = await apiPost<{ status: boolean }>('/api/web-ui-preference', { preference: 'legacy' });
+    if (result?.status !== true) throw new Error('Preference save was not confirmed by the host');
+    window.location.assign('/');
+  } catch (error) {
+    console.warn('Could not save the legacy web UI preference:', error);
+    preferenceSaveError.value = true;
+  }
+}
 function isCurrent(path: string): boolean {
   if (path === '/') return route.path === '/';
   if (path === '/devices' && route.path === '/pair') return true;
@@ -260,7 +275,10 @@ onBeforeUnmount(() => {
             </button>
           </div>
         </div>
-        <a class="sidebar__legacy" href="/" :title="t('ui.shell.classic_interface')">
+        <p v-if="preferenceSaveError" class="sidebar__preference-error" role="alert">
+          {{ t('ui.shell.preference_save_failed') }}
+        </p>
+        <a class="sidebar__legacy" href="/" :title="t('ui.shell.classic_interface')" @click="selectLegacyWebUi">
           <UiIcon name="external-link" :size="16" />
           <span class="sidebar__label">{{ t('ui.shell.classic_interface') }}</span>
         </a>
@@ -301,3 +319,15 @@ onBeforeUnmount(() => {
     </main>
   </div>
 </template>
+
+<style scoped>
+.sidebar__preference-error {
+  margin: 0.5rem 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid currentColor;
+  border-radius: 0.5rem;
+  color: #b91c1c;
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+</style>
