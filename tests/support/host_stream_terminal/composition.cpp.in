@@ -170,7 +170,7 @@ struct client_disconnect_result_t {bool disconnected=false;std::vector<remote_se
 struct rtsp_server_t {
  LockedState _session_state;Pool startup_pool,io_context;host_stream_control::startup_dispatch_t startup_tasks;std::atomic_bool stopping=false;
  using pending_launches_t = rtsp_stream::launch_registry_t<launch_session_t>;
- std::mutex _launch_sessions_mutex;pending_launches_t _launch_sessions;std::vector<std::uint32_t> _joining_launch_ids;
+ std::mutex _launch_sessions_mutex;pending_launches_t _launch_sessions;std::vector<std::uint32_t> _departing_launch_ids;
  struct Timer {void cancel(){}} raised_timer;
  void arm_launch_timer_locked(){}
 @CLAIM_STARTUP@
@@ -228,7 +228,7 @@ void reset() {
  physical=false;terminal_entered=false;late_ordinary=false;armed=true;running=0;finalizer_calls=0;config_applies=0;
  audio::ac3_encoder=true;audio::eac3_encoder=true;config::audio={};stream::session::allocated_audio={};response_status=0;response_audio_codec.clear();
  join_pause.reset(false);expiry_pause.reset(false);parser_pause.reset(false);peer_pause.reset(false);
- server._session_state->sessions.clear();server._launch_sessions.clear();server.startup_pool.queue.clear();server.io_context.queue.clear();
+ server._session_state->sessions.clear();server._launch_sessions.clear();server.startup_pool.queue.clear();server.io_context.queue.clear();server._departing_launch_ids.clear();
  topology.shutdown(true);topology.set_runtime_callbacks({});
 }
 void terminal(){nvhttp::terminate_all_streams_from_host([]{return true;});}
@@ -418,7 +418,33 @@ int main() {
    const bool launches_left=next_launch ? server._launch_sessions.size()==1 && server._launch_sessions.contains_live(13,"launch-13",now) : server._launch_sessions.empty();
    const std::string name=std::string("actual ")+(broadcast?"broadcast shutdown":"stopped-session reap")+" of two sessions without control "+
      (next_launch?"defers pause to the next launch and keeps it":"pauses the app once and clears both launches");
-   check(queued && running==0 && pauses==(next_launch?0:1) && launches_left && server._joining_launch_ids.empty(),name.c_str());
+   check(queued && running==0 && pauses==(next_launch?0:1) && launches_left && server._departing_launch_ids.empty(),name.c_str());
+ }
+ // A stopped-session reap can join one session without control and post its
+ // launch's session_clear(), and a second clear() can join the last session
+ // before that callback runs: a broadcast shutdown, or a reap of a session that
+ // stopped later. The first launch still belongs to a departed session, so the
+ // last join must pause the app unless a launch for the next broadcast is
+ // pending, and that launch must survive both delayed clears.
+ for(const bool broadcast:{true,false}) for(const bool next_launch:{false,true}) {
+   reset();app_pauses=0;const auto now=std::chrono::steady_clock::now();
+   const auto queue=[&](std::uint32_t id){auto launch=std::make_shared<launch_session_t>();launch->id=id;launch->unique_id="launch-"+std::to_string(id);launch->rtsp_source_address="10.0.0."+std::to_string(id);
+     return server._launch_sessions.add(launch,now,10s,8)==rtsp_server_t::pending_launches_t::add_result_e::added;};
+   bool queued=queue(21)&&queue(22);
+   auto first=std::make_shared<stream::session_t>();first->launch_session_id=21;server._session_state->sessions.insert(first);++running;
+   auto second=std::make_shared<stream::session_t>();second->launch_session_id=22;second->state=stream::session::state_e::RUNNING;server._session_state->sessions.insert(second);++running;
+   if(next_launch) queued=queue(23)&&queued;
+   server.clear(false);
+   const bool first_cleanup_delayed=server._launch_sessions.contains_live(21,"launch-21",now) && server._departing_launch_ids==std::vector<std::uint32_t>{21u};
+   if(!broadcast) second->state=stream::session::state_e::STOPPING;
+   const auto clear=rtsp_stream::pending_policy::rtsp_loop_clear(broadcast);
+   server.clear(clear.all_sessions,clear.preserve_pending_launches);
+   const int pauses=app_pauses;
+   server.io_context.run();
+   const bool launches_left=next_launch ? server._launch_sessions.size()==1 && server._launch_sessions.contains_live(23,"launch-23",now) : server._launch_sessions.empty();
+   const std::string name=std::string("actual stopped-session reap then ")+(broadcast?"broadcast shutdown":"second reap")+" with delayed launch clears "+
+     (next_launch?"defers pause to the next launch and keeps it":"pauses the app once and clears both launches");
+   check(queued && first_cleanup_delayed && running==0 && pauses==(next_launch?0:1) && launches_left && server._departing_launch_ids.empty(),name.c_str());
  }
  auto fresh=host_stream_control::start_guard_t(host_stream_control::request_ticket());check(bool(fresh),"fresh starts remain eligible after terminal reopen");
  return failures?1:0;
