@@ -29,12 +29,14 @@ namespace proc::display_policy {
   }
 
   // Launch/resume never fail because this screen is missing: the stream starts
-  // on the existing display and the client receives this warning code instead.
+  // on the existing display, and the client receives this warning code together
+  // with the fallback text below as its message.
   inline constexpr std::string_view virtual_display_unavailable_warning = "virtual_display_unavailable";
 
   /**
    * @brief Describe a built-in Virtual Display stream that starts without its own screen.
-   * @return Host log text, or empty when the app is not the built-in desktop or its screen exists.
+   * @return Text for the host log and the client warning, or empty when the app is not the
+   *         built-in desktop or its screen exists.
    */
   inline std::string builtin_virtual_display_fallback(const std::string_view app_uuid, const bool created, const config::video_t &video) {
     if (app_uuid != VIRTUAL_DISPLAY_UUID || created) return {};
