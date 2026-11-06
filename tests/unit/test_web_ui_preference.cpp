@@ -10,17 +10,24 @@
 
 namespace {
   struct fake_files_t {
-    std::string preference_file;
+    std::string preference_conf;
+    std::string legacy_preference;
     std::string main_config = "# Keep this comment\nport = 47989 # restart pending\n";
     int host_config_reload_calls = 0;
+    bool refuse_writes = false;
   };
 
   web_ui_preference::store_t store_for(fake_files_t &files) {
     return {
-      "web-ui-preference",
-      [&files](const std::filesystem::path &) { return files.preference_file; },
-      [&files](const std::filesystem::path &, const std::string_view text) {
-        files.preference_file = std::string(text);
+      "web-ui-preference.conf",
+      [&files](const std::filesystem::path &path) {
+        if (path.filename() == "web-ui-preference.conf") return files.preference_conf;
+        if (path.filename() == "web-ui-preference") return files.legacy_preference;
+        return std::string {};
+      },
+      [&files](const std::filesystem::path &path, const std::string_view text) {
+        if (path.filename() != "web-ui-preference.conf" || files.refuse_writes) return false;
+        files.preference_conf = std::string(text);
         return true;
       },
     };
@@ -33,11 +40,13 @@ TEST(WebUiPreference, DefaultsToClassicAndRejectsInvalidValues) {
   EXPECT_EQ(store.read(), "legacy");
   EXPECT_FALSE(store.write("not-an-interface"));
   EXPECT_FALSE(store.write(""));
-  EXPECT_TRUE(files.preference_file.empty());
+  EXPECT_TRUE(files.preference_conf.empty());
   EXPECT_TRUE(store.write("v2"));
   EXPECT_EQ(store.read(), "v2");
+  EXPECT_NE(files.preference_conf.find("webui = v2\n"), std::string::npos);
   EXPECT_TRUE(store.write("legacy"));
   EXPECT_EQ(store.read(), "legacy");
+  EXPECT_NE(files.preference_conf.find("webui = legacy\n"), std::string::npos);
 }
 
 TEST(WebUiPreference, SavingChoiceDoesNotRewriteMainConfigOrApplyPendingRestart) {
@@ -50,6 +59,53 @@ TEST(WebUiPreference, SavingChoiceDoesNotRewriteMainConfigOrApplyPendingRestart)
   EXPECT_EQ(files.host_config_reload_calls, 0);
   EXPECT_NE(files.main_config.find("# Keep this comment"), std::string::npos);
   EXPECT_NE(files.main_config.find("port = 47989 # restart pending"), std::string::npos);
+}
+
+TEST(WebUiPreference, PreservesPreferenceCommentsUnknownSettingsAndCrLf) {
+  fake_files_t files;
+  files.preference_conf = "# User annotation\r\nother = keep\r\nwebui = legacy  # trailing comment\r\n# more notes\r\n";
+  const auto original = files.preference_conf;
+  auto store = store_for(files);
+  EXPECT_EQ(store.read(), "legacy");
+  EXPECT_TRUE(store.write("v2"));
+  EXPECT_EQ(files.preference_conf,
+            "# User annotation\r\nother = keep\r\nwebui = v2  # trailing comment\r\n# more notes\r\n");
+  EXPECT_EQ(store.read(), "v2");
+  EXPECT_TRUE(store.write("legacy"));
+  EXPECT_EQ(files.preference_conf, original);
+}
+
+TEST(WebUiPreference, OnlyRecognizesExplicitWebuiSetting) {
+  fake_files_t files;
+  files.preference_conf = "# webui = v2\nwebui_extra = v2\n";
+  auto store = store_for(files);
+  EXPECT_EQ(store.read(), "legacy");
+  EXPECT_TRUE(store.write("v2"));
+  EXPECT_EQ(files.preference_conf,
+            "# webui = v2\nwebui_extra = v2\nwebui = v2\n");
+  EXPECT_EQ(store.read(), "v2");
+
+  files.preference_conf = "webui = v2 # leading value\nwebui=legacy\n";
+  EXPECT_TRUE(store.write("legacy"));
+  EXPECT_EQ(files.preference_conf, "webui = legacy # leading value\nwebui=legacy\n");
+  files.preference_conf = "webui = invalid\n";
+  EXPECT_EQ(store.read(), "legacy");
+}
+
+TEST(WebUiPreference, ReadsPreviousSingleValueAndMigratesOnFirstWrite) {
+  fake_files_t files;
+  files.legacy_preference = "v2";
+  auto store = store_for(files);
+  EXPECT_EQ(store.read(), "v2");
+  EXPECT_TRUE(files.preference_conf.empty());
+  EXPECT_TRUE(store.write("legacy"));
+  EXPECT_EQ(store.read(), "legacy");
+  EXPECT_EQ(files.legacy_preference, "v2");
+  EXPECT_NE(files.preference_conf.find("webui = legacy"), std::string::npos);
+  files.legacy_preference = "legacy";
+  EXPECT_TRUE(store.write("v2"));
+  EXPECT_EQ(store.read(), "v2");
+  EXPECT_NE(files.preference_conf.find("webui = v2"), std::string::npos);
 }
 
 TEST(WebUiPreference, ConcurrentTrayReadsAndPreferenceWritesAreSerialized) {
@@ -81,11 +137,11 @@ TEST(WebUiPreference, ConcurrentTrayReadsAndPreferenceWritesAreSerialized) {
 }
 
 TEST(WebUiPreference, FailedPersistenceDoesNotClaimSuccess) {
-  web_ui_preference::store_t store {
-    "unwritable",
-    [](const std::filesystem::path &) { return std::string {}; },
-    [](const std::filesystem::path &, std::string_view) { return false; },
-  };
-  EXPECT_FALSE(store.write("v2"));
-  EXPECT_EQ(store.read(), "legacy");
+  fake_files_t files;
+  files.legacy_preference = "v2";
+  files.refuse_writes = true;
+  auto store = store_for(files);
+  EXPECT_FALSE(store.write("legacy"));
+  EXPECT_TRUE(files.preference_conf.empty());
+  EXPECT_EQ(store.read(), "v2");
 }
