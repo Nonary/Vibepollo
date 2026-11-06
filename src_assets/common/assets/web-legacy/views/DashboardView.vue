@@ -570,11 +570,15 @@ async function selectV2WebUi(event: MouseEvent): Promise<void> {
   if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
   event.preventDefault();
   try {
-    await http.post('/api/web-ui-preference', { preference: 'v2' });
+    const result = await http.post<{ status: boolean }>('/api/web-ui-preference', { preference: 'v2' });
+    if (result.status !== 200 || result.data?.status !== true) {
+      throw new Error('Preference save was not confirmed by the host');
+    }
+    window.location.assign('/v2/');
   } catch (error) {
     console.warn('Could not save the V2 web UI preference:', error);
+    message.error($t('navbar.web_ui_preference_save_failed'));
   }
-  window.location.assign('/v2/');
 }
 
 const installedVersion = ref<VibepolloVersion>(new VibepolloVersion('0.0.0'));
