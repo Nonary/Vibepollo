@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <cctype>
 #include <filesystem>
 #include <functional>
 #include <mutex>
@@ -25,9 +26,90 @@ namespace web_ui_preference {
     return choice == "legacy" || choice == "v2";
   }
 
+  inline std::string_view trim(std::string_view text) {
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.front()))) {
+      text.remove_prefix(1);
+    }
+    while (!text.empty() && std::isspace(static_cast<unsigned char>(text.back()))) {
+      text.remove_suffix(1);
+    }
+    return text;
+  }
+
+  // Recognize only the exact webui key, not a commented-out or similarly named key.
+  inline bool is_setting_line(std::string_view line) {
+    const auto equal = line.find('=');
+    return equal != std::string_view::npos && trim(line.substr(0, equal)) == "webui";
+  }
+
+  inline std::string parse_conf(const std::string_view content) {
+    std::size_t offset = 0;
+    while (offset < content.size()) {
+      const auto end = content.find('\n', offset);
+      const auto line = content.substr(offset, end == std::string_view::npos ? end : end - offset);
+      if (is_setting_line(line)) {
+        const auto value = line.substr(line.find('=') + 1);
+        const auto parsed = trim(value.substr(0, value.find('#')));
+        return valid(parsed) ? std::string(parsed) : "legacy";
+      }
+      if (end == std::string_view::npos) {
+        break;
+      }
+      offset = end + 1;
+    }
+    return "legacy";
+  }
+
+  // Retain comments, other settings, whitespace and CRLF/LF line endings.
+  // All repeated webui keys receive the same value so none can shadow another.
+  inline std::string update_conf(const std::string_view original, const std::string_view choice) {
+    if (original.empty()) {
+      return "# Preferred Web UI for the system tray (legacy or v2).\nwebui = " + std::string(choice) + "\n";
+    }
+    std::string result;
+    result.reserve(original.size() + choice.size() + 16);
+    bool updated = false;
+    std::size_t offset = 0;
+    while (offset < original.size()) {
+      const auto end = original.find('\n', offset);
+      const auto line = original.substr(offset, end == std::string_view::npos ? end : end - offset);
+      if (is_setting_line(line)) {
+        const auto equal = line.find('=');
+        auto value_start = equal + 1;
+        while (value_start < line.size() && (line[value_start] == ' ' || line[value_start] == '\t')) {
+          ++value_start;
+        }
+        const auto comment = line.find('#', value_start);
+        auto value_end = comment == std::string_view::npos ? line.size() : comment;
+        while (value_end > value_start && std::isspace(static_cast<unsigned char>(line[value_end - 1]))) {
+          --value_end;
+        }
+        result.append(line.substr(0, value_start));
+        result.append(choice);
+        result.append(line.substr(value_end));
+        updated = true;
+      } else {
+        result.append(line);
+      }
+      if (end == std::string_view::npos) {
+        break;
+      }
+      result.push_back('\n');
+      offset = end + 1;
+    }
+    if (!updated) {
+      if (!result.empty() && result.back() != '\n') {
+        result.push_back('\n');
+      }
+      result.append("webui = ");
+      result.append(choice);
+      result.push_back('\n');
+    }
+    return result;
+  }
+
   // The real host uses atomic file replacement via file_handler. Injected I/O
-  // makes the storage and concurrent tray/open contract testable without
-  // starting an HTTPS listener or changing a real user's configuration.
+  // keeps the storage, migration, and concurrent tray/open contract testable.
   class store_t {
   public:
     using reader_t = std::function<std::string(const std::filesystem::path &)>;
@@ -41,7 +123,13 @@ namespace web_ui_preference {
     std::string read() const {
       std::lock_guard lock(mutex_);
       const auto saved = reader_(path_);
-      return valid(saved) ? saved : "legacy";
+      if (!saved.empty()) {
+        return parse_conf(saved);
+      }
+      // Non-destructive compatibility with earlier builds. The old file remains
+      // a fallback until the first successful write to web-ui-preference.conf.
+      const auto previous = trim(reader_(path_.parent_path() / "web-ui-preference"));
+      return valid(previous) ? std::string(previous) : "legacy";
     }
 
     bool write(const std::string_view choice) {
@@ -49,7 +137,7 @@ namespace web_ui_preference {
         return false;
       }
       std::lock_guard lock(mutex_);
-      return writer_(path_, choice);
+      return writer_(path_, update_conf(reader_(path_), choice));
     }
 
   private:
@@ -61,7 +149,7 @@ namespace web_ui_preference {
 
   inline store_t &host() {
     static store_t store {
-      platf::appdata() / "web-ui-preference",
+      platf::appdata() / "web-ui-preference.conf",
       [](const std::filesystem::path &path) {
         return file_handler::read_file(path.string().c_str());
       },
