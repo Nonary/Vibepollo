@@ -1102,6 +1102,11 @@ namespace rtsp_stream {
         }
         removed = !removed_sessions.empty();
         pending_launches_remain = !_launch_sessions.empty();
+        // clear() keeps a departed session's launch out of the last-session
+        // pause until this removes it. See has_other_pending_launch_or_startup().
+        if (const auto it = std::ranges::find(_departing_launch_ids, launch_session_id); it != _departing_launch_ids.end()) {
+          _departing_launch_ids.erase(it);
+        }
       }
 
       for (const auto &pending : removed_pending_sessions) {
@@ -1149,15 +1154,16 @@ namespace rtsp_stream {
     }
 
     // A session that stopped before its control stream attached still holds its
-    // renewed launch while it is joined, and clear() releases the launches of
-    // every session in its batch only after all their joins. None of those may
-    // count as a next launch at the last-session pause.
+    // renewed launch while it is joined. clear() releases the launches of every
+    // session in its batch only after all their joins, through session_clear()
+    // callbacks that may run after a later clear() has joined the last session.
+    // None of those launches may count as a next launch at the last-session pause.
     bool has_other_pending_launch_or_startup(uint32_t launch_session_id) {
       bool has_pending_launch = false;
       {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
         has_pending_launch = _launch_sessions.contains_other_than([this, launch_session_id](const uint32_t id) {
-          return id == launch_session_id || std::ranges::find(_joining_launch_ids, id) != _joining_launch_ids.end();
+          return id == launch_session_id || std::ranges::find(_departing_launch_ids, id) != _departing_launch_ids.end();
         });
       }
       return has_pending_launch || startup_count() > 0;
@@ -1305,22 +1311,24 @@ namespace rtsp_stream {
       }
       set_vulkan_hdr_layer_streaming_active(vulkan_hdr_layer_active);
 
-      // Mark the batch's launches as joining until every join is done, so the
-      // last join's pause decision does not wait on another one of them.
-      std::vector<uint32_t> joining_launch_ids;
-      joining_launch_ids.reserve(to_cleanup.size());
+      // Mark the batch's launches as departing, so no last join's pause decision
+      // waits on one of them. A launch cleared below stays marked until its
+      // posted session_clear() removes it, because another clear() can join the
+      // last session before that callback runs. The rest are unmarked on return.
+      std::vector<uint32_t> departing_launch_ids;
+      departing_launch_ids.reserve(to_cleanup.size());
       for (const auto &slot : to_cleanup) {
-        joining_launch_ids.push_back(stream::session::launch_session_id(*slot));
+        departing_launch_ids.push_back(stream::session::launch_session_id(*slot));
       }
       {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
-        _joining_launch_ids.insert(_joining_launch_ids.end(), joining_launch_ids.begin(), joining_launch_ids.end());
+        _departing_launch_ids.insert(_departing_launch_ids.end(), departing_launch_ids.begin(), departing_launch_ids.end());
       }
-      auto joined = util::fail_guard([this, &joining_launch_ids]() {
+      auto joined = util::fail_guard([this, &departing_launch_ids]() {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
-        for (const auto id : joining_launch_ids) {
-          if (const auto it = std::ranges::find(_joining_launch_ids, id); it != _joining_launch_ids.end()) {
-            _joining_launch_ids.erase(it);
+        for (const auto id : departing_launch_ids) {
+          if (const auto it = std::ranges::find(_departing_launch_ids, id); it != _departing_launch_ids.end()) {
+            _departing_launch_ids.erase(it);
           }
         }
       });
@@ -1345,6 +1353,10 @@ namespace rtsp_stream {
         asio::post(io_context, [this, launch_session_id]() {
           session_clear(launch_session_id);
         });
+        // The posted session_clear() now owns this launch's departing mark.
+        if (const auto it = std::ranges::find(departing_launch_ids, launch_session_id); it != departing_launch_ids.end()) {
+          departing_launch_ids.erase(it);
+        }
       }
     }
 
@@ -1912,9 +1924,11 @@ namespace rtsp_stream {
     sync_util::sync_t<session_state_t> _session_state;
     std::mutex _launch_sessions_mutex;
     pending_launches_t _launch_sessions;
-    // Launch IDs of the sessions clear() is joining, guarded by
-    // _launch_sessions_mutex. See has_other_pending_launch_or_startup().
-    std::vector<uint32_t> _joining_launch_ids;
+    // Launch IDs of sessions clear() removed whose launches have not been
+    // released yet, guarded by _launch_sessions_mutex. Entries stay until
+    // clear() returns or, for a launch it clears, until session_clear() runs.
+    // See has_other_pending_launch_or_startup().
+    std::vector<uint32_t> _departing_launch_ids;
     std::string plaintext_route_warning;
 
     boost::asio::io_context io_context;
