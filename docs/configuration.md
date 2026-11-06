@@ -308,9 +308,7 @@ webui = v2
 
 The `webui` value must be `v2` or `legacy`, with Classic (`legacy`) the
 default. Switching preserves unrelated lines and comments in the preference
-file. Older single-value `web-ui-preference` files are read as a fallback
-until the first successful save of the new format; the old file is not deleted.
-Saving never hot-applies pending configuration, changes the listening port, or
+file. Saving never hot-applies pending configuration, changes the listening port, or
 rewrites `sunshine.conf`. A failed save displays an error in the web interface
 without navigating away, so the user can retry. The separate preference uses
 the authenticated, CSRF-protected `POST /api/web-ui-preference` endpoint.
