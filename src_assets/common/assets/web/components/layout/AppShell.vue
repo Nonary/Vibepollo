@@ -319,3 +319,15 @@ onBeforeUnmount(() => {
     </main>
   </div>
 </template>
+
+<style scoped>
+.sidebar__preference-error {
+  margin: 0.5rem 0.75rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid currentColor;
+  border-radius: 0.5rem;
+  color: #b91c1c;
+  font-size: 0.875rem;
+  line-height: 1.4;
+}
+</style>
