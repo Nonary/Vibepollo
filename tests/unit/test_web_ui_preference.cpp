@@ -11,7 +11,6 @@
 namespace {
   struct fake_files_t {
     std::string preference_conf;
-    std::string legacy_preference;
     std::string main_config = "# Keep this comment\nport = 47989 # restart pending\n";
     int host_config_reload_calls = 0;
     bool refuse_writes = false;
@@ -22,7 +21,6 @@ namespace {
       "web-ui-preference.conf",
       [&files](const std::filesystem::path &path) {
         if (path.filename() == "web-ui-preference.conf") return files.preference_conf;
-        if (path.filename() == "web-ui-preference") return files.legacy_preference;
         return std::string {};
       },
       [&files](const std::filesystem::path &path, const std::string_view text) {
@@ -92,22 +90,6 @@ TEST(WebUiPreference, OnlyRecognizesExplicitWebuiSetting) {
   EXPECT_EQ(store.read(), "legacy");
 }
 
-TEST(WebUiPreference, ReadsPreviousSingleValueAndMigratesOnFirstWrite) {
-  fake_files_t files;
-  files.legacy_preference = "  v2\r\n";
-  auto store = store_for(files);
-  EXPECT_EQ(store.read(), "v2");
-  EXPECT_TRUE(files.preference_conf.empty());
-  EXPECT_TRUE(store.write("legacy"));
-  EXPECT_EQ(store.read(), "legacy");
-  EXPECT_EQ(files.legacy_preference, "v2");
-  EXPECT_NE(files.preference_conf.find("webui = legacy"), std::string::npos);
-  files.legacy_preference = "legacy";
-  EXPECT_TRUE(store.write("v2"));
-  EXPECT_EQ(store.read(), "v2");
-  EXPECT_NE(files.preference_conf.find("webui = v2"), std::string::npos);
-}
-
 TEST(WebUiPreference, ConcurrentTrayReadsAndPreferenceWritesAreSerialized) {
   fake_files_t files;
   auto store = store_for(files);
@@ -138,10 +120,10 @@ TEST(WebUiPreference, ConcurrentTrayReadsAndPreferenceWritesAreSerialized) {
 
 TEST(WebUiPreference, FailedPersistenceDoesNotClaimSuccess) {
   fake_files_t files;
-  files.legacy_preference = "v2";
+  files.preference_conf = "# Keep this text\nwebui = v2\n";
   files.refuse_writes = true;
   auto store = store_for(files);
   EXPECT_FALSE(store.write("legacy"));
-  EXPECT_TRUE(files.preference_conf.empty());
+  EXPECT_EQ(files.preference_conf, "# Keep this text\nwebui = v2\n");
   EXPECT_EQ(store.read(), "v2");
 }
