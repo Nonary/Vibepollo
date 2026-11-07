@@ -1628,11 +1628,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibepollo-session-controller")
         set_tests_properties(test_component_linux_session_command_timeout PROPERTIES LABELS "component" TIMEOUT 15)
         add_test(
-            NAME test_component_linux_machine_host_manifest
+            NAME test_component_linux_machine_host_retired_authorization
             COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
-                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_machine_host_manifest.sh"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_machine_host_retired_authorization.sh"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibepollo-machine-host")
-        set_tests_properties(test_component_linux_machine_host_manifest PROPERTIES LABELS "component")
+        set_tests_properties(test_component_linux_machine_host_retired_authorization PROPERTIES LABELS "component")
     else()
         message(WARNING "bash was not found; skipping the Linux VKMS setup shell test")
     endif()

@@ -165,26 +165,30 @@ sudo vibepollo configure USER
 sudo systemctl enable --now vibepollo-session-controller.service
 ```
 
-### Authorizing application commands
+### Application and preparation commands
 
-Custom application commands and per-app preparation commands require administrator approval.
-After reviewing the commands saved in `/var/lib/vibepollo/apps.json`, approve that snapshot:
+Commands you save in the Web UI run as soon as they are needed. No separate approval step is
+required.
 
-```bash
-sudo vibepollo authorize-commands
-```
+- **Normal commands** run as the streaming desktop user, in that user's desktop session, with
+  its display, audio and D-Bus.
+- **Commands with "Run elevated" turned on** run as root, as if you had run them with `sudo`.
+  They do not get the desktop's display or audio. `SUDO_USER`, `SUDO_UID` and `SUDO_GID` name
+  the streaming user, so a script can hand work back to that account, for example with
+  `runuser -u "$SUDO_USER" -- ...`.
 
-Run this again after adding or changing commands. Saving an application in the Web UI does
-not approve it. This command collects application launch, detached and preparation commands
-from `apps.json`; it does not authorize global preparation commands from `vibepollo.conf`.
-An unapproved command is rejected by the session broker and can exit with status 126.
+This applies to application launch, detached, preparation and global preparation commands.
+Anyone who can sign in to the Web UI can add a command that runs as root, so protect the
+Web UI credentials like an administrator password.
 
-Managed Steam and Lutris launches use fixed numeric-ID operations instead of approving
-arbitrary commands. The exact reserved helper syntax, such as
-`/usr/libexec/vibeshine/vibepollo-session-exec lutris 16`, selects that fixed operation even
-when entered manually. It does not approve other command strings or shell arguments.
-On a Linux machine-service host, run Lutris synchronization once after upgrading to refresh
-older managed entries. Other custom launch and preparation commands still require approval.
+Earlier releases required `sudo vibepollo authorize-commands` after every change. That step
+is gone. The command still exists but only prints a notice, and upgrading removes the old
+`/etc/vibepollo/session-commands` allowlist.
+
+Managed Steam and Lutris launches use fixed numeric-ID operations. The exact reserved helper
+syntax, such as `/usr/libexec/vibeshine/vibeshine-session-exec lutris 16`, selects that fixed
+operation even when entered manually. On a Linux machine-service host, run Lutris
+synchronization once after upgrading to refresh older managed entries.
 
 ## Verify
 

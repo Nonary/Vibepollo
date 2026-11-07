@@ -111,7 +111,7 @@
           "label": "Display output override"
         },
         "elevated": {
-          "description": "Launch the application with administrator privileges.",
+          "description": "Launch the application with administrator privileges (root on Linux).",
           "label": "Run elevated"
         },
         "excludePrep": {

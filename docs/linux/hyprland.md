@@ -39,8 +39,7 @@ use the KWin backend, independent of the desktop policy. SDDM greeter streaming
 is not provided.
 
 The supported slice captures an already enabled **physical SDR output through
-KMS**, with audio/input and administrator-authorized native Wayland application
-commands. Set `output_name` to an exact physical connector name from display
+KMS**, with audio/input and native Wayland application commands. Set `output_name` to an exact physical connector name from display
 enumeration before streaming; empty and numeric output aliases are rejected.
 Capture checks that selected connector's current DRM `HDR_OUTPUT_METADATA`
 state at initialization and before delivering frames. A zero blob or valid

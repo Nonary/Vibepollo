@@ -88,10 +88,17 @@ HDR streams use the `app-wayland-hdr` verb for the same catalog commands; Big
 Picture still maps those two strings to the same helper. The helper runs in
 the selected desktop session, matching other application launches: the broker
 namespace cannot start Steam, write the session baseline, or see the user's
-games. Fresh installations can have an empty administrator command manifest
-before the host creates its default application catalog. Arbitrary application
-commands still require administrator authorization; upgrades preserve that
-policy rather than automatically trusting newly saved commands.
+games.
+
+Custom commands use the `app`, `app-wayland-hdr` and `app-elevated` verbs, each
+carrying `<working-directory> <command>`. There is no command allowlist: the
+Web UI credentials are the trust boundary, matching Windows. `app` and
+`app-wayland-hdr` run through the desktop user's manager and the app supervisor.
+`app-elevated` ("Run elevated") skips the identity drop and runs `/bin/sh -c`
+as a root transient system unit, without the supervisor (it would drop every
+capability), with stdin on `/dev/null` and cleanup through the exact unit stop.
+Upgrades delete the retired `/etc/vibeshine/session-commands` allowlist, and
+`vibeshine authorize-commands` only prints that approval is no longer needed.
 
 ## Legacy profile migration
 
@@ -104,8 +111,8 @@ limits. Root validates and atomically publishes only the staged copy; it must
 never recursively copy a live user-controlled tree.
 
 The migration retains existing machine identity, credentials, pairing state,
-configuration, applications, and covers where valid. Policy and command
-authorization remain administrator-controlled. Use the explicit
+configuration, applications, and covers where valid. Machine policy remains
+administrator-controlled. Use the explicit
 `vibepollo-machine-host reset` operation only when an administrator intends to
 erase machine state; package removal does not erase it, while package purge
 does.

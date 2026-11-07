@@ -56,7 +56,7 @@ user_exec() {
   printf 'prepare\n' >>trace
   [[ "$fail_at" != prepare ]]
 }
-ensure_command_manifest() { printf 'manifest\n' >>trace; [[ "$fail_at" != manifest ]]; }
+remove_legacy_command_manifest() { printf 'manifest\n' >>trace; [[ "$fail_at" != manifest ]]; }
 publish_migrated_profile() {
   printf 'import\n' >>trace
   [[ "$fail_at" != import ]] || return 1

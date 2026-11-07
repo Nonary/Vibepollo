@@ -53,14 +53,15 @@ int main(void) {
   assert(!hyprland_request_supported(&identity, "managed-focus"));
   assert(!hyprland_request_supported(&identity, "app-wayland-hdr"));
   assert(hyprland_request_supported(&identity, "app"));
+  assert(hyprland_request_supported(&identity, "app-elevated"));
   assert(hyprland_request_supported(&identity, "audio-capture"));
   assert(hyprland_request_supported(&identity, "display-observe"));
   assert(hyprland_request_supported(&identity, "provider-steam-scan"));
   // Steam and Lutris launches need the bound Xwayland display.
   char *steam[] = {"broker", "steam", "3259780", NULL};
   char *lutris[] = {"broker", "lutris", "7", NULL};
-  char *big_picture[] = {"broker", "app", "setsid steam steam://open/bigpicture", NULL};
-  struct { char **args; int argc; } launches[] = {{steam, 3}, {lutris, 3}, {big_picture, 3}};
+  char *big_picture[] = {"broker", "app", "", "setsid steam steam://open/bigpicture", NULL};
+  struct { char **args; int argc; } launches[] = {{steam, 3}, {lutris, 3}, {big_picture, 4}};
   for (size_t i = 0; i < sizeof(launches) / sizeof(launches[0]); ++i) {
     identity_boundary_calls = 0;
     assert(execute_request(launches[i].argc, launches[i].args, &identity, getgid()) == 126);

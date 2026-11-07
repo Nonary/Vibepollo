@@ -652,11 +652,13 @@ require(private_display, "manager.retained_screen_hold.reset()", "restore releas
 require(host, "readonly machine_profile=/var/lib/vibepollo", "machine host")
 require(host, '"HOME=$machine_profile"', "machine host HOME isolation")
 require(host, '"XDG_CONFIG_HOME=/var/lib"', "machine host configuration isolation")
-require(host, "command_manifest_header='# vibepollo-session-commands-v2'", "versioned command authorization")
-require(host, "migrate_legacy_command_manifest", "command authorization migration")
-require(host, '/usr/bin/grep -Fqx -- "$authorization_command" "$command_manifest"', "no-new-command migration")
-require(host, "split_authorization_line", "lossless authorization field parsing")
-require(host, "extract_desktop_authorizations", "desktop-only command authorization")
+# Commands follow their own "Run elevated" setting; the retired allowlist is
+# removed on upgrade and its subcommand only explains the change.
+require(host, "readonly legacy_command_manifest=/etc/vibepollo/session-commands", "retired allowlist path")
+require(host, "remove_legacy_command_manifest", "retired allowlist cleanup")
+require(host, "authorize-commands) [[ $# == 1 ]] || exit 2; authorize_commands_retired ;;", "retired authorize-commands notice")
+for retired in ("extract_desktop_authorizations", "install_command_manifest", "migrate_legacy_command_manifest", "ensure_command_manifest"):
+    forbid(host, retired, "retired command allowlist")
 require(host, "remove_pam_hook", "exact PAM cleanup migration")
 for forbidden in ("install-pam", "activate_greeter", "systemctl --user", "/usr/bin/runuser", "session-handoffs", "session-restores"):
     forbid(host, forbidden, "machine host")
@@ -668,13 +670,13 @@ if prelogin.get("name") != "Desktop" or "cmd" in prelogin or "prep-cmd" in prelo
     raise AssertionError("pre-login app must not execute or restart greeter/session commands")
 
 # The capability-free client speaks only the bounded broker protocol. The
-# root-only, permitted-capability broker validates trusted records/endpoints
-# and launches approved desktop commands through the user's existing manager.
+# root-only, permitted-capability broker validates trusted records/endpoints,
+# launches desktop commands through the user's existing manager, and launches
+# "Run elevated" commands as root through the system manager.
 for invariant in (
     "O_NOFOLLOW",
     "attributes.st_uid != 0",
     "attributes.st_gid != service_gid",
-    "command_manifest_header",
     "validate_session_endpoints",
     "validate_xauthority",
     "setgroups(identity->group_count",
@@ -694,16 +696,21 @@ for invariant in (
     '"steam"',
     '"lutris"',
     '"app"',
+    '"app-elevated"',
+    'application_request_is_safe',
+    'exec_elevated_service',
     '"/usr/bin/systemd-run"',
     '"--user"',
+    '"--system"',
+    '"SUDO_USER=%s"',
     '"--service-type=exec"',
     '"--expand-environment=no"',
     '"--property=KillMode=control-group"',
     '"--property=TimeoutStopSec=5s"',
     'const uid_t service_uid',
     'const gid_t service_gid',
-    'supervise_user_service',
-    'stop_user_service',
+    'supervise_service',
+    'stop_service',
     'waitpid(',
     'SIGTERM',
     'SIGINT',

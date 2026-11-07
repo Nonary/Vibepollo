@@ -341,12 +341,45 @@ int main(void) {
   CHECK(!steam_big_picture_request(NULL, "setsid steam steam://open/bigpicture"));
   struct session_identity greeter_identity = {0};
   strcpy(greeter_identity.role, "greeter");
-  char *big_picture_request[] = {"broker", "app", "setsid steam steam://open/bigpicture", NULL};
-  CHECK(execute_request(3, big_picture_request, &greeter_identity, getgid()) == 126);
-  big_picture_request[2] = "setsid steam steam://close/bigpicture";
-  CHECK(execute_request(3, big_picture_request, &greeter_identity, getgid()) == 126);
-  char *hdr_big_picture_request[] = {"broker", "app-wayland-hdr", "setsid steam steam://open/bigpicture", NULL};
-  CHECK(execute_request(3, hdr_big_picture_request, &greeter_identity, getgid()) == 126);
+  char *big_picture_request[] = {"broker", "app", "", "setsid steam steam://open/bigpicture", NULL};
+  CHECK(execute_request(4, big_picture_request, &greeter_identity, getgid()) == 126);
+  big_picture_request[3] = "setsid steam steam://close/bigpicture";
+  CHECK(execute_request(4, big_picture_request, &greeter_identity, getgid()) == 126);
+  char *hdr_big_picture_request[] = {"broker", "app-wayland-hdr", "", "setsid steam steam://open/bigpicture", NULL};
+  CHECK(execute_request(4, hdr_big_picture_request, &greeter_identity, getgid()) == 126);
+
+  // Application requests carry <working-directory> <command>; no allowlist.
+  char *app_request[] = {"broker", "app", "/opt/Game Folder", "/opt/Game Folder/run.sh --flag", NULL};
+  CHECK(application_request_is_safe(4, app_request));
+  app_request[2] = "";
+  CHECK(application_request_is_safe(4, app_request));
+  app_request[2] = "relative/dir";
+  CHECK(!application_request_is_safe(4, app_request));
+  app_request[2] = "/opt/game\nmore";
+  CHECK(!application_request_is_safe(4, app_request));
+  app_request[2] = "/opt/game\001";
+  CHECK(!application_request_is_safe(4, app_request));
+  app_request[2] = "";
+  app_request[3] = "";
+  CHECK(!application_request_is_safe(4, app_request));
+  app_request[3] = "/usr/bin/true";
+  CHECK(!application_request_is_safe(3, app_request));
+  // Old two-argument requests and greeter sessions are rejected outright.
+  char *legacy_app_request[] = {"broker", "app", "/usr/bin/true", NULL};
+  CHECK(execute_request(3, legacy_app_request, &greeter_identity, getgid()) == 126);
+  char *elevated_request[] = {"broker", "app-elevated", "", "/usr/bin/true", NULL};
+  CHECK(execute_request(4, elevated_request, &greeter_identity, getgid()) == 126);
+
+  char resolved_directory[PATH_MAX] = {0};
+  resolve_application_directory("/srv/games", "/usr/bin/true", resolved_directory,
+                                sizeof(resolved_directory));
+  CHECK(!strcmp(resolved_directory, "/srv/games"));
+  resolve_application_directory("", "\"/opt/Game Folder/bin/game\" --flag", resolved_directory,
+                                sizeof(resolved_directory));
+  CHECK(!strcmp(resolved_directory, "/opt/Game Folder/bin"));
+  resolve_application_directory("", "https://example.invalid/game", resolved_directory,
+                                sizeof(resolved_directory));
+  CHECK(!resolved_directory[0]);
 
   CHECK(artwork_request_is_safe("provider-steam-artwork:42", "provider-steam-artwork:", UINT32_MAX));
   CHECK(!artwork_request_is_safe("provider-steam-artwork:0", "provider-steam-artwork:", UINT32_MAX));
@@ -548,7 +581,12 @@ int main(void) {
           "LoadState=not-found\nMainPID=1\nControlGroup=\n", "/sys/fs/cgroup"));
   CHECK(!unit_state_is_quiescent(
           "LoadState=loaded\nMainPID=0\nControlGroup=\n", "/sys/fs/cgroup"));
-  CHECK(!stop_user_service_using("/usr/bin/true", "--all", 100));
+  CHECK(!stop_service_using("/usr/bin/true", "--user", "--all", 100));
+  CHECK(!stop_service_using("/usr/bin/true", "--system", "--all", 100));
+  CHECK(!stop_service_using("/usr/bin/true", "--global", "vibeshine-app-7-1.service", 100));
+  CHECK(service_manager_is_valid("--user") && service_manager_is_valid("--system"));
+  CHECK(!service_manager_is_valid("--global") && !service_manager_is_valid(NULL));
+  CHECK(application_cgroup_path_is_safe("/system.slice/vibeshine-app-7-1.service"));
 
   char cgroup_root[] = "/tmp/vibepollo-broker-cgroup.XXXXXX";
   CHECK(mkdtemp(cgroup_root));

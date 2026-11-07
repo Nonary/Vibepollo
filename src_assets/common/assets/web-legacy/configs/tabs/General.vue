@@ -57,7 +57,7 @@ function markManualDirty() {
 function addPrepCommand(key: PrepCommandKey) {  const template = {
     do: '',
     undo: '',
-    ...(platform.value === 'windows' ? { elevated: false } : {}),
+    ...(platform.value === 'windows' || platform.value === 'linux' ? { elevated: false } : {}),
   };
   const current = prepCommands(key);
   const next = [...current, template];
@@ -135,7 +135,7 @@ function removeServerCommand(index: number) {
             </div>
             <div class="flex items-center gap-2">
               <Checkbox
-                v-if="platform === 'windows'"
+                v-if="platform === 'windows' || platform === 'linux'"
                 :id="`${section.key}_elevated_${index}`"                v-model="command.elevated"
                 :label="$t('_common.elevated')"
                 desc=""
