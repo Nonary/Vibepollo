@@ -262,7 +262,7 @@ def main():
     windows_helpers(root, args.compiler)
     header = (root / 'packaging/linux/managed_app_focus_kwin.h').read_text()
     script = re.search(r'R"JS\((.*?)\)JS"', header, re.S).group(1)
-    script = script[:script.index('callDBus(')]
+    script = script[:script.index('result.call=')]
     js = r'''
 const assert=require('assert'),vm=require('vm');
 const production=PRODUCTION;
@@ -282,12 +282,18 @@ assert.strictEqual(run([native],[7],['7:wayland-game'],()=>false).result.focused
 assert.deepStrictEqual(run([native,xwayland],[8],[]).result.windows,['8:xwayland-game']);
 assert.deepStrictEqual(run([native,xwayland],[],[]).result.windows,[]);
 assert.deepStrictEqual(run([], [7],[]).result.windows,[]);
+// A target that is already active is not activated again.
+assert.strictEqual(run([native],[7],['7:wayland-game'],()=>{throw Error('active target activated again');},native).result.focused,false);
 let fallback=run([xwayland,native],[7,8],['8:xwayland-game','7:wayland-game'],w=>w===native);assert.strictEqual(fallback.active,native);assert.strictEqual(fallback.result.focused,true);
 // Read-only HDR observations must not unminimize or activate any window.
 native.minimized=false;
 let observe=run([native,xwayland],[1],[],()=>{throw Error('read-only query attempted activation');},native);
 assert.strictEqual(observe.result.foreground_pid,7);assert.strictEqual(observe.active,native);
+// The exact active window, so a same-PID launcher is not mistaken for the game.
+assert.strictEqual(observe.result.foreground,'7:wayland-game');
+assert.strictEqual(run([native,splash],[7],[],()=>true,{...splash,minimized:false}).result.foreground,'7:splash');
 assert.strictEqual(run([native],[1],[],()=>true,{pid:99,normalWindow:false}).result.foreground_pid,0);
+assert.strictEqual(run([native],[1],[],()=>true,{pid:99,normalWindow:false}).result.foreground,'');
 assert.strictEqual(run([native],[1],[],()=>true,{pid:7,normalWindow:true,minimized:true}).result.foreground_pid,0);
 console.log('production KWin script: passed');
 '''.replace('PRODUCTION', json.dumps(script))

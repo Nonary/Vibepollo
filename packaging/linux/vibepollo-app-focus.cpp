@@ -1,6 +1,8 @@
 /** Unprivileged managed-library focus worker, run in the bound desktop session. */
 #include "src/lutris_integration.h"
 #include "src/managed_app_focus.h"
+#include "managed_app_focus_hyprland.h"
+#include "managed_app_focus_step.h"
 #include "managed_app_focus_kwin.h"
 #include "src/managed_app_focus_candidates.h"
 #include "src/steam_integration.h"
@@ -10,14 +12,22 @@
 #include <csignal>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <gio/gio.h>
 #include <iostream>
 #include <nlohmann/json.hpp>
+#include <syslog.h>
 #include <thread>
 #include <unistd.h>
 
 namespace {
   volatile sig_atomic_t cancelled = 0;
+
+  // The session broker discards stderr; mirror diagnostics into the journal.
+  void report(int priority, const std::string &message) {
+    std::cerr << "Managed focus: " << message << '\n';
+    syslog(priority, "%s", message.c_str());
+  }
 
   void cancel(int) {
     cancelled = 1;
@@ -53,7 +63,7 @@ namespace {
       }
     }
 
-    nlohmann::json apply(const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate = {}) {
+    nlohmann::json apply(const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate = {}, const std::function<bool(const std::string &)> &allowed = {}) {
       if (!registration_ || pids.empty() || cancelled) {
         return {};
       }
@@ -67,18 +77,20 @@ namespace {
         return {};
       }
       const std::string name = "vibepollo-focus-" + std::to_string(getpid());
-      const std::string script = managed_app_focus::kwin_script(pids, g_dbus_connection_get_unique_name(bus_), activate);
+      const std::string script = managed_app_focus::kwin_script(pids, g_dbus_connection_get_unique_name(bus_), activate, ++call_);
       const bool written = write(fd, script.data(), script.size()) == static_cast<ssize_t>(script.size());
       close(fd);
       received_ = false;
       result_ = {};
-      GVariant *loaded = written ? call("/Scripting", "org.kde.kwin.Scripting", "loadScript", g_variant_new("(ss)", path.c_str(), name.c_str())) : nullptr;
-      int id = -1;
-      if (loaded) {
-        g_variant_get(loaded, "(i)", &id);
-        g_variant_unref(loaded);
-      }
-      if (id >= 0) {
+      const auto load = [&] {
+        int id = -1;
+        if (GVariant *loaded = written ? call("/Scripting", "org.kde.kwin.Scripting", "loadScript", g_variant_new("(ss)", path.c_str(), name.c_str())) : nullptr) {
+          g_variant_get(loaded, "(i)", &id);
+          g_variant_unref(loaded);
+        }
+        return id;
+      };
+      const auto run = [&](int id) {
         const auto object = "/Scripting/Script" + std::to_string(id);
         if (auto *reply = call(object.c_str(), "org.kde.kwin.Script", "run", nullptr)) {
           g_variant_unref(reply);
@@ -88,6 +100,8 @@ namespace {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
           }
         }
+      };
+      if (managed_app_focus::kwin_load_and_run(activate, allowed, load, run) >= 0) {
         if (auto *reply = call("/Scripting", "org.kde.kwin.Scripting", "unloadScript", g_variant_new("(s)", name.c_str()))) {
           g_variant_unref(reply);
         }
@@ -101,11 +115,8 @@ namespace {
       auto &self = *static_cast<kwin_focus *>(data);
       const char *result = nullptr;
       g_variant_get(args, "(&s)", &result);
-      auto parsed = nlohmann::json::parse(result ? result : "", nullptr, false);
-      if (parsed.is_object() && parsed.contains("focused") && parsed["focused"].is_boolean() &&
-          parsed.contains("windows") && parsed["windows"].is_array() &&
-          std::all_of(parsed["windows"].begin(), parsed["windows"].end(), [](const auto &window) { return window.is_string(); })) {
-        self.result_ = std::move(parsed);
+      if (auto parsed = managed_app_focus::kwin_result(result ? result : "", self.call_)) {
+        self.result_ = std::move(*parsed);
         self.received_ = true;
       }
       g_dbus_method_invocation_return_value(invocation, nullptr);
@@ -115,7 +126,7 @@ namespace {
       GError *error = nullptr;
       auto *reply = g_dbus_connection_call_sync(bus_, "org.kde.KWin", object, interface, method, args, nullptr, G_DBUS_CALL_FLAGS_NONE, timeout_ms_, nullptr, &error);
       if (error) {
-        std::cerr << "Managed focus: " << error->message << '\n';
+        report(LOG_WARNING, error->message);
         g_error_free(error);
       }
       return reply;
@@ -125,6 +136,7 @@ namespace {
     GDBusNodeInfo *schema_ = nullptr;
     guint registration_ = 0;
     bool received_ = false;
+    std::uint64_t call_ = 0;
     nlohmann::json result_;
     int timeout_ms_;
   };
@@ -142,6 +154,7 @@ namespace {
 }  // namespace
 
 int main(int argc, char **argv) {
+  openlog("vibepollo-app-focus", LOG_PID, LOG_USER);
   if (argc == 4 && std::string_view(argv[1]) == "--foreground") {
     // This is a read-only query in the selected desktop identity. The dummy
     // candidate cannot activate anything: the script gets no activation list.
@@ -168,7 +181,15 @@ int main(int argc, char **argv) {
     std::cout<<(matches?"1\n":"0\n");
     return observed.is_object()?0:1;
   }
-  if (argc != 7 || std::string_view(argv[1]) != "--managed") {
+  std::optional<managed_app_focus::hyprland::compositor> bound_compositor;
+  if (argc == 8 && std::string_view(argv[1]) == "--managed-hyprland") {
+    bound_compositor = managed_app_focus::hyprland::parse_compositor(argv[2]);
+    if (!bound_compositor) {
+      return 2;
+    }
+    --argc;
+    ++argv;
+  } else if (argc != 7 || std::string_view(argv[1]) != "--managed") {
     return 2;
   }
   const std::string provider = argv[2], id = argv[3];
@@ -213,10 +234,23 @@ int main(int argc, char **argv) {
     }
   }
   if (directory.empty() || directory == directory.root_path()) {
-    std::cerr << "Managed focus: no installed catalog target for " << provider << ':' << id << '\n';
+    report(LOG_ERR, "no installed catalog target for " + provider + ':' + id);
     return 1;
   }
-  kwin_focus focus;
+  std::optional<kwin_focus> kwin;
+  managed_app_focus::hyprland::transport hyprland_ipc;
+  if (bound_compositor) {
+    // The broker only binds a session whose runtime is /run/user/<uid>; the
+    // inherited XDG_RUNTIME_DIR is not trusted.
+    const auto runtime = "/run/user/" + std::to_string(geteuid());
+    hyprland_ipc = managed_app_focus::hyprland::socket_transport(runtime, *bound_compositor, std::chrono::milliseconds(1000));
+  } else {
+    kwin.emplace();
+  }
+  const auto apply = [&](const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate, const std::function<bool(const std::string &)> &allowed) {
+    return kwin ? kwin->apply(pids, activate, allowed) : managed_app_focus::hyprland::apply(hyprland_ipc, pids, activate, allowed);
+  };
+  bool unavailable_reported = false;
   while (!cancelled && budget.active(managed_app_focus::budget::clock::now())) {
     std::vector<std::uint64_t> pids;
     if (auto snapshot = platf::steam::lifecycle::snapshot_processes()) {
@@ -229,27 +263,23 @@ int main(int argc, char **argv) {
       }
       pids = managed_app_focus::candidates({provider, id, directory}, *snapshot);
     }
-    const auto observed = focus.apply(pids);
-    if (observed.is_object() && observed.contains("windows") && observed["windows"].is_array()) {
-      for (const auto &window : observed["windows"]) {
-        if (window.is_string()) {
-          budget.observe(window.get<std::string>(), managed_app_focus::budget::clock::now());
-        }
+    bool unavailable = false;
+    const bool confirmed = managed_app_focus::focus_step([&](const std::vector<std::string> &activate, const std::function<bool(const std::string &)> &allowed) {
+      if (cancelled) {
+        return nlohmann::json {};
       }
-      if (!cancelled && budget.can_focus(managed_app_focus::budget::clock::now()) && !observed["windows"].empty()) {
-        std::vector<std::string> allowed;
-        for (const auto &window : observed["windows"]) {
-          const auto identity = window.get<std::string>();
-          if (budget.can_focus(identity, managed_app_focus::budget::clock::now())) {
-            allowed.push_back(identity);
-          }
-        }
-        const auto applied = focus.apply(pids, allowed);
-        if (!cancelled && applied.is_object() && applied.value("focused", false)) {
-          budget.confirmed();
-          std::cerr << "Managed focus: confirmed " << provider << ':' << id << '\n';
-        }
-      }
+      auto result = apply(pids, activate, [&](const std::string &identity) {
+        return !cancelled && allowed(identity);
+      });
+      unavailable = unavailable || (activate.empty() && result.is_null());
+      return result;
+    }, budget, managed_app_focus::budget::clock::now);
+    if (bound_compositor && !pids.empty() && unavailable && !unavailable_reported) {
+      report(LOG_WARNING, "the bound Hyprland IPC socket is unavailable");
+      unavailable_reported = true;
+    }
+    if (confirmed && !cancelled) {
+      report(LOG_INFO, "confirmed " + provider + ':' + id);
     }
     for (int i = 0; i < 10 && !cancelled; ++i) {
       std::this_thread::sleep_for(std::chrono::milliseconds(100));
