@@ -216,6 +216,15 @@ if(NOT _retry_result EQUAL 0)
     message(FATAL_ERROR "Retrying a numeric reservation failed: ${_retry_stdout}\n${_retry_stderr}")
 endif()
 
+# The Windows build runs MSYS2 git from native cmake.exe, which brace-expands
+# unquoted arguments; "^{commit}" peel syntax silently breaks there.
+file(READ "${SOURCE_ROOT}/cmake/prep/emit_windows_versioninfo.cmake" _versioninfo_source)
+string(REGEX REPLACE "#[^\n]*" "" _versioninfo_code "${_versioninfo_source}")
+string(FIND "${_versioninfo_code}" "^{" _brace_peel)
+if(NOT _brace_peel EQUAL -1)
+    message(FATAL_ERROR "emit_windows_versioninfo.cmake must not pass ^{...} peel syntax to git (MSYS2 brace expansion)")
+endif()
+
 # A source that has not merged the latest stable (no usable stable anchor)
 # still builds: the reservation tag alone is the numeric nightly clock.
 set(_unanchored_cache "${_fixture}/generated/unanchored-versioninfo.cache")

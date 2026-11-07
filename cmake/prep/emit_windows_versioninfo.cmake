@@ -216,7 +216,9 @@ function(_wv_verified_numeric_reservation_anchor version out_var)
     endif()
 
     execute_process(
-        COMMAND ${GIT_EXECUTABLE} rev-parse "${version}^{commit}"
+        # No "^{commit}": MSYS2 git launched from native cmake.exe brace-expands
+        # unquoted arguments, turning it into "^commit" and failing every build.
+        COMMAND ${GIT_EXECUTABLE} rev-list -n 1 "refs/tags/${version}"
         WORKING_DIRECTORY "${SOURCE_DIR}"
         OUTPUT_VARIABLE _tag_commit
         RESULT_VARIABLE _tag_error
