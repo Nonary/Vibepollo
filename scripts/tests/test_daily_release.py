@@ -28,21 +28,20 @@ class DailyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No published stable"):
             daily.published_stable_anchor([[dict(tag_name="2.0.7", draft=True, prerelease=False, published_at="today")]])
 
-    def test_source_must_include_published_stable_before_new_version(self):
+    def test_nightly_numbers_above_published_prerelease_without_any_stable(self):
         releases = [[dict(tag_name="2.0.7-beta.1", draft=False, prerelease=True, published_at="today")]]
-        with patch.object(daily.numeric_release, "run", return_value=BASE):
-            with self.assertRaisesRegex(ValueError, "No published stable"):
-                daily.numeric_release.resolve(releases, {"2.0.7-beta.1": BASE}, SHA,
-                                              "canary", "nightly")
+        with patch.object(daily.numeric_release, "run",
+                          side_effect=lambda *args: "fix: one" if args[1] == "log" else BASE):
+            result = daily.numeric_release.resolve(releases, {"2.0.7-beta.1": BASE}, SHA,
+                                                   "canary", "nightly")
+        self.assertEqual(result["tag"], "2.0.8")
 
-    def test_publication_rejects_stale_stable_anchor(self):
-        stable = dict(tag_name="2.0.6", draft=False, prerelease=False, published_at="today")
-        with patch.object(daily, "run", return_value=json.dumps([[stable]])):
-            daily.validate_live_stable_base("Nonary/vibeshine", "2.0.7-nightly.d20261104.aaaaaaaaaaaa")
-            with self.assertRaisesRegex(ValueError, "stable release changed"):
-                daily.validate_live_stable_base("Nonary/vibeshine", "2.0.5-nightly.d20261104.aaaaaaaaaaaa")
+    def test_stable_anchor_is_informational_and_never_blocks(self):
+        self.assertEqual(daily.stable_anchor([[]]), ("", ""))
+        with patch.object(daily, "run", return_value=BASE):
+            self.assertEqual(daily.stable_anchor(STABLE_PAGES), ("2.0.0", BASE))
 
-    def test_numeric_publication_requires_the_prepared_stable_anchor(self):
+    def test_numeric_publication_requires_the_reserved_tag_to_still_be_current(self):
         stable_release = dict(tag_name="2.0.6", draft=False, prerelease=False,
                               published_at="2026-11-01T00:00:00Z")
         pages = [[stable_release]]
@@ -52,13 +51,10 @@ class DailyTests(unittest.TestCase):
                  patch.object(daily, "tag_refs", return_value=(refs, {})), \
                  patch.object(daily, "previous_successful_nightly", return_value=None), \
                  patch.object(daily.numeric_release, "resolve", return_value={
-                     "should_release": "true", "tag": "2.0.7"}), \
-                 patch.object(daily.numeric_release, "run", return_value=BASE):
-                daily.validate_live_numeric_version("Nonary/vibeshine", "2.0.7", SHA,
-                                                    "nightly", "2.0.6", BASE)
-                with self.assertRaisesRegex(ValueError, "anchor changed"):
-                    daily.validate_live_numeric_version("Nonary/vibeshine", "2.0.7", SHA,
-                                                        "nightly", "2.0.5", BASE)
+                     "should_release": "true", "tag": "2.0.7"}):
+                daily.validate_live_numeric_version("Nonary/vibeshine", "2.0.7", SHA, "nightly")
+                with self.assertRaisesRegex(ValueError, "Published release state changed"):
+                    daily.validate_live_numeric_version("Nonary/vibeshine", "2.0.8", SHA, "nightly")
 
     def test_linux_requires_exact_source_version_run_and_hash(self):
         for scenario in ('valid', 'source', 'version', 'run', 'hash', 'extra'):

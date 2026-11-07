@@ -194,47 +194,6 @@ function(_wv_daily_release_anchor lines major minor patch out_var)
     set(${out_var} "${_anchor}" PARENT_SCOPE)
 endfunction()
 
-# Verify the resolver's explicit stable tag/commit pair before using it as a
-# nightly clock anchor. Bare numeric tags cannot be classified as stable from
-# Git history alone because nightly builds may also carry numeric tags.
-function(_wv_verified_stable_anchor tag expected_commit out_var)
-    if("${tag}" STREQUAL "" OR "${expected_commit}" STREQUAL "")
-        set(${out_var} "" PARENT_SCOPE)
-        return()
-    endif()
-    if(NOT "${tag}" MATCHES "^v?[0-9]+\\.[0-9]+\\.[0-9]+(-stable(\\.[0-9]+)?)?$" OR
-       NOT "${expected_commit}" MATCHES "^[0-9A-Fa-f]+$")
-        set(${out_var} "" PARENT_SCOPE)
-        return()
-    endif()
-
-    execute_process(
-        COMMAND ${GIT_EXECUTABLE} rev-parse "${tag}^{commit}"
-        WORKING_DIRECTORY "${SOURCE_DIR}"
-        OUTPUT_VARIABLE _actual_commit
-        RESULT_VARIABLE _resolve_error
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET)
-    if(_resolve_error OR NOT "${_actual_commit}" STREQUAL "${expected_commit}")
-        set(${out_var} "" PARENT_SCOPE)
-        return()
-    endif()
-
-    execute_process(
-        COMMAND ${GIT_EXECUTABLE} merge-base --is-ancestor "${expected_commit}" HEAD
-        WORKING_DIRECTORY "${SOURCE_DIR}"
-        RESULT_VARIABLE _ancestor_error
-        OUTPUT_QUIET
-        ERROR_QUIET)
-    if(NOT _ancestor_error EQUAL 0)
-        set(${out_var} "" PARENT_SCOPE)
-        return()
-    endif()
-
-    _wv_git_epoch_for_ref("${tag}" _anchor)
-    set(${out_var} "${_anchor}" PARENT_SCOPE)
-endfunction()
-
 # Numeric nightly builds are tied to their immutable numeric reservation tag.
 # Requiring an annotated tag that peels exactly to HEAD gives each numeric
 # version a fresh revision clock while making retries deterministic.
@@ -406,12 +365,9 @@ else()
                 "emit_windows_versioninfo: legacy nightly ${PROJECT_VERSION_FULL} requires a reachable matching or previous-patch stable tag; refusing a HEAD-relative revision that can downgrade installed files.")
         endif()
     elseif(PROJECT_BUILD_CHANNEL STREQUAL "nightly")
-        _wv_verified_stable_anchor("${PROJECT_STABLE_ANCHOR_TAG}" "${PROJECT_STABLE_ANCHOR_COMMIT}" _stable_anchor_time)
-        if(NOT "${_stable_anchor_time}" MATCHES "^[0-9]+$")
-            message(FATAL_ERROR
-                "emit_windows_versioninfo: numeric nightly ${PROJECT_VERSION_FULL} requires a resolver-verified reachable stable anchor "
-                "(PROJECT_STABLE_ANCHOR_TAG and PROJECT_STABLE_ANCHOR_COMMIT); refusing a HEAD-relative revision that can downgrade installed files.")
-        endif()
+        # The resolver already placed this version above every published
+        # release, so the reservation tag alone is the revision clock. Whether
+        # the source has merged the latest stable does not affect ordering.
         _wv_verified_numeric_reservation_anchor("${PROJECT_VERSION_FULL}" _anchor_time)
         if(NOT "${_anchor_time}" MATCHES "^[0-9]+$")
             message(FATAL_ERROR

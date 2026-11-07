@@ -216,6 +216,34 @@ if(NOT _retry_result EQUAL 0)
     message(FATAL_ERROR "Retrying a numeric reservation failed: ${_retry_stdout}\n${_retry_stderr}")
 endif()
 
+# A source that has not merged the latest stable (no usable stable anchor)
+# still builds: the reservation tag alone is the numeric nightly clock.
+set(_unanchored_cache "${_fixture}/generated/unanchored-versioninfo.cache")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}"
+        "-DOUTPUT_FILE=${_fixture}/generated/unanchored-versioninfo.h"
+        "-DCACHE_FILE=${_unanchored_cache}"
+        "-DSOURCE_DIR=${_fixture}"
+        -DPROJECT_VERSION_MAJOR=1
+        -DPROJECT_VERSION_MINOR=18
+        -DPROJECT_VERSION_PATCH=0
+        -DPROJECT_VERSION_FULL=1.18.0
+        -DPROJECT_BUILD_CHANNEL=nightly
+        -DPROJECT_STABLE_ANCHOR_TAG=
+        -DPROJECT_STABLE_ANCHOR_COMMIT=
+        "-DTEST_SOURCE_TIME_EPOCH=${_source_time}"
+        -P "${SOURCE_ROOT}/cmake/prep/emit_windows_versioninfo.cmake"
+    RESULT_VARIABLE _unanchored_result
+    OUTPUT_VARIABLE _unanchored_stdout
+    ERROR_VARIABLE _unanchored_stderr)
+if(NOT _unanchored_result EQUAL 0)
+    message(FATAL_ERROR "A numeric nightly without a stable anchor failed: ${_unanchored_stdout}\n${_unanchored_stderr}")
+endif()
+file(READ "${_unanchored_cache}" _unanchored_cache_text)
+if(NOT _unanchored_cache_text MATCHES "anchor_time=${_reservation_anchor}")
+    message(FATAL_ERROR "A numeric nightly without a stable anchor did not use its reservation tag: ${_unanchored_cache_text}")
+endif()
+
 # A missing immutable numeric reservation tag fails closed.
 execute_process(
     COMMAND "${CMAKE_COMMAND}"

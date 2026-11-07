@@ -100,11 +100,13 @@ def published_stable_anchor(releases):
     return version, tag
 
 
-def validate_live_stable_base(repository, tag):
-    releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
-    (major, minor, patch), _stable_tag = published_stable_anchor(releases)
-    if tag.split("-", 1)[0] != f"{major}.{minor}.{patch + 1}":
-        raise ValueError("Published stable release changed during the build; rerun with a current nightly version")
+def stable_anchor(releases):
+    """Best-effort published stable identity for build metadata; never blocks a nightly."""
+    try:
+        _version, tag = published_stable_anchor(releases)
+        return tag, run("git", "rev-parse", f"refs/tags/{tag}^{{commit}}")
+    except (ValueError, subprocess.CalledProcessError):
+        return "", ""
 
 
 def tag_refs():
@@ -121,9 +123,12 @@ def tag_refs():
     return refs, channels
 
 
-def validate_live_numeric_version(repository, tag, commit, channel="nightly",
-                                  stable_anchor_tag=None, stable_anchor_commit=None):
-    """Re-resolve immediately before publication so a newer release cannot race the build."""
+def validate_live_numeric_version(repository, tag, commit, channel="nightly"):
+    """Re-resolve immediately before publication so a newer release cannot race the build.
+
+    The reserved tag must still be the allocation for this source, which holds
+    only while it outranks every published version (stable releases included).
+    """
     releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
     refs, channels = tag_refs()
     previous = previous_successful_nightly(repository, releases)
@@ -132,13 +137,6 @@ def validate_live_numeric_version(repository, tag, commit, channel="nightly",
                                        previous)
     if expected.get("should_release") != "true" or expected.get("tag") != tag:
         raise ValueError("Published release state changed during the build; rerun with a current numeric version")
-    stable = numeric_release.latest_stable_release(releases)
-    live_stable_tag = stable["tag_name"]
-    live_stable_commit = numeric_release._commit_for_tag(live_stable_tag, refs)
-    if (stable_anchor_tag is None or stable_anchor_commit is None
-            or live_stable_tag != stable_anchor_tag
-            or live_stable_commit != stable_anchor_commit):
-        raise ValueError("Stable release anchor changed during the build; discard these artifacts and rerun")
 
 
 def resolve():
@@ -156,8 +154,7 @@ def resolve():
     releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
     previous = previous_successful_nightly(repository, releases)
     if previous and previous["source_commit"] == commit:
-        stable_version, stable_tag = published_stable_anchor(releases)
-        stable_commit = run("git", "rev-parse", f"refs/tags/{stable_tag}^{{commit}}")
+        stable_tag, stable_commit = stable_anchor(releases)
         emit_outputs({"commit": commit, "channel": "nightly", "should_build": "false",
                       "skip_reason": f"Source unchanged since {previous['tag']}",
                       "stable_anchor_tag": stable_tag, "stable_anchor_commit": stable_commit})
@@ -170,22 +167,22 @@ def resolve():
     # GITHUB_TOKEN has no workflows:write capability. Do not select a target
     # with a different workflow tree and then discover that during publication.
     run("git", "diff", "--exit-code", os.environ["GITHUB_SHA"], commit, "--", ".github/workflows")
-    (major, minor, patch), stable_tag = published_stable_anchor(releases)
-    stable_commit = run("git", "rev-parse", f"refs/tags/{stable_tag}^{{commit}}")
+    stable_tag, stable_commit = stable_anchor(releases)
     if previous:
         try:
             run("git", "merge-base", "--is-ancestor", previous["source_commit"], commit)
-        except subprocess.CalledProcessError as exc:
-            raise ValueError("Latest qualified nightly source is not an ancestor of the release source; reconcile before publishing") from exc
+        except subprocess.CalledProcessError:
+            # The notes already describe rewound history; the version is still
+            # allocated above every published release.
+            numeric_release.warn(f"Previous nightly {previous['tag']} is not an ancestor of {branch}; history was rewound")
     refs, tag_channels = tag_refs()
     info = numeric_release.resolve(releases, refs, commit, branch, "nightly", tag_channels,
                                    previous)
+    info.update({"stable_anchor_tag": stable_tag, "stable_anchor_commit": stable_commit})
     if info.get("should_release") != "true":
-        info.update({"stable_anchor_tag": stable_tag, "stable_anchor_commit": stable_commit})
+        info["should_build"] = "false"
         emit_outputs(info)
         return
-    info["stable_anchor_tag"] = stable_tag
-    info["stable_anchor_commit"] = stable_commit
     info["version"] = info["tag"]
     info["should_build"] = "true"
     emit_outputs(info)
@@ -287,14 +284,10 @@ if __name__ == "__main__":
         verify_assets(args.assets, args.product, os.environ["DAILY_COMMIT"], os.environ["DAILY_TAG"], os.environ["DAILY_VERSION"])
     elif args.command == 'public':
         validate_live_numeric_version(os.environ["GITHUB_REPOSITORY"], os.environ["DAILY_TAG"],
-                                      os.environ["DAILY_COMMIT"], "nightly",
-                                      os.environ.get("DAILY_STABLE_ANCHOR_TAG"),
-                                      os.environ.get("DAILY_STABLE_ANCHOR_COMMIT"))
+                                      os.environ["DAILY_COMMIT"], "nightly")
         stage_public_assets(args.assets, args.destination, args.product)
     elif args.command == 'validate-live':
         validate_live_numeric_version(os.environ["GITHUB_REPOSITORY"], os.environ["DAILY_TAG"],
-                                      os.environ["DAILY_COMMIT"], "nightly",
-                                      os.environ.get("DAILY_STABLE_ANCHOR_TAG"),
-                                      os.environ.get("DAILY_STABLE_ANCHOR_COMMIT"))
+                                      os.environ["DAILY_COMMIT"], "nightly")
     else:
         include_linux(args.assets, args.linux_assets, args.product, os.environ['DAILY_COMMIT'], os.environ['DAILY_VERSION'])

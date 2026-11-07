@@ -81,11 +81,10 @@ jobs:
               stable = numeric.latest_stable_release(releases)
               anchor_tag = stable["tag_name"]
               anchor_commit = numeric._commit_for_tag(anchor_tag, refs)
-              try:
-                  subprocess.run(["git", "merge-base", "--is-ancestor", anchor_commit,
-                                  os.environ["RELEASE_SOURCE_COMMIT"]], check=True)
-              except subprocess.CalledProcessError as exc:
-                  raise SystemExit("Qualification source does not contain the published stable anchor") from exc
+              if subprocess.run(["git", "merge-base", "--is-ancestor", anchor_commit,
+                                 os.environ["RELEASE_SOURCE_COMMIT"]]).returncode != 0:
+                  # Numeric versions already sit above every published release.
+                  print(f"::warning::Qualification source does not contain stable {anchor_tag}")
               values.update(stable_anchor_tag=anchor_tag, stable_anchor_commit=anchor_commit)
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               for key, value in values.items():

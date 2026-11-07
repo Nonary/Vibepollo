@@ -71,7 +71,7 @@ class NumericReleaseTests(unittest.TestCase):
         self.assertEqual(release.latest_stable_release(releases)["tag_name"], "2.0.6-stable.1")
         self.assertEqual(release.next_version("2.0.6-stable.1", ["fix: repair"]), "2.0.7")
 
-    def test_allocator_uses_exact_release_source_and_ancestry(self):
+    def test_allocator_uses_exact_release_source(self):
         messages = "fix: one\nfix: two\n"
         with patch.object(release, "run", side_effect=self.fake_git(messages, REFS)) as commands:
             result = release.resolve(RELEASES, REFS, SOURCE, "master", "stable")
@@ -164,25 +164,29 @@ class NumericReleaseTests(unittest.TestCase):
             self.assertIn(f"{second[:12]}](https://github.com/Nonary/vibeshine/commit/{second}) feat: second note", notes)
             self.assertNotIn("\n" + second[:12], notes)
 
-    def test_unrelated_imported_date_tags_do_not_reserve_product_versions(self):
+    def test_unrelated_imported_date_tags_do_not_claim_product_versions(self):
         refs = {**REFS, "v2025.814.190855": "foreign-a", "v2026.221.41532": "foreign-b"}
-        self.assertEqual(release.published_numeric_max(RELEASES, refs), (2, 0, 6))
-
-    def test_bounded_v_prefixed_reservation_blocks_lower_candidate(self):
-        refs = {**REFS, "v2.0.8": "reserved-tag"}
+        self.assertEqual(set(release.tag_claims(refs)), {(2, 0, 6)})
         with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", refs)):
-            with self.assertRaisesRegex(ValueError, "newer than every published or reserved"):
-                release.resolve(RELEASES, refs, SOURCE, "master", "stable")
+            self.assertEqual(release.resolve(RELEASES, refs, SOURCE, "canary", "nightly")["tag"], "2.0.7")
 
-    def test_missing_published_tag_fails_closed_in_source_exclusion(self):
-        with self.assertRaisesRegex(ValueError, "not available in the fetched source"):
-            release.published_source_commits(RELEASES, {})
+    def test_v_prefixed_claim_on_candidate_is_skipped(self):
+        refs = {**REFS, "v2.0.7": "reserved-tag"}
+        with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", refs)):
+            result = release.resolve(RELEASES, refs, SOURCE, "canary", "nightly")
+        self.assertEqual(result["tag"], "2.0.8")
+        self.assertEqual(result["tag_exists"], "false")
 
-    def test_latest_publication_timestamp_tie_is_ambiguous(self):
+    def test_missing_published_tag_only_widens_the_count(self):
+        self.assertEqual(release.published_source_commits(RELEASES, {}), [])
+        with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", {})):
+            self.assertEqual(release.resolve(RELEASES, {}, SOURCE, "canary", "nightly")["tag"], "2.0.7")
+
+    def test_latest_publication_timestamp_tie_is_deterministic(self):
         release_a = dict(STABLE, tag_name="2.0.6")
         release_b = dict(STABLE, tag_name="2.0.6-beta.1")
-        with self.assertRaisesRegex(ValueError, "source is ambiguous"):
-            release.latest_release([[release_a, release_b]])
+        self.assertEqual(release.latest_release([[release_b, release_a]]),
+                         release.latest_release([[release_a, release_b]]))
 
     def test_unchanged_published_source_skips_without_allocating(self):
         with patch.object(release, "run", return_value=BASE):
@@ -197,9 +201,11 @@ class NumericReleaseTests(unittest.TestCase):
                                       {"2.0.7": "prerelease"})
         self.assertEqual(result["tag"], "2.0.7")
         self.assertEqual(result["tag_exists"], "true")
+        # Another channel's reservation at this source is a claim, not a retry.
         with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", refs)):
-            with self.assertRaisesRegex(ValueError, "matching immutable stable channel"):
-                release.resolve(RELEASES, refs, SOURCE, "master", "stable", {"2.0.7": "prerelease"})
+            result = release.resolve(RELEASES, refs, SOURCE, "master", "stable", {"2.0.7": "prerelease"})
+        self.assertEqual(result["tag"], "2.0.8")
+        self.assertEqual(result["tag_exists"], "false")
 
     def test_annotated_numeric_tag_is_validated_against_source_and_channel(self):
         refs = {**REFS, "2.0.7": SOURCE}
@@ -261,22 +267,109 @@ class NumericReleaseTests(unittest.TestCase):
                                          "master", "master", "Nonary/vibeshine:master",
                                          "prerelease")
 
-    def test_reserved_tag_on_different_commit_fails(self):
+    def test_orphaned_reservation_from_failed_build_is_skipped(self):
         refs = {**REFS, "2.0.7": "other-tag-object"}
         with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", refs)):
-            with self.assertRaisesRegex(ValueError, "reserved at another source"):
-                release.resolve(RELEASES, refs, SOURCE, "master", "stable")
+            result = release.resolve(RELEASES, refs, SOURCE, "canary", "nightly", {"2.0.7": "nightly"})
+        self.assertEqual(result["tag"], "2.0.8")
+        self.assertEqual(result["tag_exists"], "false")
 
-    def test_source_divergence_fails_before_version_is_allocated(self):
-        with patch.object(release, "run", side_effect=self.fake_git("", REFS, fail_ancestry=True)):
-            with self.assertRaisesRegex(ValueError, "latest stable, highest published version, and previous release"):
-                release.resolve(RELEASES, REFS, SOURCE, "canary", "prerelease")
+    def test_source_without_latest_stable_still_numbers_above_it(self):
+        with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", REFS, fail_ancestry=True)):
+            result = release.resolve(RELEASES, REFS, SOURCE, "canary", "nightly")
+        self.assertEqual(result["tag"], "2.0.7")
+        self.assertEqual(result["should_release"], "true")
 
-    def test_candidate_must_exceed_every_published_numeric_release(self):
+    def test_suffixed_tag_on_candidate_core_is_skipped(self):
         refs = {**REFS, "2.0.7-stable.1": "legacy-stable-ref"}
         with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", refs)):
-            with self.assertRaisesRegex(ValueError, "newer than every published or reserved"):
-                release.resolve(RELEASES, refs, SOURCE, "master", "stable")
+            self.assertEqual(release.resolve(RELEASES, refs, SOURCE, "master", "stable")["tag"], "2.0.8")
+
+    def test_skip_after_last_patch_overflows_fails_closed(self):
+        releases = [[dict(STABLE, tag_name="2.0.653")]]
+        refs = {"2.0.653": BASE, "2.0.654": "other-tag-object"}
+        with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", refs)):
+            with self.assertRaisesRegex(ValueError, "Windows installer"):
+                release.resolve(releases, refs, SOURCE, "canary", "nightly")
+
+    def test_published_nightly_raises_the_base_above_stable(self):
+        nightly = dict(tag_name="2.1.0", draft=False, prerelease=True,
+                       published_at="2026-11-07T07:00:00Z")
+        refs = {**REFS, "2.1.0": "c" * 40}
+        qualified = {"tag": "2.1.0", "version": "2.1.0", "source_commit": "c" * 40}
+        with patch.object(release, "run", side_effect=self.fake_git("fix: one\nfix: two\n", refs)):
+            result = release.resolve([[STABLE, nightly]], refs, SOURCE, "canary", "nightly",
+                                     {"2.1.0": "nightly"}, qualified)
+        self.assertEqual(result["tag"], "2.1.2")
+        self.assertEqual(result["previous_tag"], "2.1.0")
+
+    def test_stable_published_above_nightly_raises_the_next_nightly(self):
+        nightly = dict(tag_name="2.1.3", draft=False, prerelease=True,
+                       published_at="2026-11-07T07:00:00Z")
+        stable = dict(STABLE, tag_name="2.2.0", published_at="2026-11-08T07:00:00Z")
+        refs = {"2.1.3": "c" * 40, "2.2.0": BASE}
+        with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", refs)):
+            result = release.resolve([[stable, nightly]], refs, SOURCE, "canary", "nightly")
+        self.assertEqual(result["tag"], "2.2.1")
+
+    def test_retry_reservation_is_dropped_once_a_newer_release_is_published(self):
+        newer = dict(STABLE, tag_name="2.0.8", published_at="2026-11-02T00:00:00Z")
+        refs = {**REFS, "2.0.7": SOURCE, "2.0.8": BASE}
+        with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", refs)):
+            result = release.resolve([[STABLE, newer]], refs, SOURCE, "canary", "nightly",
+                                     {"2.0.7": "nightly"})
+        self.assertEqual(result["tag"], "2.0.9")
+        self.assertEqual(result["tag_exists"], "false")
+
+    def test_no_feat_or_fix_since_published_sources_skips(self):
+        with patch.object(release, "run", side_effect=self.fake_git("docs: notes\nci: tidy\n", REFS)):
+            result = release.resolve(RELEASES, REFS, SOURCE, "canary", "nightly")
+        self.assertEqual(result["should_release"], "false")
+        self.assertIn("No feat or fix", result["skip_reason"])
+
+    def test_canary_missing_published_stable_numbers_above_it_end_to_end(self):
+        """Regression: canary without stable 2.0.6 must never produce 2.0.5 or 2.0.6."""
+        with tempfile.TemporaryDirectory() as temp:
+            def git(*args):
+                return subprocess.run(["git", *args], cwd=temp, check=True,
+                                      capture_output=True, text=True).stdout.strip()
+            git("init", "-q", "-b", "master")
+            git("config", "user.name", "Version test")
+            git("config", "user.email", "versions@example.invalid")
+            git("commit", "--allow-empty", "-m", "chore: root")
+            git("tag", "2.0.4")
+            root = git("rev-parse", "HEAD")
+            git("commit", "--allow-empty", "-m", "fix: stable only")
+            git("tag", "2.0.6")
+            stable_commit = git("rev-parse", "HEAD")
+            git("checkout", "-q", "-b", "canary", root)
+            git("commit", "--allow-empty", "-m", "fix: shipped nightly")
+            nightly_commit = git("rev-parse", "HEAD")
+            nightly_tag = "2.0.5-nightly.d20261106." + nightly_commit[:12]
+            git("tag", nightly_tag)
+            git("commit", "--allow-empty", "-m", "fix(audio): new fix")
+            git("commit", "--allow-empty", "-m", "fix(gamepad): another fix")
+            fixes_only = git("rev-parse", "HEAD")
+            git("commit", "--allow-empty", "-m", "feat(stream): new feature")
+            git("commit", "--allow-empty", "-m", "fix(stream): follow-up")
+            with_feature = git("rev-parse", "HEAD")
+
+            releases = [[
+                dict(tag_name="2.0.4", draft=False, prerelease=False, published_at="2026-11-01T23:51:16Z"),
+                dict(tag_name="2.0.6", draft=False, prerelease=False, published_at="2026-11-03T04:07:29Z"),
+                dict(tag_name=nightly_tag, draft=False, prerelease=True, published_at="2026-11-06T07:26:35Z"),
+            ]]
+            qualified = {"tag": nightly_tag, "source_commit": nightly_commit, "version": nightly_tag}
+            scoped_run = lambda *args: subprocess.run(
+                args, cwd=temp, check=True, capture_output=True, text=True).stdout.strip()
+            with patch.object(release, "run", side_effect=scoped_run):
+                refs, channels = release.read_refs()
+                fixes = release.resolve(releases, refs, fixes_only, "canary", "nightly", channels, qualified)
+                feature = release.resolve(releases, refs, with_feature, "canary", "nightly", channels, qualified)
+            self.assertEqual(fixes["tag"], "2.0.8")
+            self.assertEqual(feature["tag"], "2.1.0")
+            self.assertEqual(fixes["previous_source_commit"], nightly_commit)
+            self.assertNotEqual(stable_commit, nightly_commit)
 
 
 if __name__ == "__main__":

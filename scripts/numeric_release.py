@@ -1,9 +1,13 @@
 """Resolve immutable numeric release versions from Conventional Commits.
 
 The resolver is read-only: the release workflow is responsible for creating
-the annotated tag after checking the resolved outputs. Stable and prerelease
-builds share one numeric version sequence; channel identity lives in release
-metadata rather than in the tag suffix.
+the annotated tag after checking the resolved outputs. Stable, prerelease and
+nightly builds share one numeric version sequence; channel identity lives in
+release metadata rather than in the tag suffix.
+
+Every allocation is strictly above the highest published version. Each fix
+since the last published source advances patch; any feature advances minor
+(once per feature) and resets patch, ignoring the fixes alongside it.
 """
 import argparse
 import importlib.util
@@ -12,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 
 
 VERSION_RE = re.compile(r"^v?([0-9]+)\.([0-9]+)\.([0-9]+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
@@ -56,17 +61,24 @@ def validate_published_numeric_bounds(releases):
                     raise ValueError(f"Published product release {tag} exceeds supported Windows numeric version bounds")
 
 
+def warn(message):
+    """Surface a non-blocking anomaly as a GitHub Actions warning."""
+    print(f"::warning::{message}", file=sys.stderr)
+
+
+def published(releases):
+    return [release for page in releases for release in page
+            if release.get("draft") is False and release.get("published_at")]
+
+
 def latest_release(releases):
-    candidates = [release for page in releases for release in page
-                  if release.get("draft") is False and release.get("published_at")]
+    """Most recently published release; informational only, never a gate."""
+    candidates = published(releases)
     if not candidates:
-        raise ValueError("No published release is available as a version baseline")
-    latest_published_at = max(release["published_at"] for release in candidates)
-    latest = [release for release in candidates
-              if release["published_at"] == latest_published_at]
-    if len(latest) != 1:
-        raise ValueError("Latest published release source is ambiguous: releases share the same publication timestamp")
-    return latest[0]
+        return None
+    return max(candidates, key=lambda release: (release["published_at"],
+                                                version_key(release.get("tag_name", "")) or (),
+                                                release.get("tag_name", "")))
 
 
 def latest_stable_release(releases):
@@ -78,88 +90,57 @@ def latest_stable_release(releases):
                                                 release["published_at"], release["tag_name"]))
 
 
-def _release_version_order(release, tag_channels):
-    tag = release.get("tag_name", "")
-    key = supported_version_key(tag)
-    qualified_version = None
-    suffix = (VERSION_RE.fullmatch(tag).group(4) or "").lower() if VERSION_RE.fullmatch(tag) else ""
-    if key is None and suffix == "":
+def _tag_commit(tag, refs):
+    """Peel a fetched tag to its commit, or None when the tag is unavailable."""
+    if not tag or tag not in refs:
         return None
-    channel = tag_channels.get(tag, "")
-    if suffix:
-        words = re.split(r"[.-]", suffix)
-        if "stable" in words:
-            rank = 40
-        elif "rc" in words:
-            rank = 30
-        elif "beta" in words:
-            rank = 20
-        elif "alpha" in words:
-            rank = 10
-        else:
-            rank = 5
-        suffix_number = next((int(word) for word in words if word.isdigit()), 0)
-    elif channel == "stable" or release.get("prerelease") is False:
-        rank, suffix_number = 40, 0
-    elif channel == "prerelease":
-        rank, suffix_number = 20, 0
-    else:
-        rank, suffix_number = 5, 0
-    return (*key, rank, suffix_number, suffix)
+    try:
+        return run("git", "rev-parse", f"{refs[tag]}^{{commit}}")
+    except subprocess.CalledProcessError:
+        return None
 
 
-def latest_version_release(releases, refs, tag_channels, qualified_nightly=None):
-    candidates = []
-    flat = [release for page in releases for release in page
-            if release.get("draft") is False and release.get("published_at")]
-    for item in flat:
-        order = _release_version_order(item, tag_channels)
-        if order is None:
-            continue
-        tag = item["tag_name"]
-        if qualified_nightly and qualified_nightly.get("tag") == tag:
-            commit = qualified_nightly["source_commit"]
-            if _commit_for_tag(tag, refs) != commit:
-                raise ValueError("Qualified nightly tag does not match its metadata source")
-        else:
-            commit = _commit_for_tag(tag, refs)
-        candidates.append((order, item["published_at"], item, commit))
-    if qualified_nightly and not any(item["tag_name"] == qualified_nightly["tag"] for item in flat):
-        key = supported_version_key(qualified_nightly.get("version", ""))
-        if key:
-            candidates.append(((*key, 5, 0, "nightly"), "", qualified_nightly, qualified_nightly["source_commit"]))
-    if not candidates:
-        raise ValueError("No published version has a resolvable source commit")
-    _order, _published, release, commit = max(candidates, key=lambda item: (item[0], item[1]))
-    return release, commit
+def published_tag_commits(releases, refs):
+    """Map every published release tag to its source commit (None when missing)."""
+    return {release.get("tag_name", ""): _tag_commit(release.get("tag_name", ""), refs)
+            for release in published(releases)}
 
 
 def published_source_commits(releases, refs):
     sources = set()
-    for page in releases:
-        for release in page:
-            if release.get("draft") is not False or not release.get("published_at"):
-                continue
-            tag = release.get("tag_name", "")
-            sources.add(_commit_for_tag(tag, refs))
+    for tag, commit in published_tag_commits(releases, refs).items():
+        if commit:
+            sources.add(commit)
+        else:
+            # Only widens the feat/fix count; the version still lands above
+            # every posted release.
+            warn(f"Published release {tag} has no fetched tag; its commits may be counted again")
     return sorted(sources)
 
 
-def published_numeric_max(releases, refs, qualified_nightly=None):
-    versions = [supported_version_key(release.get("tag_name", ""))
-                for page in releases for release in page
-                if release.get("draft") is False and release.get("published_at")
-                and supported_version_key(release.get("tag_name", ""))]
-    if qualified_nightly and qualified_nightly.get("version"):
-        versions.append(supported_version_key(qualified_nightly["version"]))
+def posted_version(releases, qualified_nightly=None):
+    """Highest version carried by any published release: stable, prerelease or nightly.
+
+    Legacy suffixed nightlies contribute their numeric core, so 2.0.5-nightly.*
+    counts as 2.0.5. This is the only version base; git topology never lowers it.
+    """
+    versions = [supported_version_key(release.get("tag_name", "")) for release in published(releases)]
+    if qualified_nightly:
+        versions.append(supported_version_key(qualified_nightly.get("version") or ""))
+    versions = [version for version in versions if version]
+    if not versions:
+        raise ValueError("No published release carries a supported numeric version to build on")
+    return max(versions)
+
+
+def tag_claims(refs):
+    """Numeric versions already claimed by any tag, including unpublished reservations."""
+    claims = {}
     for tag in refs:
-        parsed = supported_version_key(tag)
-        # Imported upstream date tags are far outside the installer's supported
-        # range. Within that range, every numeric tag (including v-prefixed and
-        # suffixed reservations) must be treated as an immutable version claim.
-        if parsed:
-            versions.append(parsed)
-    return max(versions, default=(0, 0, 0))
+        key = supported_version_key(tag)
+        if key:
+            claims.setdefault(key, []).append(tag)
+    return claims
 
 
 def conventional_counts(messages):
@@ -216,6 +197,15 @@ def _commit_for_tag(tag, refs):
 
 def resolve(releases, refs, source_commit, source_branch, channel, tag_channels=None,
             qualified_nightly=None):
+    """Allocate the next version above everything already posted.
+
+    The base is the highest version carried by any published release, so a
+    source branch that has not merged the latest stable still numbers above it.
+    Git ancestry never blocks allocation: the feat/fix count excludes commits
+    reachable from every published release source whether or not they are
+    merged. A number already claimed by another tag (for example an unpublished
+    reservation from a failed build) is skipped rather than treated as fatal.
+    """
     tag_channels = tag_channels or {}
     if channel not in {"stable", "prerelease", "nightly"}:
         raise ValueError("Release channel must be stable, prerelease, or nightly")
@@ -223,98 +213,69 @@ def resolve(releases, refs, source_commit, source_branch, channel, tag_channels=
         raise ValueError("Expected an exact source commit SHA")
     validate_published_numeric_bounds(releases)
 
+    base = posted_version(releases, qualified_nightly)
     prior = latest_release(releases)
-    prior_tag = prior["tag_name"]
-    legacy_nightly = re.fullmatch(r"(?:v?[0-9]+\.[0-9]+\.[0-9]+-(?:nightly|daily)\..+|daily-20[0-9]{2}-[0-9]{2}-[0-9]{2}(?:\.[0-9]+)?)", prior_tag)
-    numeric_prerelease_nightly = (version_key(prior_tag) is not None and
-                                  prior.get("prerelease") is True and
-                                  qualified_nightly and qualified_nightly.get("tag") == prior_tag)
-    if legacy_nightly or numeric_prerelease_nightly:
-        if not qualified_nightly or qualified_nightly.get("tag") != prior_tag:
-            raise ValueError("Latest published nightly must have validated metadata before it can anchor a numeric release")
+    prior_tag = prior["tag_name"] if prior else ""
+    if qualified_nightly and qualified_nightly.get("tag") == prior_tag:
         prior_commit = qualified_nightly["source_commit"]
-        nightly_version = qualified_nightly.get("version", "")
-        if not version_key(nightly_version):
-            raise ValueError("Latest published nightly metadata must contain a numeric version core")
-        if _commit_for_tag(prior_tag, refs) != prior_commit:
-            raise ValueError("Latest published nightly tag does not match its validated source metadata")
     else:
-        prior_commit = _commit_for_tag(prior_tag, refs)
-    release_versions = [supported_version_key(release.get("tag_name", ""))
-                        for page in releases for release in page
-                        if release.get("draft") is False and release.get("published_at")
-                        and supported_version_key(release.get("tag_name", ""))]
-    if qualified_nightly and qualified_nightly.get("version"):
-        nightly_key = supported_version_key(qualified_nightly["version"])
-        if nightly_key:
-            release_versions.append(nightly_key)
-    if not release_versions:
-        raise ValueError("No supported published numeric release is available as a version base")
-    base_version = ".".join(map(str, max(release_versions)))
-    stable = latest_stable_release(releases)
-    stable_commit = _commit_for_tag(stable["tag_name"], refs)
-    highest_version, highest_version_commit = latest_version_release(
-        releases, refs, tag_channels, qualified_nightly)
+        prior_commit = _tag_commit(prior_tag, refs) or ""
+    common = {"commit": source_commit, "channel": channel, "source_branch": source_branch,
+              "previous_tag": prior_tag, "previous_source_commit": prior_commit}
+    commits = published_tag_commits(releases, refs)
 
     # Existing releases at this exact source are immutable identities. They
     # cannot be republished or reclassified as another channel.
-    for page in releases:
-        for release in page:
-            if not released(release):
-                continue
-            commit = _commit_for_tag(release["tag_name"], refs)
-            if commit == source_commit:
-                return {"should_release": "false", "skip_reason":
-                        f"Source already has published release {release['tag_name']} at {source_commit}",
-                        "commit": source_commit, "channel": channel,
-                        "source_branch": source_branch}
+    for release in published(releases):
+        if released(release) and commits.get(release["tag_name"]) == source_commit:
+            return {**common, "should_release": "false", "skip_reason":
+                    f"Source already has published release {release['tag_name']} at {source_commit}"}
 
     try:
-        run("git", "merge-base", "--is-ancestor", stable_commit, source_commit)
-        run("git", "merge-base", "--is-ancestor", highest_version_commit, source_commit)
-        run("git", "merge-base", "--is-ancestor", prior_commit, source_commit)
-    except subprocess.CalledProcessError as error:
-        raise ValueError("Release source must contain the latest stable, highest published version, and previous release source commits; reconcile the source first") from error
+        stable = latest_stable_release(releases)
+    except ValueError:
+        stable = None
+    stable_commit = commits.get(stable["tag_name"]) if stable else None
+    if stable_commit:
+        try:
+            run("git", "merge-base", "--is-ancestor", stable_commit, source_commit)
+        except subprocess.CalledProcessError:
+            warn(f"{source_branch} does not contain stable {stable['tag_name']}; "
+                 "numbering continues above every published version regardless")
 
-    prior_sources = published_source_commits(releases, refs)
-    messages = run("git", "log", "--format=%s", source_commit,
-                   "--not", *prior_sources).splitlines()
+    claims = tag_claims(refs)
+    # A retry reuses this source's own reservation while it still outranks
+    # every published version and no other tag claims the same number.
+    own = sorted((tag for tag in refs
+                  if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", tag) and tag_channels.get(tag) == channel),
+                 key=version_key, reverse=True)
+    for tag in own:
+        if version_key(tag) > base and claims[version_key(tag)] == [tag] \
+                and _tag_commit(tag, refs) == source_commit:
+            return {**common, "tag": tag, "version": tag, "should_release": "true",
+                    "tag_exists": "true"}
+
+    sources = sorted({commit for commit in commits.values() if commit})
+    missing = sorted(tag for tag, commit in commits.items() if not commit)
+    if missing:
+        warn(f"Published releases without fetched tags: {', '.join(missing)}; their commits may be counted again")
+    messages = run("git", "log", "--format=%s", source_commit, "--not", *sources).splitlines()
     try:
-        candidate = next_version(base_version, messages)
+        candidate = next_version(".".join(map(str, base)), messages)
     except ValueError as error:
         if "No feat or fix commits" not in str(error):
             raise
-        return {"should_release": "false", "skip_reason": str(error),
-                "commit": source_commit, "channel": channel,
-                "source_branch": source_branch, "previous_tag": prior_tag}
-    candidate_key = version_key(candidate)
-    reserved_names = [name for name in (candidate, "v" + candidate) if name in refs]
-    if reserved_names:
-        if len(reserved_names) != 1 or reserved_names[0] != candidate:
-            raise ValueError(f"Numeric release tag {candidate} has an ambiguous v-prefixed or duplicate reservation")
-        tag_commit = run("git", "rev-parse", f"{refs[candidate]}^{{commit}}")
-        if tag_commit != source_commit:
-            raise ValueError(f"Immutable release tag {candidate} is reserved at another source commit")
-        if tag_channels.get(candidate) != channel:
-            raise ValueError(f"Release tag {candidate} is reserved without matching immutable {channel} channel metadata")
-        other_refs = {tag: object_id for tag, object_id in refs.items()
-                      if tag not in {candidate, "v" + candidate}}
-        if candidate_key <= published_numeric_max(releases, other_refs, qualified_nightly):
-            raise ValueError("Reserved retry is no longer newer than every other published or reserved version")
-        return {"tag": candidate, "version": candidate, "commit": source_commit,
-                "channel": channel, "source_branch": source_branch,
-                "should_release": "true", "tag_exists": "true",
-                "previous_source_commit": prior_commit,
-                "previous_tag": prior_tag}
-    maximum = published_numeric_max(releases, refs)
-    if candidate_key <= maximum:
-        raise ValueError("Resolved version is not newer than every published or reserved stable/prerelease version")
-
-    return {"tag": candidate, "version": candidate, "commit": source_commit,
-            "channel": channel, "source_branch": source_branch,
-            "should_release": "true", "tag_exists": "false",
-            "previous_source_commit": prior_commit,
-            "previous_tag": prior_tag}
+        return {**common, "should_release": "false", "skip_reason": str(error)}
+    key = version_key(candidate)
+    while key in claims:
+        warn(f"Version {'.'.join(map(str, key))} is already tagged ({', '.join(sorted(claims[key]))}); "
+             "taking the next patch")
+        key = (key[0], key[1], key[2] + 1)
+        if key[2] > 654:
+            raise ValueError("Resolved version exceeds the Windows installer version range")
+    candidate = ".".join(map(str, key))
+    return {**common, "tag": candidate, "version": candidate, "should_release": "true",
+            "tag_exists": "false"}
 
 
 def validate_tag(releases, refs, tag_channels, tag, source_commit, source_branch,
