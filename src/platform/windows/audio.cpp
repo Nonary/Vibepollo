@@ -24,6 +24,7 @@
 #include <WinSock2.h>
 #include <Audioclient.h>
 #include <avrt.h>
+#include <endpointvolume.h>
 #include <mmdeviceapi.h>
 #include <newdev.h>
 #include <roapi.h>
@@ -619,9 +620,57 @@ namespace platf::audio {
     std::atomic_bool default_render_device_changed_flag;
   };
 
+  // COM owns a reference while registered. Notifications only publish state;
+  // the capture thread owns all PCM changes.
+  class endpoint_mute_callback_t: public IAudioEndpointVolumeCallback {
+  public:
+    std::atomic<std::uint64_t> state {1};  // fail closed until GetMute succeeds
+
+    void publish(bool muted) {
+      auto old = state.load();
+      while (bool(old & 1) != muted &&
+             !state.compare_exchange_weak(old, ((old + 2) & ~std::uint64_t(1)) | muted)) {}
+    }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void **out) override {
+      if (!out) {
+        return E_POINTER;
+      }
+      *out = nullptr;
+      if (iid != __uuidof(IUnknown) && iid != __uuidof(IAudioEndpointVolumeCallback)) {
+        return E_NOINTERFACE;
+      }
+      *out = static_cast<IAudioEndpointVolumeCallback *>(this);
+      AddRef();
+      return S_OK;
+    }
+    ULONG STDMETHODCALLTYPE AddRef() override { return ++references; }
+    ULONG STDMETHODCALLTYPE Release() override {
+      auto remaining = --references;
+      if (!remaining) {
+        delete this;
+      }
+      return remaining;
+    }
+    HRESULT STDMETHODCALLTYPE OnNotify(PAUDIO_VOLUME_NOTIFICATION_DATA data) override {
+      if (!data) {
+        return E_POINTER;
+      }
+      publish(data->bMuted != FALSE);
+      return S_OK;
+    }
+
+  private:
+    std::atomic<ULONG> references {1};
+  };
+
   class mic_wasapi_t: public mic_t {
   public:
     capture_e sample(std::vector<float> &sample_out) override {
+      auto mute_status = refresh_mute();
+      if (mute_status != capture_e::ok) {
+        return mute_status;
+      }
       if (continuous_buffer) {
         while (true) {
           auto now = qpc_time();
@@ -641,7 +690,7 @@ namespace platf::audio {
           }
           continuous_buffer->advance(now);
           if (continuous_buffer->take(now, sample_out)) {
-            return capture_e::ok;
+            return finish_sample(sample_out);
           }
           auto wait = std::min<DWORD>(default_latency_ms, continuous_buffer->wait_ms(now));
           result = _fill_buffer(wait);
@@ -668,7 +717,7 @@ namespace platf::audio {
       std::move(&sample_buf[sample_size], sample_buf_pos, std::begin(sample_buf));
       sample_buf_pos -= sample_size;
 
-      return capture_e::ok;
+      return finish_sample(sample_out);
     }
 
     int init(std::uint32_t sample_rate, std::uint32_t frame_size, std::uint32_t channels_out, bool continuous, const std::wstring &capture_device_id) {
@@ -715,6 +764,39 @@ namespace platf::audio {
       }
       if (!device) {
         return -1;
+      }
+
+      // Match the adapter identity, including renamed Steam endpoints. Local
+      // physical speakers may intentionally be muted during remote listening.
+      prop_t properties;
+      status = device->OpenPropertyStore(STGM_READ, &properties);
+      if (FAILED(status)) {
+        return -1;
+      }
+      PROPVARIANT adapter;
+      PropVariantInit(&adapter);
+      status = properties->GetValue(PKEY_DeviceInterface_FriendlyName, &adapter);
+      bool steam = SUCCEEDED(status) && adapter.vt == VT_LPWSTR && adapter.pwszVal &&
+                   std::wcscmp(adapter.pwszVal, L"Steam Streaming Speakers") == 0;
+      PropVariantClear(&adapter);
+      if (FAILED(status)) {
+        return -1;
+      }
+      if (steam) {
+        status = device->Activate(__uuidof(IAudioEndpointVolume), CLSCTX_ALL, nullptr, (void **) &endpoint_volume);
+        if (FAILED(status)) {
+          return -1;
+        }
+        mute_callback.reset(new endpoint_mute_callback_t());
+        status = endpoint_volume->RegisterControlChangeNotify(mute_callback.get());
+        if (FAILED(status)) {
+          return -1;
+        }
+        mute_registered = true;
+        if (refresh_mute() != capture_e::ok) {
+          return -1;
+        }
+        BOOST_LOG(info) << "Honoring captured Steam endpoint mute";
       }
 
       for (const auto &format : formats) {
@@ -801,6 +883,9 @@ namespace platf::audio {
     }
 
     ~mic_wasapi_t() override {
+      if (mute_registered) {
+        endpoint_volume->UnregisterControlChangeNotify(mute_callback.get());
+      }
       if (device_enum) {
         device_enum->UnregisterEndpointNotificationCallback(&endpt_notification);
       }
@@ -815,6 +900,50 @@ namespace platf::audio {
     }
 
   private:
+    capture_e refresh_mute() {
+      if (!endpoint_volume) {
+        return capture_e::ok;
+      }
+      // CAS keeps a notification arriving during GetMute from being overwritten
+      // by an older query result. Polling also detects endpoint invalidation.
+      auto before = mute_callback->state.load();
+      BOOL muted;
+      auto status = endpoint_volume->GetMute(&muted);
+      if (FAILED(status)) {
+        BOOST_LOG(warning) << "Couldn't read captured endpoint mute [0x" << util::hex(status).to_string_view() << ']';
+        return status == AUDCLNT_E_DEVICE_INVALIDATED ? capture_e::reinit : capture_e::error;
+      }
+      auto next = bool(before & 1) == (muted != FALSE) ? before :
+                  ((before + 2) & ~std::uint64_t(1)) | (muted != FALSE);
+      mute_callback->state.compare_exchange_strong(before, next);
+      auto state = mute_callback->state.load();
+      endpoint_muted = state & 1;
+      if (state != mute_state) {
+        // Preserve frame positions and pacing, but erase audio on both edges,
+        // including mute/unmute pairs occurring between capture calls.
+        if (continuous_buffer) {
+          continuous_buffer->silence();
+        }
+        if (sample_buf_pos) {
+          std::fill(std::begin(sample_buf), sample_buf_pos, 0.0f);
+        }
+        mute_state = state;
+      }
+      return capture_e::ok;
+    }
+
+    capture_e finish_sample(std::vector<float> &output) {
+      auto previous = mute_state;
+      auto status = refresh_mute();
+      if (status != capture_e::ok) {
+        return status;
+      }
+      if (endpoint_muted || previous != mute_state) {
+        std::fill(output.begin(), output.end(), 0.0f);
+      }
+      return capture_e::ok;
+    }
+
     static std::int64_t qpc_time() {
       LARGE_INTEGER counter, frequency;
       if (!QueryPerformanceCounter(&counter) || !QueryPerformanceFrequency(&frequency) || frequency.QuadPart <= 0) {
@@ -889,6 +1018,12 @@ namespace platf::audio {
             return capture_e::error;
         }
 
+        auto mute_status = refresh_mute();
+        if (mute_status != capture_e::ok) {
+          audio_capture->ReleaseBuffer(block_aligned.audio_sample_size);
+          return mute_status;
+        }
+        bool silent = endpoint_muted || (buffer_flags & AUDCLNT_BUFFERFLAGS_SILENT);
         captured = true;
         if (buffer_flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY) {
           BOOST_LOG(debug) << "Audio capture signaled buffer discontinuity";
@@ -898,7 +1033,7 @@ namespace platf::audio {
           auto valid = !(buffer_flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) &&
                        packet_qpc <= static_cast<UINT64>(INT64_MAX) &&
                        continuous_buffer->put(static_cast<std::int64_t>(packet_qpc), device_position, block_aligned.audio_sample_size,
-                                              sample_aligned.samples, buffer_flags & AUDCLNT_BUFFERFLAGS_SILENT,
+                                              sample_aligned.samples, silent,
                                               buffer_flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY);
           audio_capture->ReleaseBuffer(block_aligned.audio_sample_size);
           if (!valid && !timestamp_warning_logged) {
@@ -918,7 +1053,7 @@ namespace platf::audio {
           BOOST_LOG(warning) << "Audio capture buffer overflow";
         }
 
-        if (buffer_flags & AUDCLNT_BUFFERFLAGS_SILENT) {
+        if (silent) {
           std::fill_n(sample_buf_pos, n, 0);
         } else {
           std::copy_n(sample_aligned.samples, n, sample_buf_pos);
@@ -954,7 +1089,12 @@ namespace platf::audio {
     DWORD default_latency_ms = 10;
 
     util::buffer_t<float> sample_buf;
-    float *sample_buf_pos;
+    float *sample_buf_pos = nullptr;
+    util::safe_ptr<IAudioEndpointVolume, Release<IAudioEndpointVolume>> endpoint_volume;
+    util::safe_ptr<endpoint_mute_callback_t, Release<endpoint_mute_callback_t>> mute_callback;
+    bool mute_registered = false;
+    bool endpoint_muted = false;
+    std::uint64_t mute_state = 0;
     int channels;
     std::optional<audio_detail::continuous_buffer_t> continuous_buffer;
     bool timestamp_warning_logged = false;
@@ -970,7 +1110,9 @@ namespace platf::audio {
       [this](ERole role, const std::wstring &id) { return static_cast<long>(policy->SetDefaultEndpoint(id.c_str(), role)); },
       [this](const std::wstring &id) -> std::optional<std::wstring> {
         const auto matches = preferred_device_match_list(id);
-        if (!matches) return std::nullopt;
+        if (!matches) {
+          return std::nullopt;
+        }
         const auto endpoint = find_device_id(*matches);
         return endpoint ? std::make_optional(endpoint->second) : std::nullopt;
       },
@@ -1178,7 +1320,9 @@ namespace platf::audio {
 
     int set_sink(const std::string &sink) override {
       auto device_id = set_format(sink);
-      if (!device_id) return -1;
+      if (!device_id) {
+        return -1;
+      }
       const auto failure = roles_.assign(*device_id);
       if (roles_.assignment_active() && !failure) {
         std::scoped_lock lock(pending_restore_mutex_ref());

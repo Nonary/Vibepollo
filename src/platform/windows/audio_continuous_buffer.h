@@ -77,6 +77,11 @@ namespace platf::audio_detail {
       return true;
     }
 
+    // Erase queued PCM without disturbing the device timeline or output clock.
+    void silence() {
+      std::fill(samples_.begin(), samples_.end(), 0.0f);
+    }
+
     bool ready(std::int64_t now) const {
       return frame_at(std::max(now, origin_) - origin_) >= cursor_ + packet_frames_ + margin_frames_;
     }
