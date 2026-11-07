@@ -622,7 +622,8 @@ namespace platf::audio {
 
   // COM owns a reference while registered. Notifications only publish state;
   // the capture thread owns all PCM changes.
-  class endpoint_mute_callback_t: public IAudioEndpointVolumeCallback {
+  // final: Release() deletes through this exact type, so no derived destructor can be skipped.
+  class endpoint_mute_callback_t final: public IAudioEndpointVolumeCallback {
   public:
     std::atomic<std::uint64_t> state {1};  // fail closed until GetMute succeeds
 
