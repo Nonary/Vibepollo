@@ -21,6 +21,13 @@ REFS = {"2.0.6": BASE}
 
 
 class NumericReleaseTests(unittest.TestCase):
+    def setUp(self):
+        # Capture allocator warnings so CI run annotations only show real runs.
+        self.warnings = []
+        warn_patch = patch.object(release, "warn", side_effect=self.warnings.append)
+        warn_patch.start()
+        self.addCleanup(warn_patch.stop)
+
     def fake_git(self, messages="", refs=None, fail_ancestry=False):
         refs = refs or REFS
         def run(*args):
@@ -273,12 +280,14 @@ class NumericReleaseTests(unittest.TestCase):
             result = release.resolve(RELEASES, refs, SOURCE, "canary", "nightly", {"2.0.7": "nightly"})
         self.assertEqual(result["tag"], "2.0.8")
         self.assertEqual(result["tag_exists"], "false")
+        self.assertTrue(any("2.0.7 is already tagged" in w for w in self.warnings))
 
     def test_source_without_latest_stable_still_numbers_above_it(self):
         with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", REFS, fail_ancestry=True)):
             result = release.resolve(RELEASES, REFS, SOURCE, "canary", "nightly")
         self.assertEqual(result["tag"], "2.0.7")
         self.assertEqual(result["should_release"], "true")
+        self.assertTrue(any("does not contain stable 2.0.6" in w for w in self.warnings))
 
     def test_suffixed_tag_on_candidate_core_is_skipped(self):
         refs = {**REFS, "2.0.7-stable.1": "legacy-stable-ref"}
