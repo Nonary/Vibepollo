@@ -64,10 +64,50 @@ TEST(DualSenseUsbipGamepadPolicyTests, FeedbackHonorsValidityAndRetainsOmittedTr
   report.motor_left = 0;
   report.lightbar_red = 0;
   update = state.apply(bytes(report));
-  EXPECT_FALSE(update.rumble);
+  EXPECT_TRUE(update.rumble);
   EXPECT_FALSE(update.rgb);
-  EXPECT_EQ(update.state.low_frequency, 100 << 8);
+  EXPECT_EQ(update.state.low_frequency, 0);
   EXPECT_EQ(update.state.red, 50);
+  EXPECT_FALSE(state.apply(bytes(report)).rumble);
+}
+
+TEST(DualSenseUsbipGamepadPolicyTests, RumbleStopsAndPartialUpdatesDoNotCancelIt) {
+  output_state state;
+  lvg::driver::ds5_output_report report {};
+  report.report_id = 2;
+  report.valid_flag2 = lvg::driver::k_ds5_flag2_compatible_vibration;
+  report.motor_left = report.motor_right = 100;
+  EXPECT_TRUE(state.apply(bytes(report)).rumble);
+
+  report.valid_flag2 = 0;
+  report.motor_left = report.motor_right = 0;
+  report.valid_flag1 = lvg::driver::k_ds5_flag1_lightbar;
+  report.lightbar_red = 42;
+  auto update = state.apply(bytes(report));
+  EXPECT_FALSE(update.rumble);
+  EXPECT_EQ(update.state.low_frequency, 100 << 8);
+  report.valid_flag1 = 0;
+  report.valid_flag0 = lvg::driver::k_ds5_flag0_left_trigger_effect;
+  report.left_trigger.mode = 0x21;
+  update = state.apply(bytes(report));
+  EXPECT_FALSE(update.rumble);
+  EXPECT_EQ(update.state.high_frequency, 100 << 8);
+
+  report.valid_flag0 = 0;
+  update = state.apply(bytes(report));
+  EXPECT_TRUE(update.rumble);
+  EXPECT_EQ(update.state.low_frequency, 0);
+  EXPECT_EQ(update.state.high_frequency, 0);
+  EXPECT_EQ(update.state.red, 42);
+  EXPECT_EQ(update.state.left_trigger.mode, 0x21);
+  EXPECT_FALSE(state.apply(bytes(report)).rumble);
+
+  report.valid_flag0 = lvg::driver::k_ds5_flag0_compatible_vibration;
+  report.motor_left = 70;
+  EXPECT_TRUE(state.apply(bytes(report)).rumble);
+  report.motor_left = 0;
+  EXPECT_TRUE(state.apply(bytes(report)).rumble);
+  EXPECT_FALSE(state.apply(bytes(report)).rumble);
 }
 
 TEST(DualSenseUsbipGamepadPolicyTests, RejectsWrongReportAndTruncatedRgbPayload) {
