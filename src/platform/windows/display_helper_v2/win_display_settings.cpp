@@ -6,6 +6,7 @@
 #include "src/utility.h"
 #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
 #include "src/platform/windows/display_helper_v2/topology_policy.h"
+#include "src/platform/windows/display_clone_group_repair.h"
 #include "src/platform/windows/display_snapshot_restore.h"
 
 
@@ -116,6 +117,7 @@ namespace display_helper::v2 {
     std::lock_guard lock(settings_mutex_);
     display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
     try {
+      display_helper::clone_group::detach_before_apply(*display_device_, *win_api_, config.m_device_id);
       const auto status = map_apply_result(settings_manager_->applySettings(config));
       if (status == ApplyStatus::Ok && !config.m_device_id.empty()) {
         // Keep only state verified from the active desktop after a successful

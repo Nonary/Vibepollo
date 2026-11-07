@@ -60,6 +60,7 @@
     #define SECURITY_WIN32
   #endif
 
+  #include "src/platform/windows/display_clone_group_repair.h"
   #include "src/platform/windows/display_restore_task.h"
   #include "src/platform/windows/display_restore_policy.h"
   #include "tools/display_helper_paths.h"
@@ -432,6 +433,15 @@ namespace {
       }
     }
 
+    void detach_from_oversized_clone_group(const std::string &device_id) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation || !ensure_initialized()) {
+        return;
+      }
+      display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+      display_helper::clone_group::detach_before_apply(*m_dd, *m_wapi, device_id);
+    }
+
     bool apply(
       const display_device::SingleDisplayConfiguration &cfg,
       const std::optional<display_device::ActiveTopology> &base_topology
@@ -445,6 +455,8 @@ namespace {
       // For user-requested APPLY operations, avoid triggering display stack recovery.
       // Recovery is reserved for REVERT/restore paths where "best effort" repair is desired.
       display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+      // Reapplies run here without the APPLY handler, and Windows may have regrouped the display since.
+      display_helper::clone_group::detach_before_apply(*m_dd, *m_wapi, cfg.m_device_id);
       try {
         if (base_topology && m_dd->isTopologyValid(*base_topology)) {
           (void) m_dd->setTopology(*base_topology);
@@ -5881,6 +5893,10 @@ namespace {
       std::memory_order_release
     );
     state.last_cfg = cfg;
+    // Run this first: the baseline capture below refuses an oversized Duplicate group,
+    // and so does the soft test when the host supplies no topology. It never moves
+    // the user's own displays.
+    state.controller.detach_from_oversized_clone_group(cfg.m_device_id);
     // The session baseline is normally captured earlier via SnapshotCurrent, before any
     // display enumeration that might activate external dummy plugs. That request is
     // fire-and-forget and can be lost (helper hard-restart races, helper not yet running),
