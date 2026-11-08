@@ -326,8 +326,11 @@ include_directories(
         ${WEBRTC_INCLUDE_DIRS}
         ${SQLITE3_INCLUDE_DIRS}
         ${SUNSHINE_FFMPEG_INCLUDE_DIRS}
-        ${OPENSSL_INCLUDE_DIR}
+        # BEFORE prepends these one at a time, so later entries are searched first. Keep OpenSSL
+        # after Opus: on macOS Opus resolves to Homebrew's shared include directory, which may hold
+        # another OpenSSL's headers than the library OPENSSL_ROOT_DIR links.
         ${Opus_INCLUDE_DIR}
+        ${OPENSSL_INCLUDE_DIR}
         ${Boost_INCLUDE_DIRS}  # has to be the last, or we get runtime error on macOS ffmpeg encoder
 )
 
