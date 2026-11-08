@@ -18,6 +18,11 @@ STABLE_PAGES = [[STABLE]]
 
 
 class DailyTests(unittest.TestCase):
+    def setUp(self):
+        env = patch.dict(os.environ, GITHUB_EVENT_NAME="workflow_dispatch", GITHUB_REF_TYPE="branch", GITHUB_REF_NAME="master")
+        env.start()
+        self.addCleanup(env.stop)
+
     def test_stable_anchor_uses_only_published_stable_releases(self):
         releases = [[STABLE,
                      dict(tag_name="2.5.0", draft=True, prerelease=False, published_at="today"),
@@ -101,20 +106,12 @@ class DailyTests(unittest.TestCase):
         daily.validate_source("Nonary/vibeshine", "master", "Nonary/vibeshine:master")
         daily.validate_source("Nonary/vibeshine", "canary", "Nonary/vibeshine:canary")
         for repository, confirmation in (("Nonary/vibeshine", "Nonary/vibeshine:master"),
-                                         ("Nonary/Vibepollo", "Nonary/Vibepollo:canary")):
+                                         ("Nonary/Vibepollo", "Nonary/Vibepollo:master")):
             with self.assertRaises(ValueError):
                 daily.validate_source(repository, "canary", confirmation)
         for retired in ("vibe", "vibe-test"):
             with self.assertRaises(ValueError):
                 daily.validate_source("Nonary/vibeshine", retired, f"Nonary/vibeshine:{retired}")
-
-    def test_migration_confirmation_pins_both_exact_sources(self):
-        upstream = "b" * 40
-        expected = f"Nonary/vibeshine:{upstream}:Nonary/Vibepollo:{SHA}"
-        daily.validate_migration("Nonary/Vibepollo", SHA, upstream, expected)
-        for target, source, confirmation in ((SHA, upstream, ""), ("c" * 40, upstream, expected), (SHA, "c" * 40, expected), ("HEAD", upstream, expected)):
-            with self.assertRaises(ValueError):
-                daily.validate_migration("Nonary/Vibepollo", target, source, confirmation)
 
     def test_reserved_numeric_retry_is_covered_by_shared_allocator_contract(self):
         self.assertIn("tag_exists", Path(__file__).resolve().parents[1].joinpath("numeric_release.py").read_text())
@@ -193,16 +190,20 @@ class DailyTests(unittest.TestCase):
                 self.assertNotIn("version=", output.read_text())
                 self.assertFalse(any("ls-remote" in call.args for call in commands.call_args_list))
 
-    def test_changed_target_still_requires_exact_migration_confirmation(self):
+    def test_changed_downstream_source_builds_without_upstream_attestation(self):
         with tempfile.TemporaryDirectory() as temp:
-            with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/Vibepollo", GITHUB_SHA=SHA,
-                            DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master",
-                            DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/Vibepollo:master", GITHUB_OUTPUT=str(Path(temp) / "output"),
-                            DAILY_RELEASE_MIGRATION_CONFIRMED="stale upstream pin"):
-                with patch.object(daily, "run", side_effect=["", SHA, "", "[[]]", f"{'b' * 40} refs/heads/master"]):
-                    with patch.object(daily, "previous_successful_nightly", return_value={"tag": "daily-2026-10-10", "source_commit": "c" * 40}):
-                        with self.assertRaisesRegex(ValueError, "migration"):
-                            daily.resolve()
+            output = Path(temp) / "output"
+            with patch.dict(os.environ, GITHUB_REPOSITORY="Nonary/Vibepollo", GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH="master", DAILY_RELEASE_SOURCE_BRANCH="master", DAILY_RELEASE_SOURCE_CONFIRMED="Nonary/Vibepollo:master", GITHUB_OUTPUT=str(output)):
+                with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(STABLE_PAGES), "", BASE]) as commands:
+                    with patch.object(daily, "previous_successful_nightly", return_value=None), \
+                         patch.object(daily, "tag_refs", return_value=({"2.0.0": BASE}, {})), \
+                         patch.object(daily.numeric_release, "resolve", return_value={"commit": SHA, "tag": "2.0.7", "version": "2.0.7", "channel": "nightly", "should_release": "true"}) as allocator:
+                        daily.resolve()
+            self.assertIn(f"commit={SHA}", output.read_text())
+            self.assertIn("version=2.0.7", output.read_text())
+            self.assertIn("should_build=true", output.read_text())
+            self.assertEqual(commands.call_args_list[0].args, ("git", "fetch", "--no-tags", "origin", "refs/heads/master:refs/remotes/origin/daily-source"))
+            self.assertEqual(allocator.call_args.args[4], "nightly")
 
     def test_only_published_validated_nightly_is_a_skip_baseline(self):
         releases = [[
@@ -256,6 +257,31 @@ class DailyTests(unittest.TestCase):
                         with self.assertRaises(ValueError):
                             daily.verify_assets(root, "Vibeshine", SHA, info["tag"], info["version"])
 
+    def test_manual_canary_source_is_exact_dispatch_sha(self):
+        for advanced in (False, True):
+            with self.subTest(advanced=advanced), tempfile.TemporaryDirectory() as temp:
+                output = Path(temp) / 'output'
+                with patch.dict(os.environ, GITHUB_REPOSITORY='Nonary/Vibepollo', GITHUB_SHA=SHA,
+                                GITHUB_REF_NAME='canary', DAILY_PRIMARY_BRANCH='master',
+                                DAILY_RELEASE_SOURCE_BRANCH='canary',
+                                DAILY_RELEASE_SOURCE_CONFIRMED='Nonary/Vibepollo:canary', GITHUB_OUTPUT=str(output)):
+                    commands = ['', 'b'*40] if advanced else ['', SHA, '', json.dumps(STABLE_PAGES), '', BASE]
+                    with patch.object(daily, 'run', side_effect=commands), \
+                         patch.object(daily, 'previous_successful_nightly', return_value=None), \
+                         patch.object(daily, 'tag_refs', return_value=({'2.0.0': BASE}, {})), \
+                         patch.object(daily.numeric_release, 'resolve', return_value={'commit': SHA, 'tag': '2.1.0', 'version': '2.1.0', 'channel': 'nightly', 'should_release': 'true'}):
+                        if advanced:
+                            with self.assertRaisesRegex(ValueError, 'advanced after dispatch'): daily.resolve()
+                            self.assertFalse(output.exists())
+                        else:
+                            daily.resolve()
+                            self.assertIn('should_build=true', output.read_text())
 
-if __name__ == "__main__":
+    def test_invalid_invocations_are_rejected(self):
+        for event, ref, kind in [('push', 'canary', 'branch'), ('workflow_dispatch', 'untrusted', 'branch'), ('workflow_dispatch', 'canary', 'tag')]:
+            with self.subTest(event=event, ref=ref, kind=kind), patch.dict(os.environ, GITHUB_EVENT_NAME=event, GITHUB_REF_NAME=ref, GITHUB_REF_TYPE=kind, GITHUB_SHA=SHA, DAILY_PRIMARY_BRANCH='master'):
+                with self.assertRaises(ValueError): daily.validate_invocation('canary')
+
+
+if __name__ == '__main__':
     unittest.main()

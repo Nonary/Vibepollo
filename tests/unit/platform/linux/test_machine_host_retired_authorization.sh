@@ -32,7 +32,7 @@ usage=$(/usr/bin/bash "$host" 2>&1) && fail_test 'missing subcommand succeeded'
 
 # shellcheck source=/dev/null
 source "$host"
-[[ "$legacy_command_manifest" == /etc/vibeshine/session-commands ]] ||
+[[ "$legacy_command_manifest" == /etc/vibepollo/session-commands ]] ||
   fail_test 'legacy allowlist path changed; upgrades would leave it behind'
 for retired in authorize_commands ensure_command_manifest extract_desktop_authorizations \
                install_command_manifest migrate_legacy_command_manifest; do
@@ -42,3 +42,6 @@ for retired in authorize_commands ensure_command_manifest extract_desktop_author
 done
 
 /usr/bin/printf 'PASS\n'
+
+/usr/bin/python3 "$(dirname "${BASH_SOURCE[0]}")/test_machine_host_shutdown.py" "$1" || exit 1
+/usr/bin/python3 "$(dirname "${BASH_SOURCE[0]}")/test_machine_profile_import.py" "$1"

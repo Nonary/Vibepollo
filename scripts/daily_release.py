@@ -33,11 +33,9 @@ def identity(commit, day, base):
 def validate_source(repository, branch, confirmation):
     if repository not in {"Nonary/vibeshine", "Nonary/Vibepollo"}:
         raise ValueError("Daily publishing is limited to the designated upstream repositories")
-    allowed = {"master", "main"}
-    if repository == "Nonary/vibeshine":
-        allowed.add("canary")
+    allowed = {"master", "main", "canary"}
     if branch not in allowed:
-        raise ValueError("Daily source must use a confirmed primary or the Vibeshine canary branch; legacy vibe/test lanes are retired")
+        raise ValueError("Daily source must use a confirmed primary or canary; legacy vibe/test lanes are retired")
     if confirmation != f"{repository}:{branch}":
         raise ValueError("Set DAILY_RELEASE_SOURCE_BRANCH and explicitly confirm repository:branch in DAILY_RELEASE_SOURCE_CONFIRMED")
     subprocess.run(["git", "check-ref-format", f"refs/heads/{branch}"], check=True)
@@ -45,16 +43,6 @@ def validate_source(repository, branch, confirmation):
 
 def run(*args):
     return subprocess.run(args, check=True, capture_output=True, text=True).stdout.strip()
-
-
-def validate_migration(repository, target_commit, upstream_commit, confirmation):
-    if repository != "Nonary/Vibepollo":
-        return
-    if not re.fullmatch(r"[0-9a-f]{40}", target_commit) or not re.fullmatch(r"[0-9a-f]{40}", upstream_commit):
-        raise ValueError("Migration confirmation requires exact source and target SHAs")
-    expected = f"Nonary/vibeshine:{upstream_commit}:Nonary/Vibepollo:{target_commit}"
-    if confirmation != expected:
-        raise ValueError("Vibepollo daily is blocked until the exact upstream-to-primary migration is reviewed and confirmed")
 
 
 def previous_successful_nightly(repository, releases):
@@ -117,7 +105,7 @@ def tag_refs():
                     "refs/tags").splitlines():
         tag, object_id, subject = line.split("\t", 2)
         refs[tag] = object_id
-        match = re.match(r"^Vibeshine release channel: (stable|prerelease|nightly)(?:\s|$)", subject)
+        match = re.match(r"^Vibepollo release channel: (stable|prerelease|nightly)(?:\s|$)", subject)
         if match:
             channels[tag] = match[1]
     return refs, channels
@@ -139,17 +127,35 @@ def validate_live_numeric_version(repository, tag, commit, channel="nightly"):
         raise ValueError("Published release state changed during the build; rerun with a current numeric version")
 
 
+def validate_invocation(branch):
+    event = os.environ.get("GITHUB_EVENT_NAME")
+    primary = os.environ.get("DAILY_PRIMARY_BRANCH")
+    ref = os.environ.get("GITHUB_REF_NAME")
+    if (event not in {"schedule", "workflow_dispatch"} or primary not in {"master", "main"}
+            or os.environ.get("GITHUB_REF_TYPE") != "branch"
+            or not re.fullmatch(r"[0-9a-f]{40}", os.environ.get("GITHUB_SHA", ""))):
+        raise ValueError("Expected a branch-based nightly invocation with an exact workflow SHA")
+    manual_canary = event == "workflow_dispatch" and ref == "canary" and branch == "canary"
+    if ref != primary and not manual_canary:
+        raise ValueError("Nightly invocation must use the default branch or explicitly confirmed manual Canary")
+    return manual_canary
+
+
+
 def resolve():
     repository = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ.get("DAILY_RELEASE_SOURCE_BRANCH", "")
     validate_source(repository, branch, os.environ.get("DAILY_RELEASE_SOURCE_CONFIRMED", ""))
     if branch != os.environ.get("DAILY_PRIMARY_BRANCH") and not (
-        repository == "Nonary/vibeshine" and branch == "canary"
+        branch == "canary"
     ):
-        raise ValueError("Daily source must equal the verified repository default primary or Vibeshine canary")
+        raise ValueError("Daily source must equal the verified repository default primary or canary")
+    manual_canary = validate_invocation(branch)
     # Fetch only the explicitly confirmed remote branch; ignore local HEAD/tags.
     run("git", "fetch", "--no-tags", "origin", f"refs/heads/{branch}:refs/remotes/origin/daily-source")
     commit = run("git", "rev-parse", "refs/remotes/origin/daily-source^{commit}")
+    if manual_canary and commit != os.environ["GITHUB_SHA"]:
+        raise ValueError("Canary advanced after dispatch; rerun from its intended exact workflow/source commit")
     run("git", "fetch", "--no-recurse-submodules", "origin", "refs/tags/*:refs/tags/*")
     releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
     previous = previous_successful_nightly(repository, releases)
@@ -159,11 +165,6 @@ def resolve():
                       "skip_reason": f"Source unchanged since {previous['tag']}",
                       "stable_anchor_tag": stable_tag, "stable_anchor_commit": stable_commit})
         return
-    if repository == "Nonary/Vibepollo":
-        upstream = run("git", "ls-remote", "https://github.com/Nonary/vibeshine.git", "refs/heads/master").split()
-        if len(upstream) != 2 or upstream[1] != "refs/heads/master":
-            raise ValueError("Could not resolve the verified Vibeshine primary for migration")
-        validate_migration(repository, commit, upstream[0], os.environ.get("DAILY_RELEASE_MIGRATION_CONFIRMED", ""))
     # GITHUB_TOKEN has no workflows:write capability. Do not select a target
     # with a different workflow tree and then discover that during publication.
     run("git", "diff", "--exit-code", os.environ["GITHUB_SHA"], commit, "--", ".github/workflows")

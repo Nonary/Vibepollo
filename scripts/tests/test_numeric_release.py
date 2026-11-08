@@ -137,7 +137,7 @@ class NumericReleaseTests(unittest.TestCase):
             def scoped_run(*args):
                 return subprocess.run(args, cwd=temp, check=True,
                                       capture_output=True, text=True).stdout.strip()
-            with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/vibeshine"), \
+            with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/Vibepollo"), \
                  patch.object(release, "run", side_effect=scoped_run):
                 result = release.resolve(releases, refs, source, "canary", "nightly",
                                          {nightly_tag: "nightly"}, qualified)
@@ -166,9 +166,9 @@ class NumericReleaseTests(unittest.TestCase):
             finally:
                 os.chdir(previous_cwd)
             notes = output.read_text(encoding="utf-8")
-            self.assertIn(f"{first[:12]}](https://github.com/Nonary/vibeshine/commit/{first}) fix: first note", notes)
+            self.assertIn(f"{first[:12]}](https://github.com/Nonary/Vibepollo/commit/{first}) fix: first note", notes)
             self.assertIn("body for first note", notes)
-            self.assertIn(f"{second[:12]}](https://github.com/Nonary/vibeshine/commit/{second}) feat: second note", notes)
+            self.assertIn(f"{second[:12]}](https://github.com/Nonary/Vibepollo/commit/{second}) feat: second note", notes)
             self.assertNotIn("\n" + second[:12], notes)
 
     def test_unrelated_imported_date_tags_do_not_claim_product_versions(self):
@@ -216,24 +216,24 @@ class NumericReleaseTests(unittest.TestCase):
 
     def test_annotated_numeric_tag_is_validated_against_source_and_channel(self):
         refs = {**REFS, "2.0.7": SOURCE}
-        with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/vibeshine"), \
+        with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/Vibepollo"), \
              patch.object(release, "run", side_effect=self.fake_git("fix: one\n", refs)):
             result = release.validate_tag(RELEASES, refs, {"2.0.7": "stable"},
                                            "2.0.7", SOURCE, "master", "master",
-                                           "Nonary/vibeshine:master", "stable",
+                                           "Nonary/Vibepollo:master", "stable",
                                            source_branch_commit=SOURCE)
         self.assertEqual(result["stable_anchor_tag"], "2.0.6")
         self.assertEqual(result["stable_anchor_commit"], BASE)
-        with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/vibeshine"):
+        with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/Vibepollo"):
             with self.assertRaisesRegex(ValueError, "immutable channel"):
                 release.validate_tag(RELEASES, refs, {"2.0.7": "prerelease"},
                                      "2.0.7", SOURCE, "master", "master",
-                                     "Nonary/vibeshine:master", "stable")
+                                     "Nonary/Vibepollo:master", "stable")
             with self.assertRaisesRegex(ValueError, "exact release source"):
                 with patch.object(release, "run", side_effect=self.fake_git("fix: one\n", refs)):
                     release.validate_tag(RELEASES, refs, {"2.0.7": "stable"},
                                          "2.0.7", BASE, "master", "master",
-                                         "Nonary/vibeshine:master", "stable",
+                                         "Nonary/Vibepollo:master", "stable",
                                          source_branch_commit=SOURCE)
 
     def test_actual_annotated_tag_channel_and_source_validate_end_to_end(self):
@@ -250,28 +250,28 @@ class NumericReleaseTests(unittest.TestCase):
             git("tag", "2.0.6")
             git("commit", "--allow-empty", "-m", "fix: allocated source")
             source = git("rev-parse", "HEAD")
-            git("tag", "-a", "2.0.7", "-m", "Vibeshine release channel: stable\nSource branch: master")
+            git("tag", "-a", "2.0.7", "-m", "Vibepollo release channel: stable\nSource branch: master")
             scoped_run = lambda *args: subprocess.run(
                 args, cwd=temp, check=True, capture_output=True, text=True).stdout.strip()
-            with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/vibeshine"), \
+            with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/Vibepollo"), \
                  patch.object(release, "run", side_effect=scoped_run):
                 refs, channels = release.read_refs()
                 result = release.validate_tag(
                     RELEASES, refs, channels, "2.0.7", source, "master", "master",
-                    "Nonary/vibeshine:master", "stable", source_branch_commit=source)
+                    "Nonary/Vibepollo:master", "stable", source_branch_commit=source)
             self.assertEqual(channels["2.0.7"], "stable")
             self.assertEqual(result["tag"], "2.0.7")
-            with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/vibeshine"), \
+            with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/Vibepollo"), \
                  patch.object(release, "run", side_effect=scoped_run):
                 with self.assertRaisesRegex(ValueError, "not reachable from the confirmed source branch"):
                     release.validate_tag(RELEASES, refs, channels, "2.0.7", source,
-                                         "master", "master", "Nonary/vibeshine:master",
+                                         "master", "master", "Nonary/Vibepollo:master",
                                          "stable", source_branch_commit=stable_commit)
-            with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/vibeshine"), \
+            with patch.dict("os.environ", GITHUB_REPOSITORY="Nonary/Vibepollo"), \
                  patch.object(release, "run", side_effect=scoped_run):
                 with self.assertRaisesRegex(ValueError, "immutable channel"):
                     release.validate_tag(RELEASES, refs, channels, "2.0.7", source,
-                                         "master", "master", "Nonary/vibeshine:master",
+                                         "master", "master", "Nonary/Vibepollo:master",
                                          "prerelease")
 
     def test_orphaned_reservation_from_failed_build_is_skipped(self):

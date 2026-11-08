@@ -6,12 +6,12 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: vibeshine-release-version-allocation
+  group: vibepollo-release-version-allocation
   cancel-in-progress: false
 
 jobs:
   allocate:
-    if: github.repository == 'Nonary/vibeshine' && github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch
+    if: github.repository == 'Nonary/Vibepollo' && github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch
     runs-on: ubuntu-latest
     permissions:
       actions: write
@@ -69,7 +69,7 @@ jobs:
           RELEASE_SOURCE_BRANCH: ${{ steps.version.outputs.source_branch }}
         run: |
           set -euo pipefail
-          expected_message="$(printf 'Vibeshine release channel: %s\nSource branch: %s' "$RELEASE_CHANNEL" "$RELEASE_SOURCE_BRANCH")"
+          expected_message="$(printf 'Vibepollo release channel: %s\nSource branch: %s' "$RELEASE_CHANNEL" "$RELEASE_SOURCE_BRANCH")"
           if tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" 2>/dev/null)"; then
             test "$(jq -r '.object.type' <<< "$tag_json")" = tag
             tag_object="$(jq -r '.object.sha' <<< "$tag_json")"

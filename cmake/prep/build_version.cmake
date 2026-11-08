@@ -172,7 +172,7 @@ if(DEFINED PROJECT_VERSION)
     set(PROJECT_VERSION_FULL "${PROJECT_VERSION}")
     if(NOT PROJECT_VERSION_FULL MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$")
         message(FATAL_ERROR
-            "Invalid Vibeshine build version '${PROJECT_VERSION_FULL}'. Expected a numeric "
+            "Invalid Vibepollo build version '${PROJECT_VERSION_FULL}'. Expected a numeric "
             "major.minor.patch version with optional prerelease/build metadata.")
     endif()
     string(REGEX REPLACE "[-+].*$" "" PROJECT_VERSION_NUMERIC "${PROJECT_VERSION}")

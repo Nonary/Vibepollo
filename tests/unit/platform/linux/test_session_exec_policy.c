@@ -368,6 +368,13 @@ int main(void) {
   char *legacy_app_request[] = {"broker", "app", "/usr/bin/true", NULL};
   CHECK(execute_request(3, legacy_app_request, &greeter_identity, getgid()) == 126);
   char *elevated_request[] = {"broker", "app-elevated", "", "/usr/bin/true", NULL};
+  char *metadata_request[] = {"broker", "app", "", "/usr/bin/true", "APOLLO_APP_STATUS=TERMINATING", NULL};
+  CHECK(application_request_is_safe(5, metadata_request));
+  metadata_request[4] = "LD_PRELOAD=unsafe";
+  CHECK(!application_request_is_safe(5, metadata_request));
+  metadata_request[1] = "app-elevated";
+  metadata_request[4] = "APOLLO_APP_STATUS=TERMINATING";
+  CHECK(!application_request_is_safe(5, metadata_request));
   CHECK(execute_request(4, elevated_request, &greeter_identity, getgid()) == 126);
 
   char resolved_directory[PATH_MAX] = {0};

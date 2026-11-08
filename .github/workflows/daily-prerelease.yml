@@ -74,10 +74,10 @@ jobs:
             tag_object="$(jq -r '.object.sha' <<< "$tag_json")"
             object_json="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")"
             test "$(jq -r '.object.sha' <<< "$object_json")" = "$DAILY_COMMIT"
-            test "$(jq -r '.message' <<< "$object_json")" = $'Vibeshine release channel: nightly\nSource branch: canary'
+            test "$(jq -r '.message' <<< "$object_json")" = $'Vibepollo release channel: nightly\nSource branch: canary'
           else
             tag_object="$(gh api --method POST "repos/$GITHUB_REPOSITORY/git/tags" \
-              -f tag="$DAILY_TAG" -f message=$'Vibeshine release channel: nightly\nSource branch: canary' \
+              -f tag="$DAILY_TAG" -f message=$'Vibepollo release channel: nightly\nSource branch: canary' \
               -f object="$DAILY_COMMIT" -f type=commit --jq .sha)"
             gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
               -f ref="refs/tags/$DAILY_TAG" -f sha="$tag_object" >/dev/null
@@ -207,18 +207,17 @@ jobs:
         run: |
           set -euo pipefail
           # Partial reruns must not publish a duplicate or older qualified source.
-          python scripts/daily_release.py publication
           # The reserved tag pins the tested source even if canary advances.
           tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha)"
           tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")"
           test "$(jq -r '.object.sha' <<< "$tag_json")" = "$DAILY_COMMIT"
-          test "$(jq -r '.message' <<< "$tag_json")" = $'Vibeshine release channel: nightly\nSource branch: canary'
-          python scripts/daily_release.py public --assets daily-assets --destination public-assets --product Vibeshine
+          test "$(jq -r '.message' <<< "$tag_json")" = $'Vibepollo release channel: nightly\nSource branch: canary'
+          python scripts/daily_release.py public --assets daily-assets --destination public-assets --product Vibepollo
           if gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::Nightly $DAILY_TAG already has a GitHub Release or draft. Refusing to mutate it."
             exit 1
           fi
-          gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Vibeshine $DAILY_TAG (Nightly)" --notes-file daily-notes.md --draft --prerelease --latest=false
+          gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Vibepollo $DAILY_TAG (Nightly)" --notes-file daily-notes.md --draft --prerelease --latest=false
           created_release_id="$(gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json id,isDraft,tagName --jq 'select(.isDraft and .tagName == env.DAILY_TAG) | .id')"
           test -n "$created_release_id"
           gh release upload "$DAILY_TAG" public-assets/* --repo "$GITHUB_REPOSITORY"
@@ -246,7 +245,7 @@ jobs:
           tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" --jq .object.sha)"
           tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")"
           test "$(jq -r '.object.sha' <<< "$tag_json")" = "$DAILY_COMMIT"
-          test "$(jq -r '.message' <<< "$tag_json")" = $'Vibeshine release channel: nightly\nSource branch: canary'
+          test "$(jq -r '.message' <<< "$tag_json")" = $'Vibepollo release channel: nightly\nSource branch: canary'
           gh api --method PATCH "repos/$GITHUB_REPOSITORY/releases/$created_release_id" -F draft=false -F prerelease=true -f make_latest=false >/dev/null
           release_json="$(gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json tagName,isDraft,isPrerelease,publishedAt)"
           jq -e --arg tag "$DAILY_TAG" '.tagName == $tag and .isPrerelease == true and .isDraft == false and (.publishedAt | type == "string" and length > 0)' <<< "$release_json" >/dev/null

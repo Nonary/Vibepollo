@@ -26,7 +26,7 @@ on:
         default: false
 
 concurrency:
-  group: vibeshine-release-version-allocation
+  group: vibepollo-release-version-allocation
   cancel-in-progress: false
 
 jobs:
@@ -91,7 +91,7 @@ jobs:
           release_source_branch=""
           if [[ "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             tag_message="$(git for-each-ref --format='%(contents)' "refs/tags/${source_tag}")"
-            release_channel="$(sed -n '1s/^Vibeshine release channel: //p' <<< "${tag_message}")"
+            release_channel="$(sed -n '1s/^Vibepollo release channel: //p' <<< "${tag_message}")"
             release_source_branch="$(sed -n '2s/^Source branch: //p' <<< "${tag_message}")"
             if [[ "${release_channel}" != "stable" ]]; then
               echo "::error::Numeric signing currently accepts stable allocation tags only; nightly prereleases use the daily publisher."
@@ -724,7 +724,7 @@ jobs:
           tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)"
           tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")"
           test "$(jq -r '.object.sha' <<< "$tag_json")" = "$RELEASE_SOURCE_COMMIT"
-          test "$(jq -r '.message' <<< "$tag_json" | sed -n '1p')" = "Vibeshine release channel: $RELEASE_CHANNEL"
+          test "$(jq -r '.message' <<< "$tag_json" | sed -n '1p')" = "Vibepollo release channel: $RELEASE_CHANNEL"
           test "$(jq -r '.message' <<< "$tag_json" | sed -n '2p')" = "Source branch: $RELEASE_SOURCE_BRANCH"
 
       - name: Create or update GitHub release
@@ -951,7 +951,7 @@ jobs:
             git fetch --force --tags origin
             python scripts/numeric_release.py validate-tag
             test "$(jq -r '.object.sha' <<< "${tag_json}")" = "${RELEASE_SOURCE_COMMIT}"
-            test "$(jq -r '.message' <<< "${tag_json}")" = "$(printf 'Vibeshine release channel: %s\nSource branch: %s' "${RELEASE_CHANNEL}" "${RELEASE_SOURCE_BRANCH}")"
+            test "$(jq -r '.message' <<< "${tag_json}")" = "$(printf 'Vibepollo release channel: %s\nSource branch: %s' "${RELEASE_CHANNEL}" "${RELEASE_SOURCE_BRANCH}")"
           else
             git fetch --force --tags origin
             test "$(git rev-parse "refs/tags/${publish_tag}^{commit}")" = "${RELEASE_SOURCE_COMMIT}"

@@ -1,3 +1,5 @@
+import json
+import shutil
 import io
 import os
 import re
@@ -706,7 +708,7 @@ esac
                     notes_path.write_text(notes, encoding="utf-8")
                     env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
                                MOCK_RELEASE_JSON=str(response), RUNNER_TEMP=temp,
-                               GITHUB_REPOSITORY="Nonary/vibeshine", release_id="123",
+                               GITHUB_REPOSITORY="Nonary/Vibepollo", release_id="123",
                                publish_tag="2.0.7", release_title="v2.0.7",
                                PRERELEASE="false", NOTES_FILE=str(notes_path))
                     return subprocess.run(
@@ -1136,7 +1138,7 @@ class WindowsWorkflowEfficiencyTest(unittest.TestCase):
                 text=True,
             )
             self.assertNotEqual(invalid_version.returncode, 0)
-            self.assertIn("Invalid Vibeshine build version", invalid_version.stderr)
+            self.assertIn("Invalid Vibepollo build version", invalid_version.stderr)
 
             zero_version = subprocess.run(
                 ["cmake", "-DBUILD_VERSION=0.0.0", "-P", str(probe)],

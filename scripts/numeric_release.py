@@ -175,8 +175,8 @@ def next_version(base, messages):
 
 
 def validate_source(repository, branch, confirmation):
-    if repository != "Nonary/vibeshine":
-        raise ValueError("Numeric release allocation is limited to Nonary/vibeshine")
+    if repository != "Nonary/Vibepollo":
+        raise ValueError("Numeric release allocation is limited to Nonary/Vibepollo")
     allowed = {"master", "main", "canary"}
     if branch not in allowed or confirmation != f"{repository}:{branch}":
         raise ValueError("Select and confirm the repository source branch explicitly")
@@ -337,14 +337,14 @@ def generate_notes(version, source_commit, channel, previous_sources, output_pat
         if not re.fullmatch(r"[0-9a-f]{40}", sha):
             raise ValueError("Release notes commit data contains an invalid full SHA")
         commits.append((sha, subject, body))
-    product = "Vibeshine"
+    product = "Vibepollo"
     lines = [f"# {product} {version}", "", f"Channel: {channel}.", "",
              "These notes list commits reachable from the released source that are not reachable from any previously published release source.", "",
              "## Changes", ""]
     if not commits:
         lines.append("- No new commits were found in the qualified release range.")
     for sha, subject, body in commits:
-        lines.append(f"- [{sha[:12]}](https://github.com/Nonary/vibeshine/commit/{sha}) {subject}")
+        lines.append(f"- [{sha[:12]}](https://github.com/Nonary/Vibepollo/commit/{sha}) {subject}")
         if body.strip():
             lines.extend(f"  {line}" if line else "  " for line in body.rstrip().splitlines())
     Path(output_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
@@ -358,7 +358,7 @@ def read_refs():
                     "refs/tags").splitlines():
         tag, object_id, subject = line.split("\t", 2)
         refs[tag] = object_id
-        match = re.match(r"^Vibeshine release channel: (stable|prerelease|nightly)(?:\s|$)", subject)
+        match = re.match(r"^Vibepollo release channel: (stable|prerelease|nightly)(?:\s|$)", subject)
         if match:
             tag_channels[tag] = match[1]
     return refs, tag_channels
