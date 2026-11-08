@@ -86,9 +86,21 @@ namespace platf::dualsense_usbip_gamepad {
       const bool rumble_valid =
         (report.valid_flag0 & lvg::driver::k_ds5_flag0_compatible_vibration) ||
         (report.valid_flag2 & lvg::driver::k_ds5_flag2_compatible_vibration);
-      result.rumble = rumble_valid &&
-                      (!have_rumble_ || previous.low_frequency != state_.low_frequency ||
-                       previous.high_frequency != state_.high_frequency);
+      // A report that enables nothing ends compatible vibration. SDL's HIDAPI DualSense
+      // driver (Steam, SDL games and emulators) stops rumble this way instead of sending
+      // zero amplitudes, and a DualSense then returns to audio haptics. Keeping the old
+      // amplitudes left the client's motors running and made the next effect at the same
+      // strength look unchanged, so it was never sent.
+      const bool rumble_released = report.valid_flag0 == 0 && report.valid_flag1 == 0 &&
+                                   report.valid_flag2 == 0 &&
+                                   (state_.low_frequency != 0 || state_.high_frequency != 0);
+      if (rumble_released) {
+        state_.low_frequency = 0;
+        state_.high_frequency = 0;
+      }
+      result.rumble = rumble_released ||
+                      (rumble_valid && (!have_rumble_ || previous.low_frequency != state_.low_frequency ||
+                                        previous.high_frequency != state_.high_frequency));
       have_rumble_ = have_rumble_ || rumble_valid;
       result.rgb = (report.valid_flag1 & lvg::driver::k_ds5_flag1_lightbar) &&
                    (!(previous.valid & lvg::ps_output_lightbar_valid) ||

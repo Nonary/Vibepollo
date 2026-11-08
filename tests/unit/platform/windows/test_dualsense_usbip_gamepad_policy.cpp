@@ -63,11 +63,80 @@ TEST(DualSenseUsbipGamepadPolicyTests, FeedbackHonorsValidityAndRetainsOmittedTr
   report.valid_flag1 = 0;
   report.motor_left = 0;
   report.lightbar_red = 0;
+  // A report that enables nothing ends compatible vibration (see the SDL stop test below),
+  // while the light bar keeps its last colour.
   update = state.apply(bytes(report));
-  EXPECT_FALSE(update.rumble);
+  EXPECT_TRUE(update.rumble);
   EXPECT_FALSE(update.rgb);
-  EXPECT_EQ(update.state.low_frequency, 100 << 8);
+  EXPECT_EQ(update.state.low_frequency, 0);
   EXPECT_EQ(update.state.red, 50);
+}
+
+TEST(DualSenseUsbipGamepadPolicyTests, ReportEnablingNothingEndsCompatibleVibration) {
+  // SDL's HIDAPI DualSense driver, which Steam and SDL games and emulators drive rumble
+  // through, never stops rumble with zero amplitudes. It selects haptics, sends the
+  // amplitudes with a compatible-vibration flag, then ends the effect with a report that
+  // enables nothing, which returns a DualSense from compatible vibration to audio haptics.
+  for (const bool vibration_v2 : {true, false}) {
+    SCOPED_TRACE(vibration_v2 ? "vibration v2" : "legacy compatible vibration");
+    output_state state;
+    lvg::driver::ds5_output_report start {};
+    start.report_id = 2;
+    start.valid_flag0 = lvg::driver::k_ds5_flag0_haptics_select;
+    lvg::driver::ds5_output_report rumble = start;
+    if (vibration_v2) {
+      rumble.valid_flag2 = lvg::driver::k_ds5_flag2_compatible_vibration;
+    } else {
+      rumble.valid_flag0 |= lvg::driver::k_ds5_flag0_compatible_vibration;
+    }
+    rumble.motor_left = 255;
+    rumble.motor_right = 255;
+    lvg::driver::ds5_output_report stop {};
+    stop.report_id = 2;
+
+    for (int effect = 0; effect < 2; ++effect) {
+      SCOPED_TRACE(effect);
+      EXPECT_FALSE(state.apply(bytes(start)).rumble);
+      // The second effect has the same strength and must still reach the client.
+      auto update = state.apply(bytes(rumble));
+      EXPECT_TRUE(update.rumble);
+      EXPECT_EQ(update.state.low_frequency, 255 << 8);
+      EXPECT_EQ(update.state.high_frequency, 255 << 8);
+
+      update = state.apply(bytes(stop));
+      EXPECT_TRUE(update.rumble);
+      EXPECT_EQ(update.state.low_frequency, 0);
+      EXPECT_EQ(update.state.high_frequency, 0);
+      EXPECT_FALSE(state.apply(bytes(stop)).rumble);
+    }
+  }
+}
+
+TEST(DualSenseUsbipGamepadPolicyTests, ReportsUpdatingOtherFeedbackKeepCompatibleVibration) {
+  output_state state;
+  lvg::driver::ds5_output_report report {};
+  report.report_id = 2;
+  report.valid_flag2 = lvg::driver::k_ds5_flag2_compatible_vibration;
+  report.motor_left = 120;
+  ASSERT_TRUE(state.apply(bytes(report)).rumble);
+
+  // Light bar, player LED, trigger and haptics-select updates that omit the vibration
+  // flags leave the amplitudes alone, like any other omitted field.
+  const std::array<std::pair<std::uint8_t, std::uint8_t>, 4> other_feedback {{
+    {0, lvg::driver::k_ds5_flag1_lightbar},
+    {0, lvg::driver::k_ds5_flag1_player_indicator},
+    {lvg::driver::k_ds5_flag0_right_trigger_effect, 0},
+    {lvg::driver::k_ds5_flag0_haptics_select, 0},
+  }};
+  for (const auto &[flag0, flag1] : other_feedback) {
+    report = {};
+    report.report_id = 2;
+    report.valid_flag0 = flag0;
+    report.valid_flag1 = flag1;
+    const auto update = state.apply(bytes(report));
+    EXPECT_FALSE(update.rumble);
+    EXPECT_EQ(update.state.low_frequency, 120 << 8);
+  }
 }
 
 TEST(DualSenseUsbipGamepadPolicyTests, RejectsWrongReportAndTruncatedRgbPayload) {
