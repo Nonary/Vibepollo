@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: Version to build, for example 2.0.0
+        description: Version to build, for example 2.2.0
         required: false
-        default: '2.0.0'
+        default: '2.2.0'
         type: string
   workflow_call:
     inputs:
@@ -45,7 +45,7 @@ on:
 
 env:
   BRANCH: ${{ github.head_ref || github.ref_name }}
-  BUILD_VERSION: ${{ inputs.release_version || '2.0.0' }}
+  BUILD_VERSION: ${{ inputs.release_version || '2.2.0' }}
   COMMIT: ${{ inputs.release_commit || github.sha }}
   MACOSX_DEPLOYMENT_TARGET: 14.2
   OPENSSL_VERSION: 3.6.5
