@@ -71,6 +71,77 @@ try {
             Assert-That ($null -ne $node) "$driver is missing $name"
             . ([scriptblock]::Create($node.Extent.Text))
         }
+
+        # The wire format is ASCII Base64, not case-insensitive text. In Windows
+        # PowerShell 5.1 Turkish casing can reject a valid capital I if the
+        # character-class check is case-insensitive. Exercise the production
+        # decoder under each culture without running the installer or changing
+        # the machine's culture. Always restore the test thread's culture.
+        $originalCulture = [Threading.Thread]::CurrentThread.CurrentCulture
+        try {
+            $validJson = '{"Packages":[],"Devices":[]}'
+            $validPayload = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($validJson))
+            Assert-That ($validPayload.Contains('I')) 'The regression payload must contain an uppercase I'
+            $marker = 'DRIVER_INSTALL_SAFETY_INVENTORY:'
+            foreach ($culture in @([Globalization.CultureInfo]::GetCultureInfo('tr-TR'),
+                                    [Globalization.CultureInfo]::GetCultureInfo('en-US'),
+                                    [Globalization.CultureInfo]::InvariantCulture)) {
+                [Threading.Thread]::CurrentThread.CurrentCulture = $culture
+                $decoded = ConvertFrom-DriverInstallSafetyInventoryResult -OutputText ($marker + $validPayload)
+                Assert-That ($decoded.Packages.Count -eq 0 -and $decoded.Devices.Count -eq 0) "$driver must decode valid inventory under $($culture.Name)"
+                foreach ($badPayload in @('!', 'A===', 'A')) {
+                    $message = Get-FailureMessage { ConvertFrom-DriverInstallSafetyInventoryResult -OutputText ($marker + $badPayload) }
+                    Assert-That ($message.Contains('Driver unchanged')) "$driver must fail closed on malformed inventory under $($culture.Name)"
+                }
+                $message = Get-FailureMessage { ConvertFrom-DriverInstallSafetyInventoryResult -OutputText ($marker + $validPayload + "`n" + $marker + $validPayload) }
+                Assert-That ($message.Contains('missing or ambiguous result')) "$driver must reject duplicate markers under $($culture.Name)"
+            }
+        } finally {
+            [Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture
+        }
+
+        if ($driver -eq 'sunshine') {
+            # The retained-device health and package checks decode a separate
+            # marker after the initial guard. Exercise that production function
+            # with a mocked read-only query, without entering driver repair.
+            $node = $ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Get-RetainedSunshineInventory'}, $true)
+            Assert-That ($null -ne $node) 'sunshine is missing Get-RetainedSunshineInventory'
+            . ([scriptblock]::Create($node.Extent.Text))
+            $savedSafetyQuery = ${function:Invoke-DriverInstallSafetyQuery}
+            $hardwareId = 'ROOT\SunshineVirtualDisplay'
+            try {
+                function Invoke-DriverInstallSafetyQuery {
+                    param($ScriptText, $TimeoutSeconds)
+                    return $script:retainedFixtureOutput
+                }
+                $prefix = 'RETAINED_DISPLAY_INVENTORY:'
+                $json = '{"Nodes":[{"Present":true}],"SignedDrivers":[],"Packages":[]}'
+                $payload = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($json))
+                Assert-That ($payload.Contains('I')) 'The retained regression payload must contain an uppercase I'
+                $incomplete = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes('{"Nodes":[],"Packages":[]}'))
+                foreach ($culture in @([Globalization.CultureInfo]::GetCultureInfo('tr-TR'),
+                                        [Globalization.CultureInfo]::GetCultureInfo('en-US'),
+                                        [Globalization.CultureInfo]::InvariantCulture)) {
+                    [Threading.Thread]::CurrentThread.CurrentCulture = $culture
+                    foreach ($kind in @('Health', 'Packages')) {
+                        $script:retainedFixtureOutput = $prefix + $payload
+                        $result = Get-RetainedSunshineInventory -Kind $kind
+                        Assert-That ($result.Nodes.Count -eq 1 -and $result.Nodes[0].Present -and
+                            $result.SignedDrivers.Count -eq 0 -and $result.Packages.Count -eq 0) "Retained $kind inventory must decode under $($culture.Name)"
+                        foreach ($badOutput in @(($prefix + '!'), ($prefix + 'A==='), ($prefix + 'A'), ($prefix + $incomplete),
+                                                'no inventory', ($prefix + $payload + "`n" + $prefix + $payload))) {
+                            $script:retainedFixtureOutput = $badOutput
+                            $message = Get-FailureMessage { Get-RetainedSunshineInventory -Kind $kind }
+                            Assert-That ($message.Contains('automatic repair deferred')) "Malformed retained $kind inventory must fail closed under $($culture.Name)"
+                        }
+                    }
+                }
+            } finally {
+                [Threading.Thread]::CurrentThread.CurrentCulture = $originalCulture
+                Set-Item Function:Invoke-DriverInstallSafetyQuery $savedSafetyQuery
+            }
+        }
+
         $scriptDir = $scratch
         $script:realSafetyQuery = ${function:Invoke-DriverInstallSafetyQuery}
         $script:fixtureCase = 'success'

@@ -1,0 +1,12 @@
+---
+# Vibepollo uses Dependabot for submodules and Renovate for other dependencies.
+version: 2
+updates:
+  - package-ecosystem: "gitsubmodule"
+    directory: "/"
+    rebase-strategy: disabled
+    schedule:
+      interval: "cron"
+      cronjob: "30 2 * * *"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 10

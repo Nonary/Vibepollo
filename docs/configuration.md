@@ -671,7 +671,7 @@ controller of another client. This option does not create or redirect controller
         <td>Description</td>
         <td colspan="2">
             The initial delay, in milliseconds, before repeating keys. Controls how fast keys will
-            repeat themselves.
+            repeat themselves. When VHF is active for keyboard input, Windows controls key repeat.
         </td>
     </tr>
     <tr>
@@ -694,7 +694,8 @@ controller of another client. This option does not create or redirect controller
     <tr>
         <td>Description</td>
         <td colspan="2">
-            How often keys repeat every second.
+            How often keys repeat every second. When VHF is active for keyboard input, Windows
+            controls key repeat.
             @tip{This configurable option supports decimals.}
         </td>
     </tr>
@@ -789,6 +790,45 @@ controller of another client. This option does not create or redirect controller
     </tr>
 </table>
 
+### keyboard_mouse_backend
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Select how Vibepollo sends keyboard and mouse input on Windows. `auto` (the default)
+            prefers VHF when a compatible driver is available at input initialization and otherwise
+            uses Windows SendInput. `sendinput` always uses Windows SendInput; `vhf` explicitly
+            prefers virtual HID devices. Existing explicit settings are preserved. Backend selection
+            does not switch automatically just because a game starts or stops.
+            VHF requires a compatible virtual input driver
+            and Vibepollo running as SYSTEM or an elevated administrator. If the driver is missing,
+            lacks the capability, or access is denied, Vibepollo uses SendInput. Auto logs this normal
+            fallback as informational; an explicitly selected VHF backend logs a warning.
+            The bundled driver supports VHF keyboard and mouse input.
+            VHF keyboard repeat follows Windows settings; a modifier sent only as a temporary
+            packet flag may not remain active during a repeated key. Mouse scrolling uses whole detents.
+            Unicode text, unsupported keys, and absolute pointer positions outside the primary display
+            use SendInput. Mixed VHF and SendInput events may be processed in a different order, which
+            can affect absolute dragging on secondary displays. The keyboard and mouse enable settings
+            still apply. Restart Vibepollo after changing this setting.
+            @caution{Applies to Windows only. VHF requires a compatible virtual input driver.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            keyboard_mouse_backend = vhf
+            @endcode</td>
+    </tr>
+</table>
+
 ### high_resolution_scrolling
 
 <table>
@@ -798,7 +838,7 @@ controller of another client. This option does not create or redirect controller
             When enabled, Sunshine will pass through high resolution scroll events from Moonlight clients.
             <br>
             This can be useful to disable for older applications that scroll too fast with high resolution scroll
-            events.
+            events. When VHF is active for mouse input, scrolling uses whole detents.
         </td>
     </tr>
     <tr>
@@ -2826,6 +2866,20 @@ These settings are host-wide and are not application runtime overrides.
     </tr>
 </table>
 
+### pacing_group_demand_limit
+
+Experimental opt-in for ordinary video streams. Derive a fixed pacing quantum
+from the negotiated bitrate and this frame's actual FEC-expanded packet count.
+This bounds each send call and uses the quantum as the pacing wait threshold.
+A short FEC block tail can let a group exceed that threshold before the next
+wait. It does not guarantee a wire-level burst limit. The existing `pacing_batch_demand_limit`
+option remains an independent batch-only bound. Both options default to `false`.
+
+When combined with `host_adaptive_pacing`, use the smaller group and the later
+of the demand and adaptive deadlines. The operator's `pacing_max_bitrate_kbps`
+ceiling always applies, and accepted packets retain their debt across frames.
+PyroWave is unchanged. Example: `pacing_group_demand_limit = true`.
+
 ### host_adaptive_pacing
 
 <table>
@@ -3744,7 +3798,10 @@ are detected during the stream. The host log reports hook readiness or failure.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Full path to the RTSS install directory. If empty, Sunshine will attempt to auto-detect it.
+            Full path to the RTSS install directory under Program Files. If empty, Vibepollo will
+            attempt to auto-detect it. Paths outside Program Files and paths containing reparse
+            points are ignored because the Windows service loads signed RTSS integration code in
+            its privileged host process; Vibepollo falls back to the default Program Files location.
         </td>
     </tr>
     <tr>

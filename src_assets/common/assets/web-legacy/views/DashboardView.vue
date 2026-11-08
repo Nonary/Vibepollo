@@ -552,6 +552,7 @@ import type { ChangelogEntry } from '../../web/utils/changelog';
 import {
   apiNightlyMetadata,
   fetchUpdateReleases,
+  installedBuildIsPrerelease,
   selectAvailableUpdate,
   prereleasesEnabled,
   dismissedUpdate,
@@ -1184,11 +1185,12 @@ const crashDumpMessage = computed(() => {
 });
 
 const installedVersionNotStable = computed(() => {
-  // Consider non-main/master branches as non-stable
-  if (branch.value && !['master', 'main'].includes(branch.value)) return true;
-  // If GitHub flags the installed tag as a prerelease, consider it non-stable
-  if (installedIsPrerelease.value) return true;
-  return false;
+  return installedBuildIsPrerelease(
+    configStore.metadata?.channel,
+    installedVersion.value?.version || '',
+    branch.value,
+    installedIsPrerelease.value,
+  );
 });
 const displayVersion = computed(() => installedVersion.value?.version || '0.0.0');
 const stableBuildAvailable = computed(() => availableUpdate.value?.prerelease === false);

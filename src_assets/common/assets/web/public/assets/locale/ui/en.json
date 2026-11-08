@@ -111,7 +111,7 @@
           "label": "Display output override"
         },
         "elevated": {
-          "description": "Launch the application with administrator privileges.",
+          "description": "Launch the application with administrator privileges (root on Linux).",
           "label": "Run elevated"
         },
         "excludePrep": {
@@ -1766,7 +1766,7 @@
           "warning": "Warning: Async, Front-edge Sync, Back-edge Sync, or any other mode besides NVIDIA Reflex can cause massive latency when a game uses DLSS Frame Generation. You are accepting that trade-off for virtual-display streams."
         },
         "rtss_install_path": {
-          "description": "Leave blank to detect the RTSS installation folder automatically. RTSS is ready when its hooks are present.",
+          "description": "Choose an RTSS installation under Program Files, or leave blank to detect it automatically. Other locations fall back to the default for service safety. RTSS is ready when its signed hooks are trusted.",
           "label": "RTSS installation folder"
         },
         "virtual_display_layout": {

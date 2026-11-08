@@ -21,7 +21,7 @@ try {
     foreach ($name in $names) {
         $path = Join-Path $fixture $name
         New-Item -ItemType Directory -Path ([IO.Path]::GetDirectoryName($path)) -Force | Out-Null
-        if ($name.EndsWith('.inf')) { 'DriverVer=10/04/2026,1.6.4.0' | Set-Content $path } else { "pure provenance fixture: $name" | Set-Content $path }
+        if ($name.EndsWith('.inf')) { "DriverVer=$($realLock.driver_ver)" | Set-Content $path } else { "pure provenance fixture: $name" | Set-Content $path }
         $files[$name] = Hash $path
     }
     $fixtureArchivePath = Join-Path $testRoot $realLock.archive_name
@@ -120,13 +120,13 @@ try {
     $refreshAst = [Management.Automation.Language.Parser]::ParseFile($refreshPath,[ref]$null,[ref]$null)
     $versionFunction = $refreshAst.Find({param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Resolve-PackageVersionFromPrebuiltRoot'},$true)
     . ([scriptblock]::Create($versionFunction.Extent.Text))
-    Assert-That ((Resolve-PackageVersionFromPrebuiltRoot -Path $cache) -ceq '1.6.4.0') 'Reviewed metadata must supply real component version regardless of cache directory name'
+    Assert-That ((Resolve-PackageVersionFromPrebuiltRoot -Path $cache) -ceq '1.6.5.0') 'Reviewed metadata must supply real component version regardless of cache directory name'
     $refresh = Get-Content $refreshPath -Raw
     $gate = $refresh.IndexOf('& $producerVerifier -Repository')
     Assert-That ($gate -gt 0 -and $gate -lt $refresh.IndexOf('$resolvedPackageVersion = Resolve-PackageVersion')) 'Refresh must verify producer before version resolution/copy/build'
-    Assert-That ($realLock.tag -ceq 'v1.6.4' -and $realLock.source_revision -ceq '2a29ea71a52d15522c95b3de532b6612c54d75cc' -and
-        $realLock.archive_sha256 -ceq '34c6cddb507187b9a0971765644b38637004d7ebed104e830363f36b661ed075' -and
-        $realLock.driver_ver -ceq '10/04/2026,1.6.4.0') 'Reviewed production display identity must remain exact'
+    Assert-That ($realLock.tag -ceq 'v1.6.5' -and $realLock.source_revision -ceq 'b6874684d82925d0d76f487d8e4ba3ec71c9721a' -and
+        $realLock.archive_sha256 -ceq 'e37967d86c0102903bcff0bc40c5aece6653686165276c5e1045a7e11aad522d' -and
+        $realLock.driver_ver -ceq '10/29/2026,1.6.5.0') 'Reviewed production display identity must remain exact'
     $cmake = Get-Content (Join-Path $RepositoryRoot 'cmake/packaging/windows.cmake') -Raw
     Assert-That ($cmake.Contains('-LockPath "${SUNSHINE_VDD_LIBVIRTUALDISPLAY_RELEASE_LOCK}"') -and
         $cmake.Contains('set(_sunshine_vdd_provenance_args -ValidateOnly)')) 'CMake must verify explicit prebuilt roots too'

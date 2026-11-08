@@ -19,18 +19,24 @@ namespace managed_app_focus {
               for (auto window : windows) {
                 remaining.observe(playnite_launcher::focus::window_identity(window), budget::clock::now());
               }
-              for (auto window : windows) {
-                const auto identity = playnite_launcher::focus::window_identity(window);
-                const auto cancel = [&] { return cancelled_ || !remaining.can_focus(identity, budget::clock::now()); };
-                if (cancelled_) {
-                  break;
-                }
-                if (cancel()) {
-                  continue;
-                }
-                if (playnite_launcher::focus::focus_game_window(window, cancel)) {
-                  remaining.confirmed();
-                  break;
+              // An expired activation allowance does not invalidate an already
+              // focused game. Additional windows must not displace it.
+              if (!cancelled_ && playnite_launcher::focus::find_foreground_game_window(windows)) {
+                remaining.confirmed();
+              } else {
+                for (auto window : windows) {
+                  const auto identity = playnite_launcher::focus::window_identity(window);
+                  const auto cancel = [&] { return cancelled_ || !remaining.can_focus(identity, budget::clock::now()); };
+                  if (cancelled_) {
+                    break;
+                  }
+                  if (cancel()) {
+                    continue;
+                  }
+                  if (playnite_launcher::focus::focus_game_window(window, cancel)) {
+                    remaining.confirmed();
+                    break;
+                  }
                 }
               }
               std::unique_lock lock(mutex_);

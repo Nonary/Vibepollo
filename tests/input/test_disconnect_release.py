@@ -4,6 +4,7 @@
 No live keyboard, mouse, touch, or gamepad devices are used.
 """
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -24,6 +25,12 @@ using PNV_MULTI_CONTROLLER_PACKET = controller_packet *;
 struct arrival_packet { uint8_t controllerNumber; uint8_t type; uint16_t capabilities; uint32_t supportedButtonFlags; };
 using PSS_CONTROLLER_ARRIVAL_PACKET = arrival_packet *;
 namespace platf {
+  bool native_repeat = false;
+  std::vector<uint16_t> repeat_queries;
+  bool keyboard_uses_native_repeat(input_t &, uint16_t key) {
+    repeat_queries.push_back(key);
+    return native_repeat;
+  }
   struct gamepad_id_t { int globalIndex; uint8_t clientRelativeIndex; };
   struct gamepad_arrival_t {
     uint8_t type;
@@ -232,6 +239,45 @@ int main(int argc, char **argv) {
     key(a, VKEY_LMENU, true); platf::keyboard_events.clear();
     task_pool.fire(); expect({{0x41, false, 0}});
     disconnect(a);
+  } else if (test == "native_repeat_does_not_pulse_synthetic_modifiers") {
+    config::input.key_repeat_delay = 10ms;
+    key(a, 0x41, false, MODIFIER_SHIFT);
+    platf::native_repeat = true;
+    platf::keyboard_events.clear();
+    task_pool.fire();
+#ifdef _WIN32
+    expect({});
+#else
+    // The native VHF branch only exists on Windows.
+    expect({{VKEY_SHIFT, false, 0}, {0x41, false, 0}, {VKEY_SHIFT, true, 0}});
+#endif
+    disconnect(a);
+  } else if (test == "native_repeat_needs_no_software_timer") {
+    config::input.key_repeat_delay = 10ms;
+    platf::native_repeat = true;
+    key(a, 0x41, false, MODIFIER_SHIFT);
+#ifdef _WIN32
+    assert(task_pool.timers.empty());
+#else
+    assert(task_pool.timers.size() == 1);
+#endif
+    disconnect(a);
+    assert(task_pool.timers.empty() && host_keys.empty());
+  } else if (test == "native_repeat_uses_first_owner_alias") {
+    config::input.key_repeat_delay = 10ms;
+    platf::native_repeat = true;
+    key(a, VKEY_SHIFT); key(b, VKEY_LSHIFT);
+#ifdef _WIN32
+    assert((platf::repeat_queries == std::vector<uint16_t>{VKEY_SHIFT, VKEY_SHIFT}));
+    assert(task_pool.timers.empty());
+#else
+    assert(platf::repeat_queries.empty());
+#endif
+    disconnect(a);
+    expect({{VKEY_SHIFT, false, 0}});
+    disconnect(b);
+    expect({{VKEY_SHIFT, false, 0}, {VKEY_SHIFT, true, 0}});
+    assert(task_pool.timers.empty() && host_keys.empty());
   } else if (test == "all_mouse_buttons") {
     for (int button_id = 1; button_id <= 5; ++button_id) button(a, button_id);
     disconnect(a);
@@ -514,6 +560,7 @@ int main(int argc, char **argv) {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, default=ROOT / 'src/input.cpp')
+    parser.add_argument('--compiler', choices=('c++', 'msvc'), default='c++')
     args = parser.parse_args()
     source = args.source.read_text()
     prelude = production_prelude(source).replace('std::list<int> input_queue;', 'std::list<std::vector<uint8_t>> input_queue;\n  std::atomic_bool input_queue_task_scheduled {false};\n  int feedback_queue = 0;\n  bool persist_gamepads = false;')
@@ -549,11 +596,16 @@ def main():
     cases = list(dict.fromkeys(re.findall(r'test == "([^"]+)"', TESTS)))
     failed = []
     with tempfile.TemporaryDirectory(prefix='input-disconnect-') as temp:
-        cpp, binary = Path(temp) / 'test.cpp', Path(temp) / 'test'
+        cpp, binary = Path(temp) / 'test.cpp', Path(temp) / ('test.exe' if os.name == 'nt' else 'test')
         cpp.write_text(prelude + EXTRA + handlers + TESTS)
-        subprocess.run(['c++', '-I', str(ROOT), '-std=c++20', '-Wall', '-Wextra', '-Wno-sign-compare',
-                        '-Wno-unused-const-variable', '-Wno-missing-field-initializers',
-                        str(cpp), '-o', str(binary)], check=True)
+        if args.compiler == 'msvc':
+            command = ['cl', '/nologo', '/std:c++20', '/EHsc', f'/I{ROOT}',
+                       str(cpp), f'/Fe:{binary}', f'/Fo:{Path(temp) / "test.obj"}']
+        else:
+            command = ['c++', '-I', str(ROOT), '-std=c++20', '-Wall', '-Wextra', '-Wno-sign-compare',
+                       '-Wno-unused-const-variable', '-Wno-missing-field-initializers',
+                       str(cpp), '-o', str(binary)]
+        subprocess.run(command, check=True)
         for case in cases:
             result = subprocess.run([str(binary), case], capture_output=True, text=True)
             print(f'{"PASS" if result.returncode == 0 else "FAIL"}: {case}')

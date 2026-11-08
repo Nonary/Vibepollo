@@ -64,6 +64,7 @@
   #include "display_helper_integration.h"
   #include "remote_display_topology.h"
 #endif
+#include "paused_app_monitor.h"
 #ifdef _WIN32
   #include "config_playnite.h"
   #include "platform/windows/dualsense_launch_policy.h"
@@ -97,6 +98,7 @@
   #include <unistd.h>
 #endif
 #include "builtin_virtual_display.h"
+#include "session_display_policy.h"
 #include "httpcommon.h"
 #include "nvhttp.h"
 #include "prep_command_lifetime.h"
@@ -1274,6 +1276,7 @@ namespace proc {
     }
 
     ~deinit_t() {
+      paused_app_monitor_.stop();
       proc.terminate();
     }
 
@@ -1281,6 +1284,18 @@ namespace proc {
 #ifdef _WIN32
     std::unique_ptr<platf::deinit_t> playnite_integration_;
 #endif
+    paused_app_monitor_t paused_app_monitor_ {
+      [] {
+        try {
+          proc.poll_paused_app();
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "Paused app monitor: liveness check failed: " << e.what();
+        } catch (...) {
+          BOOST_LOG(error) << "Paused app monitor: liveness check failed.";
+        }
+      },
+      3s,
+    };
   };
 
   std::unique_ptr<platf::deinit_t> init() {
@@ -1535,6 +1550,7 @@ namespace proc {
     // resolve the same app/client display policy locally before any VDD exists.
     bool should_use_virtual_display = launch_session->virtual_display;
     if (!launch_session->virtual_display_request_resolved) {
+      proc::display_policy::apply_builtin_virtual_display(*launch_session, _app.uuid, config::video);
       using dd_config_option_e = config::video_t::dd_t::config_option_e;
       const auto dd_config_option =
         launch_session->dd_config_option_override.value_or(config::video.dd.configuration_option);
@@ -2758,8 +2774,32 @@ namespace proc {
   }
 
   int proc_t::running() {
+    return observe_app(false);
+  }
+
+  void proc_t::poll_paused_app() {
+    (void) observe_app(true);
+  }
+
+  int proc_t::observe_app(bool paused_only) {
     host_stream_control::activity_guard_t activity;
     if (!activity) return current_app_id();
+    return observe_app_liveness(
+      nvhttp::stream_lifecycle_mutex(),
+      [this] { return current_app_id(); },
+      [this, paused_only] {
+        if (!paused_only) return true;
+        // Never start a login/controller-deferred app without a client. Check
+        // under the same gate as execute(), not before acquiring that gate.
+        if (current_app_id() <= 0) return false;
+        return paused_app_poll_allowed(current_app_id(), is_launch_deferred(),
+                                       stream::session::has_capture_runtime_owner());
+      },
+      [this] { return running_locked(); }
+    );
+  }
+
+  int proc_t::running_locked() {
 #ifndef _WIN32
     // Detached launchers still need collecting, but other children retain
     // their own wait status (Boost, provider scans and GLib helpers).
@@ -2770,13 +2810,6 @@ namespace proc {
 
 #ifdef _WIN32
     if (_deferred_launch) {
-      // Discovery and the control thread can observe readiness together.
-      // Admit exactly one launch/cleanup owner without blocking discovery
-      // behind another stream lifecycle operation.
-      std::unique_lock deferred_lock {nvhttp::stream_lifecycle_mutex(), std::try_to_lock};
-      if (!deferred_lock.owns_lock() || !_deferred_launch) {
-        return _app_id;
-      }
       if (platf::is_running_as_system()) {
         HANDLE user_token = platf::dxgi::retrieve_users_token(false);
         if (!user_token) {
@@ -2933,16 +2966,6 @@ namespace proc {
 
     // Perform cleanup actions now if needed
     if (_process) {
-      std::unique_lock<std::mutex> stream_lifecycle_lock {nvhttp::stream_lifecycle_mutex(), std::try_to_lock};
-      if (!stream_lifecycle_lock.owns_lock()) {
-        // Teardown is already in flight on another thread. Blocking here
-        // parks the caller - including the single serverinfo worker, which
-        // made the host undiscoverable for the whole teardown tail
-        // (vibepollo#326). The gate owner performs the cleanup; report
-        // not-running without waiting on it.
-        BOOST_LOG(debug) << "[running] App exited but stream teardown is already in flight; deferring cleanup to the gate owner.";
-        return 0;
-      }
       BOOST_LOG(info) << "[running] _process.running() is false; calling terminate(). App exited with code ["sv << _process.native_exit_code() << "] for app '" << _app.name << "' (id=" << _app_id << ")";
       // running() owns the lifecycle gate above; prevent terminate() from
       // acquiring the non-recursive mutex a second time.
@@ -3456,6 +3479,10 @@ namespace proc {
     _app_launch_time = {};
     _app_id = -1;
 #ifdef _WIN32
+    // A suspended application owns its limiter independently of RTSP/WebRTC.
+    // Drop that lifetime under the stream lifecycle gate before restoring config;
+    // live transports still defer provider restoration until their final stop.
+    platf::frame_limiter_streaming_stop(platf::frame_limiter_owner::application);
     platf::dualsense_usbip_gamepad::set_application_active(false);
 #endif
     _app_name.clear();

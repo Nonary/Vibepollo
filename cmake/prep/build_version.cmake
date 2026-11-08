@@ -172,7 +172,7 @@ if(DEFINED PROJECT_VERSION)
     set(PROJECT_VERSION_FULL "${PROJECT_VERSION}")
     if(NOT PROJECT_VERSION_FULL MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?(\\+[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$")
         message(FATAL_ERROR
-            "Invalid Vibeshine build version '${PROJECT_VERSION_FULL}'. Expected a numeric "
+            "Invalid Vibepollo build version '${PROJECT_VERSION_FULL}'. Expected a numeric "
             "major.minor.patch version with optional prerelease/build metadata.")
     endif()
     string(REGEX REPLACE "[-+].*$" "" PROJECT_VERSION_NUMERIC "${PROJECT_VERSION}")
@@ -185,6 +185,28 @@ else()
     set(PROJECT_VERSION_NUMERIC "0.0.0")
     set(PROJECT_VERSION_PRERELEASE "")
 endif()
+
+# A release's channel is embedded in the binary so it remains available offline.
+# CI supplies BUILD_CHANNEL for numeric releases; suffix inference preserves older
+# release and developer builds when the input is absent.
+if(DEFINED ENV{BUILD_CHANNEL} AND NOT "$ENV{BUILD_CHANNEL}" STREQUAL "")
+    set(BUILD_CHANNEL "$ENV{BUILD_CHANNEL}")
+endif()
+if(DEFINED BUILD_CHANNEL AND NOT "${BUILD_CHANNEL}" STREQUAL "")
+    string(TOLOWER "${BUILD_CHANNEL}" PROJECT_BUILD_CHANNEL)
+elseif(PROJECT_VERSION_FULL MATCHES "-(daily|nightly)[.]")
+    set(PROJECT_BUILD_CHANNEL "nightly")
+elseif(PROJECT_VERSION_PRERELEASE MATCHES "^-stable([.+-]|$)")
+    set(PROJECT_BUILD_CHANNEL "stable")
+elseif(PROJECT_VERSION_PRERELEASE MATCHES "^-")
+    set(PROJECT_BUILD_CHANNEL "prerelease")
+else()
+    set(PROJECT_BUILD_CHANNEL "legacy")
+endif()
+if(NOT PROJECT_BUILD_CHANNEL MATCHES "^(stable|nightly|prerelease|legacy)$")
+    message(FATAL_ERROR "Invalid BUILD_CHANNEL '${PROJECT_BUILD_CHANNEL}'; expected stable, nightly, prerelease or legacy")
+endif()
+message("PROJECT_BUILD_CHANNEL: ${PROJECT_BUILD_CHANNEL}")
 
 # 0.0.0 sorts below every real release, so a package built from it installs over
 # a released one as an MSI downgrade. That is the riskiest replacement path and
@@ -306,6 +328,7 @@ list(APPEND SUNSHINE_DEFINITIONS PROJECT_VERSION_PATCH="${PROJECT_VERSION_PATCH}
 list(APPEND SUNSHINE_DEFINITIONS RC_VERSION_BUILD=${RC_VERSION_BUILD})
 list(APPEND SUNSHINE_DEFINITIONS RC_VERSION_REVISION=${RC_VERSION_REVISION})
 list(APPEND SUNSHINE_DEFINITIONS PROJECT_VERSION_PRERELEASE="${PROJECT_VERSION_PRERELEASE}")
+list(APPEND SUNSHINE_DEFINITIONS PROJECT_BUILD_CHANNEL="${PROJECT_BUILD_CHANNEL}")
 list(APPEND SUNSHINE_DEFINITIONS PROJECT_VERSION_COMMIT="${GITHUB_COMMIT}")
 list(APPEND SUNSHINE_DEFINITIONS PROJECT_VERSION_BRANCH="${PROJECT_VERSION_BRANCH}")
 

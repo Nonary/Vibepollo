@@ -269,8 +269,6 @@ const filteredDevices = computed(() => {
   return list;
 });
 
-const PERMISSION_VIEW = 0x02000000;
-const PERMISSION_LAUNCH = 0x04000000;
 const PERMISSION_ALL = 0x071f1f00;
 
 function permissionMask(device: PairedDevice): number {
@@ -278,8 +276,8 @@ function permissionMask(device: PairedDevice): number {
   return Number.isFinite(parsed) ? parsed & PERMISSION_ALL : 0;
 }
 
-function canViewStream(device: PairedDevice): boolean {
-  return Boolean(permissionMask(device) & (PERMISSION_VIEW | PERMISSION_LAUNCH));
+function hasClientAccess(device: PairedDevice): boolean {
+  return device.enabled && permissionMask(device) !== 0;
 }
 
 const hasDeviceFilters = computed(
@@ -292,9 +290,9 @@ function clearDeviceFilters(): void {
 }
 
 const deviceCounts = computed(() => ({
-  streaming: devices.value.filter((device) => device.connected && canViewStream(device)).length,
-  blocked: devices.value.filter((device) => !canViewStream(device)).length,
-  offline: devices.value.filter((device) => !device.connected && canViewStream(device)).length,
+  streaming: devices.value.filter((device) => device.connected && hasClientAccess(device)).length,
+  blocked: devices.value.filter((device) => !hasClientAccess(device)).length,
+  offline: devices.value.filter((device) => !device.connected && hasClientAccess(device)).length,
 }));
 
 const confirmTitle = computed(() => {
@@ -503,12 +501,17 @@ async function loadHdrProfiles(force = false): Promise<void> {
   }
 }
 
-async function loadDevices(silent = false): Promise<void> {
-  if (refreshing.value) return;
+let devicesLoadRevision = 0;
+let accessMutationPending = false;
+
+async function loadDevices(silent = false, force = false): Promise<void> {
+  if (!force && (refreshing.value || accessMutationPending)) return;
+  const revision = ++devicesLoadRevision;
   refreshing.value = true;
   if (!silent) error.value = '';
   try {
     const response = await apiGet<ClientsResponse>('/api/clients/list');
+    if (revision !== devicesLoadRevision) return;
     if (response.status === false) throw new Error(t('ui.devices.error.list_rejected'));
     const incoming = Array.isArray(response.named_certs)
       ? response.named_certs.map((device, index) => normalizeDevice(device, index))
@@ -521,6 +524,7 @@ async function loadDevices(silent = false): Promise<void> {
     devices.value = reconcileStable(devices.value, incoming);
     if (!silent) notice.value = '';
   } catch (cause) {
+    if (revision !== devicesLoadRevision) return;
     error.value =
       cause instanceof ApiError
         ? t('ui.devices.error.load')
@@ -528,13 +532,42 @@ async function loadDevices(silent = false): Promise<void> {
           ? cause.message
           : t('ui.devices.error.load');
   } finally {
-    refreshing.value = false;
-    loading.value = false;
+    if (revision === devicesLoadRevision) {
+      refreshing.value = false;
+      loading.value = false;
+    }
+  }
+}
+
+async function toggleEnabled(device: PairedDevice, event: Event): Promise<void> {
+  (event.target as HTMLInputElement).checked = device.enabled;
+  if (busyUuid.value) return;
+  busyUuid.value = device.uuid;
+  accessMutationPending = true;
+  ++devicesLoadRevision; // Fence a list request that started before this mutation.
+  error.value = '';
+  try {
+    const response = await apiPost<MutationResponse>('/api/clients/update', {
+      uuid: device.uuid,
+      enabled: !device.enabled,
+    });
+    if (!response.status) throw new Error('client-update-rejected');
+  } catch {
+    error.value = t('_common.error');
+  } finally {
+    // Failed revocation saves still disable access in memory. Keep controls
+    // busy through readback and preserve dirty drafts through syncDrafts.
+    try {
+      await loadDevices(true, true);
+    } finally {
+      accessMutationPending = false;
+      busyUuid.value = '';
+    }
   }
 }
 
 function statusFor(device: PairedDevice): { label: string; tone: StatusTone } {
-  if (!canViewStream(device)) return { label: t('ui.devices.status.blocked'), tone: 'danger' };
+  if (!hasClientAccess(device)) return { label: t('ui.devices.status.blocked'), tone: 'danger' };
   if (device.connected) return { label: t('ui.devices.status.streaming'), tone: 'success' };
   return { label: t('clients.offline'), tone: 'neutral' };
 }
@@ -979,6 +1012,11 @@ onBeforeUnmount(() => {
                 <code>{{ device.uuid }}</code>
               </div>
               <div class="device-row__actions">
+                <label class="vs-button vs-button--tertiary">
+                  <input type="checkbox" :checked="device.enabled" :disabled="Boolean(busyUuid)"
+                    @change="toggleEnabled(device, $event)" />
+                  {{ t('_common.enabled') }}
+                </label>
                 <AppButton
                   :label="t('clients.disconnect')"
                   icon="stop"

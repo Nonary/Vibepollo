@@ -11,7 +11,8 @@ REPO = 'Nonary/vibeshine'
 
 
 def release(tag='daily-2026-10-10', **kwargs):
-    return dict(tag_name=tag, draft=False, prerelease=True, published_at='2026-10-10T12:00:00Z', assets=[], **kwargs)
+    return dict({'tag_name': tag, 'draft': False, 'prerelease': True,
+                 'published_at': '2026-10-10T12:00:00Z', 'assets': []}, **kwargs)
 
 
 class NightlyNotesTests(unittest.TestCase):
@@ -38,6 +39,21 @@ class NightlyNotesTests(unittest.TestCase):
         self.assertEqual(n.sequence(REPO, tag, tag, A), 20261011)
         for bad_version, bad_source in ((tag + '+extra', A), (tag, B)):
             with self.assertRaises(ValueError): n.sequence(REPO, tag, bad_version, bad_source)
+
+    def test_plain_numeric_nightly_tag_uses_exact_version_without_sequence(self):
+        tag = '2.3.4'
+        self.assertIsNone(n.sequence(REPO, tag, tag, A))
+        with self.assertRaises(ValueError): n.sequence(REPO, tag, '2.3.5', A)
+        for bad_tag in ('02.3.4', '2.3', '2.3.4-nightly.1'):
+            with self.assertRaises(ValueError): n.sequence(REPO, bad_tag, bad_tag, A)
+        notes, metadata = n.make_notes(REPO, tag, tag, A, None, [])
+        self.assertEqual(metadata['schema_version'], 1)
+        self.assertEqual(metadata['channel'], 'nightly')
+        self.assertEqual(metadata['tag'], tag)
+        self.assertEqual(metadata['version'], tag)
+        self.assertEqual(metadata['source_commit'], A)
+        self.assertNotIn('nightly_sequence', metadata)
+        self.assertIn('<details>', notes)
 
     def test_semver_tags_preserve_legacy_sequence_and_bind_exact_core(self):
         tag = '2.0.1-daily.d20261011.3'
@@ -70,6 +86,33 @@ class NightlyNotesTests(unittest.TestCase):
         failed = dict(good, tag_name='daily-2026-10-13', draft=True)
         found = n.previous_release(REPO, [draft, stable, failed, manual, good], lambda a: {}, lambda tag: A)
         self.assertEqual(found, {'tag': good['tag_name'], 'source_commit': A})
+
+    def test_published_numeric_nightly_requires_complete_metadata_identity(self):
+        r = release('2.3.4', assets=[{'name': 'nightly-metadata.json'}])
+        data = dict(schema_version=1, channel='nightly', tag='2.3.4', version='2.3.4',
+                    source_commit=A)
+        found = n.previous_release(REPO, [r], lambda a: data, lambda tag: A)
+        self.assertEqual(found, {'tag': '2.3.4', 'source_commit': A, 'version': '2.3.4'})
+        for field, value in (('schema_version', 2), ('tag', '2.3.5'), ('version', '2.3.5'),
+                             ('source_commit', 'not-a-sha')):
+            invalid = dict(data, **{field: value})
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                n.previous_release(REPO, [r], lambda a: invalid, lambda tag: A)
+        with self.assertRaisesRegex(ValueError, 'tag does not match'):
+            n.previous_release(REPO, [r], lambda a: data, lambda tag: B)
+
+    def test_published_plain_numeric_tag_without_metadata_is_not_a_nightly_baseline(self):
+        r = release('2.3.4')
+        self.assertIsNone(n.previous_release(REPO, [r], lambda a: {}, lambda tag: A))
+
+    def test_legacy_metadata_returns_validated_version_and_stable_is_ignored(self):
+        r = release('daily-2026-10-10', assets=[{'name': 'nightly-metadata.json'}])
+        version = '1.2.3-daily.d20261010+' + A[:12]
+        data = dict(schema_version=1, channel='nightly', tag=r['tag_name'], version=version,
+                    source_commit=A, nightly_sequence=20261010)
+        stable = dict(r, tag_name='2.0.0', prerelease=False)
+        found = n.previous_release(REPO, [stable, r], lambda a: data, lambda tag: A)
+        self.assertEqual(found, {'tag': r['tag_name'], 'source_commit': A, 'version': version})
 
     def test_first_nightly_claims_no_delta(self):
         notes, data = self.notes()

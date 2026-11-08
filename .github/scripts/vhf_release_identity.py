@@ -15,6 +15,10 @@ RELEASES = {
         "jlobue10/libvirtualgamepad", "v0.1.0-beta.155",
         "56be2b6c18162f88c38db65b062c86d6d7eb596b6eb77dd19da721a24cb19b08",
         "10/24/2026,0.1.0.86", "2"),
+    "5a3e4d222dd0b87556d4c564eb58b450ab579fb0": (
+        "Nonary/libvirtualgamepad", "v0.1.0-beta.10",
+        "650cf8281d95d1fb9388f8117cadeab195727e3dcb4105607df45080b15d312c",
+        "10/29/2026,0.1.0.92", "2"),
 }
 FIELDS = {
     "REPOSITORY": "VHF_REPOSITORY",

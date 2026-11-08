@@ -42,6 +42,8 @@ code = r'''
 #include <vector>
 #include "thread_safe_test.h"
 #include "controller_speaker_pcm.h"
+#include "platform/windows/vhf_keyboard_mouse_policy.h"
+namespace vhf_keyboard_mouse = platf::vhf_keyboard_mouse;
 using namespace std::literals;
 #define BOOST_LOG(level) std::clog
 using DWORD = unsigned;
@@ -78,6 +80,8 @@ struct impl_t {
     client_t client;
     recovery_t recovery;
     bool recovery_failure_logged = false;
+    bool keyboard_mouse_owned = false, keyboard_mouse_faulted = false;
+    bool keyboard_mouse_teardown_confirmed = false, keyboard_mouse_recovery_needs_probe = false;
     void observe_status(DWORD) {}
 };
 struct vhf_gamepad_t { impl_t* impl; void free(int); };
@@ -134,6 +138,18 @@ int main() {
     empty.slots[2].active = true; empty.active_count = 1;
     host.free(2);
     check(empty.active_count == 0, "a controller with no feedback queue can retire");
+    impl_t shared;
+    vhf_gamepad_t shared_host {&shared};
+    shared.slots[0].active = true; shared.active_count = 1;
+    shared.keyboard_mouse_owned = true;
+    shared_host.free(0);
+    check(shared.active_count == 0 && shared.client.closes == 0,
+          "retiring the final controller retains an owned keyboard/mouse control handle");
+    shared.slots[0].active = true; shared.active_count = 1;
+    shared.keyboard_mouse_owned = false; shared.keyboard_mouse_faulted = true;
+    shared_host.free(0);
+    check(shared.client.closes == 1 && shared.keyboard_mouse_recovery_needs_probe,
+          "an unconfirmed keyboard/mouse teardown requires a probe after control closes");
     std::cout << checks << " checks, " << failures << " failures\n";
     return failures != 0;
 }
@@ -143,7 +159,9 @@ with tempfile.TemporaryDirectory(prefix='vhf-retirement-') as directory:
     work = Path(directory)
     (work / 'thread_safe_test.h').write_text(read('src/thread_safe.h'))
     (work / 'test.cpp').write_text(code)
-    args = ['g++', '-std=c++20', '-fsanitize=address,undefined', '-g', '-I' + str(ROOT / 'src')]
+    args = ['g++', '-std=c++20', '-g', '-iquote' + str(ROOT / 'src')]
+    if os.name != 'nt':
+        args += ['-fsanitize=address,undefined']
     if os.getenv('AUDIT_JSON_INCLUDE'):
         args += ['-I' + os.environ['AUDIT_JSON_INCLUDE']]
     subprocess.run(args + [str(work / 'test.cpp'), '-pthread', '-o', str(work / 'test')], check=True)

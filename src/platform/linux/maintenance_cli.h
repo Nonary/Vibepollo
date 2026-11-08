@@ -16,12 +16,11 @@
 namespace platf::linux_cli {
   inline constexpr const char *help =
     "Linux maintenance (native packages):\n"
-    "  vibepollo paths                    Show settings and program locations\n"
-    "  vibepollo status                   Show machine service status\n"
+    "  vibeshine paths                    Show settings and program locations\n"
+    "  vibeshine status                   Show machine service status\n"
     "  sudo vibepollo logs                 Show recent service logs\n"
     "  sudo vibepollo configure USER       Select the desktop owner and migrate settings\n"
     "  sudo vibepollo migrate              Prepare existing settings after an upgrade\n"
-    "  sudo vibepollo authorize-commands   Approve commands in the application list\n"
     "  sudo vibepollo driver install       Install/update the virtual-display driver\n"
     "  sudo vibepollo driver status        Show virtual-display driver status\n"
     "  sudo vibepollo reset                Erase settings and pairings; ends active streams\n";
@@ -40,6 +39,8 @@ namespace platf::linux_cli {
         return std::vector<const char *> {machine, "configure", argv[2]};
       }
     } else if (name == "migrate" || name == "authorize-commands" || name == "reset") {
+      // authorize-commands is retired; the helper explains that commands now
+      // follow their own "Run elevated" setting instead of an allowlist.
       if (argc == 2) {
         return std::vector<const char *> {machine, name == "migrate" ? "configure-auto" : argv[1]};
       }

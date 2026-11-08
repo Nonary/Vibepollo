@@ -230,6 +230,14 @@ namespace nvhttp {
   bool get_client_always_use_virtual_display(const std::string &uuid);
 
   /**
+   * @brief Enable or disable a client.
+   * @param uuid The UUID of the client.
+   * @param enabled Whether the client should be enabled.
+   * @return true if the client was found and updated.
+   */
+  bool set_client_enabled(std::string_view uuid, bool enabled);
+
+  /**
    * @brief Get all paired clients.
    * @return The list of all paired clients.
    * @examples

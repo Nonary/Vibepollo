@@ -9,6 +9,7 @@
 #include <Windows.h>
 
 // standard includes
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -31,6 +32,7 @@
 #include "dualsense_usbip_gamepad.h"
 #include "dualsense_usbip_gamepad_policy.h"
 #include "vhf_gamepad_policy.h"
+#include "vhf_keyboard_mouse_policy.h"
 
 #ifdef __MINGW32__
 // DECLARE_HANDLE(HSYNTHETICPOINTERDEVICE);
@@ -513,6 +515,11 @@ namespace platf {
     vigem_t *vigem;
     vhf_gamepad_t *vhf;
     usbip_gamepad_t *usbip;
+    bool vhf_keyboard_mouse {false};
+    std::uint8_t vhf_held_buttons {0};
+    // Pin a key's physical usage (or its Win32 fallback) from press to release,
+    // even if the active keyboard layout changes while it is held.
+    vhf_keyboard_mouse::keyboard_routes vhf_key_routes {};
 
     // Slots are allocated one at a time, so both backends can own gamepads simultaneously.
     std::array<gamepad_backend_e, MAX_GAMEPADS> gamepad_backend {};
@@ -573,6 +580,10 @@ namespace platf {
     // ViGEmBus should be reported.
     raw.vhf = new vhf_gamepad_t {};
     const bool vhf_available = raw.vhf->probe();
+    if (config::input.keyboard_mouse_backend == "auto"sv ||
+        config::input.keyboard_mouse_backend == "vhf"sv) {
+      raw.vhf_keyboard_mouse = raw.vhf->open_keyboard_mouse();
+    }
 
     raw.usbip = new usbip_gamepad_t {};
     const bool usbip_available = raw.usbip->probe();
@@ -613,6 +624,15 @@ namespace platf {
     BOOST_LOG(error) << "Couldn't send input"sv;
   }
 
+  // Do not replay the event that failed. A later event may use SendInput once
+  // the driver has confirmed synchronous removal of the VHF child.
+  static bool use_vhf_keyboard_mouse(input_raw_t *raw) {
+    if (raw->vhf_keyboard_mouse && raw->vhf->keyboard_mouse_fallback_safe()) {
+      raw->vhf_keyboard_mouse = false;
+    }
+    return raw->vhf_keyboard_mouse;
+  }
+
   /**
    * @brief Calls InjectSyntheticPointerInput() and switches input desktops if required.
    * @details Must only be called if InjectSyntheticPointerInput() is available.
@@ -651,10 +671,23 @@ namespace platf {
     mi.dx = scaled_x;
     mi.dy = scaled_y;
 
+    auto *raw = (input_raw_t *) input.get();
+    if (use_vhf_keyboard_mouse(raw)) {
+      if (raw->vhf->keyboard_mouse_absolute(
+            static_cast<std::uint16_t>(std::clamp<long>(scaled_x, 0, 65535)),
+            static_cast<std::uint16_t>(std::clamp<long>(scaled_y, 0, 65535)))) return;
+      (void) raw->vhf->keyboard_mouse_fallback([&] { send_input(i); });
+      return;
+    }
     send_input(i);
   }
 
   void move_mouse(input_t &input, int deltaX, int deltaY) {
+    auto *raw = (input_raw_t *) input.get();
+    if (use_vhf_keyboard_mouse(raw)) {
+      raw->vhf->keyboard_mouse_relative(deltaX, deltaY, 0, 0);
+      return;
+    }
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -682,6 +715,18 @@ namespace platf {
   }
 
   void button_mouse(input_t &input, int button, bool release) {
+    auto *raw = (input_raw_t *) input.get();
+    const auto hid_button = vhf_keyboard_mouse::mouse_button(button);
+    const auto mask = hid_button ? static_cast<std::uint8_t>(1u << (hid_button - 1)) : 0;
+    if (use_vhf_keyboard_mouse(raw) && hid_button != 0) {
+      if (release) raw->vhf_held_buttons &= ~mask;
+      else raw->vhf_held_buttons |= mask;
+      raw->vhf->keyboard_mouse_button(hid_button, !release);
+      return;
+    }
+    // The virtual child has already been removed. Do not inject an unmatched
+    // release (or repeat) for a button that belonged to that child.
+    if (vhf_keyboard_mouse::consume_removed_button(raw->vhf_held_buttons, mask, release)) return;
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -705,6 +750,11 @@ namespace platf {
   }
 
   void scroll(input_t &input, int distance) {
+    auto *raw = (input_raw_t *) input.get();
+    if (use_vhf_keyboard_mouse(raw)) {
+      raw->vhf->keyboard_mouse_relative(0, 0, distance, 0);
+      return;
+    }
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -717,6 +767,11 @@ namespace platf {
   }
 
   void hscroll(input_t &input, int distance) {
+    auto *raw = (input_raw_t *) input.get();
+    if (use_vhf_keyboard_mouse(raw)) {
+      raw->vhf->keyboard_mouse_relative(0, 0, 0, distance);
+      return;
+    }
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -728,7 +783,59 @@ namespace platf {
     send_input(i);
   }
 
+  bool mouse_requires_scroll_ticks(input_t &input) {
+    return use_vhf_keyboard_mouse((input_raw_t *) input.get());
+  }
+
+  bool keyboard_uses_native_repeat(input_t &input, std::uint16_t key) {
+    auto *raw = (input_raw_t *) input.get();
+    use_vhf_keyboard_mouse(raw);
+    const auto route = raw->vhf_key_routes.keys[key];
+    // A key from a removed VHF child (or one suppressed during teardown) is
+    // still logically held by the client. Do not emit software repeats or
+    // temporary modifiers until its matching release arrives.
+    return route != 0 && route != vhf_keyboard_mouse::win32_fallback;
+  }
+
   void keyboard_update(input_t &input, uint16_t modcode, bool release, uint8_t flags) {
+    auto *raw = (input_raw_t *) input.get();
+    const bool vhf_active = use_vhf_keyboard_mouse(raw);
+    const bool first_press = !release && raw->vhf_key_routes.keys[modcode] == 0;
+    if (vhf_active) {
+      const auto route = raw->vhf_key_routes.keys[modcode];
+      if (route == vhf_keyboard_mouse::suppressed_fallback) {
+        if (release) raw->vhf_key_routes.keys[modcode] = 0;
+        return;
+      }
+      std::uint16_t usage = 0;
+      if (!release && route == 0) {
+        const auto consumer = vhf_keyboard_mouse::consumer_usage(modcode);
+        if (consumer && raw->vhf->keyboard_mouse_consumer_supported()) {
+          usage = vhf_keyboard_mouse::consumer_route | consumer;
+        } else {
+          usage = (flags & SS_KBE_FLAG_NON_NORMALIZED) ?
+                    vhf_keyboard_mouse::scan_usage(static_cast<std::uint16_t>(MapVirtualKeyW(modcode, MAPVK_VK_TO_VSC_EX))) :
+                    vhf_keyboard_mouse::key_usage(modcode);
+        }
+      }
+      const auto transition = raw->vhf_key_routes.update(modcode, release, usage);
+      if (transition.route != 0 && transition.route != vhf_keyboard_mouse::win32_fallback) {
+        if (transition.emit) {
+          if (transition.route & vhf_keyboard_mouse::consumer_route) {
+            raw->vhf->keyboard_mouse_consumer(transition.route & 0xff, !release);
+          } else {
+            raw->vhf->keyboard_mouse_key(transition.route, !release);
+          }
+        }
+        return;
+      }
+    }
+    else {
+      // Held VHF keys have been released by child removal. Suppress their
+      // remaining repeats and key-up packets rather than replaying them via
+      // SendInput. A key originally routed to SendInput still needs its up.
+      if (vhf_keyboard_mouse::consume_removed_key(raw->vhf_key_routes, modcode, release)) return;
+    }
     INPUT i {};
     i.type = INPUT_KEYBOARD;
     auto &ki = i.ki;
@@ -780,7 +887,15 @@ namespace platf {
       ki.dwFlags |= KEYEVENTF_KEYUP;
     }
 
-    send_input(i);
+    // An already-injected fallback key must still be released during teardown.
+    // Pin a suppressed first press until its matching release arrives.
+    if (vhf_active && !release) {
+      if (!raw->vhf->keyboard_mouse_fallback([&] { send_input(i); }) && first_press) {
+        raw->vhf_key_routes.keys[modcode] = vhf_keyboard_mouse::suppressed_fallback;
+      }
+    } else {
+      send_input(i);
+    }
   }
 
   struct client_input_raw_t;
@@ -1328,6 +1443,9 @@ namespace platf {
   }
 
   void unicode(input_t &input, char *utf8, int size) {
+    auto *raw = (input_raw_t *) input.get();
+    const bool vhf_active = use_vhf_keyboard_mouse(raw);
+
     // We can do no worse than one UTF-16 character per byte of UTF-8
     std::vector<WCHAR> wide(size);
 
@@ -1336,22 +1454,29 @@ namespace platf {
       return;
     }
 
-    // Send all key down events
-    for (int i = 0; i < chars; i++) {
-      INPUT input {};
-      input.type = INPUT_KEYBOARD;
-      input.ki.wScan = wide[i];
-      input.ki.dwFlags = KEYEVENTF_UNICODE;
-      send_input(input);
-    }
+    auto send_unicode = [&] {
+      // Send all key down events
+      for (int i = 0; i < chars; i++) {
+        INPUT input {};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wScan = wide[i];
+        input.ki.dwFlags = KEYEVENTF_UNICODE;
+        send_input(input);
+      }
 
-    // Send all key up events
-    for (int i = 0; i < chars; i++) {
-      INPUT input {};
-      input.type = INPUT_KEYBOARD;
-      input.ki.wScan = wide[i];
-      input.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
-      send_input(input);
+      // Send all key up events
+      for (int i = 0; i < chars; i++) {
+        INPUT input {};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wScan = wide[i];
+        input.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+        send_input(input);
+      }
+    };
+    if (vhf_active) {
+      (void) raw->vhf->keyboard_mouse_fallback(send_unicode);
+    } else {
+      send_unicode();
     }
   }
 

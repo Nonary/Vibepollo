@@ -1521,6 +1521,10 @@ namespace confighttp {
 #endif
   }
 
+  AuthResult check_remote_access(const std::string &remote_address) {
+    return make_request_auth_policy().check_remote(remote_address);
+  }
+
   namespace {
     [[maybe_unused]] std::string extract_cookie_value(const SimpleWeb::CaseInsensitiveMultimap &headers, std::string_view name) {
       if (auto cookie_it = headers.find("Cookie"); cookie_it != headers.end()) {

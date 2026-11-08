@@ -13,7 +13,7 @@ class ProducerIdentityTests(unittest.TestCase):
         return "\n".join(f'set(SUNSHINE_VHF_GAMEPAD_{field}\n "{value}" CACHE STRING "pin")'
                          for field, value in zip(identity.FIELDS, values))
 
-    def test_audited_legacy_and_steam_sources_keep_their_own_release(self):
+    def test_audited_sources_keep_their_own_release(self):
         for source, release in identity.RELEASES.items():
             with self.subTest(source=source):
                 selected = identity.select_identity(source, self.contract(source))
@@ -22,11 +22,11 @@ class ProducerIdentityTests(unittest.TestCase):
                 self.assertEqual(selected["VHF_ARCHIVE_SHA256"], release[2])
 
     def test_every_mismatched_pin_fails_closed(self):
-        source = "09e635cc3570268e7cd2cbda2a6a39d4efa6e174"
-        contract = self.contract(source)
-        for value in (*identity.RELEASES[source], source):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                identity.select_identity(source, contract.replace(f'"{value}"', '"different"'))
+        for source in identity.RELEASES:
+            contract = self.contract(source)
+            for value in (*identity.RELEASES[source], source):
+                with self.subTest(source=source, value=value), self.assertRaises(ValueError):
+                    identity.select_identity(source, contract.replace(f'"{value}"', '"different"'))
 
     def test_missing_duplicate_and_interpolated_pins_fail_closed(self):
         source = next(iter(identity.RELEASES))

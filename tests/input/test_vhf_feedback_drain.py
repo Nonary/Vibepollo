@@ -52,6 +52,8 @@ code = r'''
 #include <vector>
 #include "thread_safe_test.h"
 #include "controller_speaker_pcm.h"
+#include "platform/windows/vhf_keyboard_mouse_policy.h"
+namespace vhf_keyboard_mouse = platf::vhf_keyboard_mouse;
 using namespace std::literals;
 #define BOOST_LOG(level) std::clog
 using DWORD = unsigned;
@@ -114,6 +116,8 @@ struct impl_t {
     client_t client;
     recovery_t recovery;
     bool recovery_failure_logged = false;
+    bool keyboard_mouse_owned = false, keyboard_mouse_faulted = false;
+    bool keyboard_mouse_teardown_confirmed = false, keyboard_mouse_recovery_needs_probe = false;
     void observe_status(DWORD) {}
 };
 struct vhf_gamepad_t { impl_t* impl; void free(int); };
@@ -230,8 +234,10 @@ with tempfile.TemporaryDirectory(prefix='vhf-drain-') as directory:
     queue_source = read('src/thread_safe.h')
     (work / 'thread_safe_test.h').write_text(queue_source)
     (work / 'test.cpp').write_text(code)
-    args = ['g++', '-std=c++20', '-fsanitize=address,undefined', '-g', '-I' + str(ROOT / 'src'),
+    args = ['g++', '-std=c++20', '-g', '-iquote' + str(ROOT / 'src'),
             '-DQUEUE_HAS_TRY_POP=' + ('1' if 'try_pop()' in queue_source else '0')]
+    if os.name != 'nt':
+        args += ['-fsanitize=address,undefined']
     if os.getenv('AUDIT_JSON_INCLUDE'):
         args += ['-I' + os.environ['AUDIT_JSON_INCLUDE']]
     subprocess.run(args + [str(work / 'test.cpp'), '-pthread', '-o', str(work / 'test')], check=True)

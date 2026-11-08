@@ -48,6 +48,104 @@ TEST(RemoteDisplayTopology, NormalizesMalformedPersistenceButKeepsUnavailableTyp
   EXPECT_EQ(remote_display_topology::normalize_layout(saved), saved);
 }
 
+TEST(RemoteDisplayTopology, RemovingClientCleansItsPlacementAndDirectClientAnchors) {
+  const auto physical = nlohmann::json {{"anchor_kind", "physical"}, {"anchor_id", "old"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", 0}};
+  const auto direct = nlohmann::json {{"anchor_kind", "client"}, {"anchor_id", "old"}, {"edge", "below"}, {"alignment", "center"}, {"gap_px", 10}, {"primary", true}};
+  const auto indirect = nlohmann::json {{"anchor_kind", "client"}, {"anchor_id", "direct"}, {"edge", "left"}, {"alignment", "end"}, {"gap_px", 0}};
+  auto preserved = direct;
+  preserved["preserve"] = true;
+  const auto before = layout({{"old", physical}, {"direct", direct}, {"indirect", indirect}, {"physical", physical}, {"preserved", preserved}});
+  const auto after = remote_display_topology::remove_client_from_layout(before, "old");
+
+  EXPECT_FALSE(after["placements"].contains("old"));
+  ASSERT_TRUE(after["placements"].contains("direct"));
+  EXPECT_EQ(after["placements"]["direct"]["anchor_id"], "");
+  EXPECT_EQ(after["placements"]["direct"]["anchor_kind"], "physical");
+  EXPECT_TRUE(after["placements"]["direct"]["automatic_fallback"]);
+  EXPECT_TRUE(after["placements"]["direct"]["preserve"]);
+  EXPECT_TRUE(after["placements"]["direct"]["primary"]);
+  EXPECT_EQ(after["placements"]["indirect"], indirect);
+  EXPECT_EQ(after["placements"]["physical"], physical);
+  EXPECT_TRUE(after["placements"]["preserved"]["preserve"]);
+  EXPECT_EQ(after["placements"]["preserved"]["anchor_id"], "");
+  EXPECT_FALSE(after["placements"]["preserved"].contains("automatic_fallback"));
+  std::string error;
+  EXPECT_TRUE(remote_display_topology::validate_layout(after, {"direct", "indirect", "physical", "preserved"}, {"old"}, error)) << error;
+
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_layout(after);
+  EXPECT_EQ(coordinator.snapshot({})["layout"], after);
+  // The saved JSON round-trip must not restore the old UUID or transfer its
+  // placement to a newly paired identity.
+  const auto reloaded = remote_display_topology::normalize_layout(nlohmann::json::parse(after.dump()));
+  EXPECT_EQ(reloaded, after);
+  EXPECT_FALSE(reloaded["placements"].contains("new"));
+  auto legacy = reloaded;
+  legacy["placements"]["direct"].erase("automatic_fallback");
+  EXPECT_TRUE(remote_display_topology::layout_schema_valid(legacy, error));
+  const auto saved_stream = coordinator.saved_stream_placement({.id = "direct", .active = true}, {});
+  EXPECT_FALSE(saved_stream.position.has_value());
+  EXPECT_TRUE(saved_stream.primary_requested);
+  EXPECT_EQ(remote_display_topology::remove_client_from_layout(after, "old"), after);
+}
+
+TEST(RemoteDisplayTopology, UnpairRetainsActiveDependentPrimaryAndIndirectAnchor) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<remote_display_topology::node_t> applied;
+  coordinator.set_physical_baseline({{.id = "physical", .physical = true, .active = true, .primary = true, .configured_mode = {1920, 1080, 60}}});
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [&applied](const auto &nodes) { applied = nodes; return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &id, const auto &) { return std::optional<std::string> {id}; },
+    .remove_owned_display = [](const auto &) { return true; },
+  });
+  const auto before = layout({
+    {"old", {{"anchor_kind", "physical"}, {"anchor_id", "physical"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", 0}}},
+    {"direct", {{"anchor_kind", "client"}, {"anchor_id", "old"}, {"edge", "below"}, {"alignment", "start"}, {"gap_px", 0}, {"primary", true}}},
+    {"indirect", {{"anchor_kind", "client"}, {"anchor_id", "direct"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", 0}}},
+  });
+  coordinator.set_layout(before);
+  ASSERT_TRUE(coordinator.activate_or_resume("old", "Old", {}, 1).ready);
+  ASSERT_TRUE(coordinator.activate_or_resume("direct", "Direct", {}, 1).ready);
+  ASSERT_TRUE(coordinator.activate_or_resume("indirect", "Indirect", {}, 1).ready);
+
+  const auto after = remote_display_topology::remove_client_from_layout(before, "old");
+  coordinator.set_layout(after);
+  coordinator.unpair_client("old");
+  const auto direct = std::find_if(applied.begin(), applied.end(), [](const auto &node) { return node.id == "direct"; });
+  const auto indirect = std::find_if(applied.begin(), applied.end(), [](const auto &node) { return node.id == "indirect"; });
+  ASSERT_NE(direct, applied.end());
+  ASSERT_NE(indirect, applied.end());
+  EXPECT_TRUE(direct->primary);
+  EXPECT_EQ(indirect->x, direct->x + direct->configured_mode.width);
+  EXPECT_EQ(coordinator.snapshot({})["layout"], after);
+
+  // Exercise the runtime reset used by erase-all; persistence is not under test here.
+  coordinator.set_layout(nlohmann::json {});
+  EXPECT_EQ(coordinator.snapshot({})["layout"], layout(nlohmann::json::object()));
+}
+
+TEST(RemoteDisplayTopology, DetachedPrimaryCountsForValidation) {
+  const auto detached = nlohmann::json {{"anchor_kind", "physical"}, {"anchor_id", ""}, {"edge", "right"}, {"alignment", "center"}, {"gap_px", 0}, {"primary", true}, {"preserve", true}, {"automatic_fallback", true}};
+  const auto other = nlohmann::json {{"anchor_kind", "physical"}, {"anchor_id", "path"}, {"edge", "right"}, {"alignment", "center"}, {"gap_px", 0}, {"primary", true}};
+  std::string error;
+  EXPECT_FALSE(remote_display_topology::validate_layout(layout({{"one", detached}, {"two", other}}), {"one", "two"}, {"path"}, error));
+  auto legacy_edited = detached;
+  legacy_edited["preserve"] = false;
+  legacy_edited["anchor_id"] = "path";
+  EXPECT_TRUE(remote_display_topology::validate_layout(layout({{"one", legacy_edited}}), {"one"}, {"path"}, error));
+  const auto normalized = remote_display_topology::normalize_layout(layout({{"one", legacy_edited}}));
+  EXPECT_FALSE(normalized["placements"]["one"].contains("automatic_fallback"));
+  EXPECT_TRUE(remote_display_topology::validate_layout(normalized, {"one"}, {"path"}, error));
+  auto malformed = detached;
+  malformed["automatic_fallback"] = "yes";
+  EXPECT_FALSE(remote_display_topology::layout_schema_valid(layout({{"one", malformed}}), error));
+}
+
+TEST(RemoteDisplayTopology, RemovingClientNormalizesMalformedLayout) {
+  EXPECT_EQ(remote_display_topology::remove_client_from_layout(nlohmann::json {}, "old"), layout(nlohmann::json::object()));
+}
+
 TEST(RemoteDisplayTopology, SupportsEveryEdgeAndAlignment) {
   for (const auto &edge : {"left", "right", "above", "below"}) for (const auto &alignment : {"start", "center", "end"}) {
     std::string error;
@@ -134,6 +232,443 @@ TEST(RemoteDisplayTopology, PlatformCanDowngradeHdrBeforeApplyAndReadiness) {
   ASSERT_TRUE(coordinator.reapply_composed_topology());
   EXPECT_TRUE(applied.hdr);
   EXPECT_TRUE(coordinator.snapshot({})["nodes"][0]["mode"]["hdr"]);
+}
+
+TEST(RemoteDisplayTopology, PostTopologyHdrConfirmationControlsCaptureAndRetainedResume) {
+  remote_display_topology::coordinator_t coordinator;
+  bool topology_applied = false;
+  bool hdr_available = false;
+  int creations = 0;
+  std::vector<bool> requested;
+  std::vector<bool> capture_modes;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&creations](const auto &, const auto &, const auto &) {
+      ++creations;
+      return true;
+    },
+    .apply_composed_topology = [&topology_applied](const auto &) {
+      topology_applied = true;
+      return true;
+    },
+    .finalize_mode = [&](const auto &id, auto &mode, bool allow_mutation) {
+      EXPECT_EQ(id, "client");
+      EXPECT_TRUE(topology_applied);
+      EXPECT_TRUE(allow_mutation);
+      requested.push_back(mode.hdr);
+      return !mode.hdr || hdr_available;
+    },
+    .exact_target_has_current_mode_and_dxgi = [&](const auto &, const auto &mode) {
+      capture_modes.push_back(mode.hdr);
+      return std::optional<std::string> {"Virtual-1"};
+    },
+  });
+
+  auto result = coordinator.activate_or_resume("client", "Display", {3840, 2160, 120, true}, 1);
+  ASSERT_FALSE(result.ready);
+  EXPECT_TRUE(result.retryable);
+  EXPECT_TRUE(capture_modes.empty());
+  ASSERT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_FALSE(coordinator.snapshot("client", 1).ready);
+
+  // A retained output must retry color setup on resume, even without creation.
+  hdr_available = true;
+  topology_applied = false;
+  result = coordinator.activate_or_resume("client", "Display", {3840, 2160, 120, true}, 2);
+  ASSERT_TRUE(result.ready);
+  EXPECT_TRUE(result.hdr_enabled);
+  EXPECT_TRUE(capture_modes.back());
+  EXPECT_EQ(creations, 1);
+
+  coordinator.transport_lost("client", 2);
+  topology_applied = false;
+  result = coordinator.activate_or_resume("client", "Display", {3840, 2160, 120, false}, 3);
+  ASSERT_TRUE(result.ready);
+  EXPECT_FALSE(result.hdr_enabled);
+  EXPECT_FALSE(capture_modes.back());
+  EXPECT_EQ(requested, (std::vector<bool> {true, true, false}));
+}
+
+TEST(RemoteDisplayTopology, ReadyMonitorRetryWaitsForTransportLossBeforeColorChanges) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<bool> mutations;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .finalize_mode = [&](const auto &, auto &mode, bool allow_mutation) {
+      mutations.push_back(allow_mutation);
+      // The retained source is SDR, so an HDR retry must not claim success.
+      mode.hdr = false;
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) { return std::optional<std::string> {"Virtual-1"}; },
+  });
+  ASSERT_TRUE(coordinator.activate_or_resume("client", "Monitor", {3840, 2160, 120, false}, 1).ready);
+  const auto retried = coordinator.activate_or_resume("client", "Monitor", {3840, 2160, 120, true}, 2);
+  EXPECT_FALSE(retried.accepted);
+  EXPECT_TRUE(retried.retryable);
+  EXPECT_EQ(mutations, (std::vector<bool> {true}));
+  coordinator.transport_lost("client", 1);
+  ASSERT_TRUE(coordinator.activate_or_resume("client", "Monitor", {3840, 2160, 120, true}, 2).ready);
+  EXPECT_EQ(mutations, (std::vector<bool> {true, true}));
+}
+
+TEST(RemoteDisplayTopology, SharedNormalCaptureIsNotRecreatedOrColorMutated) {
+  remote_display_topology::coordinator_t coordinator;
+  int creations = 0, finalizations = 0;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &) { ++creations; return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .observe_shared_mode = [](const auto &) { return std::optional<remote_display_topology::mode_t> {{3840, 2160, 120, false}}; },
+    .finalize_mode = [&](const auto &, auto &mode, bool allow_mutation) {
+      ++finalizations;
+      EXPECT_FALSE(allow_mutation);
+      // Read-only verification finds the shared source SDR.
+      mode.hdr = false;
+      return true;
+    },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) { return std::optional<std::string> {"Virtual-1"}; },
+  });
+  const auto game = coordinator.reserve_normal_game_identity("client", "Game", {3840, 2160, 120, false});
+  auto capture = coordinator.retain_normal_game_capture("client", game.token);
+  ASSERT_TRUE(capture);
+  const auto result = coordinator.activate_or_resume("client", "Monitor", {3840, 2160, 120, true}, 1);
+  ASSERT_TRUE(result.ready);
+  EXPECT_FALSE(result.hdr_enabled);
+  EXPECT_EQ(creations, 0);
+  EXPECT_EQ(finalizations, 1);
+}
+
+TEST(RemoteDisplayTopology, UnverifiedSdrOnSharedHdrCaptureIsNotReady) {
+  remote_display_topology::coordinator_t coordinator;
+  int capture_checks = 0;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .observe_shared_mode = [](const auto &) { return std::optional<remote_display_topology::mode_t> {{3840, 2160, 120, true}}; },
+    .finalize_mode = [](const auto &, auto &mode, bool allow_mutation) {
+      EXPECT_FALSE(mode.hdr);  // Also the source request for RTX HDR.
+      EXPECT_FALSE(allow_mutation);
+      return false;  // The shared source remains HDR.
+    },
+    .exact_target_has_current_mode_and_dxgi = [&](const auto &, const auto &) {
+      ++capture_checks;
+      return std::optional<std::string> {"Virtual-1"};
+    },
+  });
+  const auto game = coordinator.reserve_normal_game_identity("client", "Game", {3840, 2160, 120, true});
+  auto capture = coordinator.retain_normal_game_capture("client", game.token);
+  ASSERT_TRUE(capture);
+  const auto result = coordinator.activate_or_resume("client", "Monitor", {3840, 2160, 120, false}, 1);
+  EXPECT_TRUE(result.accepted);
+  EXPECT_FALSE(result.ready);
+  EXPECT_TRUE(result.retryable);
+  EXPECT_EQ(capture_checks, 0);  // Color failure prevents readiness publication.
+}
+
+TEST(RemoteDisplayTopology, SharedModeMismatchNeverMovesLivePeerBeforeVerification) {
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_layout(layout({{"peer", {{"anchor_kind", "client"}, {"anchor_id", "game"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", 0}}}}));
+  remote_display_topology::mode_t actual {1920, 1080, 60, false};
+  std::vector<remote_display_topology::node_t> applied;
+  int applies = 0;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &id, const auto &, const auto &mode) {
+      if (id == "game") actual = mode;
+      return true;
+    },
+    .apply_composed_topology = [&](const auto &nodes) { ++applies; applied = nodes; return true; },
+    .observe_shared_mode = [&](const auto &id) -> std::optional<remote_display_topology::mode_t> { return id == "game" ? std::optional {actual} : std::nullopt; },
+    .finalize_mode = [](const auto &, auto &, bool) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [&](const auto &id, const auto &mode) -> std::optional<std::string> {
+      if (id == "game" && (mode.width != actual.width || mode.height != actual.height || mode.refresh_hz != actual.refresh_hz)) return std::nullopt;
+      return "DISPLAY";
+    },
+  });
+  const auto game = coordinator.reserve_normal_game_identity("game", "Game", actual);
+  auto capture = coordinator.retain_normal_game_capture("game", game.token);
+  ASSERT_TRUE(capture);
+  ASSERT_TRUE(coordinator.activate_or_resume("peer", "Peer", {1920, 1080, 60, false}, 1).ready);
+  auto peer_x = [&] {
+    const auto peer = std::find_if(applied.begin(), applied.end(), [](const auto &node) { return node.id == "peer"; });
+    EXPECT_NE(peer, applied.end());
+    return peer == applied.end() ? -1 : peer->x;
+  };
+  ASSERT_EQ(peer_x(), 1920);
+  const int before = applies;
+  const auto mismatch = coordinator.activate_or_resume("game", "Monitor", {3840, 2160, 120, false}, 1);
+  EXPECT_TRUE(mismatch.accepted);
+  EXPECT_FALSE(mismatch.ready);
+  EXPECT_TRUE(mismatch.retryable);
+  EXPECT_EQ(applies, before);
+  EXPECT_EQ(peer_x(), 1920);
+  EXPECT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_EQ(peer_x(), 1920);
+  const auto other = coordinator.activate_or_resume("other", "Other", {1280, 720, 60, false}, 1);
+  EXPECT_TRUE(other.ready);
+  EXPECT_EQ(peer_x(), 1920);
+  EXPECT_TRUE(coordinator.explicit_release("other", 1, "test release"));
+  EXPECT_EQ(peer_x(), 1920);
+
+  coordinator.release_normal_game_identity("game", game.token);
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_TRUE(coordinator.reapply_composed_topology());  // Uses the observed old footprint.
+  EXPECT_EQ(peer_x(), 1920);
+  ASSERT_TRUE(coordinator.activate_or_resume("game", "Monitor", {3840, 2160, 120, false}, 2).ready);
+  EXPECT_EQ(peer_x(), 3840);  // Only after the exact output has the new mode.
+}
+
+TEST(RemoteDisplayTopology, DisconnectingUnverifiedMonitorDoesNotMoveItsNormalOwner) {
+  remote_display_topology::coordinator_t coordinator;
+  int applies = 0;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [&](const auto &) { ++applies; return true; },
+    .observe_shared_mode = [](const auto &) { return std::optional<remote_display_topology::mode_t> {{1920, 1080, 60, false}}; },
+    .finalize_mode = [](const auto &, auto &, bool) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) -> std::optional<std::string> { return "DISPLAY"; },
+    .terminate_owned_display = [](const auto &) { return true; },
+  });
+  const auto game = coordinator.reserve_normal_game_identity("game", "Game", {1920, 1080, 60, false});
+  auto capture = coordinator.retain_normal_game_capture("game", game.token);
+  ASSERT_TRUE(capture);
+  ASSERT_TRUE(coordinator.activate_or_resume("peer", "Peer", {1280, 720, 60, false}, 1).ready);
+  ASSERT_FALSE(coordinator.activate_or_resume("game", "Monitor", {3840, 2160, 120, false}, 1).ready);
+  coordinator.set_layout(layout({{"peer", {{"anchor_kind", "client"}, {"anchor_id", "game"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", 300}}}}));
+  EXPECT_TRUE(coordinator.explicit_release("game", 1, "disconnect monitor"));
+  EXPECT_EQ(applies, 2);  // Existing release composition uses the observed footprint.
+  EXPECT_TRUE(coordinator.reapply_composed_topology());
+  EXPECT_EQ(applies, 3);
+  coordinator.release_normal_game_identity("game", game.token);
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(applies, 4);  // Normal output removal waits for capture drain.
+}
+
+TEST(RemoteDisplayTopology, UnknownSharedGeometryStillAllowsIndependentTerminalCleanup) {
+  remote_display_topology::coordinator_t coordinator;
+  bool observation_available = true;
+  bool removal_available = false;
+  int applies = 0;
+  std::vector<std::string> removed;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [&](const auto &) { ++applies; return true; },
+    .observe_shared_mode = [&](const auto &) -> std::optional<remote_display_topology::mode_t> {
+      return observation_available ? std::optional<remote_display_topology::mode_t> {{1920, 1080, 60, false}} : std::nullopt;
+    },
+    .finalize_mode = [](const auto &, auto &, bool) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) { return std::optional<std::string> {"DISPLAY"}; },
+    .terminate_owned_display = [&](const auto &id) { if (!removal_available) return false; removed.push_back(id); return true; },
+  });
+  const auto game = coordinator.reserve_normal_game_identity("game", "Game", {1920, 1080, 60, false});
+  auto capture = coordinator.retain_normal_game_capture("game", game.token);
+  ASSERT_TRUE(capture);
+  ASSERT_TRUE(coordinator.activate_or_resume("peer", "Peer", {1280, 720, 60, false}, 1).ready);
+  const auto other_game = coordinator.reserve_normal_game_identity("other-game", "Other", {1280, 720, 60, false});
+  ASSERT_TRUE(other_game.accepted);
+  ASSERT_FALSE(coordinator.activate_or_resume("game", "Monitor", {3840, 2160, 120, false}, 1).ready);
+  const int before = applies;
+  observation_available = false;
+  EXPECT_FALSE(coordinator.reapply_composed_topology());
+  EXPECT_FALSE(coordinator.explicit_release("peer", 1, "disconnect peer"));
+  coordinator.release_normal_game_identity("other-game", other_game.token);
+  EXPECT_EQ(applies, before);
+  EXPECT_TRUE(removed.empty());
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 3u);
+  removal_available = true;
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_EQ(applies, before);
+  EXPECT_EQ(removed, (std::vector<std::string> {"other-game", "peer"}));
+  EXPECT_EQ(coordinator.managed_client_identity_count(), 1u);
+}
+
+TEST(RemoteDisplayTopology, SharedModeMismatchIsConfiguredAfterCaptureDrains) {
+  remote_display_topology::coordinator_t coordinator;
+  int creates = 0;
+  remote_display_topology::mode_t actual {1920, 1080, 60, false};
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &requested) {
+      ++creates;
+      actual = requested;
+      return true;
+    },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .observe_shared_mode = [&](const auto &) { return std::optional {actual}; },
+    .finalize_mode = [](const auto &, auto &, bool) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [&](const auto &, const auto &requested) -> std::optional<std::string> {
+      if (requested.width != actual.width || requested.height != actual.height || requested.refresh_hz != actual.refresh_hz) return std::nullopt;
+      return "Virtual-1";
+    },
+  });
+  const auto game = coordinator.reserve_normal_game_identity("client", "Game", actual);
+  auto capture = coordinator.retain_normal_game_capture("client", game.token);
+  ASSERT_TRUE(capture);
+  const auto first = coordinator.activate_or_resume("client", "Monitor", {3840, 2160, 120, false}, 1);
+  EXPECT_TRUE(first.accepted);
+  EXPECT_FALSE(first.ready);
+  EXPECT_EQ(creates, 0);
+  coordinator.release_normal_game_identity("client", game.token);
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  const auto retry = coordinator.activate_or_resume("client", "Monitor", {3840, 2160, 120, false}, 2);
+  EXPECT_TRUE(retry.ready);
+  EXPECT_EQ(creates, 1);
+  EXPECT_EQ(actual.width, 3840);
+  EXPECT_EQ(actual.refresh_hz, 120);
+}
+
+TEST(RemoteDisplayTopology, DeferredReconfigurationRetriesUntilGeometryIsObserved) {
+  remote_display_topology::coordinator_t coordinator;
+  int creates = 0, applies = 0, color_checks = 0;
+  remote_display_topology::mode_t actual {1920, 1080, 60, false};
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &requested) {
+      ++creates;
+      // A successful producer call may not yet have applied the geometry.
+      if (creates == 3) actual = requested;
+      return true;
+    },
+    .apply_composed_topology = [&](const auto &) { ++applies; return true; },
+    .observe_shared_mode = [&](const auto &) -> std::optional<remote_display_topology::mode_t> {
+      if (creates == 2) return std::nullopt;
+      return actual;
+    },
+    .finalize_mode = [&](const auto &, auto &, bool) { return ++color_checks > 1; },
+    .exact_target_has_current_mode_and_dxgi = [&](const auto &, const auto &requested) -> std::optional<std::string> {
+      if (requested.width != actual.width || requested.height != actual.height || requested.refresh_hz != actual.refresh_hz) return std::nullopt;
+      return "Virtual-1";
+    },
+  });
+  const auto game = coordinator.reserve_normal_game_identity("client", "Game", actual);
+  auto capture = coordinator.retain_normal_game_capture("client", game.token);
+  ASSERT_TRUE(capture);
+  const remote_display_topology::mode_t desired {3840, 2160, 120, false};
+  ASSERT_FALSE(coordinator.activate_or_resume("client", "Monitor", desired, 1).ready);
+  EXPECT_EQ(creates, 0);
+  coordinator.release_normal_game_identity("client", game.token);
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  const int before = applies;
+  EXPECT_FALSE(coordinator.activate_or_resume("client", "Monitor", desired, 2).ready);
+  EXPECT_EQ(creates, 1);
+  EXPECT_FALSE(coordinator.activate_or_resume("client", "Monitor", desired, 3).ready);
+  EXPECT_EQ(creates, 2);
+  EXPECT_EQ(applies, before);
+  EXPECT_FALSE(coordinator.activate_or_resume("client", "Monitor", desired, 4).ready);  // Geometry matches, but color does not yet.
+  EXPECT_EQ(creates, 3);
+  EXPECT_EQ(applies, before + 1);
+  EXPECT_TRUE(coordinator.activate_or_resume("client", "Monitor", desired, 5).ready);
+  EXPECT_EQ(creates, 3);  // Verified geometry clears the retry obligation.
+  coordinator.transport_lost("client", 5);
+  EXPECT_TRUE(coordinator.activate_or_resume("client", "Monitor", desired, 6).ready);
+  EXPECT_EQ(creates, 3);
+}
+
+TEST(RemoteDisplayTopology, PendingOrPausedNormalOwnerIsNotReconfigured) {
+  remote_display_topology::coordinator_t coordinator;
+  int creates = 0;
+  bool allow_mutation = true;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &) { ++creates; return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .observe_shared_mode = [](const auto &) { return std::optional<remote_display_topology::mode_t> {{1920, 1080, 60, false}}; },
+    .finalize_mode = [&](const auto &, auto &, bool allowed) { allow_mutation = allowed; return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &, const auto &) { return std::optional<std::string> {"Virtual-1"}; },
+  });
+  ASSERT_TRUE(coordinator.reserve_normal_game_identity("client", "Game", {1920, 1080, 60, false}).accepted);
+  ASSERT_TRUE(coordinator.activate_or_resume("client", "Monitor", {1920, 1080, 60, false}, 1).ready);
+  EXPECT_FALSE(allow_mutation);
+  EXPECT_EQ(creates, 0);
+}
+
+TEST(RemoteDisplayTopology, ExclusiveRetrySetsColorAfterGeometryEvenWhenCreateDoesNot) {
+  remote_display_topology::coordinator_t coordinator;
+  bool actual_hdr = false;
+  int creates = 0, color_sets = 0;
+  remote_display_topology::mode_t actual {1920, 1080, 60, false};
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &mode) {
+      ++creates;
+      actual.width = mode.width; actual.height = mode.height; actual.refresh_hz = mode.refresh_hz;
+      return true;  // The producer intentionally does not change HDR.
+    },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .observe_shared_mode = [&](const auto &) { return std::optional {actual}; },
+    .finalize_mode = [&](const auto &, auto &mode, bool allow_mutation) {
+      if (allow_mutation) { ++color_sets; actual_hdr = mode.hdr; }
+      return actual_hdr == mode.hdr;
+    },
+    .exact_target_has_current_mode_and_dxgi = [&](const auto &, const auto &mode) -> std::optional<std::string> {
+      return actual_hdr == mode.hdr ? std::optional<std::string> {"DISPLAY"} : std::nullopt;
+    },
+  });
+  const auto game = coordinator.reserve_normal_game_identity("client", "Game", actual);
+  auto capture = coordinator.retain_normal_game_capture("client", game.token);
+  ASSERT_TRUE(capture);
+  const auto first = coordinator.activate_or_resume("client", "Monitor", {1920, 1080, 60, true}, 1);
+  ASSERT_FALSE(first.ready);
+  EXPECT_EQ(color_sets, 0);
+  coordinator.release_normal_game_identity("client", game.token);
+  capture.reset();
+  coordinator.release_drained_normal_game_identities();
+  EXPECT_TRUE(coordinator.activate_or_resume("client", "Monitor", {1920, 1080, 60, true}, 2).ready);
+  EXPECT_EQ(creates, 1);
+  EXPECT_EQ(color_sets, 1);
+}
+
+TEST(RemoteDisplayTopology, RetainedMonitorChangedModeIsReconfiguredAfterTransportLoss) {
+  remote_display_topology::coordinator_t coordinator;
+  int creates = 0;
+  remote_display_topology::mode_t actual {};
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &requested) { ++creates; actual = requested; return true; },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .observe_shared_mode = [&](const auto &) { return std::optional {actual}; },
+    .finalize_mode = [](const auto &, auto &, bool) { return true; },
+    .exact_target_has_current_mode_and_dxgi = [&](const auto &, const auto &requested) -> std::optional<std::string> {
+      if (requested.width != actual.width || requested.refresh_hz != actual.refresh_hz) return std::nullopt;
+      return "Virtual-1";
+    },
+  });
+  ASSERT_TRUE(coordinator.activate_or_resume("client", "Monitor", {1920, 1080, 60, false}, 1).ready);
+  coordinator.transport_lost("client", 1);
+  EXPECT_TRUE(coordinator.activate_or_resume("client", "Monitor", {3840, 2160, 120, false}, 2).ready);
+  EXPECT_EQ(creates, 2);
+  EXPECT_EQ(actual.width, 3840);
+}
+
+TEST(RemoteDisplayTopology, ExclusiveModeChangeDoesNotRecreateAfterColorFailure) {
+  remote_display_topology::coordinator_t coordinator;
+  int creates = 0, color_checks = 0;
+  remote_display_topology::mode_t actual {};
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [&](const auto &, const auto &, const auto &requested) {
+      ++creates;
+      if (creates == 1 || creates == 4) actual = requested;
+      return true;
+    },
+    .apply_composed_topology = [](const auto &) { return true; },
+    .observe_shared_mode = [&](const auto &) -> std::optional<remote_display_topology::mode_t> {
+      return creates == 3 ? std::nullopt : std::optional {actual};
+    },
+    .finalize_mode = [&](const auto &, auto &, bool) { return ++color_checks != 2; },
+    .exact_target_has_current_mode_and_dxgi = [&](const auto &, const auto &requested) -> std::optional<std::string> {
+      if (requested.width != actual.width || requested.height != actual.height || requested.refresh_hz != actual.refresh_hz) return std::nullopt;
+      return "Virtual-1";
+    },
+  });
+  ASSERT_TRUE(coordinator.activate_or_resume("client", "Monitor", {1920, 1080, 60, false}, 1).ready);
+  coordinator.transport_lost("client", 1);
+  const remote_display_topology::mode_t desired {3840, 2160, 120, true};
+  EXPECT_FALSE(coordinator.activate_or_resume("client", "Monitor", desired, 2).ready);
+  EXPECT_EQ(creates, 2);
+  EXPECT_FALSE(coordinator.activate_or_resume("client", "Monitor", desired, 3).ready);
+  EXPECT_EQ(creates, 3);
+  EXPECT_FALSE(coordinator.activate_or_resume("client", "Monitor", desired, 4).ready);  // Geometry matches, color does not yet.
+  EXPECT_EQ(creates, 4);
+  EXPECT_TRUE(coordinator.activate_or_resume("client", "Monitor", desired, 5).ready);
+  EXPECT_EQ(creates, 4);  // The observed mode did not need a destructive replacement.
 }
 
 TEST(RemoteDisplayTopology, PlatformModeFallbackDoesNotReplaceRetainedClientRequest) {
@@ -2031,7 +2566,7 @@ TEST(RemoteDisplayTopology, NormalStreamUsesSavedBelowCenterWithoutRecomposingPe
   const remote_display_topology::node_t primary {.id = "primary", .physical = true, .active = true, .primary = true, .configured_mode = {3840, 2160, 60}};
   const remote_display_topology::node_t target {.id = "one", .active = true, .x = 3840, .configured_mode = {2732, 2048, 60}};
   const remote_display_topology::node_t peer {.id = "two", .active = true, .x = -1920, .y = 100};
-  const auto placed = coordinator.saved_stream_placement(target, {primary, peer});
+  const auto placed = coordinator.saved_stream_placement(target, {primary, peer}).position;
   ASSERT_TRUE(placed);
   EXPECT_EQ(placed->x, 554);
   EXPECT_EQ(placed->y, 2160);
@@ -2043,11 +2578,11 @@ TEST(RemoteDisplayTopology, NormalStreamUsesSavedBelowCenterWithoutRecomposingPe
 TEST(RemoteDisplayTopology, NormalStreamManualAndUnavailableAnchorsPreserveWindowsPosition) {
   remote_display_topology::coordinator_t coordinator;
   const remote_display_topology::node_t target {.id = "one", .active = true, .x = 554, .y = 2160};
-  EXPECT_FALSE(coordinator.saved_stream_placement(target, {}));
+  EXPECT_FALSE(coordinator.saved_stream_placement(target, {}).position);
   coordinator.set_layout(layout({{"one", {{"anchor_kind", "physical"}, {"anchor_id", "absent"}, {"edge", "right"}, {"alignment", "start"}, {"gap_px", 0}}}}));
-  EXPECT_FALSE(coordinator.saved_stream_placement(target, {}));
+  EXPECT_FALSE(coordinator.saved_stream_placement(target, {}).position);
   const remote_display_topology::node_t inactive {.id = "absent", .physical = true};
-  EXPECT_FALSE(coordinator.saved_stream_placement(target, {inactive}));
+  EXPECT_FALSE(coordinator.saved_stream_placement(target, {inactive}).position);
   EXPECT_EQ(target.x, 554);
   EXPECT_EQ(target.y, 2160);
 }
@@ -2059,7 +2594,7 @@ TEST(RemoteDisplayTopology, NormalStreamUsesLiveClientAnchorAndRequestedTargetDi
   for (const auto &edge : {"left", "right", "above", "below"}) {
     for (const auto &alignment : {"start", "center", "end"}) {
       coordinator.set_layout(layout({{"one", {{"anchor_kind", "client"}, {"anchor_id", "two"}, {"edge", edge}, {"alignment", alignment}, {"gap_px", 8}, {"primary", true}}}}));
-      const auto placed = coordinator.saved_stream_placement(target, {anchor});
+      const auto placed = coordinator.saved_stream_placement(target, {anchor}).position;
       ASSERT_TRUE(placed);
       EXPECT_TRUE(placed->primary);
       if (std::string(edge) == "left") {
@@ -2092,7 +2627,7 @@ TEST(RemoteDisplayTopology, ExplicitManualRulePreservesIsolatedTargetWithoutAnAn
   ASSERT_TRUE(remote_display_topology::validate_layout(manual, clients, {}, error)) << error;
   coordinator.set_layout(manual);
   const remote_display_topology::node_t target {.id = "one", .active = true, .x = 554, .y = 2160};
-  const auto placed = coordinator.saved_stream_placement(target, {});
+  const auto placed = coordinator.saved_stream_placement(target, {}).position;
   ASSERT_TRUE(placed);
   EXPECT_EQ(placed->x, 554);
   EXPECT_EQ(placed->y, 2160);

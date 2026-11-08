@@ -35,6 +35,7 @@
 #include "dualsense_haptics.h"
 #include "vhf_gamepad_policy.h"
 #include "vhf_gamepad_recovery.h"
+#include "vhf_keyboard_mouse_policy.h"
 
 namespace platf {
   using namespace std::literals;
@@ -359,6 +360,53 @@ namespace platf {
     std::atomic<bool> stopping {false};
     bool probed {false};
     bool driver_available {false};
+    // The KM child belongs to the same exclusive control handle as the pads.
+    // A failed submission is never replayed through another backend.
+    bool keyboard_mouse_owned {false};
+    bool keyboard_mouse_faulted {false};
+    bool keyboard_mouse_teardown_confirmed {false};
+    // After the owning handle is lost, a new connection must prove the old
+    // PnP child is absent by opening and then aborting a fresh child.
+    bool keyboard_mouse_recovery_needs_probe {false};
+    std::chrono::steady_clock::time_point keyboard_mouse_retry_at {};
+    std::uint32_t absolute_generation {0};
+    bool absolute_uses_primary {false};
+    bool keyboard_mouse_consumer {false};
+    vhf_keyboard_mouse::mouse_delivery_t mouse_delivery;
+
+    // Windows services relative and absolute mouse TLCs independently. A
+    // completed submission is queue admission, not desktop delivery. Observe
+    // the preceding button/position before crossing those queues so an
+    // absolute drag cannot move before its press or release before its move.
+    bool settle_keyboard_mouse_locked(bool include_absolute) {
+      if (!keyboard_mouse_owned || keyboard_mouse_faulted || recovery.pending()) return false;
+      const auto deadline = std::chrono::steady_clock::now() + 100ms;
+      constexpr std::array buttons {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2};
+      do {
+        bool ready = true;
+        for (std::size_t i = 0; i < buttons.size(); ++i) {
+          const auto mask = static_cast<std::uint8_t>(1u << i);
+          if ((mouse_delivery.pending_buttons & mask) &&
+              (((GetAsyncKeyState(buttons[i]) & 0x8000) != 0) != ((mouse_delivery.pressed_buttons & mask) != 0))) ready = false;
+        }
+        if (include_absolute && mouse_delivery.absolute_pending) {
+          POINT position {};
+          if (!GetCursorPos(&position) || std::abs(position.x - mouse_delivery.absolute_x) > 1 ||
+              std::abs(position.y - mouse_delivery.absolute_y) > 1) ready = false;
+        }
+        if (ready) {
+          mouse_delivery.pending_buttons = 0;
+          if (include_absolute) mouse_delivery.absolute_pending = false;
+          return true;
+        }
+        std::this_thread::sleep_for(1ms);
+      } while (std::chrono::steady_clock::now() < deadline);
+      // Never replay a transition whose delivery is uncertain. The existing
+      // recovery worker removes the child before later SendInput fallback.
+      keyboard_mouse_faulted = true;
+      recovery.request();
+      return false;
+    }
 
     std::mutex wake_mutex;
     std::condition_variable wake;
@@ -373,6 +421,28 @@ namespace platf {
     }
 
     void feedback_loop();
+    template<class Request>
+    bool submit_keyboard_mouse_locked(const Request &request) {
+      if (!keyboard_mouse_owned || keyboard_mouse_faulted || recovery.pending()) return false;
+      const DWORD status = vhf_keyboard_mouse::submit_with_backpressure(
+        [&] { return client.submit_keyboard_mouse(request); },
+        [] { std::this_thread::sleep_for(1ms); }, ERROR_BUSY);
+      if (status == ERROR_SUCCESS) return true;
+      keyboard_mouse_faulted = true;
+      observe_status(status);
+      const auto abort_status = client.abort_keyboard_mouse();
+      if (abort_status == ERROR_SUCCESS) {
+        keyboard_mouse_owned = false;
+        keyboard_mouse_teardown_confirmed = true;
+        BOOST_LOG(warning) << "VHF keyboard/mouse stopped after driver error ["sv
+                           << util::hex(status).to_string_view() << "]; using Windows SendInput for subsequent events"sv;
+      } else {
+        keyboard_mouse_retry_at = std::chrono::steady_clock::now() + 1s;
+        BOOST_LOG(error) << "VHF keyboard/mouse input stopped after driver error ["sv
+                         << util::hex(status).to_string_view() << "]; retrying device removal"sv;
+      }
+      return false;
+    }
     void raise_feedback(
       int nr,
       const lvg::feedback_event &event,
@@ -633,6 +703,23 @@ namespace platf {
 
       if (recovery.pending()) {
         std::unique_lock lock {lifetime};
+        if (keyboard_mouse_owned) {
+          // The recovery operation replaces the shared control handle. Do not
+          // replay held keys or uncertain events onto the replacement child.
+          const auto abort_status = client.abort_keyboard_mouse();
+          keyboard_mouse_teardown_confirmed = abort_status == ERROR_SUCCESS;
+          keyboard_mouse_owned = false;
+          keyboard_mouse_faulted = true;
+          // Recovery can replace the connection below. A new owner's abort of
+          // an empty slot alone does not prove that the old PnP child vanished.
+          keyboard_mouse_recovery_needs_probe = abort_status != ERROR_SUCCESS;
+          keyboard_mouse_retry_at = std::chrono::steady_clock::now() + 1s;
+          if (keyboard_mouse_teardown_confirmed) {
+            BOOST_LOG(warning) << "VHF keyboard/mouse stopped during driver recovery; using Windows SendInput for subsequent events"sv;
+          } else {
+            BOOST_LOG(error) << "VHF keyboard/mouse stopped during driver recovery; device removal could not be confirmed"sv;
+          }
+        }
         if (active_count.load(std::memory_order_acquire) == 0) {
           recovery.reset();
           continue;
@@ -751,6 +838,15 @@ namespace platf {
 
     std::unique_lock lock {impl->lifetime};
     if (impl->client.connected()) {
+      if (impl->keyboard_mouse_owned) {
+        DWORD status = ERROR_BUSY;
+        for (int attempt = 0; attempt < 20 && status == ERROR_BUSY; ++attempt) {
+          status = impl->client.close_keyboard_mouse();
+          if (status == ERROR_BUSY) std::this_thread::sleep_for(1ms);
+        }
+        if (status != ERROR_SUCCESS) std::ignore = impl->client.abort_keyboard_mouse();
+        impl->keyboard_mouse_owned = false;
+      }
       // Closing the control handle releases every controller this process owns, but destroying
       // them explicitly keeps removal ordered while the driver is still responsive.
       for (int nr = 0; nr < MAX_GAMEPADS; ++nr) {
@@ -819,6 +915,200 @@ namespace platf {
     return impl->driver_available;
   }
 
+  bool vhf_gamepad_t::open_keyboard_mouse() {
+    std::unique_lock lock {impl->lifetime};
+    if (impl->keyboard_mouse_owned) return true;
+    if (impl->keyboard_mouse_faulted || impl->recovery.pending()) return false;
+    const bool already_connected = impl->client.connected();
+    DWORD status = already_connected ? ERROR_SUCCESS : impl->client.connect();
+    lvg::km::query_response km_info {};
+    if (status == ERROR_SUCCESS) status = impl->client.query_keyboard_mouse(&km_info);
+    if (status == ERROR_SUCCESS &&
+        (km_info.capabilities & lvg::km::k_relative_capabilities) != lvg::km::k_relative_capabilities) {
+      status = ERROR_NOT_SUPPORTED;
+    }
+    const bool open_attempted = status == ERROR_SUCCESS;
+    if (open_attempted) status = impl->client.open_keyboard_mouse();
+    if (status != ERROR_SUCCESS) {
+      // A failed open response does not prove the driver did not create the
+      // neutral child. Try to remove it before closing our new handle; closing
+      // that handle also triggers driver file cleanup if the abort failed.
+      if (open_attempted) std::ignore = impl->client.abort_keyboard_mouse();
+      if (config::input.keyboard_mouse_backend == "auto"sv) {
+        BOOST_LOG(info) << "Automatic keyboard/mouse input selected Windows SendInput; VHF is unavailable ["sv
+                        << util::hex(status).to_string_view() << ']';
+      } else {
+        BOOST_LOG(warning) << "VHF keyboard/mouse is unavailable ["sv
+                           << util::hex(status).to_string_view() << "]; using Windows SendInput"sv;
+      }
+      if (!already_connected && impl->active_count.load(std::memory_order_acquire) == 0) impl->client.close();
+      return false;
+    }
+    impl->keyboard_mouse_owned = true;
+    impl->mouse_delivery = {};
+    impl->keyboard_mouse_teardown_confirmed = false;
+    impl->absolute_uses_primary = (km_info.capabilities & lvg::km::primary_absolute_mouse) != 0;
+    // A nonzero generation alone does not identify the producer's coordinate
+    // domain. The v1 extension we know how to translate is primary-display.
+    impl->absolute_generation = ((km_info.capabilities & lvg::km::bound_absolute_mouse) != 0 &&
+                                 impl->absolute_uses_primary) ? km_info.absolute_target_generation : 0;
+    impl->keyboard_mouse_consumer = (km_info.capabilities & lvg::km::consumer) != 0;
+    BOOST_LOG(info) << "VHF keyboard/mouse input enabled"sv;
+    return true;
+  }
+
+  bool vhf_gamepad_t::keyboard_mouse_fallback_safe() {
+    std::unique_lock lock {impl->lifetime};
+    if (!impl->keyboard_mouse_faulted || impl->keyboard_mouse_teardown_confirmed) {
+      return impl->keyboard_mouse_faulted && impl->keyboard_mouse_teardown_confirmed;
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now < impl->keyboard_mouse_retry_at) return false;
+    impl->keyboard_mouse_retry_at = now + 1s;
+    const auto active_pads = impl->active_count.load(std::memory_order_acquire);
+    // The feedback thread must finish reconstructing its shared handle before
+    // a new-owner PnP probe can be attempted.
+    if (active_pads != 0 && impl->recovery.pending()) return false;
+
+    if (!impl->keyboard_mouse_recovery_needs_probe && impl->client.connected()) {
+      if (impl->client.abort_keyboard_mouse() == ERROR_SUCCESS) {
+        impl->keyboard_mouse_owned = false;
+        impl->keyboard_mouse_teardown_confirmed = true;
+      } else if (active_pads == 0) {
+        // Release a stale handle so the driver can return after PnP removal.
+        // Closing is not evidence that its virtual child has been removed.
+        impl->client.close();
+        impl->keyboard_mouse_owned = false;
+        impl->keyboard_mouse_recovery_needs_probe = true;
+      }
+    } else if (!impl->client.connected()) {
+      impl->keyboard_mouse_recovery_needs_probe = true;
+    }
+
+    if (!impl->keyboard_mouse_teardown_confirmed && impl->keyboard_mouse_recovery_needs_probe) {
+      if (!impl->client.connected()) {
+        if (active_pads != 0 || impl->client.connect() != ERROR_SUCCESS) return false;
+      }
+      // The driver checks that the prior named child is absent before opening
+      // a replacement. Its synchronous abort then proves replacement removal.
+      if (impl->client.open_keyboard_mouse() == ERROR_SUCCESS) {
+        impl->keyboard_mouse_owned = true;
+        impl->keyboard_mouse_recovery_needs_probe = false;
+        if (impl->client.abort_keyboard_mouse() == ERROR_SUCCESS) {
+          impl->keyboard_mouse_owned = false;
+          impl->keyboard_mouse_teardown_confirmed = true;
+        }
+      } else if (active_pads == 0) {
+        // An uncertain open may have created a child. Closing this probe does
+        // not authorize fallback; the next attempt must pass the PnP check.
+        impl->client.close();
+      } else {
+        // Do not close a connection shared with gamepads. Best-effort cleanup
+        // of an uncertain open still leaves the PnP probe required next time.
+        std::ignore = impl->client.abort_keyboard_mouse();
+      }
+    }
+
+    if (impl->keyboard_mouse_teardown_confirmed) {
+      if (active_pads == 0) {
+        impl->client.close();
+        impl->recovery.reset();
+      }
+      BOOST_LOG(info) << "VHF keyboard/mouse removal confirmed; using Windows SendInput for subsequent events"sv;
+    }
+    return impl->keyboard_mouse_teardown_confirmed;
+  }
+
+  bool vhf_gamepad_t::keyboard_mouse_fallback(const std::function<void()> &send) {
+    // Feedback and other transport paths can request recovery under a shared
+    // lock. Hold the exclusive lock through injection so they cannot mark the
+    // VHF child uncertain between the check and the fallback event.
+    std::unique_lock lock {impl->lifetime};
+    if (impl->recovery.pending() ||
+        (impl->keyboard_mouse_faulted && !impl->keyboard_mouse_teardown_confirmed)) return false;
+    send();
+    return true;
+  }
+
+  void vhf_gamepad_t::keyboard_mouse_key(std::uint16_t usage, bool pressed) {
+    std::unique_lock lock {impl->lifetime};
+    auto request = lvg::km::request<lvg::km::keyboard_request>();
+    request.usage = usage;
+    request.pressed = pressed ? 1 : 0;
+    std::ignore = impl->submit_keyboard_mouse_locked(request);
+  }
+
+  bool vhf_gamepad_t::keyboard_mouse_consumer_supported() const {
+    std::shared_lock lock {impl->lifetime};
+    return impl->keyboard_mouse_owned && impl->keyboard_mouse_consumer;
+  }
+
+  void vhf_gamepad_t::keyboard_mouse_consumer(std::uint16_t usage, bool pressed) {
+    std::unique_lock lock {impl->lifetime};
+    auto request = lvg::km::request<lvg::km::consumer_request>();
+    request.usage = usage;
+    request.pressed = pressed ? 1 : 0;
+    std::ignore = impl->submit_keyboard_mouse_locked(request);
+  }
+
+  void vhf_gamepad_t::keyboard_mouse_button(std::uint8_t button, bool pressed) {
+    std::unique_lock lock {impl->lifetime};
+    if (!impl->settle_keyboard_mouse_locked(true)) return;
+    auto request = lvg::km::request<lvg::km::button_request>();
+    request.button = button;
+    request.pressed = pressed ? 1 : 0;
+    if (impl->submit_keyboard_mouse_locked(request) && button >= 1 && button <= 5) {
+      const auto mask = static_cast<std::uint8_t>(1u << (button - 1));
+      impl->mouse_delivery.pending_buttons |= mask;
+      if (pressed) impl->mouse_delivery.pressed_buttons |= mask;
+      else impl->mouse_delivery.pressed_buttons &= ~mask;
+    }
+  }
+
+  void vhf_gamepad_t::keyboard_mouse_relative(int x, int y, int wheel, int pan) {
+    std::unique_lock lock {impl->lifetime};
+    if (!impl->settle_keyboard_mouse_locked(true)) return;
+    static_assert(WHEEL_DELTA == 120);
+    std::ignore = vhf_keyboard_mouse::send_relative(x, y, wheel / WHEEL_DELTA, pan / WHEEL_DELTA, [&](const auto &part) {
+      auto request = lvg::km::request<lvg::km::relative_request>();
+      request.x = part.x;
+      request.y = part.y;
+      request.wheel = part.wheel;
+      request.pan = part.pan;
+      return impl->submit_keyboard_mouse_locked(request);
+    });
+  }
+
+  bool vhf_gamepad_t::keyboard_mouse_absolute(std::uint16_t x, std::uint16_t y) {
+    std::unique_lock lock {impl->lifetime};
+    // A failed or removed VHF device may still own a pressed mouse button.
+    // Suppress even off-primary movement until recovery confirms removal;
+    // returning false here would incorrectly send it through SendInput.
+    if (impl->keyboard_mouse_faulted || impl->recovery.pending()) return true;
+    if (!impl->settle_keyboard_mouse_locked(false)) return true;
+    if (impl->absolute_generation == 0) return false;
+    if (impl->absolute_uses_primary) {
+      const auto primary = vhf_keyboard_mouse::map_primary_absolute(x, y,
+        GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
+        GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN),
+        GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+      if (!primary.inside_primary) return false;
+      x = primary.x;
+      y = primary.y;
+    }
+    auto request = lvg::km::request<lvg::km::absolute_request>();
+    request.x = x;
+    request.y = y;
+    request.target_generation = impl->absolute_generation;
+    if (impl->submit_keyboard_mouse_locked(request)) {
+      impl->mouse_delivery.absolute_pending = true;
+      impl->mouse_delivery.absolute_x = static_cast<long>((std::uint64_t(x) * GetSystemMetrics(SM_CXSCREEN)) / 65536);
+      impl->mouse_delivery.absolute_y = static_cast<long>((std::uint64_t(y) * GetSystemMetrics(SM_CYSCREEN)) / 65536);
+    }
+    return true;
+  }
+
   int vhf_gamepad_t::alloc(
     const gamepad_id_t &id,
     feedback_queue_t &feedback_queue,
@@ -853,7 +1143,7 @@ namespace platf {
     lvg::profile profile {};
     if (!select_profile(impl->client, desired, profile)) {
       BOOST_LOG(error) << "Vibepollo virtual gamepad driver does not offer the requested gamepad profile"sv;
-      if (impl->active_count.load(std::memory_order_acquire) == 0) {
+      if (!vhf_keyboard_mouse::retain_control_handle(impl->active_count.load(std::memory_order_acquire), impl->keyboard_mouse_owned)) {
         impl->client.close();
       }
       return -1;
@@ -869,7 +1159,7 @@ namespace platf {
       }
       BOOST_LOG(error) << "Couldn't create VHF gamepad "sv << id.globalIndex << " ["sv
                        << util::hex(status).to_string_view() << ']';
-      if (impl->active_count.load(std::memory_order_acquire) == 0) {
+      if (!vhf_keyboard_mouse::retain_control_handle(impl->active_count.load(std::memory_order_acquire), impl->keyboard_mouse_owned)) {
         impl->client.close();
       }
       return -1;
@@ -955,7 +1245,12 @@ namespace platf {
     slot.reset();
     if (impl->active_count.fetch_sub(1, std::memory_order_acq_rel) == 1) {
       BOOST_LOG(debug) << "Disconnecting from the Vibepollo virtual gamepad driver"sv;
-      impl->client.close();
+      if (!vhf_keyboard_mouse::retain_control_handle(0, impl->keyboard_mouse_owned)) {
+        if (impl->keyboard_mouse_faulted && !impl->keyboard_mouse_teardown_confirmed) {
+          impl->keyboard_mouse_recovery_needs_probe = true;
+        }
+        impl->client.close();
+      }
       impl->recovery.reset();
       impl->recovery_failure_logged = false;
     }

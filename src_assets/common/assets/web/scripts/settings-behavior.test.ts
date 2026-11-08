@@ -16,6 +16,16 @@ import {
   parseNetworkPort,
 } from '../utils/network.ts';
 
+test('keyboard and mouse input defaults to Auto with explicit backend overrides', async () => {
+  const { settingsDefaults } = await import('../configs/settingsSchema.ts');
+  const backend = settingsFields.get('keyboard_mouse_backend');
+  assert.ok(backend);
+  assert.equal(settingsDefaults.keyboard_mouse_backend, 'auto');
+  assert.deepEqual(backend.options?.map((option) => option.value), ['auto', 'sendinput', 'vhf']);
+  assert.equal(backend.platform, 'windows');
+  assert.equal(backend.restartRequired, true);
+});
+
 test('capture verification requires observed event-driven KMS, never configuration alone', () => {
   const configured = {
     virtual_display: { ready: true },

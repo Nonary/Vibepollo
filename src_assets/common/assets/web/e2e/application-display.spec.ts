@@ -124,7 +124,7 @@ for (const ui of ['classic', 'v2'] as const) {
     });
   }
 
-  for (const action of ['verify_only', 'disabled']) {
+  for (const action of ['disabled']) {
     test(`${ui} exposes an existing ${action} conflict without changing it on load`, async ({
       page,
     }) => {
@@ -156,6 +156,32 @@ for (const ui of ['classic', 'v2'] as const) {
       expect(saves[1]['dd-configuration-option']).toBe('ensure_active');
     });
   }
+
+  test(`${ui} applies an app virtual layout even with app verify only`, async ({ page }) => {
+    const { saves } = await setup(page, {
+      'virtual-screen': true,
+      'virtual-display-mode': 'per_client',
+      'virtual-display-layout': 'extended_primary_isolated',
+      'dd-configuration-option': 'verify_only',
+    });
+    await open(page, ui);
+    await expect(page.getByTestId('app-display-layout-conflict')).toHaveCount(0);
+    await expect(page.getByText('This game uses a virtual display, so its selected layout will be applied even when Verify Only is selected. Client display settings can override this.')).toBeVisible();
+    await save(page, ui);
+    await expect.poll(() => saves.length).toBe(1);
+    expect(saves[0]['dd-configuration-option']).toBe('verify_only');
+  });
+
+  test(`${ui} explains a generic app verify-only override`, async ({ page }) => {
+    await setup(page, {
+      'virtual-screen': true,
+      'virtual-display-mode': 'per_client',
+      'virtual-display-layout': 'extended_primary_isolated',
+      'config-overrides': { dd_configuration_option: 'verify_only' },
+    }, { dd_configuration_option: 'ensure_active' });
+    await open(page, ui);
+    await expect(page.getByText('This game uses a virtual display, so its selected layout will be applied even when Verify Only is selected. Client display settings can override this.')).toBeVisible();
+  });
 
   test(`${ui} preserves explicit choices equal to host defaults when the host later changes`, async ({
     page,

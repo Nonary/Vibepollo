@@ -20,6 +20,7 @@ namespace confighttp::policy {
     AuthResult make_error(StatusCode code, const std::string &error) const;
     AuthResult check_bearer(const std::string &raw_auth, const std::string &path, const std::string &method) const;
     AuthResult check_session(const std::string &raw_auth) const;
+    AuthResult check_remote(const std::string &remote_address) const;
     AuthResult check(const std::string &remote_address, const std::string &auth_header, const std::string &path, const std::string &method) const;
     bool is_html_request(const std::string &path) const;
     std::string extract_cookie(const SimpleWeb::CaseInsensitiveMultimap &headers, std::string_view name) const;

@@ -149,7 +149,7 @@ TEST(SunshineVirtualDisplayPackaging, RenderAdapterSelectionUsesConfiguredThenDe
 
 TEST(SunshineVirtualDisplayPackaging, DriverRefreshConsumesPinnedLibvirtualdisplayRelease) {
   EXPECT_EQ(contract::libvirtualdisplay_repository, "Nonary/libvirtualdisplay");
-  EXPECT_EQ(contract::libvirtualdisplay_release_tag, "v1.6.4");
+  EXPECT_EQ(contract::libvirtualdisplay_release_tag, "v1.6.5");
 }
 
 TEST(SunshineVirtualDisplayPackaging, DriverRefreshUsesThePinnedReleasePayload) {

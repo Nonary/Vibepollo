@@ -10,6 +10,7 @@
   #include "src/platform/windows/display_helper_v2/enumeration_status.h"
   #include "src/platform/windows/display_helper_v2/runtime_support.h"
   #include "src/platform/windows/display_helper_v2/snapshot.h"
+  #include "src/platform/windows/display_helper_v2/snapshot_codec.h"
   #include "src/platform/windows/display_helper_v2/state_machine.h"
   #include "src/platform/windows/display_helper_v2/topology_policy.h"
 
@@ -278,6 +279,9 @@ namespace {
     }
 
     bool snapshot_matches_current(const display_device::DisplaySettingsSnapshot &snapshot_input) override {
+      if (requested_field_validation) {
+        return display_helper::v2::codec::recovery_snapshot_matches(snapshot, snapshot_input);
+      }
       if (enact_restore) {
         return display_helper::v2::topology::equal_snapshot(snapshot_input, snapshot);
       }
@@ -324,6 +328,7 @@ namespace {
     bool query_display_config_unavailable = false;
     bool path_mapping_incomplete = false;
     bool enact_restore = false;
+    bool requested_field_validation = false;
     int apply_snapshot_calls = 0;
   };
 
@@ -3849,6 +3854,55 @@ TEST(DisplayHelperV2StateMachine, RevertRunsRecoveryAndValidation) {
   EXPECT_EQ(harness.exit_code.value(), 0);
   EXPECT_EQ(harness.task_manager.deleted, 1);
   EXPECT_EQ(harness.workarounds.refresh_calls, 1);
+}
+
+// A completed partial snapshot must reach terminal disarm, not leave the
+// scheduler armed to undo a later local display change.
+TEST(DisplayHelperV2StateMachine, PartialSnapshotValidationDisarmsFurtherRecovery) {
+  StateMachineHarness harness;
+  auto saved = make_snapshot("LG");
+  saved.m_modes.at("LG").m_refresh_rate = display_device::Rational {59997, 1000};
+  ASSERT_TRUE(harness.storage.save(display_helper::v2::SnapshotTier::Current, saved));
+  harness.display_settings.snapshot = saved;
+  harness.display_settings.snapshot.m_hdr_states["LG"] = display_device::HdrState::Disabled;
+  harness.display_settings.snapshot.m_primary_device = "LG";
+  harness.display_settings.topology = saved.m_topology;
+  harness.display_settings.requested_field_validation = true;
+  harness.add_active_device("LG");
+  harness.display_settings.valid_topology_ids.insert("LG");
+  harness.state_machine.handle_message(display_helper::v2::RevertCommand {harness.cancellation.current_generation()});
+  ASSERT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+
+  display_helper::v2::RecoveryOperation recovery {
+    harness.display_settings, harness.storage, harness.golden_health,
+    harness.restore_state, harness.clock
+  };
+  const auto restored = recovery.run(harness.cancellation.token());
+  ASSERT_TRUE(restored.success);
+  ASSERT_TRUE(restored.snapshot);
+  EXPECT_EQ(harness.display_settings.apply_snapshot_calls, 0);
+  harness.dispatcher.recovery_completion(restored);
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::RecoveryValidation);
+
+  display_helper::v2::RecoveryValidationOperation validation {harness.snapshot_service, harness.clock};
+  harness.dispatcher.recovery_validation_completion(validation.run(*restored.snapshot, harness.cancellation.token()));
+  harness.drain_messages();
+  ASSERT_EQ(harness.state_machine.state(), display_helper::v2::State::Waiting);
+  EXPECT_FALSE(harness.state_machine.recovery_armed());
+  EXPECT_EQ(harness.task_manager.deleted, 1);
+  EXPECT_EQ(harness.exit_code, 0);
+
+  // Model the helper remaining alive for another connection after completion.
+  harness.display_settings.snapshot.m_modes.at("LG").m_resolution = display_device::Resolution {3840, 2160};
+  harness.state_machine.handle_message(display_helper::v2::DisplayEventMessage {
+    display_helper::v2::DisplayEvent::DisplayChange, harness.cancellation.current_generation()
+  });
+  harness.clock.advance(std::chrono::minutes(2));
+  harness.state_machine.handle_tick();
+  EXPECT_EQ(harness.dispatcher.recovery_dispatch_count, 1);
+  EXPECT_EQ(harness.display_settings.apply_snapshot_calls, 0);
+  EXPECT_EQ(harness.display_settings.snapshot.m_modes.at("LG").m_resolution.m_width, 3840u);
 }
 
 TEST(DisplayHelperV2StateMachine, RevertWithNoSnapshotsExitsImmediately) {

@@ -413,10 +413,10 @@ namespace {
     server.config.timeout_request = 3;
     std::atomic_uint handshakes {0};
     std::vector<request_t> route_requests;
-    server.verify = [&](request_t request, SSL *ssl) {
+    server.verify = [&](request_t request, SSL *ssl, pending_peer_factory_t pending_peer) {
       ++handshakes;
       std::lock_guard lock(client_mutex);
-      return store.authenticate(request, ssl, chain, clients).identity.has_value();
+      return store.authenticate(request, ssl, chain, clients, std::move(pending_peer)).identity.has_value();
     };
     server.on_verify_failed = [](auto response, auto) {
       response->close_connection_after_response = true;
@@ -517,6 +517,25 @@ namespace {
     tls_identity::native_store_t native_store;
     std::vector<crypto::p_named_cert_t> records;
   };
+
+  TEST_F(NativeTlsClientIdentity, PendingPeerFactoryRemainsBoundToNativeTransportAuthority) {
+    auto transport = factory.connect();
+    const auto request = factory.request(transport);
+    int factories = 0;
+    auto certificate = crypto::x509(first_credentials().x509);
+    {
+      std::lock_guard lock(client_mutex);
+      ASSERT_TRUE(native_store.authenticate_certificate(request, certificate, chain, records,
+        [&factories]() -> std::shared_ptr<pending_peer_t> { ++factories; return {}; }).identity);
+    }
+    const auto peer = native_store.pending_peer(request);
+    ASSERT_TRUE(peer);
+    peer();
+    EXPECT_EQ(factories, 1);
+    native_store.revoke(first_uuid);
+    EXPECT_FALSE(native_store.pending_peer(request));
+    EXPECT_FALSE(native_resolve(request));
+  }
 
   TEST_F(NativeTlsClientIdentity, NativeConversionRecognizesOnlyCurrentPermissionBits) {
     for (const auto permission : {crypto::PERM::_no, crypto::PERM::_reserved, static_cast<crypto::PERM>(0x80000000u)}) {
@@ -763,5 +782,46 @@ namespace {
     records[0]->allow_sleep = true;
     records[0]->perm = crypto::PERM::_no;
     EXPECT_FALSE(native_resolve(request));
+  }
+
+  TEST_F(NativeTlsClientIdentity, AccessTogglePreservesNarrowPermissionsAndInvalidatesLiveAuthorization) {
+    auto transport = factory.connect();
+    const auto request = factory.request(transport);
+    records[0]->perm = crypto::PERM::input_kbd;
+    ASSERT_TRUE(native_authenticate(request).identity);
+    records[0]->enabled = false;
+    EXPECT_FALSE(native_resolve(request));
+    EXPECT_FALSE(tls_identity::current_native_permissions_match(records, first_uuid, crypto::PERM::input_kbd));
+    EXPECT_EQ(records[0]->perm, crypto::PERM::input_kbd);
+    native_store.revoke(first_uuid);
+    records[0]->enabled = true;
+    EXPECT_FALSE(native_resolve(request)); // old transport stays revoked
+    auto replacement = factory.connect();
+    const auto replacement_request = factory.request(replacement);
+    EXPECT_TRUE(native_authenticate(replacement_request).identity);
+    EXPECT_EQ(native_resolve(replacement_request)->perm, crypto::PERM::input_kbd);
+    records[0]->perm = crypto::PERM::_no;
+    EXPECT_FALSE(native_resolve(replacement_request)); // enable never grants a mask
+  }
+
+  TEST_F(NativeTlsClientIdentity, AccessToggleDoesNotChangeOtherClientAuthorization) {
+    auto second = std::make_shared<crypto::named_cert_t>();
+    second->uuid = second_uuid;
+    second->name = "Second native client";
+    second->cert = second_credentials().x509;
+    second->perm = crypto::PERM::view;
+    records.push_back(second);
+    chain.add(records.back());
+    auto first_transport = factory.connect();
+    auto second_transport = factory.connect();
+    const auto first_request = factory.request(first_transport);
+    const auto second_request = factory.request(second_transport);
+    ASSERT_TRUE(native_authenticate(first_request).identity);
+    ASSERT_TRUE(native_authenticate(second_request, second_credentials()).identity);
+    records[0]->enabled = false;
+    native_store.revoke(first_uuid);
+    EXPECT_FALSE(native_resolve(first_request));
+    ASSERT_TRUE(native_resolve(second_request));
+    EXPECT_EQ(native_resolve(second_request)->uuid, second_uuid);
   }
 }  // namespace

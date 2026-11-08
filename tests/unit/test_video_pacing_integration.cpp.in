@@ -37,7 +37,7 @@ namespace pyrowave {
 namespace config {
   struct { int pacing_max_bitrate_kbps = 0, fec_percentage = 20,
                pyrowave_critical_fec_percentage = 20, video_max_batch_size_kb = 64;
-          bool pacing_batch_demand_limit = false, host_adaptive_pacing = false; } stream;
+          bool pacing_batch_demand_limit = false, pacing_group_demand_limit = false, host_adaptive_pacing = false; } stream;
 }
 struct config_t {
   struct { int bitrate = 150000, client_requested_bitrate = 150000, videoFormat = 1,
@@ -54,8 +54,8 @@ struct session_t {
   config_t config;
   std::string device_uuid = "client";
   safe::mail_t mail = std::make_shared<safe::mail_raw_t>();
-  struct address_t { bool is_v6() const { return false; } };
-  struct peer_t { address_t address() const { return {}; } };
+  struct address_t { bool v6 = false; bool is_v6() const { return v6; } };
+  struct peer_t { bool v6 = false; address_t address() const { return {v6}; } };
   struct {
     safe::mail_raw_t::event_t<int> bitrate_events;
     std::atomic<int> pacing_bitrate_kbps {0};
@@ -104,13 +104,15 @@ int publish_session(session_t &session) {
 // Logging is an external edge; the controller and sender decisions are production fragments.
 void log_adaptive_pacing(const pacing::adaptive_pacing_events_t &, const pacing::adaptive_pacing_snapshot_t &, std::uint64_t) {}
 std::pair<size_t, size_t> pace(int cap, bool encrypted = false, bool pyro = false, size_t blocksize = 1408,
-                             std::uint64_t packets = 0, bool delay_mode = false, bool demand_limit = false, bool adaptive = false) {
+                             std::uint64_t packets = 0, bool delay_mode = false, bool demand_limit = false, bool adaptive = false, bool group_limit = false, size_t actual_frame_packets = 5, bool ipv6 = false) {
   config::stream.pacing_max_bitrate_kbps = cap;
   config::stream.pacing_batch_demand_limit = demand_limit;
+  config::stream.pacing_group_demand_limit = group_limit;
   session_t instance;
   instance.video.adaptive_pacing_enabled = adaptive && !pyro;
   instance.video.adaptive_pacing = pacing::adaptive_pacing_t{instance.video.adaptive_pacing_enabled};
   instance.video.cipher = encrypted;
+  instance.video.peer.v6 = ipv6;
   auto *session = &instance;
   const bool pyrowave_session = pyro;
   const auto &monitor = session->config.monitor;
@@ -127,7 +129,7 @@ std::pair<size_t, size_t> pace(int cap, bool encrypted = false, bool pyro = fals
       ratecontrol_packets_in_1ms = 900; // deterministic adaptive-policy boundary
 @CLAMP@
 @ADAPTIVE@
-    std::size_t pacing_frame_packets = 5;
+    std::size_t pacing_frame_packets = actual_frame_packets;
 @BATCH_QUANTUM@
 @BATCHES@
 @FRAME_DELAY@
@@ -192,6 +194,7 @@ std::pair<bool, int> startup_response(int selected) {
   auto stream_session = std::make_shared<int>(0);
   std::string remote_address, startup_error;
   bool startup_failed = true;
+  bool failed_before_control_registration = false;
   int startup_status = 500;
 @RTSP_MAPPING@
   return {startup_failed, startup_status};
@@ -370,6 +373,48 @@ size_t frame_packets(size_t image_bytes, int packet_size, int percentage, int mi
   }
   EXPECT_EQ(policy_count, count);
   return count;
+}
+TEST(VideoPacingIntegration, DemandGroupUsesActualFrameQuantumWithIndependentBatchOption) {
+  for (const bool ipv6 : {false,true}) for (const bool encrypted : {false, true}) for (const bool batch : {false, true}) {
+    for (const auto frame : {1u, 10000u, 156250u, 1000000u}) {
+      const auto actual = frame_packets(frame, 1392, 20, 2);
+      const auto quantum = pacing::packets_per_ms(0, 150000, 1376, 1408+38+(ipv6?40:20)+8+(encrypted?32:0), actual, 120, 0);
+      const auto selected = pace(0, encrypted, false, 1408, 0, false, batch, false, true, actual, ipv6);
+      EXPECT_EQ(selected.first, quantum);
+      EXPECT_LE(selected.second, quantum);
+      for (const auto sent : {0u, 1u, 101u, 10001u}) {
+        EXPECT_EQ(pace(0,encrypted,false,1408,sent,true,batch,false,true,actual,ipv6).first,
+                  std::uint64_t(pacing::packet_pace_t::fixed(quantum).offset(sent).count()));
+      }
+    }
+  }
+}
+TEST(VideoPacingIntegration, DemandGroupWaitThresholdRetainsFecTailAccounting) {
+  const auto quantum = pace(0,false,false,1408,0,false,false,false,true).first;
+  ASSERT_GT(quantum,3u);
+  // Replay the production wait condition across a short FEC-block tail.
+  // A whole next call can cross the threshold; debt remains cumulative.
+  EXPECT_TRUE(checks_deadline(0,0,0,quantum));
+  EXPECT_FALSE(checks_deadline(0,quantum-3,quantum-3,quantum));
+  EXPECT_TRUE(checks_deadline(0,2*quantum-3,2*quantum-3,quantum));
+  EXPECT_EQ(pace(0,false,false,1408,2*quantum-3,true,false,false,true).first,(2*quantum-3)*1000000/quantum);
+  EXPECT_TRUE(checks_deadline(8000,quantum-3,quantum-3,quantum));
+}
+TEST(VideoPacingIntegration, DemandGroupComposesWithAdaptiveAndHardCeilings) {
+  for (const int cap : {0, 8000, 200000, 10000000}) for (const bool encrypted : {false,true}) {
+    for (const bool batch : {false,true}) for (const auto sent : {1u,101u,10001u}) {
+      const auto group = pace(cap,encrypted,false,1408,sent,true,batch,false,true,1000).first;
+      const auto adaptive = pace(cap,encrypted,false,1408,sent,true,batch,true,false,1000).first;
+      EXPECT_EQ(pace(cap,encrypted,false,1408,sent,true,batch,true,true,1000).first,std::max(group,adaptive));
+      if (cap) EXPECT_GE(group,stream::video_pacing_delay_ns(sent,1408+(encrypted?32:0),cap));
+    }
+  }
+}
+TEST(VideoPacingIntegration, DemandGroupDoesNotAffectPyroWave) {
+  for(const int cap : {0,8000,200000}) for(const bool batch : {false,true}) for(const bool adaptive : {false,true}) {
+    EXPECT_EQ(pace(cap,true,true,1408,1000,true,batch,adaptive,true),pace(cap,true,true,1408,1000,true,batch,adaptive,false));
+    EXPECT_EQ(pace(cap,true,true,1408,0,false,batch,adaptive,true),pace(cap,true,true,1408,0,false,batch,adaptive,false));
+  }
 }
 TEST(VideoPacingIntegration, DemandBoundCoversActualProductionPacketizationAndFec) {
   unsigned fixtures = 0;

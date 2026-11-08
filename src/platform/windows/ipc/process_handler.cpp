@@ -14,6 +14,7 @@
 #include <UserEnv.h>
 #include <windows.h>
 #include <WtsApi32.h>
+#include <sddl.h>
 
 // standard includes
 #include "src/logging.h"
@@ -21,6 +22,7 @@
 #include "src/utility.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <system_error>
 #include <vector>
 
@@ -33,7 +35,9 @@ namespace {
     const std::wstring &cmd_line,
     const std::wstring &working_dir,
     DWORD creation_flags,
-    STARTUPINFOEXW &si,
+    STARTUPINFOW &si,
+    bool inherit_handles,
+    SECURITY_ATTRIBUTES *process_attributes,
     PROCESS_INFORMATION &pi
   ) {
     const DWORD session_id = WTSGetActiveConsoleSessionId();
@@ -89,16 +93,16 @@ namespace {
     });
 
     // Ensure the child runs on the interactive window station/desktop for the active console session.
-    auto *prev_desktop = si.StartupInfo.lpDesktop;
+    auto *prev_desktop = si.lpDesktop;
     const auto try_launch = [&](const wchar_t *desktop) {
-      si.StartupInfo.lpDesktop = const_cast<LPWSTR>(desktop);
+      si.lpDesktop = const_cast<LPWSTR>(desktop);
       return CreateProcessAsUserW(
         raw_primary_token,
         nullptr,
         (LPWSTR) cmd_line.c_str(),
-        nullptr,
-        nullptr,
-        FALSE,
+        process_attributes,
+        process_attributes,
+        inherit_handles,
         creation_flags,
         env_block,
         working_dir.empty() ? nullptr : working_dir.c_str(),
@@ -115,7 +119,7 @@ namespace {
       launched_desktop = kWinlogonDesktopW;
     }
 
-    si.StartupInfo.lpDesktop = prev_desktop;
+    si.lpDesktop = prev_desktop;
     if (!ok) {
       BOOST_LOG(debug) << "CreateProcessAsUserW failed while launching SYSTEM child in active session (session_id="
                        << session_id << "), winerr=" << GetLastError();
@@ -140,7 +144,8 @@ ProcessHandler::ProcessHandler(bool use_job):
 bool ProcessHandler::start(
   const std::wstring &application_path,
   std::wstring_view arguments,
-  bool allow_system_fallback
+  bool allow_system_fallback,
+  bool restrict_process_access
 ) {
   if (running_) {
     // Check if the previously started process has already exited. If so, clear stale state.
@@ -182,10 +187,39 @@ bool ProcessHandler::start(
   BOOST_LOG(debug) << "Launching process: " << platf::to_utf8(application_path)
                    << (arguments.empty() ? "" : " with arguments") << " (hidden, detached)";
 
-  STARTUPINFOEXW si = {};
-  si.StartupInfo.cb = sizeof(si);
+  STARTUPINFOW si = {};
+  si.cb = sizeof(si);
 
-  DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT;
+  // Windows does not support inheriting handles across sessions.
+  const BOOL inherit_handles = FALSE;
+  const bool parent_is_system = platf::is_running_as_system();
+
+  // A helper accepting privileged commands runs with the interactive
+  // user's token, so its process object must not grant that user
+  // PROCESS_DUP_HANDLE. The parent keeps its creation-time process handle;
+  // only SYSTEM and Administrators may open another one.
+  PSECURITY_DESCRIPTOR process_descriptor = nullptr;
+  SECURITY_ATTRIBUTES process_attributes {sizeof(process_attributes), nullptr, FALSE};
+  SECURITY_ATTRIBUTES *process_attributes_ptr = nullptr;
+  if (parent_is_system && restrict_process_access) {
+    if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+          L"O:SYG:SYD:P(A;;GA;;;SY)(A;;GA;;;BA)",
+          SDDL_REVISION_1,
+          &process_descriptor,
+          nullptr)) {
+      BOOST_LOG(error) << "Unable to build restricted child process security descriptor, error=" << GetLastError();
+      return false;
+    }
+    process_attributes.lpSecurityDescriptor = process_descriptor;
+    process_attributes_ptr = &process_attributes;
+  }
+  auto release_process_descriptor = util::fail_guard([&]() {
+    if (process_descriptor) {
+      LocalFree(process_descriptor);
+    }
+  });
+
+  DWORD creation_flags = CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW;
   // When not using a job (keep-alive child), prefer to break away from any existing job to avoid kill-on-close
   if (!use_job_) {
     creation_flags |= CREATE_BREAKAWAY_FROM_JOB;
@@ -201,7 +235,7 @@ bool ProcessHandler::start(
 
   BOOL ret = FALSE;
 
-  if (platf::is_running_as_system()) {
+  if (parent_is_system) {
     HANDLE user_token = platf::retrieve_users_token(false);
     if (user_token) {
       auto close_token = util::fail_guard([&]() {
@@ -225,9 +259,9 @@ bool ProcessHandler::start(
         user_token,
         nullptr,
         (LPWSTR) cmd_line.c_str(),
-        nullptr,
-        nullptr,
-        FALSE,
+        process_attributes_ptr,
+        process_attributes_ptr,
+        inherit_handles,
         creation_flags,
         env_block,
         working_dir.empty() ? nullptr : working_dir.c_str(),
@@ -239,15 +273,22 @@ bool ProcessHandler::start(
 
       // Prefer launching into the active console session so display APIs (e.g., SetDisplayConfig)
       // have a better chance of working while Sunshine runs as a service.
-      if (start_as_system_in_active_console_session(cmd_line, working_dir, creation_flags, si, pi_)) {
+      if (start_as_system_in_active_console_session(
+            cmd_line,
+            working_dir,
+            creation_flags,
+            si,
+            inherit_handles != FALSE,
+            process_attributes_ptr,
+            pi_)) {
         ret = TRUE;
       } else {
         ret = CreateProcessW(
           nullptr,
           (LPWSTR) cmd_line.c_str(),
-          nullptr,
-          nullptr,
-          FALSE,
+          process_attributes_ptr,
+          process_attributes_ptr,
+          inherit_handles,
           creation_flags,
           nullptr,
           working_dir.empty() ? nullptr : working_dir.c_str(),
@@ -264,9 +305,9 @@ bool ProcessHandler::start(
     ret = CreateProcessW(
       nullptr,
       (LPWSTR) cmd_line.c_str(),
-      nullptr,
-      nullptr,
-      FALSE,
+      process_attributes_ptr,
+      process_attributes_ptr,
+      inherit_handles,
       creation_flags,
       nullptr,
       working_dir.empty() ? nullptr : working_dir.c_str(),

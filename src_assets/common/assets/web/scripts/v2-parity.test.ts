@@ -368,14 +368,16 @@ test('Settings explains unavailable host metadata and virtual-display readiness'
   assert.equal(typeof messages.ui.settings.virtual_display_unavailable.description, 'string');
 });
 
-test('global command rows preserve order, verbatim text, and Windows elevation', () => {
+test('global command rows preserve order, verbatim text, and elevation', () => {
   const source = [
     { do: '  set-mode "A"  ', undo: 'restore A', elevated: true, custom: 'keep' },
     { do: 'second', undo: '', elevated: false },
   ];
   const rows = normalizeCommandRows(source, 'windows');
   assert.deepEqual(serializeCommandRows(rows, 'windows'), source);
-  assert.deepEqual(serializeCommandRows(source, 'linux'), [
+  // The Linux machine service runs elevated commands as root.
+  assert.deepEqual(serializeCommandRows(source, 'linux'), source);
+  assert.deepEqual(serializeCommandRows(source, 'macos'), [
     { do: '  set-mode "A"  ', undo: 'restore A', custom: 'keep' },
     { do: 'second', undo: '' },
   ]);

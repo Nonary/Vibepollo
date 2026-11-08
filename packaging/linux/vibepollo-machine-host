@@ -11,25 +11,15 @@ readonly service_user=vibepollo
 readonly machine_profile=/var/lib/vibepollo
 readonly profile_marker=$machine_profile/.machine-profile
 readonly session_file=/run/vibepollo/session.env
-readonly command_manifest=/etc/vibepollo/session-commands
-readonly command_manifest_header='# vibepollo-session-commands-v2'
+# Removed in favor of per-command elevation; deleted on upgrade and reset.
+readonly legacy_command_manifest=/etc/vibepollo/session-commands
 readonly session_controller=/usr/libexec/vibeshine/vibepollo-session-controller
 readonly profile_importer=/usr/libexec/vibeshine/vibepollo-profile-import
 readonly machine_host=/usr/libexec/vibeshine/vibepollo-machine-host
 readonly machine_host_executable=/usr/libexec/vibeshine/vibepollo-host
-readonly maximum_environment_entries=128
-readonly maximum_environment_value_bytes=4096
-readonly maximum_application_entries=2048
-readonly maximum_authorization_entries=4096
-readonly maximum_raw_directory_bytes=4095
-readonly maximum_raw_command_bytes=16384
-readonly maximum_normalized_command_bytes=65535
-readonly maximum_command_manifest_bytes=1048576
 
 desktop_user=''; desktop_uid=''; desktop_gid=''; desktop_home=''; desktop_backend=kwin
 session_id=''; session_generation=''; session_user=''; session_uid=''; session_gid=''; session_home=''; session_runtime=''; session_display=''; session_xdisplay=''; session_xauthority=''; session_groups=''; session_role=''; session_backend=kwin; session_compositor=''
-authorization_role=''; authorization_directory=''; authorization_command=''
-declare -A application_environment=()
 
 fail() { /usr/bin/printf 'vibepollo-machine-host: %s\n' "$*" >&2; return 1; }
 require_root() { ((EUID == 0)) || fail "$1 requires root"; }
@@ -117,256 +107,6 @@ write_settings() {
   /usr/bin/chown root:root "$temporary" || return 1
   /usr/bin/chmod 0600 "$temporary" || return 1
   /usr/bin/mv -fT -- "$temporary" "$settings_file"
-}
-
-normalize_application_value() {
-  local remaining=$1 maximum=$2 result='' prefix suffix variable addition
-  [[ "$maximum" =~ ^[1-9][0-9]*$ ]] || {
-    fail 'invalid application expansion bound'
-    return 1
-  }
-  while [[ "$remaining" == *'$'* ]]; do
-    prefix=${remaining%%\$*}
-    ((${#prefix} <= maximum && ${#result} <= maximum - ${#prefix})) || {
-      fail 'expanded application value exceeds its bound'
-      return 1
-    }
-    result+=$prefix
-    remaining=${remaining#*\$}
-    if [[ "$remaining" == '$'* ]]; then
-      ((${#result} < maximum)) || {
-        fail 'expanded application value exceeds its bound'
-        return 1
-      }
-      result+='$'
-      remaining=${remaining:1}
-    elif [[ "$remaining" == '('* ]]; then
-      suffix=${remaining:1}
-      [[ "$suffix" == *')'* ]] || fail 'application variable reference is missing a closing parenthesis'
-      variable=${suffix%%)*}
-      [[ "$variable" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || fail 'application variable name is invalid'
-      [[ -v "application_environment[$variable]" ]] || fail "application variable is unavailable to the machine host: $variable"
-      addition=${application_environment[$variable]}
-      ((${#addition} <= maximum && ${#result} <= maximum - ${#addition})) || {
-        fail 'expanded application value exceeds its bound'
-        return 1
-      }
-      result+=$addition
-      remaining=${suffix#*)}
-    else
-      ((${#result} < maximum)) || {
-        fail 'expanded application value exceeds its bound'
-        return 1
-      }
-      result+='$'
-    fi
-  done
-  ((${#remaining} <= maximum && ${#result} <= maximum - ${#remaining})) || {
-    fail 'expanded application value exceeds its bound'
-    return 1
-  }
-  /usr/bin/printf '%s%s' "$result" "$remaining"
-}
-
-initialize_application_environment() {
-  local source=$1 encoded decoded key raw normalized entries entry_count=0
-  application_environment=(
-    [HOME]="$desktop_home"
-    [USER]="$desktop_user"
-    [LOGNAME]="$desktop_user"
-    [PATH]='/usr/local/sbin:/usr/local/bin:/usr/bin'
-    [LANG]='C.UTF-8'
-    [SHELL]='/bin/sh'
-    [XDG_CONFIG_HOME]="$desktop_home/.config"
-    [XDG_DATA_HOME]="$desktop_home/.local/share"
-    [VIBEPOLLO_MACHINE_HOST]='1'
-    [VIBEPOLLO_SESSION_HOME]="$desktop_home"
-    [VIBEPOLLO_SESSION_USER]="$desktop_user"
-  )
-  entries=$(user_exec "$service_user" /usr/bin/jq -r '
-      (.env // {})
-      | if type != "object" then error("application environment must be an object") else . end
-      | to_entries
-      | if length > 128 then error("too many application environment entries") else . end
-      | .[]
-      | if (.key | length) > 64 or
-           (.key | test("^[A-Za-z_][A-Za-z0-9_]*$") | not) or
-           (.value | type) != "string" or (.value | length) > 4096 or
-           (.value | test("[[:cntrl:]]"))
-        then error("application environment entry is unsafe")
-        else @base64
-        end
-    ' "$source") || fail "invalid application environment: $source"
-  while IFS= read -r encoded; do
-    [[ -n "$encoded" ]] || continue
-    ((++entry_count <= maximum_environment_entries)) || {
-      fail 'too many application environment entries'
-      return 1
-    }
-    decoded=$(/usr/bin/printf '%s' "$encoded" |
-      user_exec "$service_user" /usr/bin/base64 --decode) || return 1
-    key=$(/usr/bin/printf '%s' "$decoded" |
-      user_exec "$service_user" /usr/bin/jq -er '.key') || return 1
-    raw=$(/usr/bin/printf '%s' "$decoded" |
-      user_exec "$service_user" /usr/bin/jq -er '.value') || return 1
-    ((${#raw} <= maximum_environment_value_bytes)) || {
-      fail 'application environment value exceeds its bound'
-      return 1
-    }
-    normalized=$(normalize_application_value "$raw" "$maximum_environment_value_bytes") || return 1
-    application_environment[$key]=$normalized
-  done <<<"$entries"
-}
-
-extract_desktop_authorizations() {
-  local source=$1 destination=$2 entries encoded decoded raw_directory raw_command directory command size
-  local authorization_count=0 manifest_bytes=0 line_bytes
-  if [[ ! -e "$source" && ! -L "$source" ]]; then
-    # A fresh machine profile has no application list yet; authorize nothing.
-    : >"$destination"
-    return 0
-  fi
-  [[ -f "$source" && ! -L "$source" ]] || fail "unsafe application list: $source"
-  size=$(/usr/bin/stat -c '%s' -- "$source") || return 1
-  [[ "$size" =~ ^[0-9]+$ ]] && ((size > 0 && size <= 16777216)) ||
-    fail 'application list exceeds the administrator authorization limit'
-  initialize_application_environment "$source" || return 1
-  entries=$(user_exec "$service_user" /usr/bin/jq -r '
-        if (.apps | type) != "array" then error("application list must be an array") else . end
-        | if (.apps | length) > 2048 then error("too many applications") else . end
-        |
-        .apps[]? as $app
-        | ($app["working-dir"]? // "") as $directory
-        | [($app.cmd? // empty), ($app.detached[]? // empty),
-           ($app["prep-cmd"][]? | (.do? // empty), (.undo? // empty))][]
-        | select(type == "string" and length > 0) as $command
-        | if ($directory | type) != "string" or ($directory | length) > 4095 or
-             ($command | length) > 16384 or
-             any([$directory, $command][]; test("[[:cntrl:]]"))
-          then error("application command or working directory is unsafe")
-          else {directory: $directory, command: $command} | @base64
-          end
-    ' "$source") || fail "invalid application commands: $source"
-  : >"$destination"
-  while IFS= read -r encoded; do
-    [[ -n "$encoded" ]] || continue
-    ((++authorization_count <= maximum_authorization_entries)) || {
-      fail 'too many application command authorizations'
-      return 1
-    }
-    decoded=$(/usr/bin/printf '%s' "$encoded" |
-      user_exec "$service_user" /usr/bin/base64 --decode) || return 1
-    raw_directory=$(/usr/bin/printf '%s' "$decoded" |
-      user_exec "$service_user" /usr/bin/jq -er '.directory') || return 1
-    raw_command=$(/usr/bin/printf '%s' "$decoded" |
-      user_exec "$service_user" /usr/bin/jq -er '.command') || return 1
-    ((${#raw_directory} <= maximum_raw_directory_bytes &&
-       ${#raw_command} <= maximum_raw_command_bytes)) || {
-      fail 'raw application command or working directory exceeds its bound'
-      return 1
-    }
-    directory=$(normalize_application_value "$raw_directory" "$maximum_raw_directory_bytes") || return 1
-    command=$(normalize_application_value "$raw_command" "$maximum_normalized_command_bytes") || return 1
-    [[ -n "$command" && ( -z "$directory" || "$directory" == /* ) ]] ||
-      fail 'normalized application command or working directory is unsafe'
-    line_bytes=$((8 + ${#directory} + ${#command}))
-    ((line_bytes <= maximum_command_manifest_bytes &&
-      manifest_bytes <= maximum_command_manifest_bytes - line_bytes)) || {
-      fail 'application command manifest exceeds its bound'
-      return 1
-    }
-    /usr/bin/printf 'desktop\t%s\t%s\n' "$directory" "$command" >>"$destination"
-    ((manifest_bytes += line_bytes))
-  done <<<"$entries"
-}
-
-install_command_manifest() {
-  local body=$1 temporary size
-  size=$(/usr/bin/stat -c '%s' -- "$body") || return 1
-  [[ "$size" =~ ^[0-9]+$ ]] && ((size <= maximum_command_manifest_bytes)) ||
-    fail 'application command manifest exceeds its bound'
-  /usr/bin/awk -F '\t' '
-    NF != 3 || $1 != "desktop" || $3 == "" || ($2 != "" && substr($2, 1, 1) != "/") { exit 1 }
-    $3 in directory && directory[$3] != $2 { exit 1 }
-    { directory[$3] = $2 }
-  ' "$body" || fail 'a command is ambiguously authorized for multiple working directories'
-  temporary=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .commands.XXXXXX)
-  /usr/bin/printf '%s\n' "$command_manifest_header" >"$temporary"
-  if [[ -s "$body" ]]; then
-    LC_ALL=C /usr/bin/sort -u -- "$body" >>"$temporary"
-  fi
-  /usr/bin/chown root:"$service_user" "$temporary"; /usr/bin/chmod 0640 "$temporary"; /usr/bin/mv -fT -- "$temporary" "$command_manifest"
-}
-
-manifest_is_v2() {
-  local header size
-  size=$(/usr/bin/stat -c '%s' -- "$command_manifest") || return 1
-  [[ "$size" =~ ^[0-9]+$ ]] && ((size <= maximum_command_manifest_bytes)) || return 1
-  IFS= read -r header <"$command_manifest" || return 1
-  [[ "$header" == "$command_manifest_header" ]] || return 1
-  /usr/bin/awk -F '\t' '
-    NR == 1 { next }
-    NF != 3 || $1 != "desktop" || $3 == "" || ($2 != "" && substr($2, 1, 1) != "/") { exit 1 }
-    $3 in directory && directory[$3] != $2 { exit 1 }
-    { directory[$3] = $2 }
-  ' "$command_manifest"
-}
-
-authorize_commands() {
-  local extracted
-  require_root authorize-commands; load_settings
-  extracted=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .commands-json.XXXXXX)
-  extract_desktop_authorizations "$machine_profile/apps.json" "$extracted" || {
-    /usr/bin/rm -f -- "$extracted"
-    return 1
-  }
-  install_command_manifest "$extracted"
-  /usr/bin/rm -f -- "$extracted"
-}
-
-split_authorization_line() {
-  local line=$1 remainder
-  authorization_role=''; authorization_directory=''; authorization_command=''
-  [[ "$line" == *$'\t'* ]] || return 1
-  authorization_role=${line%%$'\t'*}
-  remainder=${line#*$'\t'}
-  [[ "$remainder" == *$'\t'* ]] || return 1
-  authorization_directory=${remainder%%$'\t'*}
-  authorization_command=${remainder#*$'\t'}
-  [[ "$authorization_role" == desktop && -n "$authorization_command" &&
-     ( -z "$authorization_directory" || "$authorization_directory" == /* ) ]]
-}
-
-migrate_legacy_command_manifest() {
-  local extracted selected line
-  extracted=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .commands-json.XXXXXX)
-  selected=$(/usr/bin/mktemp --tmpdir=/etc/vibepollo .commands-selected.XXXXXX)
-  extract_desktop_authorizations "$machine_profile/apps.json" "$extracted" || {
-    /usr/bin/rm -f -- "$extracted" "$selected"
-    return 1
-  }
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    split_authorization_line "$line" || continue
-    if /usr/bin/grep -Fqx -- "$authorization_command" "$command_manifest"; then
-      /usr/bin/printf '%s\t%s\t%s\n' "$authorization_role" "$authorization_directory" "$authorization_command" >>"$selected"
-    fi
-  done <"$extracted"
-  install_command_manifest "$selected"
-  /usr/bin/rm -f -- "$extracted" "$selected"
-  /usr/bin/printf 'vibepollo-machine-host: migrated the legacy command allowlist without authorizing new commands\n'
-}
-
-ensure_command_manifest() {
-  local attributes
-  if [[ -f "$command_manifest" && ! -L "$command_manifest" ]]; then
-    attributes=$(/usr/bin/stat -c '%U:%G:%a' -- "$command_manifest") || return 1
-    [[ "$attributes" == "root:${service_user}:640" ]] || { fail 'administrator command manifest is unsafe'; return 1; }
-    manifest_is_v2 && return 0
-    migrate_legacy_command_manifest
-    return
-  fi
-  [[ ! -e "$command_manifest" && ! -L "$command_manifest" ]] || { fail 'administrator command manifest is unsafe'; return 1; }
-  authorize_commands
 }
 
 profile_is_safe() {
@@ -623,12 +363,27 @@ configure_automatically() {
 prepare_upgrade_profile() {
   # All native package formats use this same ordered upgrade path. Repair old
   # ownership/modes before validating an existing profile; never re-import a
-  # marked machine profile or authorize additional commands during an upgrade.
+  # marked machine profile during an upgrade.
   # Explicit returns matter when configure_automatically is called in an if.
   repair_profile_tree || return 1
   migrate_profile || return 1
   user_exec "$service_user" "$machine_host" prepare-profile || return 1
-  ensure_command_manifest || return 1
+  remove_legacy_command_manifest
+}
+
+remove_legacy_command_manifest() {
+  # Older releases required `vibeshine authorize-commands` before any custom
+  # command could run. Commands now follow their own elevation setting, so the
+  # allowlist has no reader; remove it so it cannot mislead an administrator.
+  [[ -e "$legacy_command_manifest" || -L "$legacy_command_manifest" ]] || return 0
+  /usr/bin/rm -f -- "$legacy_command_manifest" ||
+    fail "could not remove the retired command allowlist $legacy_command_manifest"
+}
+
+authorize_commands_retired() {
+  /usr/bin/printf '%s\n' \
+    'vibeshine: command approval is no longer required.' \
+    'Commands run as the desktop user. Turn on "Run elevated" for a command to run it as root.'
 }
 
 user_exec() (
@@ -1181,12 +936,12 @@ reset_machine() {
   RESET_CONTROLLER_WAS_ACTIVE=0
   quiesce_machine_for_reset
   remove_machine_profile || fail 'could not remove the machine profile'
-  /usr/bin/rm -f -- "$settings_file" "$legacy_settings_file" "$command_manifest"
+  /usr/bin/rm -f -- "$settings_file" "$legacy_settings_file" "$legacy_command_manifest"
   /usr/bin/rmdir -- /etc/vibepollo 2>/dev/null || :
   [[ ! -e "$machine_profile" && ! -L "$machine_profile" &&
      ! -e "$settings_file" && ! -L "$settings_file" &&
      ! -e "$legacy_settings_file" && ! -L "$legacy_settings_file" &&
-     ! -e "$command_manifest" && ! -L "$command_manifest" ]] ||
+     ! -e "$legacy_command_manifest" && ! -L "$legacy_command_manifest" ]] ||
     fail 'persistent machine state was not completely removed'
   restore_reset_unit_admission "$RESET_CONTROLLER_WAS_ACTIVE" ||
     fail 'machine state was removed but temporary reset unit masks could not be restored'
@@ -1197,13 +952,13 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
   case "${1:-}" in
     configure) [[ $# == 2 ]] || exit 2; shift; write_settings "$@"; prepare_upgrade_profile ;;
     configure-auto) [[ $# == 1 ]] || exit 2; configure_automatically ;;
-    authorize-commands) [[ $# == 1 ]] || exit 2; authorize_commands ;;
+    authorize-commands) [[ $# == 1 ]] || exit 2; authorize_commands_retired ;;
     migrate-profile) [[ $# == 1 ]] || exit 2; migrate_profile ;;
     prepare-profile) [[ $# == 1 ]] || exit 2; prepare_service_profile ;;
     repair-profile) [[ $# == 1 ]] || exit 2; repair_profile_tree ;;
     run) [[ $# == 1 ]] || exit 2; run_host ;;
     remove-pam) [[ $# == 1 ]] || exit 2; remove_pam_hook ;;
     reset) [[ $# == 1 ]] || exit 2; reset_machine ;;
-    *) /usr/bin/printf 'usage: %s {configure USER|configure-auto|authorize-commands|migrate-profile|prepare-profile|repair-profile|run|remove-pam|reset}\n' "$0" >&2; exit 2 ;;
+    *) /usr/bin/printf 'usage: %s {configure USER|configure-auto|migrate-profile|prepare-profile|repair-profile|run|remove-pam|reset}\n' "$0" >&2; exit 2 ;;
   esac
 fi

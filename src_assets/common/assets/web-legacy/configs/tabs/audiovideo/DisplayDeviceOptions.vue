@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue';
-import PlatformLayout from '@/PlatformLayout.vue';
 import Checkbox from '@/Checkbox.vue';
 import ConfigDurationField from '@/ConfigDurationField.vue';
 import { useConfigStore } from '@/stores/config';
@@ -96,15 +95,11 @@ function getRemapping(): DdModeRemapping | null {
   return isRemapping(v) ? v : null;
 }
 
-function canBeRemapped(): boolean {
-  // Always show remapper UI as long as the display device configuration isn't disabled
-  return config.dd_configuration_option !== 'disabled';
-}
-
 function getRemappingType(): RemapType {
-  // Always expose resolution override fields regardless of selected options
-  // Design requirement: remapper shows both resolution and refresh rate inputs
-  // whenever display device configuration is enabled. Default to MIXED.
+  const resolutionAuto = config.dd_resolution_option === 'auto';
+  const refreshAuto = config.dd_refresh_rate_option === 'auto';
+  if (resolutionAuto && !refreshAuto) return RESOLUTION_ONLY;
+  if (!resolutionAuto && refreshAuto) return REFRESH_RATE_ONLY;
   return MIXED;
 }
 
@@ -472,11 +467,11 @@ function clearSnapshotHotkey(): void {
 </script>
 
 <template>
-  <PlatformLayout v-if="config">
-    <template #windows>
+  <div v-if="config">
+    <template v-if="['windows', 'linux'].includes(store.metadata?.platform ?? '')">
       <div class="space-y-4">
         <!-- Step 2 content combined: configuration + snapshot (single card) -->
-        <section v-if="section === 'pre'" class="min-w-0">
+        <section v-if="section === 'pre' && store.metadata?.platform === 'windows'" class="min-w-0">
           <h4 class="mb-3 break-words text-sm font-semibold leading-snug">
             {{ $t('config.dd_step_2') }}: {{ $t('config.dd_pre_stream_setup') }}
           </h4>
@@ -787,15 +782,25 @@ function clearSnapshotHotkey(): void {
 
         <!-- Optional adjustments (belongs to Step 3 in parent) -->
         <section
-          v-if="section === 'options' && config.dd_configuration_option !== 'disabled'"
+          v-if="section === 'options'"
           class="min-w-0"
         >
           <h4 class="mb-3 break-words text-sm font-semibold leading-snug">
             {{ $t('config.dd_step_3') }}: {{ $t('config.dd_optional_adjustments') }}
           </h4>
           <div class="space-y-6">
+            <p v-if="config.dd_configuration_option === 'disabled'" class="text-sm text-warning">
+              {{ $t('config.dd_overrides_configuration_disabled') }}
+            </p>
+            <n-button
+              v-if="store.metadata?.platform === 'linux' && config.dd_configuration_option === 'disabled'"
+              size="small"
+              @click="store.updateOption('dd_configuration_option', 'verify_only')"
+            >
+              {{ $t('config.dd_enable_overrides') }}
+            </n-button>
             <!-- Display overrides (formerly Display mode remapping) -->
-            <section v-if="canBeRemapped()" class="space-y-3">
+            <section class="space-y-3">
               <div class="space-y-2">
                 <label
                   for="dd_mode_remapping"
@@ -1020,7 +1025,13 @@ function clearSnapshotHotkey(): void {
               </div>
             </section>
 
-            <n-grid :cols="12" x-gap="16" y-gap="16" class="optional-adjustments-grid">
+            <n-grid
+              v-if="store.metadata?.platform === 'windows'"
+              :cols="12"
+              x-gap="16"
+              y-gap="16"
+              class="optional-adjustments-grid"
+            >
               <!-- Resolution option -->
               <n-gi :span="12" :lg="6">
                 <div class="space-y-3">
@@ -1221,10 +1232,7 @@ function clearSnapshotHotkey(): void {
         </section>
       </div>
     </template>
-    <template #freebsd></template>
-    <template #linux></template>
-    <template #macos></template>
-  </PlatformLayout>
+  </div>
 </template>
 
 <style scoped>

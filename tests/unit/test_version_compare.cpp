@@ -47,3 +47,13 @@ TEST(VersionCompareTest, StableRespinsAreNotPrereleaseChannel) {
   EXPECT_TRUE(version_compare::is_prerelease_channel("1.15.5-beta.1"));
   EXPECT_TRUE(version_compare::is_prerelease_channel("1.15.5-rc.1"));
 }
+
+TEST(VersionCompareTest, CompiledChannelSurvivesNumericVersionOffline) {
+  EXPECT_TRUE(version_compare::is_prerelease_build("nightly", "2.0.16"));
+  EXPECT_TRUE(version_compare::is_prerelease_build("prerelease", "2.0.16"));
+  EXPECT_FALSE(version_compare::is_prerelease_build("stable", "2.0.16"));
+  EXPECT_TRUE(version_compare::is_prerelease_build("legacy", "2.0.16-beta.1"));
+  EXPECT_FALSE(version_compare::is_prerelease_build("legacy", "2.0.16"));
+  EXPECT_TRUE(version_compare::is_prerelease_build("", "2.0.16-beta.1"));
+  EXPECT_FALSE(version_compare::is_prerelease_build("", "2.0.16-stable.1"));
+}

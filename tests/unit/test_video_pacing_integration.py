@@ -59,9 +59,9 @@ else:
     clamp = ''
 batches = section('        size_t max_batch_size_bytes =', '        // Don\'t ignore the last ratecontrol group')
 adaptive = section('        } else if (session->video.adaptive_pacing_enabled) {',
-                   '\n\n        if (!pyrowave_session && config::stream.pacing_batch_demand_limit) {')
+                   '\n\n        if (!pyrowave_session && (config::stream.pacing_batch_demand_limit || config::stream.pacing_group_demand_limit)) {')
 batch_quantum = section(
-    '        if (!pyrowave_session && config::stream.pacing_batch_demand_limit) {\n          const auto &monitor = session->config.monitor;',
+    '        if (!pyrowave_session && (config::stream.pacing_batch_demand_limit || config::stream.pacing_group_demand_limit)) {\n          const auto &monitor = session->config.monitor;',
     '        // Send less than 64K in a single batch.',
     source.index('        const auto pacing_ceiling =')
 )

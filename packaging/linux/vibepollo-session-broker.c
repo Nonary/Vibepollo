@@ -31,10 +31,9 @@
 #include "vibepollo-display-borrow.h"
 
 static const char session_path[] = "/run/vibepollo/session.env";
-static const char command_manifest_path[] = "/etc/vibepollo/session-commands";
-static const char command_manifest_header[] = "# vibepollo-session-commands-v2";
 static const char service_name[] = "vibepollo";
 static const char fixed_path[] = "/usr/local/bin:/usr/bin:/bin";
+static const char elevated_path[] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 static const char application_supervisor_path[] =
   "/usr/libexec/vibeshine/vibepollo-app-supervisor";
 static const char steam_launch_path[] =
@@ -523,65 +522,29 @@ static bool executable_parent_directory(const char *command, char *directory,
   return true;
 }
 
-static bool command_is_authorized(const char *role, const char *command, gid_t service_gid,
-                                  char *directory, size_t directory_size) {
-  if (!safe_text(role, 15, false) || !safe_text(command, 65535, false) ||
-      !directory || directory_size < 2) {
-    errno = EINVAL;
-    return false;
+static bool application_request_is_safe(int argc, char **argv) {
+  // <operation> <working-directory> <command>. The working directory comes
+  // from the application's configuration and may be empty; when set it must
+  // be absolute. The command is the exact string the host would have run.
+  if (argc < 4) return false;
+  if (!strcmp(argv[1], "app-elevated")) {
+    if (argc != 4) return false;
+  } else {
+    if (strcmp(argv[1], "app") && strcmp(argv[1], "app-wayland-hdr")) return false;
+    if (!vibepollo_stream_environment_is_safe((size_t) (argc - 4), &argv[4])) return false;
   }
-  const int fd = open(command_manifest_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-  if (fd < 0) return false;
-  struct stat attributes;
-  if (fstat(fd, &attributes) || !S_ISREG(attributes.st_mode) || attributes.st_uid != 0 ||
-      attributes.st_gid != service_gid || (attributes.st_mode & 0777) != 0640 || attributes.st_size > 1048576) {
-    close(fd);
-    errno = EPERM;
-    return false;
+  return safe_text(argv[2], PATH_MAX - 1, true) &&
+         (!argv[2][0] || argv[2][0] == '/') && safe_text(argv[3], 65535, false);
+}
+
+static void resolve_application_directory(const char *requested, const char *command,
+                                          char *directory, size_t directory_size) {
+  directory[0] = 0;
+  if (requested && requested[0]) {
+    (void) copy_field(directory, directory_size, requested, false);
+    return;
   }
-  FILE *input = fdopen(fd, "r");
-  if (!input) {
-    close(fd);
-    return false;
-  }
-  bool authorized = false;
-  char *line = NULL;
-  size_t capacity = 0;
-  if (getline(&line, &capacity, input) < 0) goto complete;
-  line[strcspn(line, "\r\n")] = 0;
-  if (strcmp(line, command_manifest_header)) {
-    errno = EPERM;
-    goto complete;
-  }
-  while (getline(&line, &capacity, input) >= 0) {
-    line[strcspn(line, "\r\n")] = 0;
-    char *first = strchr(line, '\t');
-    char *second = first ? strchr(first + 1, '\t') : NULL;
-    if (!first || !second) continue;
-    *first++ = 0;
-    *second++ = 0;
-    if (!safe_text(first, PATH_MAX - 1, true) || (first[0] && first[0] != '/')) {
-      errno = EPERM;
-      authorized = false;
-      break;
-    }
-    if (!strcmp(line, role) && !strcmp(second, command)) {
-      if (authorized || !copy_field(directory, directory_size, first, true)) {
-        errno = EPERM;
-        authorized = false;
-        break;
-      }
-      authorized = true;
-    }
-  }
-complete:
-  free(line);
-  fclose(input);
-  if (authorized && !directory[0]) {
-    (void) executable_parent_directory(command, directory, directory_size);
-  }
-  if (!authorized) errno = EPERM;
-  return authorized;
+  (void) executable_parent_directory(command, directory, directory_size);
 }
 
 static bool install_session_environment(const struct session_identity *identity) {
@@ -1002,12 +965,16 @@ static bool unit_state_is_quiescent(const char *state,
          cgroup_is_unpopulated_using(cgroup_root, control_group);
 }
 
-static bool user_service_is_quiescent_using(
-    const char *systemctl_path, const char *cgroup_root, const char *unit,
-    unsigned int command_timeout_milliseconds) {
+static bool service_manager_is_valid(const char *manager) {
+  return manager && (!strcmp(manager, "--user") || !strcmp(manager, "--system"));
+}
+
+static bool service_is_quiescent_using(
+    const char *systemctl_path, const char *manager, const char *cgroup_root,
+    const char *unit, unsigned int command_timeout_milliseconds) {
   char state[4096] = {0};
   char *const show_arguments[] = {
-    "systemctl", "--user", "--quiet", "show",
+    "systemctl", (char *) manager, "--quiet", "show",
     "--property=LoadState", "--property=MainPID", "--property=ControlGroup",
     (char *) unit, NULL
   };
@@ -1020,26 +987,26 @@ static bool user_service_is_quiescent_using(
   // A collected transient unit has no object left for Show().  systemctl's
   // exact-unit status 4 is its explicit "unknown/not found" proof.
   char *const missing_arguments[] = {
-    "systemctl", "--user", "--quiet", "is-active", (char *) unit, NULL
+    "systemctl", (char *) manager, "--quiet", "is-active", (char *) unit, NULL
   };
   return run_command_bounded(systemctl_path, missing_arguments,
                              command_timeout_milliseconds, NULL, 0) == 4;
 }
 
-static bool stop_user_service_using(const char *systemctl_path, const char *unit,
-                                    unsigned int command_timeout_milliseconds) {
-  if (!systemctl_path || systemctl_path[0] != '/' ||
+static bool stop_service_using(const char *systemctl_path, const char *manager,
+                               const char *unit, unsigned int command_timeout_milliseconds) {
+  if (!systemctl_path || systemctl_path[0] != '/' || !service_manager_is_valid(manager) ||
       !application_unit_name_is_safe(unit) || !command_timeout_milliseconds) return false;
   char *const stop_arguments[] = {
-    "systemctl", "--user", "--quiet", "--no-block", "stop", (char *) unit, NULL
+    "systemctl", (char *) manager, "--quiet", "--no-block", "stop", (char *) unit, NULL
   };
   (void) run_command_bounded(systemctl_path, stop_arguments,
                              command_timeout_milliseconds, NULL, 0);
   const struct timespec retry_delay = {.tv_sec = 0, .tv_nsec = 50000000};
   unsigned int consecutive_clean_checks = 0;
   for (unsigned int attempt = 0; attempt < 100; ++attempt) {
-    if (user_service_is_quiescent_using(systemctl_path, "/sys/fs/cgroup", unit,
-                                        command_timeout_milliseconds)) {
+    if (service_is_quiescent_using(systemctl_path, manager, "/sys/fs/cgroup", unit,
+                                   command_timeout_milliseconds)) {
       if (++consecutive_clean_checks == 10) return true;
     } else {
       consecutive_clean_checks = 0;
@@ -1053,8 +1020,8 @@ static bool stop_user_service_using(const char *systemctl_path, const char *unit
   return false;
 }
 
-static bool stop_user_service(const char *unit) {
-  return stop_user_service_using("/usr/bin/systemctl", unit, 250);
+static bool stop_service(const char *manager, const char *unit) {
+  return stop_service_using("/usr/bin/systemctl", manager, unit, 250);
 }
 
 static bool make_watchdog_pipe(int descriptors[2]) {
@@ -1078,8 +1045,14 @@ static bool steam_launch_retry_is_safe(int result, bool cleanup_verified,
   return result == 126 && cleanup_verified && !termination_signal && attempt + 1 < attempts;
 }
 
-static int supervise_user_service(const char *unit, char *const arguments[], bool *cleanup_verified) {
+// Desktop launches run under the user's manager through vibepollo-app-supervisor,
+// which reads cancellation from the watchdog on stdin. Elevated launches run
+// under the system manager without that supervisor (it drops every
+// capability), so they get /dev/null on stdin and rely on the exact unit stop.
+static int supervise_service(const char *manager, const char *unit, char *const arguments[], bool *cleanup_verified) {
   *cleanup_verified = false;
+  if (!service_manager_is_valid(manager)) return 126;
+  const bool watchdog_stdin = !strcmp(manager, "--user");
   if (termination_signal) return 128 + termination_signal;
   if (!set_termination_handlers(request_user_service_stop)) return 126;
   if (termination_signal) return 128 + termination_signal;
@@ -1091,13 +1064,15 @@ static int supervise_user_service(const char *unit, char *const arguments[], boo
   if (runner < 0) {
     close(watchdog[0]);
     close(watchdog[1]);
-    (void) stop_user_service(unit);
+    (void) stop_service(manager, unit);
     return 126;
   }
   if (!runner) {
     close(watchdog[1]);
-    if (dup2(watchdog[0], STDIN_FILENO) < 0) _exit(126);
+    const int runner_input = watchdog_stdin ? watchdog[0] : open("/dev/null", O_RDONLY | O_CLOEXEC);
+    if (runner_input < 0 || dup2(runner_input, STDIN_FILENO) < 0) _exit(126);
     if (watchdog[0] != STDIN_FILENO) close(watchdog[0]);
+    if (runner_input != watchdog[0] && runner_input != STDIN_FILENO) close(runner_input);
     if (!reset_termination_handlers()) _exit(126);
     execv("/usr/bin/systemd-run", arguments);
     _exit(errno == ENOENT ? 127 : 126);
@@ -1137,15 +1112,15 @@ static int supervise_user_service(const char *unit, char *const arguments[], boo
     // This first stop may race registration.  It is only an acceleration: the
     // authoritative proof is repeated after the runner can no longer create
     // the exact generated unit.
-    (void) stop_user_service(unit);
+    (void) stop_service(manager, unit);
     runner_exited = terminate_and_reap_child(runner, SIGTERM, 500, &status);
   }
-  const bool unit_stopped = runner_exited && stop_user_service(unit);
+  const bool unit_stopped = runner_exited && stop_service(manager, unit);
   if (!runner_exited || !unit_stopped || worker_error) {
     fprintf(stderr,
-            "vibepollo-session-broker: user service %s cleanup failed "
+            "vibepollo-session-broker: %s service %s cleanup failed "
             "(runner=%s, unit=%s, worker=%s)\n",
-            unit, runner_exited ? "exited" : "running",
+            watchdog_stdin ? "user" : "system", unit, runner_exited ? "exited" : "running",
             unit_stopped ? "stopped" : "not-stopped",
             worker_error ? "error" : "ok");
     return 126;
@@ -1263,7 +1238,7 @@ static int exec_user_service(const struct session_identity *identity, const char
     arguments[index] = NULL;
 
     bool cleanup_verified = false;
-    const int result = supervise_user_service(unit, arguments, &cleanup_verified);
+    const int result = supervise_service("--user", unit, arguments, &cleanup_verified);
     if (termination_signal) return 128 + termination_signal;
     if (!steam_launch_retry_is_safe(result, cleanup_verified, attempt, attempts)) return result;
     fprintf(stderr,
@@ -1273,6 +1248,74 @@ static int exec_user_service(const struct session_identity *identity, const char
     (void) nanosleep(&retry_delay, NULL);
   }
   return 126;
+}
+
+// "Run elevated": the command runs as root under the system manager,
+// like `sudo` from the desktop user's terminal. It does not get the desktop
+// session's display, audio or D-Bus environment; SUDO_USER/SUDO_UID/SUDO_GID
+// identify the streaming user so scripts can hand work back to that account.
+static int exec_elevated_service(const struct session_identity *identity, const char *directory,
+                                 const char *command) {
+  char unit[192], environment_sudo_user[80], environment_sudo_uid[48], environment_sudo_gid[48];
+  char environment_path[sizeof(elevated_path) + sizeof("PATH=")];
+  const int unit_length = snprintf(unit, sizeof(unit), "vibepollo-app-%lu-%ld.service",
+                                   identity->generation, (long) getpid());
+  if (unit_length < 0 || unit_length >= (int) sizeof(unit) ||
+      snprintf(environment_sudo_user, sizeof(environment_sudo_user), "SUDO_USER=%s", identity->user) >= (int) sizeof(environment_sudo_user) ||
+      snprintf(environment_sudo_uid, sizeof(environment_sudo_uid), "SUDO_UID=%lu", (unsigned long) identity->uid) >= (int) sizeof(environment_sudo_uid) ||
+      snprintf(environment_sudo_gid, sizeof(environment_sudo_gid), "SUDO_GID=%lu", (unsigned long) identity->gid) >= (int) sizeof(environment_sudo_gid) ||
+      snprintf(environment_path, sizeof(environment_path), "PATH=%s", elevated_path) >= (int) sizeof(environment_path)) return 126;
+  // systemd-run reaches PID 1 over its root-only private socket. Give it a
+  // fixed environment rather than whatever the broker unit inherited.
+  if (clearenv() || setenv("PATH", fixed_path, 1) || setenv("LANG", "C.UTF-8", 1)) return 126;
+
+  char *arguments[48];
+  size_t index = 0;
+  arguments[index++] = "systemd-run";
+  arguments[index++] = "--system";
+  arguments[index++] = "--quiet";
+  arguments[index++] = "--wait";
+  arguments[index++] = "--pipe";
+  arguments[index++] = "--collect";
+  arguments[index++] = "--service-type=exec";
+  arguments[index++] = "--expand-environment=no";
+  arguments[index++] = "--property=ExitType=main";
+  arguments[index++] = "--property=KillMode=control-group";
+  arguments[index++] = "--property=TimeoutStopSec=5s";
+  arguments[index++] = "--property=Restart=no";
+  arguments[index++] = "--property=RemainAfterExit=no";
+  arguments[index++] = "--unit";
+  arguments[index++] = unit;
+  arguments[index++] = "--setenv";
+  arguments[index++] = "HOME=/root";
+  arguments[index++] = "--setenv";
+  arguments[index++] = "USER=root";
+  arguments[index++] = "--setenv";
+  arguments[index++] = "LOGNAME=root";
+  arguments[index++] = "--setenv";
+  arguments[index++] = "SHELL=/bin/sh";
+  arguments[index++] = "--setenv";
+  arguments[index++] = "LANG=C.UTF-8";
+  arguments[index++] = "--setenv";
+  arguments[index++] = environment_path;
+  arguments[index++] = "--setenv";
+  arguments[index++] = environment_sudo_user;
+  arguments[index++] = "--setenv";
+  arguments[index++] = environment_sudo_uid;
+  arguments[index++] = "--setenv";
+  arguments[index++] = environment_sudo_gid;
+  if (directory && directory[0]) {
+    arguments[index++] = "--working-directory";
+    arguments[index++] = (char *) directory;
+  }
+  arguments[index++] = "--";
+  arguments[index++] = "/bin/sh";
+  arguments[index++] = "-c";
+  arguments[index++] = (char *) command;
+  arguments[index++] = "--";
+  arguments[index] = NULL;
+  bool cleanup_verified = false;
+  return supervise_service("--system", unit, arguments, &cleanup_verified);
 }
 
 static bool managed_focus_arguments_are_safe(int argc, char **argv) {
@@ -1311,9 +1354,9 @@ static bool display_request_is_mutating(const char *operation) {
 
 static const char *steam_big_picture_uri(const char *command) {
   // These are the two commands shipped in the default Linux apps.json. Treat
-  // them as fixed Steam actions: a fresh install creates its command manifest
-  // before the host creates that catalog, and upgrades preserve the manifest.
-  // Never interpret shell syntax or pass the original command to an executor.
+  // them as fixed Steam actions so they reach Steam through the managed
+  // launcher instead of a shell. Never interpret shell syntax or pass the
+  // original command to an executor.
   if (!command) return NULL;
   if (!strcmp(command, "setsid steam steam://open/bigpicture")) return "steam://open/bigpicture";
   if (!strcmp(command, "setsid steam steam://close/bigpicture")) return "steam://close/bigpicture";
@@ -1330,7 +1373,7 @@ static bool steam_big_picture_request(const char *operation, const char *command
 static bool hyprland_request_supported(const struct session_identity *identity, const char *operation) {
   return !strcmp(operation, "display-observe") || !strcmp(operation, "display-observe-events") ||
          !strncmp(operation, "audio-", 6) || !strncmp(operation, "provider-", 9) ||
-         !strcmp(operation, "app") ||
+         !strcmp(operation, "app") || !strcmp(operation, "app-elevated") ||
          // X11/Proton launches need the bound Xwayland display.
          (identity->x_display[0] && (!strcmp(operation, "steam") || !strcmp(operation, "steam-direct") ||
                                      !strcmp(operation, "lutris")));
@@ -1339,22 +1382,24 @@ static bool hyprland_request_supported(const struct session_identity *identity, 
 static int execute_request(int argc, char **argv,
                            const struct session_identity *identity,
                            gid_t service_gid) {
+  (void) service_gid;
   if (argc < 2) return 2;
   enum operation {
     DISPLAY_QUERY, DISPLAY_APPLY, DISPLAY_OBSERVE, DISPLAY_POWER, DISPLAY_WAKE, DISPLAY_INHIBIT, DISPLAY_RETAIN, TOUCH_MAP, AUDIO_GET_DEFAULT, AUDIO_LIST_SINKS, AUDIO_SET_DEFAULT,
     AUDIO_CREATE_NULL, AUDIO_REMOVE_NULL, AUDIO_CAPTURE, STEAM, STEAM_BIG_PICTURE, STEAM_DIRECT, GLOBAL_LIMITER, LUTRIS, LUTRIS_WAYLAND_HDR, MANAGED_FOCUS,
-    PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, RTX_HDR_FOREGROUND, APP, APP_WAYLAND_HDR
+    PROVIDER_STEAM_SCAN, PROVIDER_LUTRIS_SCAN, PROVIDER_STEAM_ARTWORK, PROVIDER_LUTRIS_ARTWORK, RTX_HDR_FOREGROUND, APP, APP_WAYLAND_HDR,
+    APP_ELEVATED
   } operation;
   unsigned long first_number = 0, second_number = 0, third_number = 0;
   unsigned char channel_mapping[8] = {0};
   size_t audio_channel_count = 0;
-  char authorized_directory[PATH_MAX] = {0};
+  char application_directory[PATH_MAX] = {0};
   const char *big_picture_uri = NULL;
   size_t stream_environment_count = 0;
   char **stream_environment = NULL;
-  if (argc >= 3 && (!strcmp(argv[1], "app") || !strcmp(argv[1], "app-wayland-hdr"))) {
-    stream_environment_count = (size_t) (argc - 3);
-    stream_environment = &argv[3];
+  if (argc >= 4 && (!strcmp(argv[1], "app") || !strcmp(argv[1], "app-wayland-hdr"))) {
+    stream_environment_count = (size_t) (argc - 4);
+    stream_environment = &argv[4];
     // Reject the entire metadata list before any identity/capability change.
     // No assignment is ever installed in the privileged broker environment.
     if (!vibepollo_stream_environment_is_safe(stream_environment_count, stream_environment)) return 126;
@@ -1406,15 +1451,15 @@ static int execute_request(int argc, char **argv,
            artwork_request_is_safe(argv[1], "provider-steam-artwork:", UINT32_MAX)) operation = PROVIDER_STEAM_ARTWORK;
   else if (argc == 2 && !strcmp(identity->role, "desktop") &&
            artwork_request_is_safe(argv[1], "provider-lutris-artwork:", INT64_MAX)) operation = PROVIDER_LUTRIS_ARTWORK;
-  else if (argc >= 3 && !strcmp(identity->role, "desktop") &&
-           steam_big_picture_request(argv[1], argv[2]) &&
-           (big_picture_uri = steam_big_picture_uri(argv[2]))) operation = STEAM_BIG_PICTURE;
-  else if (!strcmp(argv[1], "app") && argc >= 3 && !strcmp(identity->role, "desktop") &&
-           command_is_authorized(identity->role, argv[2], service_gid,
-                                 authorized_directory, sizeof(authorized_directory))) operation = APP;
-  else if (!strcmp(argv[1], "app-wayland-hdr") && argc >= 3 && !strcmp(identity->role, "desktop") &&
-           command_is_authorized(identity->role, argv[2], service_gid,
-                                 authorized_directory, sizeof(authorized_directory))) operation = APP_WAYLAND_HDR;
+  else if (application_request_is_safe(argc, argv) && !strcmp(identity->role, "desktop") &&
+           steam_big_picture_request(argv[1], argv[3]) &&
+           (big_picture_uri = steam_big_picture_uri(argv[3]))) operation = STEAM_BIG_PICTURE;
+  else if (!strcmp(argv[1], "app") && application_request_is_safe(argc, argv) &&
+           !strcmp(identity->role, "desktop")) operation = APP;
+  else if (!strcmp(argv[1], "app-wayland-hdr") && application_request_is_safe(argc, argv) &&
+           !strcmp(identity->role, "desktop")) operation = APP_WAYLAND_HDR;
+  else if (!strcmp(argv[1], "app-elevated") && application_request_is_safe(argc, argv) &&
+           !strcmp(identity->role, "desktop")) operation = APP_ELEVATED;
   else {
     fprintf(stderr, "vibepollo-session-broker: rejected request '%s' (argc=%d, role=%s)\n",
             argv[1], argc, identity->role);
@@ -1426,6 +1471,16 @@ static int execute_request(int argc, char **argv,
        (operation == STEAM_BIG_PICTURE && !identity->x_display[0]))) {
     fprintf(stderr, "vibepollo-session-broker: Hyprland KMS supports existing physical SDR outputs and native Wayland apps; request '%s' is unsupported\n", argv[1]);
     return 126;
+  }
+
+  if (operation == APP || operation == APP_WAYLAND_HDR || operation == APP_ELEVATED) {
+    // Resolve before dropping privileges: ProtectHome=read-only still lets
+    // the broker find the executable for a command with no working directory.
+    resolve_application_directory(argv[2], argv[3], application_directory,
+                                  sizeof(application_directory));
+  }
+  if (operation == APP_ELEVATED) {
+    return exec_elevated_service(identity, application_directory, argv[3]);
   }
 
   if (!drop_to_session(identity) || !validate_session_endpoints(identity) ||
@@ -1601,11 +1656,13 @@ static int execute_request(int argc, char **argv,
     }
     case APP:
     case APP_WAYLAND_HDR: {
-      char *const arguments[] = {"/bin/sh", "-c", argv[2], "--", NULL};
-      return exec_user_service(identity, authorized_directory, arguments, false,
+      char *const arguments[] = {"/bin/sh", "-c", argv[3], "--", NULL};
+      return exec_user_service(identity, application_directory, arguments, false,
                                operation == APP_WAYLAND_HDR,
                                stream_environment_count, stream_environment);
     }
+    case APP_ELEVATED:
+      break;
   }
   perror("vibepollo-session-broker");
   return errno == ENOENT ? 127 : 126;

@@ -1,3 +1,5 @@
+import json
+import shutil
 import io
 import os
 import re
@@ -144,11 +146,13 @@ class ReleaseWorkflowSplitTest(unittest.TestCase):
         self.assertIn('if tag.startswith("v"):', workflow_text)
         self.assertIn("release source tags must be v-less", workflow_text)
         self.assertIn(
-            "valid_candidates.append((key, tag, notes_file, release_commit))",
+            'valid_candidates.append((key, tag, "generated from published source range", release_commit,',
             workflow_text,
         )
         self.assertNotIn("vibe-test", workflow_text)
         self.assertNotIn("Linux branch candidate:", workflow_text)
+        self.assertIn('metadata["stable_anchor_commit"]', workflow_text)
+        self.assertIn('channel_match[1] != "stable"', workflow_text)
         self.assertIn("should_release=\"false\"", workflow_text)
         self.assertNotIn("def canonical_release_tag", workflow_text)
 
@@ -665,6 +669,60 @@ esac
         workflow_text = (ROOT / ".github" / "workflows" / "sign-release.yml").read_text(
             encoding="utf-8"
         )
+        create_step = next(step for step in jobs["release"]["steps"]
+                           if step.get("name") == "Create or update GitHub release")
+        self.assertEqual(create_step["env"]["ALLOCATED_CHANNEL"],
+                         "${{ needs.resolve_release.outputs.release_channel }}")
+        if shutil.which("bash"):
+            script = create_step["run"]
+            start = script.index('release_id="$(jq')
+            end = script.index('release_make_latest=')
+            fragment = script[start:end]
+            executed = subprocess.run(
+                ["bash", "-euo", "pipefail", "-c",
+                 'set -euo pipefail; release_match="{}";\n' + fragment + '\nprintf "channel=%s allocated_numeric=%s\\n" "$RELEASE_CHANNEL" "$allocated_numeric"'],
+                env=dict(os.environ, TAG_NAME="2.1.0", RELEASE_CHANNEL="stable",
+                         ALLOCATED_CHANNEL="stable", PRERELEASE="false"),
+                text=True, capture_output=True, check=True)
+            self.assertIn("channel=stable allocated_numeric=true", executed.stdout)
+
+            # Execute the actual draft-resume gate with API responses that have
+            # a wrong channel or wrong release body. Neither may be mutated.
+            script = create_step["run"]
+            start = script.index('if [[ -n "${release_id}" ]]; then',
+                                 script.index("allocated_numeric=false"))
+            end = script.index("\n\nrelease_make_latest=", start)
+            draft_gate = script[start:end]
+
+            def run_draft_gate(release_json: dict[str, object], notes: str) -> subprocess.CompletedProcess[str]:
+                with tempfile.TemporaryDirectory() as temp:
+                    root = Path(temp)
+                    fake_bin = root / "bin"
+                    fake_bin.mkdir()
+                    fake_gh = fake_bin / "gh"
+                    fake_gh.write_text("#!/bin/sh\ncat \"$MOCK_RELEASE_JSON\"\n", encoding="utf-8")
+                    fake_gh.chmod(0o755)
+                    response = root / "release.json"
+                    response.write_text(json.dumps(release_json), encoding="utf-8")
+                    notes_path = root / "notes.md"
+                    notes_path.write_text(notes, encoding="utf-8")
+                    env = dict(os.environ, PATH=f"{fake_bin}:{os.environ['PATH']}",
+                               MOCK_RELEASE_JSON=str(response), RUNNER_TEMP=temp,
+                               GITHUB_REPOSITORY="Nonary/Vibepollo", release_id="123",
+                               publish_tag="2.0.7", release_title="v2.0.7",
+                               PRERELEASE="false", NOTES_FILE=str(notes_path))
+                    return subprocess.run(
+                        ["bash", "-euo", "pipefail", "-c",
+                         "set -euo pipefail;\n" + draft_gate],
+                        env=env, text=True, capture_output=True, check=False)
+
+            valid_draft = {"id": 123, "draft": True, "tag_name": "2.0.7",
+                           "prerelease": False, "name": "v2.0.7", "body": "expected notes\n"}
+            self.assertEqual(run_draft_gate(valid_draft, "expected notes\n").returncode, 0)
+            wrong_channel = dict(valid_draft, prerelease=True)
+            self.assertNotEqual(run_draft_gate(wrong_channel, "expected notes\n").returncode, 0)
+            wrong_body = dict(valid_draft, body="unqualified notes\n")
+            self.assertNotEqual(run_draft_gate(wrong_body, "expected notes\n").returncode, 0)
 
         self.assertIn("workflow_dispatch", workflow["on"])
         self.assertEqual(dispatch_inputs["build_run_id"]["required"], "false")
@@ -748,7 +806,16 @@ esac
             any(step["name"] == "Close fixed issues for release" for step in release_steps)
         )
         self.assertNotIn("state=closed", workflow_text)
-        self.assertIn('--argjson draft "${RELEASE_DRAFT}"', workflow_text)
+        self.assertIn('--argjson draft "${create_as_draft}"', workflow_text)
+        self.assertIn('ALLOCATED_CHANNEL: ${{ needs.resolve_release.outputs.release_channel }}', workflow_text)
+        self.assertIn('Only the exact matching draft can be resumed', workflow_text)
+        self.assertIn('Existing release draft asset differs from this exact build', workflow_text)
+        self.assertIn('Uploaded release asset digest mismatch', workflow_text)
+        self.assertIn('source_event}" != "workflow_dispatch"', workflow_text)
+        self.assertIn('(.event == "push" or .event == "workflow_dispatch")', workflow_text)
+        self.assertIn('New suffix-tag releases are disabled.', workflow_text)
+        self.assertIn('Published releases are immutable', workflow_text)
+        self.assertNotIn("--method DELETE", workflow_text)
         self.assertIn('if [[ "${RELEASE_DRAFT}" == "true" ]]', workflow_text)
 
     def test_daily_fixed_issue_follow_up_is_verified_and_permission_bounded(self) -> None:
@@ -774,24 +841,56 @@ esac
             self.assertNotIn("state_reason=completed", workflow_text)
 
         daily = load_workflow("daily-prerelease.yml")
-        self.assertEqual(daily["jobs"]["build"]["with"]["upload_symbols_artifact"], "true")
-        publish = daily["jobs"]["publish"]
-        self.assertEqual(publish["permissions"], {"actions": "read", "contents": "write"})
-        self.assertNotIn("issues", publish["permissions"])
-        publish_steps = {step["name"]: step for step in publish["steps"] if "name" in step}
-        symbols = publish_steps["Retain exact-build Windows symbols"]
-        self.assertEqual(symbols["with"]["retention-days"], "90")
-        self.assertEqual(symbols["with"]["name"], "nightly-windows-symbols")
-        self.assertEqual(publish_steps["Download exact-build Windows symbols from this run"]["with"]["name"], "windows-symbols-Windows")
-        self.assertIn('test -s "symbol-assets/$symbol_pack"',
-                      publish_steps["Verify exact-build Windows symbols"]["run"])
-        self.assertIn('VibepolloSymbols-${DAILY_VERSION}-windows-x64.7z',
-                      publish_steps["Verify exact-build Windows symbols"]["run"])
-        self.assertLess(
-            list(publish_steps).index("Verify exact-build Windows symbols"),
-            list(publish_steps).index("Verify finalized provenance, identity and complete asset set"),
-        )
+        if "dispatch" in daily["jobs"]:
+            self.assertIn("prepare", daily["jobs"])
+            self.assertIn("build", daily["jobs"])
+            launcher = daily["jobs"]["dispatch"]
+            self.assertEqual(launcher["permissions"], {"actions": "write"})
+            for required in ("github.repository == 'Nonary/Vibepollo'", "github.ref_name == github.event.repository.default_branch", "vars.DAILY_RELEASE_SOURCE_BRANCH == 'canary'", "vars.DAILY_RELEASE_SOURCE_CONFIRMED == 'Nonary/Vibepollo:canary'"):
+                self.assertIn(required, launcher["if"])
+            self.assertEqual(daily["concurrency"]["group"], "vibepollo-release-version-allocation")
+            self.assertIn("github.ref_name == 'canary'", daily["jobs"]["prepare"]["if"])
+            self.assertIn("github.event_name == 'workflow_dispatch'", daily["jobs"]["prepare"]["if"])
+            step = launcher["steps"][0]
+            self.assertIn("github.event_name == 'schedule' || inputs.publish == true", step["env"]["PUBLISH"])
+            self.assertIn('{ref:"canary",inputs:{publish:$publish}}', step["run"])
+            self.assertIn('actions/workflows/daily-prerelease.yml/dispatches', step["run"])
+            self.assertEqual(daily["on"]["schedule"], [{"cron": "17 6 * * *"}])
+        if "build" in daily["jobs"]:
+            self.assertEqual(daily["jobs"]["build"]["with"]["daily_validation_only"],
+                             "${{ vars.DAILY_RELEASE_ENABLED != 'true' || inputs.publish != true }}")
+            reserve = next(step for step in daily["jobs"]["prepare"]["steps"]
+                           if step.get("name") == "Reserve exact qualified source identity before builds")
+            self.assertIn("vars.DAILY_RELEASE_ENABLED == 'true' && inputs.publish == true", reserve["if"])
+            self.assertEqual(daily["jobs"]["build"]["with"]["upload_symbols_artifact"], "true")
+            publish = daily["jobs"]["publish"]
+            self.assertEqual(publish["permissions"], {"actions": "read", "contents": "write"})
+            self.assertNotIn("issues", publish["permissions"])
+            publish_steps = {step["name"]: step for step in publish["steps"] if "name" in step}
+            symbols = publish_steps["Retain exact-build Windows symbols"]
+            self.assertEqual(symbols["with"]["retention-days"], "90")
+            self.assertEqual(symbols["with"]["name"], "nightly-windows-symbols")
+            self.assertEqual(publish_steps["Download exact-build Windows symbols from this run"]["with"]["name"], "windows-symbols-Windows")
+            self.assertIn('test -s "symbol-assets/$symbol_pack"',
+                          publish_steps["Verify exact-build Windows symbols"]["run"])
+            self.assertLess(
+                list(publish_steps).index("Verify exact-build Windows symbols"),
+                list(publish_steps).index("Verify finalized provenance, identity and complete asset set"),
+            )
+            publish_script = "\n".join(step.get("run", "") for step in publish["steps"])
+            self.assertIn('event_type:"daily-release-published"', publish_script)
+            self.assertIn('if gh release view "$DAILY_TAG"', publish_script)
+            self.assertIn('python scripts/daily_release.py validate-live', publish_script)
+            self.assertIn('Uploaded nightly asset digest mismatch', publish_script)
         windows = load_workflow("ci-windows.yml")
+        self.assertIn("daily_validation_only", windows["on"]["workflow_call"]["inputs"])
+        local_tag = next(step for step in windows["jobs"]["build_windows"]["steps"]
+                         if step.get("name") == "Create local-only validation tag")
+        self.assertEqual(local_tag["if"], "inputs.daily_validation_only")
+        self.assertIn("CHANNEL_INPUT -ne 'nightly'", local_tag["run"])
+        self.assertIn("$env:TAG_INPUT -cne $env:VERSION_INPUT", local_tag["run"])
+        self.assertIn("SOURCE_INPUT -cnotmatch '^[0-9a-f]{40}$'", local_tag["run"])
+        self.assertIn("Created or verified a local-only tag", local_tag["run"])
         finalize_steps = {step["name"]: step for step in windows["jobs"]["finalize_windows"]["steps"] if "name" in step}
         self.assertEqual(finalize_steps["Include symbols in build artifact"]["if"],
                          "inputs.upload_symbols_artifact && !inputs.daily_unsigned")
@@ -1039,7 +1138,7 @@ class WindowsWorkflowEfficiencyTest(unittest.TestCase):
                 text=True,
             )
             self.assertNotEqual(invalid_version.returncode, 0)
-            self.assertIn("Invalid Vibeshine build version", invalid_version.stderr)
+            self.assertIn("Invalid Vibepollo build version", invalid_version.stderr)
 
             zero_version = subprocess.run(
                 ["cmake", "-DBUILD_VERSION=0.0.0", "-P", str(probe)],

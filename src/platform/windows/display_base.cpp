@@ -20,6 +20,7 @@
 
 // lib includes
 #include <boost/algorithm/string/join.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 #include <MinHook.h>
 
 typedef long NTSTATUS;
@@ -1582,6 +1583,39 @@ namespace platf {
       return std::nullopt;
     }
     return std::move(outputs.front());
+  }
+
+  std::optional<bool> dxgi::capture_output_hdr_state(const std::string &output_name) {
+    if (output_name.empty()) return std::nullopt;
+    syncThreadDesktop();
+    dxgi::factory1_t factory;
+    if (FAILED(CreateDXGIFactory1(IID_IDXGIFactory1, (void **) &factory)) || !factory) return std::nullopt;
+    std::optional<bool> observed;
+    for (UINT a = 0;; ++a) {
+      dxgi::adapter_t::pointer adapter_ptr = nullptr;
+      const HRESULT adapter_result = factory->EnumAdapters1(a, &adapter_ptr);
+      if (adapter_result == DXGI_ERROR_NOT_FOUND) break;
+      if (FAILED(adapter_result) || !adapter_ptr) return std::nullopt;
+      dxgi::adapter_t adapter {adapter_ptr};
+      for (UINT o = 0;; ++o) {
+        dxgi::output_t::pointer output_ptr = nullptr;
+        const HRESULT output_result = adapter->EnumOutputs(o, &output_ptr);
+        if (output_result == DXGI_ERROR_NOT_FOUND) break;
+        if (FAILED(output_result) || !output_ptr) return std::nullopt;
+        dxgi::output_t output {output_ptr};
+        DXGI_OUTPUT_DESC desc {};
+        if (FAILED(output->GetDesc(&desc))) return std::nullopt;
+        if (!desc.AttachedToDesktop || !boost::iequals(utf_utils::to_utf8(desc.DeviceName), output_name)) continue;
+        if (observed) return std::nullopt;
+        dxgi::output6_t::pointer output6_ptr = nullptr;
+        if (FAILED(output->QueryInterface(IID_IDXGIOutput6, (void **) &output6_ptr)) || !output6_ptr) return std::nullopt;
+        dxgi::output6_t output6 {output6_ptr};
+        DXGI_OUTPUT_DESC1 color {};
+        if (FAILED(output6->GetDesc1(&color))) return std::nullopt;
+        observed = color.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+      }
+    }
+    return observed;
   }
 
   std::shared_ptr<display_t> display(

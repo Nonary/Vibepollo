@@ -880,6 +880,15 @@ export const settingsCategories: SettingsCategory[] = [
         fields: [
           boolean('keyboard'),
           boolean('mouse'),
+          select(
+            'keyboard_mouse_backend',
+            [
+              option('auto', 'config.keyboard_mouse_backend_auto'),
+              option('sendinput', 'config.keyboard_mouse_backend_sendinput'),
+              option('vhf', 'config.keyboard_mouse_backend_vhf'),
+            ],
+            { platform: 'windows', restartRequired: true },
+          ),
           boolean('controller'),
           boolean('enable_input_only_mode'),
           boolean('forward_rumble'),
@@ -1215,6 +1224,7 @@ export const settingsDefaults: Record<string, unknown> = {
   dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
   keyboard: true,
   mouse: true,
+  keyboard_mouse_backend: 'auto',
   proton_dualsense_compatibility: true,
   dualsense_haptics_gain: 1,
   motion_as_ds4: true,

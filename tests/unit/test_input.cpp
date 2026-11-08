@@ -12,6 +12,7 @@ extern "C" {
 }
 
 #include <src/input_validation_policy.h>
+#include <src/steam_controller_protocol.h>
 #include <src/controller_speaker_pcm.h>
 
 namespace {
@@ -139,4 +140,18 @@ TEST(InputValidation, SpeakerBindingOwnerIsSingleUseSessionScopedAndFailClosed) 
     else std::fill(malformed.begin() + 12, malformed.end(), 0);
     EXPECT_FALSE(controller_speaker_pcm::parse_binding(malformed));
   }
+}
+
+TEST(InputValidation, SteamAttributesRequireExactWireSize) {
+  SS_STEAM_CONTROLLER_ATTRIBUTES_PACKET packet {};
+  auto bytes = packet_bytes(packet);
+  write_u32_be(bytes, 0, bytes.size() - 4);
+  write_u32_le(bytes, 4, SS_STEAM_CONTROLLER_ATTRIBUTES_MAGIC);
+  EXPECT_TRUE(input::validation::validate_packet(bytes));
+  bytes.pop_back();
+  write_u32_be(bytes, 0, bytes.size() - 4);
+  EXPECT_FALSE(input::validation::validate_packet(bytes));
+  bytes.resize(sizeof(packet) + 1);
+  write_u32_be(bytes, 0, bytes.size() - 4);
+  EXPECT_FALSE(input::validation::validate_packet(bytes));
 }

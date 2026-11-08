@@ -1,4 +1,4 @@
-"""Validate signing-independent Windows compilation and CTest dispatch contracts."""
+"""Validate signing-independent Windows validation and nightly qualification."""
 from pathlib import Path
 import re
 import unittest
@@ -18,35 +18,94 @@ class WindowsValidationWorkflow(unittest.TestCase):
     def setUpClass(cls):
         cls.wrapper = (ROOT / ".github/workflows/validate-windows.yml").read_text()
         cls.reusable = (ROOT / ".github/workflows/ci-windows.yml").read_text()
+        cls.production_signing = (ROOT / ".github/workflows/sign-release.yml").read_text()
 
-    def test_opt_in_tests_preserve_artifact_only_dispatch(self):
+    def test_standard_validation_tests_are_opt_in_and_signing_independent(self):
         self.assertRegex(self.wrapper, r"build_tests:\n        description: [^\n]+\n        type: boolean\n        default: false")
-        self.assertIn("build_tests: ${{ inputs.build_tests }}", self.wrapper)
-        self.assertIn("build_only: true", self.wrapper)
-        self.assertIn("release_commit: ${{ github.sha }}", self.wrapper)
-        self.assertRegex(self.wrapper, r"use_self_hosted:\n        description: [^\n]+\n        type: boolean\n        default: false")
-        self.assertNotIn("daily_unsigned:", self.wrapper)
-        self.assertNotIn("secrets:", self.wrapper)
-        self.assertNotIn("write", self.wrapper)
-        self.assertNotIn("publish_", self.wrapper)
+        self.assertIn("build_tests: ${{ inputs.qualify_nightly_installer || inputs.build_tests }}", self.wrapper)
+        self.assertIn("build_only: ${{ !inputs.qualify_nightly_installer }}", self.wrapper)
+        self.assertIn("daily_unsigned: ${{ inputs.qualify_nightly_installer }}", self.wrapper)
+        self.assertNotIn("signpath_api_token:", self.wrapper)
+        self.assertNotIn("SIGNPATH_API_TOKEN", self.wrapper)
 
-    def test_compilation_and_execution_share_the_test_input(self):
-        build = step(self.reusable, "Build Windows")
-        self.assertIn("-DBUILD_TESTS=${{ inputs.build_tests && 'ON' || 'OFF' }}", build)
-        self.assertIn("cmake --build build --target all", build)
+        # The ordinary validation path passes empty scoped secrets. Enabling
+        # build_tests alone must not turn on nightly qualification or signing.
+        self.assertIn("inputs.qualify_nightly_installer && secrets.TRUEHDR_RUNTIME_TOKEN || ''", self.wrapper)
+        self.assertIn("inputs.qualify_nightly_installer && secrets.NIGHTLY_GAMEPAD_PFX_BASE64 || ''", self.wrapper)
+        self.assertIn("inputs.qualify_nightly_installer && secrets.NIGHTLY_GAMEPAD_PFX_PASSWORD || ''", self.wrapper)
+        self.assertNotIn("contents: write", self.wrapper)
+
         execute = step(self.reusable, "Execute Windows tests")
         self.assertIn("if: inputs.build_tests", execute)
-        self.assertNotIn("daily_unsigned", execute)
-        self.assertIn("set -euo pipefail", execute)
         self.assertIn("ctest --test-dir build --output-on-failure --no-tests=error", execute)
-        self.assertLess(self.reusable.index(build), self.reusable.index(execute))
 
-    def test_artifact_signing_remains_daily_only(self):
-        for name in ("Locate OpenSSL for artifact-only daily signing", "Self-sign only the daily gamepad catalog and setup tool"):
-            signing = step(self.reusable, name)
-            self.assertIn("if: inputs.daily_unsigned", signing)
-            self.assertNotIn("if: inputs.build_tests", signing)
-        self.assertIn("SIGNPATH_ENABLED: ${{ secrets.signpath_api_token != '' }}", self.reusable)
+    def test_nightly_qualification_forces_tests_and_fresh_unsigned_packaging(self):
+        self.assertRegex(self.wrapper, r"qualify_nightly_installer:\n        description: [^\n]+\n        type: boolean\n        default: false")
+        self.assertIn("build_tests: ${{ inputs.qualify_nightly_installer || inputs.build_tests }}", self.wrapper)
+        self.assertIn("build_only: ${{ !inputs.qualify_nightly_installer }}", self.wrapper)
+        self.assertIn("daily_unsigned: ${{ inputs.qualify_nightly_installer }}", self.wrapper)
+        self.assertIn("require_truehdr_runtime: ${{ inputs.qualify_nightly_installer }}", self.wrapper)
+
+        policy = step(self.reusable, "Enforce unsigned daily build policy")
+        self.assertIn("if: inputs.daily_unsigned", policy)
+        self.assertIn("$env:SIGNPATH_ENABLED -ne 'false'", policy)
+        self.assertIn("$env:BUILD_TESTS -ne 'true'", policy)
+        self.assertIn("$env:BUILD_ONLY -ne 'false'", policy)
+        self.assertIn("$env:ARTIFACT_SOURCE_RUN_ID -ne ''", policy)
+        self.assertIn("test_daily_version_contract.cmake", policy)
+        self.assertIn("test_daily_gamepad_signing.ps1", policy)
+
+        execute = step(self.reusable, "Execute Windows tests")
+        self.assertIn("if: inputs.build_tests", execute)
+        self.assertIn("ctest --test-dir build --output-on-failure --no-tests=error", execute)
+
+    def test_numeric_nightly_qualification_resolves_exact_stable_anchor(self):
+        prepare = re.search(r"(?ms)^  prepare:\n.*?(?=^  windows:)", self.wrapper)
+        self.assertIsNotNone(prepare, "Validation must classify the requested nightly identity first")
+        prepare = prepare.group(0)
+        self.assertIn("numeric_nightly: ${{ steps.identity.outputs.numeric_nightly }}", prepare)
+        self.assertIn("Resolve numeric nightly stable anchor", prepare)
+        self.assertIn("QUALIFY_NIGHTLY: ${{ inputs.qualify_nightly_installer }}", prepare)
+        self.assertIn("RELEASE_VERSION: ${{ inputs.release_version }}", prepare)
+        self.assertIn(r're.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", os.environ["RELEASE_VERSION"])', prepare)
+        self.assertIn('os.environ.get("RELEASE_TAG") not in ("", os.environ["RELEASE_VERSION"])', prepare)
+        self.assertIn("if numeric_nightly:", prepare)
+        self.assertIn("numeric.latest_stable_release(releases)", prepare)
+        self.assertIn("git\", \"merge-base\", \"--is-ancestor\"", prepare)
+        self.assertIn("contents: read", prepare)
+        self.assertNotIn("contents: write", prepare)
+
+        windows = re.search(r"(?ms)^  windows:\n.*?(?=\Z)", self.wrapper).group(0)
+        self.assertIn("release_channel: ${{ needs.prepare.outputs.numeric_nightly == 'true' && 'nightly' || '' }}", windows)
+        self.assertIn("daily_validation_only: ${{ needs.prepare.outputs.numeric_nightly == 'true' }}", windows)
+        self.assertIn("stable_anchor_tag: ${{ needs.prepare.outputs.stable_anchor_tag }}", windows)
+        self.assertIn("stable_anchor_commit: ${{ needs.prepare.outputs.stable_anchor_commit }}", windows)
+
+    def test_legacy_qualification_does_not_claim_numeric_nightly_identity(self):
+        prepare = re.search(r"(?ms)^  prepare:\n.*?(?=^  windows:)", self.wrapper).group(0)
+        self.assertIn('values = {"numeric_nightly": "true" if numeric_nightly else "false"', prepare)
+        self.assertIn('"stable_anchor_tag": "", "stable_anchor_commit": ""', prepare)
+        self.assertIn("if numeric_nightly:", prepare)
+
+        windows = re.search(r"(?ms)^  windows:\n.*?(?=\Z)", self.wrapper).group(0)
+        self.assertIn("release_tag: ${{ inputs.release_tag || (needs.prepare.outputs.numeric_nightly == 'true' && inputs.release_version) || '' }}", windows)
+        self.assertIn("release_channel: ${{ needs.prepare.outputs.numeric_nightly == 'true' && 'nightly' || '' }}", windows)
+        self.assertIn("daily_validation_only: ${{ needs.prepare.outputs.numeric_nightly == 'true' }}", windows)
+        # A qualified non-numeric legacy build may run required tests and use
+        # daily driver safeguards, but it gets no numeric tag or nightly channel.
+        self.assertIn("build_tests: ${{ inputs.qualify_nightly_installer || inputs.build_tests }}", windows)
+        self.assertIn("daily_unsigned: ${{ inputs.qualify_nightly_installer }}", windows)
+
+    def test_signing_is_confined_to_nightly_and_production_signing_workflow(self):
+        daily_gamepad = step(self.reusable, "Self-sign only the daily gamepad catalog and setup tool")
+        self.assertIn("if: inputs.daily_unsigned", daily_gamepad)
+        self.assertIn("secrets.daily_gamepad_pfx_base64", daily_gamepad)
+        self.assertIn("secrets.daily_gamepad_pfx_password", daily_gamepad)
+        self.assertNotIn("inputs.build_tests", daily_gamepad)
+
+        self.assertIn("require_signpath_signing: true", self.production_signing)
+        self.assertIn("signpath_api_token: ${{ secrets.SIGNPATH_API_TOKEN }}", self.production_signing)
+        self.assertNotIn("signpath_api_token:", self.wrapper)
 
 
 if __name__ == "__main__":

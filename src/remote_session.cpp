@@ -186,6 +186,76 @@ namespace remote_session {
     };
   }
 
+  void cached_game_tiles_t::remember(const std::string_view client_uuid, const std::int32_t tile_id, const app_t &game) {
+    if (client_uuid.empty() || tile_id <= 0 || identify(tile_id) != control_e::none || game.id <= 0) return;
+
+    std::lock_guard lock {mutex_};
+    auto &entries = clients_[std::string {client_uuid}];
+    const auto same_target = [&](const entry_t &entry) {
+      if (entry.tile_id != tile_id) return false;
+      return !game.uuid.empty() ? entry.game.uuid == game.uuid :
+                                  entry.game.uuid.empty() && entry.game.id == game.id && entry.game.title == game.title;
+    };
+    if (const auto it = std::find_if(entries.begin(), entries.end(), same_target); it != entries.end()) {
+      it->game = game;
+      return;
+    }
+
+    // A paired client cannot grow this cache without bound by cycling covers.
+    constexpr std::size_t max_tiles_per_client = 1024;
+    if (entries.size() == max_tiles_per_client) entries.erase(entries.begin());
+    entries.push_back({tile_id, game});
+  }
+
+  cached_game_resolution_t cached_game_tiles_t::resolve(
+    const std::string_view client_uuid,
+    const std::int32_t tile_id,
+    const std::string_view tile_uuid,
+    const std::vector<app_t> &configured
+  ) const {
+    const auto running_uuid = synthetic_uuid(control_e::running_game);
+    if (client_uuid.empty() || (!tile_uuid.empty() && tile_uuid != running_uuid) ||
+        (tile_id <= 0 && tile_uuid.empty()) || (tile_id > 0 && identify(tile_id) != control_e::none)) {
+      return {};
+    }
+
+    // Numeric-only requests for a configured ID or retained alias always use
+    // that configured app, even if a stale tile once occupied the same ID.
+    if (tile_id > 0 && tile_uuid.empty() && configured_identity(tile_id, configured)) return {};
+
+    std::lock_guard lock {mutex_};
+    const auto client = clients_.find(std::string {client_uuid});
+    if (client == clients_.end()) return {};
+
+    const entry_t *match = nullptr;
+    for (const auto &entry : client->second) {
+      if (tile_id > 0 && entry.tile_id != tile_id) continue;
+      if (match) {
+        const bool same_target = !entry.game.uuid.empty() ? entry.game.uuid == match->game.uuid :
+                                  match->game.uuid.empty() && entry.game.id == match->game.id && entry.game.title == match->game.title;
+        if (!same_target) return {cached_game_status_e::unavailable, std::nullopt};
+      }
+      match = &entry;
+    }
+    if (!match) return {};
+
+    // An explicit synthetic UUID identifies a conflicting stale tile.
+    if (tile_id > 0 && configured_identity(tile_id, configured)) {
+      return {cached_game_status_e::unavailable, std::nullopt};
+    }
+
+    const app_t *target = nullptr;
+    for (const auto &app : configured) {
+      const bool same_target = !match->game.uuid.empty() ? app.uuid == match->game.uuid :
+                               app.uuid.empty() && app.id == match->game.id && app.title == match->game.title;
+      if (!same_target) continue;
+      if (target || app.monitor_profile) return {cached_game_status_e::unavailable, std::nullopt};
+      target = &app;
+    }
+    return target ? cached_game_resolution_t {cached_game_status_e::resolved, *target} :
+                    cached_game_resolution_t {cached_game_status_e::unavailable, std::nullopt};
+  }
+
   std::optional<std::string_view> synthetic_artwork_filename(const control_e control) {
     switch (control) {
       case control_e::resume: return "resume.png";
@@ -225,10 +295,18 @@ namespace remote_session {
       }
       const auto control = identify(0, app.uuid);
       return app.catalogue_visible && control != control_e::input && control != control_e::monitor &&
-             (app.monitor_profile || !reserved_name(app.title));
+             (app.uuid == VIRTUAL_DISPLAY_UUID || app.monitor_profile || !reserved_name(app.title));
     });
     if (owner.role == role_e::monitor) {
+      // Moonlight caches the list it fetches as the Monitor stream ends and
+      // only reloads it on a timer. Keep the configured apps beside the Monitor
+      // controls so that cached list never strands the client. Launch admission
+      // still decides what may start while the Monitor is kept. Other Monitor
+      // profiles conflict until Disconnect Monitor, so they stay hidden here.
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_monitor)};
+      std::copy_if(visible_configured.begin(), visible_configured.end(), std::back_inserter(result.catalogue), [](const app_t &app) {
+        return !app.monitor_profile;
+      });
       return result;
     }
     // Moonlight refreshes the catalogue before asynchronous input teardown

@@ -7,7 +7,7 @@ build_root=$(mktemp -d /tmp/vibepollo-steamos-profile.XXXXXXXX)
 trap 'rm -rf -- "$build_root"' EXIT
 
 cmake -S "$repository" -B "$build_root/profile" \
-  -DSUNSHINE_BUILD_STEAMOS=ON -DSUNSHINE_CONFIGURE_ONLY=ON > "$build_root/configure.log" 2>&1 || {
+  -DBUILD_VERSION=2.0.2-beta.3 -DSUNSHINE_BUILD_STEAMOS=ON -DSUNSHINE_CONFIGURE_ONLY=ON > "$build_root/configure.log" 2>&1 || {
   cat "$build_root/configure.log"
   exit 1
 }
@@ -37,7 +37,7 @@ EOF
 cmake -DREPOSITORY="$repository" -P "$build_root/assets.cmake"
 
 if cmake -S "$repository" -B "$build_root/conflicting" \
-  -DSUNSHINE_BUILD_STEAMOS=ON -DSUNSHINE_BUILD_APPIMAGE=ON \
+  -DBUILD_VERSION=2.0.2-beta.3 -DSUNSHINE_BUILD_STEAMOS=ON -DSUNSHINE_BUILD_APPIMAGE=ON \
   -DSUNSHINE_CONFIGURE_ONLY=ON > "$build_root/conflicting.log" 2>&1; then
   printf 'ERROR: incompatible packaging profiles were accepted\n' >&2
   exit 1

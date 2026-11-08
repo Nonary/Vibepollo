@@ -33,10 +33,46 @@ def function(source, signature):
 writer = function((root / "src/state_storage.cpp").read_text(),
                   "  void save_display_restore_preference(")
 paths = (root / "tools/display_helper_paths.h").read_text()
+assert 'L"O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"' in paths
+assert "FILE_FLAG_OPEN_REPARSE_POINT" in paths
+assert "SE_DACL_PROTECTED" in paths
+assert "remove_untrusted_snapshot_objects" in paths
+assert "SetSecurityInfo(" not in paths
+assert "SeTakeOwnershipPrivilege" not in paths
+assert "is_private_system_dacl" in paths
+assert "MoveFileExW" not in paths and 'L".untrusted-"' not in paths
+assert "HKEY_LOCAL_MACHINE" in paths
+assert 'L"SOFTWARE\\\\Nonary\\\\Vibepollo\\\\DisplayHelper"' in paths
+assert 'L"SnapshotDirectory"' in paths
+assert "KEY_WOW64_64KEY" in paths
+assert 'L"O:SYG:SYD:P(A;;KA;;;SY)(A;;KA;;;BA)"' in paths
+assert "SE_REGISTRY_KEY" in paths
+assert "KEY_ALL_ACCESS" in paths
+assert 'L"Initialization"' in paths
+assert "REG_CREATED_NEW_KEY" in paths
+assert 'L"OwnerPid"' in paths
+assert "inspect_snapshot_initializer" in paths
+assert 'L"OwnerCreationTime"' in paths
+assert 'L"Sunshine-State-"' in paths
+assert "CoCreateGuid" in paths and "StringFromGUID2" in paths
+assert "is_snapshot_directory_basename" in paths
+assert "result.find(L'\\0')" in paths
+random_root = function(paths, "  inline std::optional<std::filesystem::path> create_random_private_snapshot_dir(")
+assert random_root.index("create_private_system_directory") < random_root.index("write_snapshot_locator")
+locator = function(paths, "  inline std::optional<std::filesystem::path> private_system_snapshot_dir()")
+assert "static std::optional<std::filesystem::path> cached" in locator
+assert "is_trusted_system_object(legacy, true)" in locator
+assert "create_random_private_snapshot_dir" in locator
+assert "ensure_private_system_directory" not in paths
+assert "return {};" in function(paths, "  inline std::filesystem::path compute_snapshot_dir()")
 command_line_reader = function(paths, "  inline std::optional<std::filesystem::path> restore_state_file_from_command_line()")
 task_arguments = function(paths, "  inline std::wstring restore_task_arguments()")
 legacy = (root / "tools/display_settings_helper.cpp").read_text()
 v2 = (root / "tools/display_settings_helper_v2.cpp").read_text()
+assert "refusing SYSTEM startup" in legacy
+assert "refusing SYSTEM startup" in v2
+v2_run = function(v2, "int run_v2_helper(")
+assert v2_run.index("ensure_single_instance(singleton)") < v2_run.index("compute_snapshot_dir()")
 legacy_boot = legacy[legacy.index('Display helper started in restore mode'):]
 v2_boot = v2[v2.index('Display helper v2 running in restore mode.'):]
 legacy_assignment = re.search(r"state\.always_restore_from_golden\.store\([\s\S]+?;", legacy_boot).group()

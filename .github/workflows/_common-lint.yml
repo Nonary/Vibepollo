@@ -1,0 +1,21 @@
+---
+# Adapted from Vibeshine for Vibepollo; retain downstream release policy.
+
+name: common lint
+permissions: {}
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Common Lint
+    uses: LizardByte/.github/.github/workflows/__call-common-lint.yml@master
+    if: ${{ github.repository != 'LizardByte/.github' }}
+    permissions:
+      contents: read
+      pull-requests: read

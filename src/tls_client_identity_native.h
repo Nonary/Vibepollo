@@ -27,10 +27,13 @@ namespace nvhttp::tls_identity {
     // resolution and publication, or across resolution AND native value copy.
     authentication_result_t authenticate_certificate(
       const request_t &request, crypto::x509_t &certificate,
-      crypto::cert_chain_t &chain, std::span<const crypto::p_named_cert_t> clients);
+      crypto::cert_chain_t &chain, std::span<const crypto::p_named_cert_t> clients,
+      pending_peer_factory_t pending_peer = {});
 
     std::optional<crypto::named_cert_t> resolve_snapshot(
       const request_t &request, std::span<const crypto::p_named_cert_t> clients);
+
+    pending_peer_factory_t pending_peer(const request_t &request) { return store.pending_peer(request); }
 
     void reset(const request_t &request) { store.reset(request); }
     void revoke(std::string_view uuid) { store.revoke(uuid); }

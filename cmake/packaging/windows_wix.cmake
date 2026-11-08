@@ -65,7 +65,8 @@ set(CPACK_WIX_CANDLE_EXTRA_FLAGS
 
 # Daily packages forbid unattended trust changes; production defaults stay zero.
 set(SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY 0)
-if(PROJECT_VERSION_FULL MATCHES "-(daily|nightly)[.]")
+if(PROJECT_BUILD_CHANNEL STREQUAL "nightly" OR
+   PROJECT_VERSION_FULL MATCHES "-(daily|nightly)[.]")
   set(SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY 1)
 endif()
 list(APPEND CPACK_WIX_CANDLE_EXTRA_FLAGS "-dDailyUnsignedDriverPolicy=${SUNSHINE_DAILY_UNSIGNED_DRIVER_POLICY}")
@@ -128,7 +129,8 @@ set(CPACK_WIX_TEMPLATE "${CMAKE_SOURCE_DIR}/packaging/windows/wix/WIX.template.i
 
 
 # ----------------------------------------------------------------------------
-# Sanitize version for WiX: must be x.x.x.x with integers [0,65534]
+# Sanitize version for WiX: major/minor are [0,255], patch/revision are
+# [0,65534]; the third field uses a packed patch/ordinal allocator below.
 # ----------------------------------------------------------------------------
 # Windows Installer only compares the FIRST THREE ProductVersion fields when
 # deciding whether a package upgrades an installed one (the 4th field is
@@ -207,16 +209,23 @@ if(PROJECT_VERSION_FULL MATCHES "-([A-Za-z]+)(\\.([0-9]+))?")
   endif()
 endif()
 
+foreach(_v IN ITEMS _WIX_MAJ _WIX_MIN)
+  if(${_v} GREATER 255)
+    message(FATAL_ERROR "WiX ProductVersion field ${_v}=${${_v}} exceeds the allowed maximum 255.")
+  endif()
+endforeach()
+
 if(_WIX_PAT GREATER 654)
   # 654 * 100 + 99 = 65499 <= 65534 (WiX field limit); anything larger overflows.
   message(FATAL_ERROR "Patch version ${_WIX_PAT} cannot be ordinal-encoded into the WiX ProductVersion third field (max 654).")
 endif()
 math(EXPR _WIX_PAT "${_WIX_PAT} * 100 + ${_WIX_PRERELEASE_ORDINAL}")
 
-# Clamp to WiX allowed maximum 65534
+# Reject out-of-range ProductVersion fields instead of clamping them into a
+# value that could collide with a different source version.
 foreach(_v IN ITEMS _WIX_MAJ _WIX_MIN _WIX_PAT _WIX_REV)
   if(${_v} GREATER 65534)
-    set(${_v} 65534)
+    message(FATAL_ERROR "WiX ProductVersion field ${_v}=${${_v}} exceeds the allowed maximum 65534.")
   endif()
 endforeach()
 

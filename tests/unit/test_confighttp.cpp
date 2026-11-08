@@ -13,6 +13,8 @@
 // local includes
 #include "../tests_common.h"
 #include "src/confighttp.h"
+#include "src/config_http_log_policy.h"
+#include "src/config_http_login_limiter.h"
 #include "src/http_auth.h"
 #include "src/http_auth_request_policy.h"
 
@@ -134,6 +136,56 @@ namespace confighttp {
     EXPECT_EQ(result.code, SimpleWeb::StatusCode::success_ok);
     EXPECT_TRUE(result.body.empty());
     EXPECT_TRUE(result.headers.empty());
+  }
+
+  TEST_F(ConfigHttpCheckAuthTest, given_disallowed_remote_when_checking_public_auth_route_then_should_return_forbidden) {
+    auto result = auth->check("8.8.8.8", "", "/api/auth/login", "POST");
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.code, SimpleWeb::StatusCode::client_error_forbidden);
+  }
+
+  TEST_F(ConfigHttpCheckAuthTest, given_disallowed_remote_when_checking_remote_only_then_should_return_forbidden) {
+    auto result = auth->check_remote("8.8.8.8");
+
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.code, SimpleWeb::StatusCode::client_error_forbidden);
+  }
+
+  TEST(ConfigHttpLoginLimiterTest, blocks_after_bounded_attempts_and_resets_after_success) {
+    using namespace std::chrono_literals;
+    policy::LoginAttemptLimiter limiter(3, 60s, 30s, 8);
+    const auto start = policy::LoginAttemptLimiter::clock::time_point {};
+
+    EXPECT_TRUE(limiter.consume("192.0.2.1", start).allowed);
+    EXPECT_TRUE(limiter.consume("192.0.2.1", start + 1s).allowed);
+    EXPECT_TRUE(limiter.consume("192.0.2.1", start + 2s).allowed);
+    const auto blocked = limiter.consume("192.0.2.1", start + 3s);
+    EXPECT_FALSE(blocked.allowed);
+    EXPECT_GT(blocked.retry_after, 0s);
+
+    limiter.reset("192.0.2.1");
+    EXPECT_TRUE(limiter.consume("192.0.2.1", start + 4s).allowed);
+  }
+
+  TEST(ConfigHttpLoginLimiterTest, bounds_tracked_remote_addresses) {
+    using namespace std::chrono_literals;
+    policy::LoginAttemptLimiter limiter(3, 60s, 30s, 2);
+    const auto start = policy::LoginAttemptLimiter::clock::time_point {};
+
+    EXPECT_TRUE(limiter.consume("192.0.2.1", start).allowed);
+    EXPECT_TRUE(limiter.consume("192.0.2.2", start + 1s).allowed);
+    EXPECT_TRUE(limiter.consume("192.0.2.3", start + 2s).allowed);
+    EXPECT_EQ(limiter.size(), 2U);
+  }
+
+  TEST(ConfigHttpLogPolicyTest, redacts_authentication_material_case_insensitively) {
+    EXPECT_TRUE(policy::is_sensitive_http_field("Authorization"));
+    EXPECT_TRUE(policy::is_sensitive_http_field("authorization"));
+    EXPECT_TRUE(policy::is_sensitive_http_field("COOKIE"));
+    EXPECT_TRUE(policy::is_sensitive_http_field("refresh_token"));
+    EXPECT_TRUE(policy::is_sensitive_http_field("currentPassword"));
+    EXPECT_FALSE(policy::is_sensitive_http_field("User-Agent"));
   }
 
   TEST_F(ConfigHttpCheckAuthTest, given_empty_username_config_when_checking_auth_then_should_return_unauthorized) {

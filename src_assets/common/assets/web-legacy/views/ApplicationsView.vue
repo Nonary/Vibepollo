@@ -51,6 +51,15 @@
       </div>
     </section>
 
+    <section v-if="restorableSystemApps.length" class="apps-header__actions" aria-label="Restore system apps">
+      <span>Restore system apps:</span>
+      <n-button v-for="app in restorableSystemApps" :key="app.id" :disabled="restoringSystemApp !== ''"
+        :loading="restoringSystemApp === app.id" @click="restoreSystemApp(app.id)">
+        Restore {{ app.name }}
+      </n-button>
+      <span v-if="restoreError" role="alert">{{ restoreError }}</span>
+    </section>
+
     <!-- List card -->
     <section class="apps-list-card">
       <div v-if="apps && apps.length" class="apps-list">
@@ -162,7 +171,21 @@ import { useI18n } from 'vue-i18n';
 import type { App } from '@/stores/apps';
 
 const appsStore = useAppsStore();
-const { apps } = storeToRefs(appsStore);
+const { apps, restorableSystemApps } = storeToRefs(appsStore);
+const restoringSystemApp = ref('');
+const restoreError = ref('');
+async function restoreSystemApp(id: string): Promise<void> {
+  restoringSystemApp.value = id;
+  restoreError.value = '';
+  try {
+    await http.post(`/api/apps/system/${encodeURIComponent(id)}/restore`, {});
+    await reload();
+  } catch {
+    restoreError.value = 'Could not restore the system app.';
+  } finally {
+    restoringSystemApp.value = '';
+  }
+}
 const configStore = useConfigStore();
 const auth = useAuthStore();
 const router = useRouter();

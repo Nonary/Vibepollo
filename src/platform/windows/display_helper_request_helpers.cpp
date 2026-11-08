@@ -10,6 +10,7 @@
   #include "src/platform/windows/display_helper_request_policy.h"
 
   #include "src/display_device.h"
+  #include "src/display_helper_saved_placement.h"
   #include "src/globals.h"
   #include "src/logging.h"
   #include "src/platform/common.h"
@@ -790,18 +791,11 @@ namespace display_helper_integration::helpers {
         live_nodes.push_back(std::move(node));
       }
     }
-    const auto placement = target && effective_video_config_.virtual_display_mode != config::video_t::virtual_display_mode_e::shared ?
-                             remote_display_topology::instance().saved_stream_placement(*target, live_nodes) :
-                             std::nullopt;
-    if (placement) {
-      topology.monitor_positions[target->device_id] = {placement->x, placement->y};
-      if (placement->primary) {
-        if (auto request = builder.build(); request.configuration) {
-          request.configuration->m_device_prep = display_device::SingleDisplayConfiguration::DevicePreparation::EnsurePrimary;
-          builder.set_configuration(*request.configuration);
-        }
-      }
-    }
+    const auto saved = target && effective_video_config_.virtual_display_mode != config::video_t::virtual_display_mode_e::shared ?
+                         remote_display_topology::instance().saved_stream_placement(*target, live_nodes) :
+                         remote_display_topology::saved_stream_layout_t {};
+    if (target) apply_saved_stream_layout(builder, saved, target->device_id, layout_flags.isolated);
+    const auto &placement = saved.position;
     const auto request = builder.build();
     if (target && request.configuration && request.configuration->m_device_prep == display_device::SingleDisplayConfiguration::DevicePreparation::EnsurePrimary && (!layout_flags.isolated || placement)) {
       const auto origin = topology.monitor_positions.at(target->device_id);

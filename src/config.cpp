@@ -1003,6 +1003,7 @@ namespace config {
     20,  // fecPercentage
     64,  // video_max_batch_size_kb
     false,  // pacing_batch_demand_limit (experimental per-call demand-based sizing; default off)
+    false,  // pacing_group_demand_limit (experimental per-frame group pacing; default off)
     false,  // host_adaptive_pacing (experimental loss-responsive packet spacing; default off)
     20,  // pyrowave_critical_fec_percentage
 
@@ -1054,6 +1055,7 @@ namespace config {
 
     true,  // keyboard enabled
     true,  // mouse enabled
+    "auto",  // Windows keyboard and mouse input backend
     true,  // controller enabled
     true,  // always send scancodes
     true,  // high resolution scrolling
@@ -1095,7 +1097,7 @@ namespace config {
     #endif
 
     int default_min_log_level() {
-      if (version_compare::is_prerelease_channel(PROJECT_VERSION)) {
+      if (version_compare::is_prerelease_build(PROJECT_BUILD_CHANNEL, PROJECT_VERSION)) {
         return 1;
       }
       return 2;
@@ -1754,12 +1756,6 @@ namespace config {
   void apply_config(std::unordered_map<std::string, std::string> &&vars) {
     reset_runtime_config_to_defaults();
     std::chrono::milliseconds control_peer_timeout {0};
-#ifndef __ANDROID__
-    // TODO: Android can possibly support this
-    if (!fs::exists(stream.file_apps.c_str())) {
-      fs::copy_file(SUNSHINE_ASSETS_DIR "/apps.json", stream.file_apps);
-    }
-#endif
 
     nv::normalize_split_encode_alias(vars);
     log_config_settings(vars, true);
@@ -2230,6 +2226,7 @@ namespace config {
     int_between_f(vars, "pyrowave_critical_fec_percentage", stream.pyrowave_critical_fec_percentage, {0, 255});
     int_between_f(vars, "video_max_batch_size_kb", stream.video_max_batch_size_kb, {0, 64});
     bool_f(vars, "pacing_batch_demand_limit", stream.pacing_batch_demand_limit);
+    bool_f(vars, "pacing_group_demand_limit", stream.pacing_group_demand_limit);
     bool_f(vars, "host_adaptive_pacing", stream.host_adaptive_pacing);
     if (stream.video_max_batch_size_kb == 0) {
       stream.video_max_batch_size_kb = 64;
@@ -2280,6 +2277,7 @@ namespace config {
 
     bool_f(vars, "mouse", input.mouse);
     bool_f(vars, "keyboard", input.keyboard);
+    string_restricted_f(vars, "keyboard_mouse_backend", input.keyboard_mouse_backend, {"auto"sv, "sendinput"sv, "vhf"sv});
     bool_f(vars, "controller", input.controller);
 
     bool_f(vars, "always_send_scancodes", input.always_send_scancodes);
@@ -2804,6 +2802,7 @@ namespace config {
         "fec_percentage",
         "video_max_batch_size_kb",
         "pacing_batch_demand_limit",
+        "pacing_group_demand_limit",
         "host_adaptive_pacing",
         "pyrowave_critical_fec_percentage",
         "qp",

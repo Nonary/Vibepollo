@@ -57,6 +57,9 @@ namespace rtsp_stream {
     uint32_t id;
     remote_session::role_e role {remote_session::role_e::game};
     std::uint64_t role_generation {};
+    // Pending launch only, protected by the stream lifecycle mutex. Once a
+    // monitor stream is published its join path owns transport-loss handling.
+    bool monitor_stream_published = false;
     // Bound to this pending launch and then to the admitted stream generation.
     std::string monitor_profile_uuid;
     std::optional<display_target::descriptor_t> exact_monitor_target;

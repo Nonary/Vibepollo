@@ -14,6 +14,27 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  windows-hid-regressions:
+    runs-on: windows-2022
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+      - name: Check keyboard mappings and input ownership on Windows
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT exit /b 1
+          call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+          cl /nologo /std:c++17 /EHsc /W4 /WX /wd4244 /I. tests\input\test_vhf_keyboard_windows.cpp hid.lib /Fe:vhf-keyboard-test.exe
+          if errorlevel 1 exit /b 1
+          vhf-keyboard-test.exe
+          if errorlevel 1 exit /b 1
+          python tests\input\test_disconnect_release.py --compiler msvc
+          if errorlevel 1 exit /b 1
+
   host-regressions:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -29,9 +50,13 @@ jobs:
           python3 .github/scripts/vhf_release_identity.py --source-commit "$RELEASE_COMMIT" --github-env "$GITHUB_ENV"
       - name: Install host test headers
         run: sudo apt-get update && sudo apt-get install -y nlohmann-json3-dev libboost-dev
+      - name: Check production final display recovery validation
+        run: |
+          git submodule update --init --depth 1 third-party/libdisplaydevice
+          python3 tests/unit/test_display_recovery_confirmation.py . --compiler g++
       - name: Check Steam Controller feedback forwarding, queue policy, slot retirement and VHF fallback
         # Legacy master has no Steam implementation; Steam sources must run every harness.
-        if: env.VHF_TAG == 'v0.1.0-beta.155'
+        if: env.VHF_SOURCE_REVISION != '7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a'
         run: |
           python3 tests/input/test_haptic_queue.py
           python3 tests/input/test_steam_settings_forward.py
@@ -41,9 +66,14 @@ jobs:
           python3 tests/input/test_legacy_feedback_admission.py
           python3 tests/input/test_usbip_trigger_admission.py
           python3 tests/input/test_vhf_fallback.py
+      - name: Check VHF keyboard and mouse routing
+        run: |
+          python3 tests/input/test_vhf_keyboard_mouse_policy.py
+          python3 tests/input/test_vhf_keyboard_mouse_integration.py
+          python3 tests/input/test_scroll_backend_fallback.py
       - name: Check SC2026 client-to-driver click fidelity and the firmware attribute relay
         # Missing fixtures in a Steam source remain a failure.
-        if: env.VHF_TAG == 'v0.1.0-beta.155'
+        if: env.VHF_SOURCE_REVISION != '7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a'
         run: |
           git submodule update --init --depth 1 third-party/moonlight-common-c third-party/libvirtualgamepad
           python3 tests/input/test_sc26_buttons.py

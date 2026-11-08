@@ -25,16 +25,13 @@ extern "C" {
 #include "globals.h"
 #include "input.h"
 #include "input_geometry_policy.h"
+#include "input_scroll_policy.h"
+#include "input_validation_policy.h"
 #include "logging.h"
 #include "mouse_input.h"
 #include "platform/common.h"
 #include "thread_pool.h"
 #include "utility.h"
-
-// Win32 WHEEL_DELTA constant
-#ifndef WHEEL_DELTA
-constexpr int WHEEL_DELTA = 120;
-#endif
 
 using namespace std::literals;
 
@@ -1056,7 +1053,14 @@ namespace input {
     const auto &host = host_keys.at(host_keycode(held.host_key));
     held.host_key = host.key;
     held.flags = host.flags;
-    send_key_and_modifiers(held, input->shortcutFlags);
+    // A HID keyboard repeats held keys in Windows. Sending repeated identical
+    // HID downs has no effect, and re-sending temporary modifier transitions
+    // around them would instead pulse those modifiers on every timer tick.
+    bool native_repeat = false;
+#ifdef _WIN32
+    native_repeat = platf::keyboard_uses_native_repeat(platf_input, host.key);
+#endif
+    if (!native_repeat) send_key_and_modifiers(held, input->shortcutFlags);
     input->key_press_repeat_id = task_pool.pushDelayed(repeat_key, config::input.key_repeat_period, input, key_code).task_id;
   }
 
@@ -1156,7 +1160,14 @@ namespace input {
     task_pool.cancel(input->key_press_repeat_id);
     input->key_press_repeat_id = nullptr;
     input->repeating_key = key_code;
-    if (config::input.key_repeat_delay.count() > 0) {
+    bool native_repeat = false;
+#ifdef _WIN32
+    // The platform pins each held key to its initial route until release,
+    // including when a failed VHF child is removed. Windows already repeats
+    // VHF keys, so do not create a periodic no-op timer for those keys.
+    native_repeat = platf::keyboard_uses_native_repeat(platf_input, host.key);
+#endif
+    if (!native_repeat && config::input.key_repeat_delay.count() > 0) {
       input->key_press_repeat_id = task_pool.pushDelayed(repeat_key, config::input.key_repeat_delay, input, key_code).task_id;
     }
   }
@@ -1171,16 +1182,16 @@ namespace input {
       return;
     }
 
-    if (config::input.high_resolution_scrolling) {
-      platf::scroll(platf_input, util::endian::big(packet->scrollAmt1));
+    bool full_ticks_only = !config::input.high_resolution_scrolling;
+#ifdef _WIN32
+    full_ticks_only = full_ticks_only || platf::mouse_requires_scroll_ticks(platf_input);
+#endif
+    if (!full_ticks_only) {
+      const auto delta = scroll_policy::pass_through(input->accumulated_vscroll_delta, util::endian::big(packet->scrollAmt1));
+      platf::scroll(platf_input, delta);
     } else {
-      input->accumulated_vscroll_delta += util::endian::big(packet->scrollAmt1);
-      auto full_ticks = input->accumulated_vscroll_delta / WHEEL_DELTA;
-      if (full_ticks) {
-        // Send any full ticks that have accumulated and store the rest
-        platf::scroll(platf_input, full_ticks * WHEEL_DELTA);
-        input->accumulated_vscroll_delta -= full_ticks * WHEEL_DELTA;
-      }
+      const auto full_ticks = scroll_policy::accumulate(input->accumulated_vscroll_delta, util::endian::big(packet->scrollAmt1));
+      if (full_ticks) platf::scroll(platf_input, full_ticks);
     }
   }
 
@@ -1194,16 +1205,16 @@ namespace input {
       return;
     }
 
-    if (config::input.high_resolution_scrolling) {
-      platf::hscroll(platf_input, util::endian::big(packet->scrollAmount));
+    bool full_ticks_only = !config::input.high_resolution_scrolling;
+#ifdef _WIN32
+    full_ticks_only = full_ticks_only || platf::mouse_requires_scroll_ticks(platf_input);
+#endif
+    if (!full_ticks_only) {
+      const auto delta = scroll_policy::pass_through(input->accumulated_hscroll_delta, util::endian::big(packet->scrollAmount));
+      platf::hscroll(platf_input, delta);
     } else {
-      input->accumulated_hscroll_delta += util::endian::big(packet->scrollAmount);
-      auto full_ticks = input->accumulated_hscroll_delta / WHEEL_DELTA;
-      if (full_ticks) {
-        // Send any full ticks that have accumulated and store the rest
-        platf::hscroll(platf_input, full_ticks * WHEEL_DELTA);
-        input->accumulated_hscroll_delta -= full_ticks * WHEEL_DELTA;
-      }
+      const auto full_ticks = scroll_policy::accumulate(input->accumulated_hscroll_delta, util::endian::big(packet->scrollAmount));
+      if (full_ticks) platf::hscroll(platf_input, full_ticks);
     }
   }
 

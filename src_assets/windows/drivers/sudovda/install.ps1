@@ -69,7 +69,7 @@ function ConvertFrom-DriverInstallSafetyInventoryResult {
     if ($markerLines.Count -ne 1) { throw 'Driver safety inventory returned a missing or ambiguous result. Driver unchanged.' }
 
     $encodedJson = $markerLines[0].Substring($markerPrefix.Length)
-    if ($encodedJson -notmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'Driver safety inventory returned malformed data. Driver unchanged.' }
+    if ($encodedJson -cnotmatch '^[A-Za-z0-9+/]+={0,2}$') { throw 'Driver safety inventory returned malformed data. Driver unchanged.' }
 
     try {
         $json = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encodedJson))

@@ -78,6 +78,10 @@ namespace platf::dxgi {
     const std::optional<adapter_id_t> &required_adapter = std::nullopt
   );
 
+  // Read the exact output's effective DXGI capture color state. Unknown or
+  // ambiguous output identities return nullopt, never a guessed SDR value.
+  std::optional<bool> capture_output_hdr_state(const std::string &output_name);
+
   void set_last_wgc_adapter_luid(std::optional<LUID> luid, std::string output_name = {});
   std::optional<LUID> get_last_wgc_adapter_luid();
   std::optional<wgc_adapter_identity_t> get_last_wgc_adapter_identity();

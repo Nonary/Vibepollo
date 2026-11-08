@@ -28,6 +28,7 @@ def function(source, signature):
 def fixture(root):
     nv = (root / 'src/nvhttp.cpp').read_text()
     stream = (root / 'src/stream.cpp').read_text()
+    rtsp = (root / 'src/rtsp.cpp').read_text()
     template = (Path(__file__).with_suffix('.cpp.in')).read_text()
     owners = function(nv, 'struct remote_role_owner_t {') + ';\n'
     owners += function(nv, 'struct remote_role_gate_snapshot_t {') + ';\n'
@@ -60,10 +61,13 @@ std::unordered_map<std::string, remote_role_owner_t> remote_role_owners;\n'''
     runtime_start = locate(r'^[ \t]*bool runtime_overrides_applied = false;', idle_end)
     apply_start = locate(r'^[ \t]*if \(no_active_sessions\) \{', runtime_start)
     runtime_apply = function(nv[apply_start:], 'if (no_active_sessions) {')
+    monitor_reconciliation = '\n'.join(function(rtsp, signature) for signature in (
+        'void reconcile_abandoned_monitor_locked(', 'void retry_abandoned_monitor(', 'void reconcile_abandoned_monitor(',
+    ))
     matches = '\n'.join(function(stream, signature) for signature in (
         'bool uuid_match(', 'bool remote_role_match(',
     ))
-    return (template.replace('/* @OWNERS@ */', owners)
+    return (template.replace('/* @MONITOR_RECONCILIATION@ */', monitor_reconciliation).replace('/* @OWNERS@ */', owners)
             .replace('/* @DISPATCH@ */', dispatch).replace('/* @REPLACEMENT@ */', replacement)
             .replace('/* @RUNTIME_IDLE@ */', runtime_idle).replace('/* @RUNTIME_APPLY@ */', runtime_apply)
             .replace('/* @MATCHES@ */', matches))

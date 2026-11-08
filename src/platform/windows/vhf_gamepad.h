@@ -5,6 +5,7 @@
 #pragma once
 
 // standard includes
+#include <functional>
 #include <memory>
 
 // local includes
@@ -38,6 +39,24 @@ namespace platf {
      * @return `true` when the driver was reachable.
      */
     [[nodiscard]] bool available() const;
+
+    // Keyboard/mouse shares the controller connection and its lifetime lock.
+    // Initialization returns false before any HID input when unavailable.
+    bool open_keyboard_mouse();
+    // A failed report may be followed by fallback only after the VHF child has
+    // been synchronously removed; the failed event itself is never replayed.
+    [[nodiscard]] bool keyboard_mouse_fallback_safe();
+    // Keep the recovery state stable until a Win32 fallback event has been sent.
+    // The callback must not call back into the VHF transport.
+    [[nodiscard]] bool keyboard_mouse_fallback(const std::function<void()> &send);
+    void keyboard_mouse_key(std::uint16_t usage, bool pressed);
+    [[nodiscard]] bool keyboard_mouse_consumer_supported() const;
+    void keyboard_mouse_consumer(std::uint16_t usage, bool pressed);
+    void keyboard_mouse_button(std::uint8_t button, bool pressed);
+    void keyboard_mouse_relative(int x, int y, int wheel, int pan);
+    // False means a healthy VHF device cannot represent this coordinate.
+    // A faulted device consumes the event until its removal is confirmed.
+    bool keyboard_mouse_absolute(std::uint16_t x, std::uint16_t y);
 
     /**
      * @brief Creates a virtual controller in the driver.

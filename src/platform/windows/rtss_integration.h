@@ -28,6 +28,7 @@ namespace platf {
     std::string resolved_path;  // absolute resolved path we will use
     bool path_exists;  // resolved path exists on disk
     bool hooks_found;  // RTSSHooks64.dll or RTSSHooks.dll exists
+    bool trust_valid;  // protected Program Files root with immutable, signer-matched executable and hooks
     bool profile_found;  // Sunshine-managed profile exists
     bool can_bootstrap_profile;  // Sunshine can create its profile automatically
     bool process_running;  // RTSS process currently running

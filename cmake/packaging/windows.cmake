@@ -23,11 +23,11 @@ if(WEBRTC_RUNTIME_DLL)
     install(FILES "${WEBRTC_RUNTIME_DLL}" DESTINATION "." COMPONENT application)
 endif()
 
-# Optional NVIDIA TrueHDR runtime. Release builders download a pinned runtime
-# bundle before configure; local builders may place these files in this
-# directory before packaging. Only the TrueHDR feature DLL is bundled; VSR is not
-# used.
-option(SUNSHINE_REQUIRE_TRUEHDR_RUNTIME "Fail Windows packaging when the TrueHDR runtime DLLs are missing." OFF)
+# NVIDIA TrueHDR runtime. Installer builds stage the pinned runtime at CPack
+# time so RTX HDR cannot be shipped in a silently disabled state. Force the
+# cache value on so older local build trees do not keep the previous optional
+# default. Only the TrueHDR feature DLL is bundled; VSR is not used.
+set(SUNSHINE_REQUIRE_TRUEHDR_RUNTIME ON CACHE BOOL "Fail Windows packaging when the TrueHDR runtime DLLs are missing." FORCE)
 set(SUNSHINE_TRUEHDR_RUNTIME_DIR "${CMAKE_BINARY_DIR}/truehdr-runtime" CACHE PATH "Directory containing vibeshine_truehdr.dll and the NVIDIA NGX TrueHDR runtime DLL")
 if("${SUNSHINE_TRUEHDR_RUNTIME_DIR}" STREQUAL "${CMAKE_BINARY_DIR}")
     set(SUNSHINE_TRUEHDR_RUNTIME_DIR "${CMAKE_BINARY_DIR}/truehdr-runtime" CACHE PATH "Directory containing vibeshine_truehdr.dll and the NVIDIA NGX TrueHDR runtime DLL" FORCE)
@@ -38,18 +38,39 @@ foreach(_truehdr_runtime_name IN LISTS SUNSHINE_VDD_TRUEHDR_FILES)
         "${SUNSHINE_TRUEHDR_RUNTIME_DIR}/${_truehdr_runtime_name}")
 endforeach()
 unset(_truehdr_runtime_name)
+set(SUNSHINE_TRUEHDR_RUNTIME_FILES_INSTALL_CODE "")
+foreach(_truehdr_runtime_file IN LISTS SUNSHINE_TRUEHDR_RUNTIME_FILES)
+    string(APPEND SUNSHINE_TRUEHDR_RUNTIME_FILES_INSTALL_CODE
+        "        \"${_truehdr_runtime_file}\"\n")
+endforeach()
+unset(_truehdr_runtime_file)
 if(SUNSHINE_REQUIRE_TRUEHDR_RUNTIME)
-    foreach(_truehdr_runtime_file IN LISTS SUNSHINE_TRUEHDR_RUNTIME_FILES)
-        if(NOT EXISTS "${_truehdr_runtime_file}")
-            message(FATAL_ERROR "Required TrueHDR runtime file missing: ${_truehdr_runtime_file}")
-        endif()
-        file(SIZE "${_truehdr_runtime_file}" _truehdr_runtime_file_size)
-        if(_truehdr_runtime_file_size EQUAL 0)
-            message(FATAL_ERROR "Required TrueHDR runtime file is empty (0 bytes): ${_truehdr_runtime_file}")
-        endif()
-    endforeach()
-    unset(_truehdr_runtime_file_size)
-    unset(_truehdr_runtime_file)
+    set(_truehdr_stage_code [=[
+execute_process(
+    COMMAND powershell -NoProfile -ExecutionPolicy Bypass -File "@CMAKE_SOURCE_DIR@/scripts/download_truehdr_runtime_release.ps1"
+            -Repository "@SUNSHINE_VDD_TRUEHDR_REPOSITORY@"
+            -Tag "@SUNSHINE_VDD_TRUEHDR_RELEASE_TAG@"
+            -OutDir "@SUNSHINE_TRUEHDR_RUNTIME_DIR@"
+    RESULT_VARIABLE _truehdr_stage_result
+)
+if(NOT _truehdr_stage_result EQUAL 0)
+    message(FATAL_ERROR "Failed to stage required TrueHDR runtime files in @SUNSHINE_TRUEHDR_RUNTIME_DIR@")
+endif()
+
+foreach(_truehdr_runtime_file IN ITEMS
+@SUNSHINE_TRUEHDR_RUNTIME_FILES_INSTALL_CODE@)
+    if(NOT EXISTS "${_truehdr_runtime_file}")
+        message(FATAL_ERROR "Required TrueHDR runtime file missing: ${_truehdr_runtime_file}")
+    endif()
+    file(SIZE "${_truehdr_runtime_file}" _truehdr_runtime_file_size)
+    if(_truehdr_runtime_file_size EQUAL 0)
+        message(FATAL_ERROR "Required TrueHDR runtime file is empty (0 bytes): ${_truehdr_runtime_file}")
+    endif()
+endforeach()
+]=])
+    string(CONFIGURE "${_truehdr_stage_code}" _truehdr_stage_code @ONLY)
+    install(CODE "${_truehdr_stage_code}" COMPONENT application)
+    unset(_truehdr_stage_code)
     install(FILES ${SUNSHINE_TRUEHDR_RUNTIME_FILES}
         DESTINATION "."
         COMPONENT application)
@@ -330,8 +351,10 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
         unset(_vhf_gamepad_signer)
     endif()
 
-    set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR
-        "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/vhf-gamepad")
+    sunshine_vhf_prepare_package_stage(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR
+        "${SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE}"
+        "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/vhf-gamepad"
+        "${CMAKE_BINARY_DIR}")
     set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_REFRESH_SCRIPT
         "${CMAKE_SOURCE_DIR}/packaging/windows/virtual_gamepad_driver/refresh_driver_package.ps1")
     set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_DOWNLOAD_SCRIPT

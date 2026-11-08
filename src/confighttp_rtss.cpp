@@ -112,6 +112,7 @@ namespace confighttp {
     out["resolved_path"] = rtss.resolved_path;
     out["path_exists"] = rtss.path_exists;
     out["hooks_found"] = rtss.hooks_found;
+    out["trust_valid"] = rtss.trust_valid;
     out["profile_found"] = rtss.profile_found;
     out["can_bootstrap_profile"] = rtss.can_bootstrap_profile;
     out["process_running"] = rtss.process_running;
@@ -157,7 +158,7 @@ namespace confighttp {
 
     const std::string configured_id = provider_to_string(fl.configured_provider);
     const bool prefer_rtss = fl.configured_provider == platf::frame_limiter_provider::rtss || fl.configured_provider == platf::frame_limiter_provider::auto_detect;
-    const bool rtss_ready = rtss.path_exists && rtss.hooks_found;
+    const bool rtss_ready = rtss.path_exists && rtss.hooks_found && rtss.trust_valid;
     const bool rtss_bootstrap_pending = rtss_ready && !rtss.profile_found && rtss.can_bootstrap_profile;
 
     std::string provider_message;
@@ -180,6 +181,8 @@ namespace confighttp {
             add_segment(provider_message, "RTSS not found at the resolved path. Install RTSS for the smoothest streaming experience.");
           } else if (!rtss.hooks_found) {
             add_segment(provider_message, "RTSSHooks DLL not found. Reinstall RTSS to restore frame limiter support.");
+          } else if (!rtss.trust_valid) {
+            add_segment(provider_message, "RTSS is outside a protected Program Files installation, is user-writable, or failed signature validation. Reinstall RTSS under Program Files.");
           } else {
             add_segment(provider_message, std::string("Frame limiter configured for ") + describe_provider(configured_id) + "; awaiting next stream.");
             if (!rtss.process_running) {

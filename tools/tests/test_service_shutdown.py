@@ -13,6 +13,21 @@ import tempfile
 
 source_path = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(__file__).resolve().parents[1] / "sunshinesvc.cpp"
 source = source_path.read_text()
+assert 'L"\\\\Vibepollo"' in source and 'L"\\\\Logs"' in source
+assert 'L"O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)"' in source
+assert "FILE_FLAG_OPEN_REPARSE_POINT" in source
+assert "CREATE_NEW" in source
+assert "GetTempPathW" not in source
+assert "open_null" in source and "NUL" in source
+assert "sunshine-service-" in source and "std::to_wstring(process_id)" in source
+assert "FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT" in source
+assert "const bool have_log_handle = log_file_handle != INVALID_HANDLE_VALUE;" in source
+assert "if (log_file_handle == INVALID_HANDLE_VALUE)" not in source
+assert "SetSecurityInfo(" not in source
+assert "SeTakeOwnershipPrivilege" not in source
+assert "Never take ownership of or rewrite an untrusted directory's DACL" in source
+assert "opened before such a rewrite retain their granted rename/mutation access" in source
+assert "MoveFileExW" in source and 'L".untrusted-"' in source
 # Keep the production ServiceMain (and its cleanup helper when present) intact.
 start = source.find("void ReportServiceStopped(")
 if start < 0:
@@ -77,7 +92,7 @@ bool SetServiceStatus(HANDLE, SERVICE_STATUS *s) {
   assert(!child_alive && "child still owns its inherited log handle");
   for (auto h : handles) assert(h==handle(1) || h==handle(2));
   assert(!attributes_live);
-  assert(s->dwWin32ExitCode==(scenario<=4 ? 123 : 0));
+  assert(s->dwWin32ExitCode==((scenario==1 || scenario==2 || scenario==4) ? 123 : 0));
   assert(s->dwWaitHint==0 && s->dwCheckPoint==0 && s->dwControlsAccepted==0);
   assert(++stopped_count==1);
  }
@@ -104,8 +119,9 @@ bool SetEnvironmentVariableW(...) { return true; }
 DWORD WTSGetActiveConsoleSessionId() { return 1; }
 HANDLE DuplicateTokenForSession(DWORD) { return acquire(5); }
 HANDLE CreateJobObjectForChildProcess() { return acquire(6); }
-bool CreateProcessAsUserW(HANDLE, const wchar_t *, void *, void *, void *, bool,
+bool CreateProcessAsUserW(HANDLE, const wchar_t *, void *, void *, void *, bool inherit_handles,
  DWORD, void *, void *, LPSTARTUPINFOW, PROCESS_INFORMATION *p) {
+ assert(inherit_handles==(scenario!=3));
  p->hProcess=acquire(7); p->hThread=acquire(8); p->dwProcessId=1;
  child_alive=true; return true;
 }

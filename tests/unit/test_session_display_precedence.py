@@ -23,6 +23,8 @@ dependency_includes = [flag for group in args.include_dir for path in group.spli
 source = args.source_dir
 launch = (source / 'nvhttp.cpp').read_text()
 helpers = (source / 'platform/windows/display_helper_request_helpers.cpp').read_text()
+# Wiring guard: the builder behavior is exercised by test_component_display_helper_saved_placement.
+assert 'apply_saved_stream_layout(builder, saved, target->device_id, layout_flags.isolated)' in helpers
 webrtc = (source / 'webrtc_stream.cpp').read_text()
 linux = (source / 'platform/linux/private_display.cpp').read_text()
 start = linux.index('    auto effective_video = config::video;')
@@ -35,10 +37,17 @@ output_end = launch.index('      const auto original_client_name', output_start)
 client_fields = launch[client_start:client_end] + launch[output_start:output_end]
 app_start = launch.index('          launch_session->virtual_display = app_ctx->virtual_screen;')
 app_end = launch.index('          launch_session->app_metadata = std::move(metadata);', app_start)
-app_fields = launch[app_start:app_end] + '          launch_session->app_metadata = std::move(metadata);\n'
+def through_metadata(text, start, end):
+    end = text.index(';', end) + 1
+    following = text[end:].splitlines()
+    if len(following) > 1 and 'apply_builtin_virtual_display(' in following[1]:
+        end = text.index(';', end) + 1
+    return text[start:end] + '\n'
+
+app_fields = through_metadata(launch, app_start, app_end)
 web_start = webrtc.index('            launch_session->virtual_display = app_ctx->virtual_screen;')
 web_end = webrtc.index('            launch_session->app_metadata = std::move(metadata);', web_start)
-web_fields = webrtc[web_start:web_end]
+web_fields = through_metadata(webrtc, web_start, web_end)
 web_finalizer = ''
 web_marker = '      // Resolve display preparation after client and application fields.'
 if web_marker in webrtc:
@@ -61,12 +70,11 @@ if '    void finalize_display_preparation(' in launch:
 start = launch.index('    // A resume request carries no appid or appuuid')
 start = launch.index('          // launch_session->virtual_display is deliberately left alone:', start)
 end = launch.index('          launch_session->app_metadata = std::move(metadata);', start)
-resume_fields = launch[start:end] + '          launch_session->app_metadata = std::move(metadata);\n'
+resume_fields = through_metadata(launch, start, end)
 policy_include = '#include "src/session_display_policy.h"' if (source / 'session_display_policy.h').exists() else ''
 program = r"""
 #include "src/config.h"
 #include "src/platform/windows/display_helper_request_policy.h"
-#include <boost/algorithm/string.hpp>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -95,6 +103,7 @@ struct launch_session_t {
 };
 }
 struct App {
+ std::string uuid;
  bool virtual_screen = false, virtual_display = false;
  std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
  std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
@@ -149,6 +158,7 @@ auto assemble_resume(Client client, App app, const std::unordered_map<std::strin
  return launch_session;
 }
 auto assemble_webrtc(Client client, App app) {
+ rtsp_stream::launch_session_t::app_metadata_t metadata {app.virtual_screen || app.virtual_display};
  auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
  auto app_ctx = std::make_shared<App>(app);
  SessionOptions options {"paired-client"};
@@ -232,7 +242,7 @@ int main() {
  client = {}; client.config_overrides["dd_configuration_option"] = "verify_only";
  check("client generic beats dedicated app", client, app, Prep::verify_only);
  app = {}; app.virtual_screen = true; app.dd_config_option_override = Prep::verify_only;
- check("explicit app VerifyOnly", {}, app, Prep::verify_only);
+ check("app virtual choice beats app VerifyOnly", {}, app, Prep::ensure_active);
  client = {}; client.output_name_override = "physical";
  check("physical target keeps VerifyOnly", client, {}, Prep::verify_only);
  client = {}; client.virtual_display_mode_override = "disabled";
@@ -245,7 +255,9 @@ int main() {
  client.config_overrides["dd_configuration_option"] = "ensure_primary";
  check("client generic activating policy beats dedicated app VerifyOnly", client, app, Prep::ensure_primary);
  app = {}; app.virtual_screen = true; app.config_overrides["dd_configuration_option"] = "verify_only";
- check("app generic VerifyOnly remains explicit", {}, app, Prep::verify_only);
+ check("app virtual choice beats app generic VerifyOnly", {}, app, Prep::ensure_active);
+ client = {}; client.config_overrides["dd_configuration_option"] = "verify_only";
+ check("client VerifyOnly beats app virtual choice", client, app, Prep::verify_only);
  client = {}; client.virtual_display_mode_override = "per_client";
  check("client virtual choice beats lower app generic VerifyOnly", client, app, Prep::ensure_active);
  client.config_overrides["dd_configuration_option"] = "verify_only";
@@ -283,6 +295,17 @@ int main() {
  ++count;
  if (assemble_resume(client, app, {})->output_name_override != client.output_name_override) {
    std::cerr << "FAIL resumed client virtual output must beat app physical output\n"; ++failed;
+ }
+ app = {}; app.uuid = VIRTUAL_DISPLAY_UUID;
+ client = {}; client.output_name_override = "physical";
+ client.virtual_display_mode_override = "disabled";
+ check("explicit Virtual Display applet prepares its virtual target", client, app, Prep::ensure_active);
+ for (const auto &s : {assemble(client, app, {}), assemble_resume(client, app, {}), assemble_webrtc(client, app)}) {
+   ++count;
+   if (!s->virtual_display || s->output_name_override != "sunshine:virtual_display" ||
+       s->virtual_display_mode_override != Mode::per_client) {
+     std::cerr << "FAIL explicit Virtual Display applet target on launch/resume/WebRTC\n"; ++failed;
+   }
  }
  namespace Policy = display_helper_integration::request_policy;
  for (const auto layout : {Layout::extended, Layout::extended_primary, Layout::extended_isolated, Layout::extended_primary_isolated}) {

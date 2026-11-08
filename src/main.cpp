@@ -448,7 +448,7 @@ int main(int argc, char *argv[]) {
     BOOST_LOG(warning) << "Windows 10 detected; HDR will not work on the Vibepollo Virtual Display.";
   }
 #endif
-  if (version_compare::is_prerelease_channel(PROJECT_VERSION)) {
+  if (version_compare::is_prerelease_build(PROJECT_BUILD_CHANNEL, PROJECT_VERSION)) {
     BOOST_LOG(info) << "Prerelease build detected; default min_log_level is debug unless overridden.";
   }
   BOOST_LOG(info) << "Effective min_log_level=" << config::sunshine.min_log_level;

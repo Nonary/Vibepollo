@@ -36,6 +36,7 @@ program = r'''
 #include <thread>
 #include <vector>
 #include "src/platform/windows/vhf_gamepad_recovery.h"
+#include "src/platform/windows/vhf_keyboard_mouse_policy.h"
 using DWORD = std::uint32_t;
 constexpr DWORD ERROR_SUCCESS = 0, ERROR_DEVICE_REMOVED = 1617;
 constexpr int MAX_GAMEPADS = 4;
@@ -146,6 +147,10 @@ public:
     vhf_gamepad::connection_recovery_t recovery;
     std::atomic<unsigned> active_count{};
     bool recovery_failure_logged{};
+    bool keyboard_mouse_owned{};
+    bool keyboard_mouse_faulted{};
+    bool keyboard_mouse_teardown_confirmed{};
+    bool keyboard_mouse_recovery_needs_probe{};
     // REAL_OBSERVE
   };
   std::unique_ptr<impl_t> impl{std::make_unique<impl_t>()};

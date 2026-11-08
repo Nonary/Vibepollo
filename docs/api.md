@@ -69,6 +69,15 @@ See below for details on token endpoints and usage examples.
 ## POST /api/clients/unpair-all
 @copydoc confighttp::unpairAll()
 
+## POST /api/clients/update
+@copydoc confighttp::updateClient()
+
+A partial `{"uuid":"<uuid>","enabled":false}` request revokes only that client's
+access without changing its permissions or preferences. Setting `enabled` to
+`true` restores access subject to the retained permission mask. A zero mask
+continues to deny access. The response reports `status` and `enabled_updated`;
+failed saves are reported, and a failed disable remains denied in memory.
+
 ## GET /api/config
 @copydoc confighttp::getConfig()
 

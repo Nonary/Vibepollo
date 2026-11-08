@@ -11,6 +11,7 @@
 #include <functional>
 #include <future>
 #include <gtest/gtest.h>
+#include <latch>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -31,9 +32,11 @@ namespace {
   // single-flight lease, pairing decision, shared_t and controls are production.
   struct response_t {
     bool close_connection_after_response = false;
+    bool close_was_set_at_write = false;
     std::string body;
 
     void write(const std::string &value) {
+      close_was_set_at_write = close_connection_after_response;
       body += value;
     }
   };
@@ -278,6 +281,8 @@ namespace {
       stale_bitrate = true;
     });
     EXPECT_EQ(read_response(*bitrate_response).get<int>("root.<xmlattr>.status_code"), 503);
+    EXPECT_FALSE(bitrate_response->close_was_set_at_write);
+    EXPECT_TRUE(bitrate_response->close_connection_after_response);
     EXPECT_EQ(pending.size(), 1);
     pending.front()();
     EXPECT_FALSE(stale_bitrate);
@@ -396,5 +401,178 @@ namespace {
       stage_e::host_start_canceled_response_write_returned,
       stage_e::worker_completed,
     }));
+  }
+
+  struct fake_pending_peer_t: nvhttp::pending_peer_t {
+    std::function<void(nvhttp::pending_peer_end_e)> on_end;
+    std::function<void(bool)> on_ready;
+    bool open = true;
+    bool stopped = false;
+
+    void start(std::chrono::steady_clock::time_point, std::function<void(nvhttp::pending_peer_end_e)> cb) override { on_end = std::move(cb); }
+    void prepare(std::function<void(bool)> cb) override { on_ready = std::move(cb); }
+    bool connected() override { return open; }
+    void stop() override { stopped = true; }
+    void end(nvhttp::pending_peer_end_e why) { on_end(why); }
+    void ready(bool value = true) { auto cb = std::move(on_ready); cb(value); }
+  };
+
+  class NvhttpHandoff: public testing::Test {
+  protected:
+    nvhttp::handoff::admission_t admission;
+    std::vector<std::function<void()>> tasks;
+    int cancels = 0;
+    int starts = 0;
+
+    auto submitter() {
+      return [this](auto task) { tasks.emplace_back(std::move(task)); };
+    }
+
+    void run_one() {
+      ASSERT_FALSE(tasks.empty());
+      auto task = std::move(tasks.front());
+      tasks.erase(tasks.begin());
+      task();
+    }
+
+    auto cancel() {
+      auto response = std::make_shared<response_t>();
+      auto result = nvhttp::dispatch::run_handoff(admission, submitter(), response, "cancel", [this] { ++cancels; });
+      EXPECT_EQ(result, nvhttp::handoff::result_e::admitted);
+      return response;
+    }
+
+    auto start(const std::shared_ptr<fake_pending_peer_t> &peer, const char *operation = "launch", std::chrono::steady_clock::duration wait = 20s) {
+      auto response = std::make_shared<response_t>();
+      auto result = nvhttp::dispatch::run_handoff(admission, submitter(), response, operation, [this] { ++starts; }, [peer] { return peer; }, nvhttp::dispatch::no_trace_t {}, wait);
+      return std::pair {response, result};
+    }
+  };
+
+  TEST_F(NvhttpHandoff, OneStartRunsAutomaticallyAfterCancelAndOtherMutationsStayBounded) {
+    cancel();
+    auto peer = std::make_shared<fake_pending_peer_t>();
+    auto [response, result] = start(peer);
+    ASSERT_EQ(result, nvhttp::handoff::result_e::waiting);
+    EXPECT_TRUE(response->body.empty());
+    auto [competing, competing_result] = start(std::make_shared<fake_pending_peer_t>());
+    EXPECT_EQ(competing_result, nvhttp::handoff::result_e::busy);
+    EXPECT_EQ(read_response(*competing).get<int>("root.<xmlattr>.status_code"), 503);
+    auto other = std::make_shared<response_t>();
+    EXPECT_EQ(nvhttp::dispatch::run_handoff(admission, submitter(), other, "bitrate", [] {}), nvhttp::handoff::result_e::busy);
+    ASSERT_EQ(tasks.size(), 1u);
+    run_one();
+    EXPECT_EQ(cancels, 1);
+    EXPECT_EQ(starts, 0);
+    ASSERT_TRUE(peer->on_ready);
+    peer->ready();
+    ASSERT_EQ(tasks.size(), 1u);
+    run_one();
+    EXPECT_EQ(starts, 1);
+    EXPECT_TRUE(peer->stopped);
+    auto fresh = std::make_shared<response_t>();
+    EXPECT_EQ(nvhttp::dispatch::run_handoff(admission, submitter(), fresh, "bitrate", [] {}), nvhttp::handoff::result_e::admitted);
+    run_one();
+  }
+
+  TEST_F(NvhttpHandoff, DisconnectedAndExpiredRequestsReleaseTheSlotWithoutLeavingWorkBehind) {
+    cancel();
+    for (int i = 0; i < 50; ++i) {
+      auto peer = std::make_shared<fake_pending_peer_t>();
+      auto [response, result] = start(peer, i % 2 ? "resume" : "launch");
+      ASSERT_EQ(result, nvhttp::handoff::result_e::waiting);
+      peer->end(i % 2 ? nvhttp::pending_peer_end_e::expired : nvhttp::pending_peer_end_e::disconnected);
+      EXPECT_TRUE(peer->stopped);
+      if (i % 2) {
+        EXPECT_EQ(read_response(*response).get<int>("root.<xmlattr>.status_code"), 503);
+        EXPECT_FALSE(response->close_was_set_at_write);
+      } else {
+        EXPECT_TRUE(response->body.empty());
+      }
+      EXPECT_TRUE(response->close_connection_after_response);
+      EXPECT_EQ(tasks.size(), 1u);
+    }
+    run_one();
+    EXPECT_EQ(starts, 0);
+    EXPECT_TRUE(tasks.empty());
+  }
+
+  TEST_F(NvhttpHandoff, WorkerRechecksDeadlineAndConnectionAfterCancelFinishes) {
+    for (int scenario = 0; scenario < 2; ++scenario) {
+      cancel();
+      auto peer = std::make_shared<fake_pending_peer_t>();
+      auto [response, result] = start(peer, "launch", scenario == 0 ? -1s : 20s);
+      ASSERT_EQ(result, nvhttp::handoff::result_e::waiting);
+      run_one();
+      ASSERT_TRUE(peer->on_ready);
+      peer->ready();
+      if (scenario == 1) peer->open = false;
+      run_one();
+      EXPECT_EQ(starts, 0);
+      EXPECT_TRUE(peer->stopped);
+      if (scenario == 0) EXPECT_EQ(read_response(*response).get<int>("root.<xmlattr>.status_code"), 503);
+      else EXPECT_TRUE(response->body.empty());
+    }
+  }
+
+  TEST_F(NvhttpHandoff, TimeoutOrShutdownAfterReservationMakesQueuedWorkerHarmless) {
+    for (int scenario = 0; scenario < 2; ++scenario) {
+      nvhttp::handoff::admission_t local;
+      auto peer = std::make_shared<fake_pending_peer_t>();
+      auto cancel_response = std::make_shared<response_t>();
+      auto response = std::make_shared<response_t>();
+      ASSERT_EQ(nvhttp::dispatch::run_handoff(local, submitter(), cancel_response, "cancel", [] {}), nvhttp::handoff::result_e::admitted);
+      ASSERT_EQ(nvhttp::dispatch::run_handoff(local, submitter(), response, "launch", [this] { ++starts; }, [peer] { return peer; }), nvhttp::handoff::result_e::waiting);
+      run_one();
+      peer->ready();
+      ASSERT_EQ(tasks.size(), 1u);
+      if (scenario == 0) peer->end(nvhttp::pending_peer_end_e::expired);
+      else local.stop();
+      run_one();
+      EXPECT_EQ(starts, 0);
+      EXPECT_EQ(read_response(*response).get<int>("root.<xmlattr>.status_code"), 503);
+    }
+  }
+
+  TEST_F(NvhttpHandoff, StartsDoNotQueueBehindOtherOperationsOrWithoutAConnectionMonitor) {
+    auto other = std::make_shared<response_t>();
+    ASSERT_EQ(nvhttp::dispatch::run_handoff(admission, submitter(), other, "bitrate", [] {}), nvhttp::handoff::result_e::admitted);
+    auto [blocked, result] = start(std::make_shared<fake_pending_peer_t>());
+    EXPECT_EQ(result, nvhttp::handoff::result_e::busy);
+    run_one();
+    cancel();
+    auto no_peer = std::make_shared<response_t>();
+    EXPECT_EQ(nvhttp::dispatch::run_handoff(admission, submitter(), no_peer, "launch", [this] { ++starts; }), nvhttp::handoff::result_e::busy);
+    run_one();
+    EXPECT_EQ(starts, 0);
+  }
+
+  TEST_F(NvhttpHandoff, ExpiryRacingWorkerClaimHasExactlyOneOutcome) {
+    for (int iteration = 0; iteration < 100; ++iteration) {
+      nvhttp::handoff::admission_t local;
+      auto peer = std::make_shared<fake_pending_peer_t>();
+      auto cancel_response = std::make_shared<response_t>();
+      auto response = std::make_shared<response_t>();
+      std::atomic_int launched {0};
+      ASSERT_EQ(nvhttp::dispatch::run_handoff(local, submitter(), cancel_response, "cancel", [] {}), nvhttp::handoff::result_e::admitted);
+      ASSERT_EQ(nvhttp::dispatch::run_handoff(local, submitter(), response, "launch", [&] { ++launched; }, [peer] { return peer; }), nvhttp::handoff::result_e::waiting);
+      run_one();
+      peer->ready();
+      ASSERT_EQ(tasks.size(), 1u);
+      auto task = std::move(tasks.front());
+      tasks.clear();
+      std::latch gate {1};
+      std::thread worker([&] { gate.wait(); task(); });
+      std::thread timer([&] { gate.wait(); peer->end(nvhttp::pending_peer_end_e::expired); });
+      gate.count_down();
+      worker.join();
+      timer.join();
+      if (launched == 0) {
+        EXPECT_EQ(read_response(*response).get<int>("root.<xmlattr>.status_code"), 503);
+      } else {
+        EXPECT_EQ(launched, 1);
+        EXPECT_TRUE(response->body.empty());
+      }
+    }
   }
 }  // namespace
