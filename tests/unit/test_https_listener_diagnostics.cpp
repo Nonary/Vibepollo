@@ -50,7 +50,8 @@ namespace {
         require(ASN1_INTEGER_set(X509_get_serialNumber(certificate.get()), 1) == 1);
         require(X509_gmtime_adj(X509_getm_notBefore(certificate.get()), -60) && X509_gmtime_adj(X509_getm_notAfter(certificate.get()), 3600));
         require(X509_set_pubkey(certificate.get(), key.get()) == 1);
-        std::unique_ptr<X509_NAME, decltype(&X509_NAME_free)> subject(X509_NAME_new(), X509_NAME_free);
+        // Name the struct: Windows' wincrypt.h defines X509_NAME as a macro.
+        std::unique_ptr<X509_name_st, decltype(&X509_NAME_free)> subject(X509_NAME_new(), X509_NAME_free);
         require(subject && X509_NAME_add_entry_by_txt(subject.get(), "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char *>("temporary-local-test"), -1, -1, 0) == 1);
         require(X509_set_subject_name(certificate.get(), subject.get()) == 1 && X509_set_issuer_name(certificate.get(), subject.get()) == 1);
         require(X509_sign(certificate.get(), key.get(), EVP_sha256()) > 0);

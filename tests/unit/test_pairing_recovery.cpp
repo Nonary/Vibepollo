@@ -48,7 +48,8 @@ namespace {
     X509_gmtime_adj(X509_getm_notBefore(cert.get()), -60);
     X509_gmtime_adj(X509_getm_notAfter(cert.get()), 86400);
     X509_set_pubkey(cert.get(), key.get());
-    std::unique_ptr<X509_NAME, decltype(&X509_NAME_free)> name(X509_NAME_new(), X509_NAME_free);
+    // Name the struct: Windows' wincrypt.h defines X509_NAME as a macro.
+    std::unique_ptr<X509_name_st, decltype(&X509_NAME_free)> name(X509_NAME_new(), X509_NAME_free);
     X509_NAME_add_entry_by_txt(name.get(), "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char *>("synthetic recovery fixture"), -1, -1, 0);
     X509_set_subject_name(cert.get(), name.get());
     X509_set_issuer_name(cert.get(), name.get());
