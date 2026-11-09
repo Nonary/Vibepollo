@@ -47,7 +47,7 @@ env:
   BRANCH: ${{ github.head_ref || github.ref_name }}
   BUILD_VERSION: ${{ inputs.release_version || '2.2.0' }}
   COMMIT: ${{ inputs.release_commit || github.sha }}
-  MACOSX_DEPLOYMENT_TARGET: 15.0
+  MACOSX_DEPLOYMENT_TARGET: "15.0"
   OPENSSL_VERSION: 3.6.5
   OPENSSL_SHA256: a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98
 
