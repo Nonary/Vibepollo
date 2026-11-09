@@ -123,11 +123,13 @@ namespace platf::vhf_gamepad {
     const std::string_view configured_gamepad,
     const bool composite_dualsense
   ) noexcept {
+    // Clients gate controller motion on the same feature flag (LiSendControllerMotionEvent
+    // returns LI_ERR_UNSUPPORTED without it), so the Switch Pro keeps it for its gyro and
+    // accelerometer even though it has no touchpad. Only the Xbox selections drop it.
     return composite_dualsense ||
            (configured_gamepad != "x360" &&
             configured_gamepad != "vhf_xbox" &&
-            configured_gamepad != "vhf_xbox_one" &&
-            configured_gamepad != "vhf_switch");
+            configured_gamepad != "vhf_xbox_one");
   }
 
   lvg::input_state_request make_input_state(
