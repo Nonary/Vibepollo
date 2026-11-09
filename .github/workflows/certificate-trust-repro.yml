@@ -6,34 +6,30 @@ permissions:
   contents: read
 jobs:
   stage:
+    strategy:
+      fail-fast: false
+      matrix:
+        identity: [administrator, system]
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
       - name: Stage public driver packages after machine trust
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          foreach ($driver in @('sunshine/SunshineVirtualDisplayDriver', 'sudovda/SudoVDA')) {
-            $base = Join-Path $PWD "src_assets/windows/drivers/$driver"
-            $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new([IO.File]::ReadAllBytes("$base.cer"))
-            Write-Host "Testing $driver certificate $($certificate.Thumbprint)"
-            foreach ($name in @('Root','TrustedPublisher')) {
-              $store = [Security.Cryptography.X509Certificates.X509Store]::new($name, 'LocalMachine')
-              try {
-                $store.Open([Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite)
-                $store.Add($certificate)
-                Write-Host "$name present: $($store.Certificates.Find('FindByThumbprint', $certificate.Thumbprint, $false).Count)"
-              } finally { $store.Close() }
-            }
-            Get-AuthenticodeSignature "$base.cat" | Format-List Status,StatusMessage,SignerCertificate
-            & pnputil.exe /add-driver "$base.inf"
-            $code = $LASTEXITCODE
-            Write-Host "PNPUTIL_EXIT=$code"
-            Get-Content "$env:windir/inf/setupapi.dev.log" -Tail 250
-            if ($code -ne 0 -and $code -ne 3010) { throw "Native staging failed: $driver ($code)" }
+          $scriptPath = Join-Path $PWD 'packaging/windows/test_native_certificate_staging.ps1'
+          if ('${{ matrix.identity }}' -eq 'administrator') {
+            & $scriptPath
+          } else {
+            $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`"" -WorkingDirectory $PWD
+            Register-ScheduledTask -TaskName 'VibepolloTrustProbe' -Action $action -User SYSTEM -RunLevel Highest -Force | Out-Null
+            Start-ScheduledTask -TaskName 'VibepolloTrustProbe'
+            $deadline = (Get-Date).AddMinutes(2)
+            do { Start-Sleep -Seconds 1; $info = Get-ScheduledTaskInfo 'VibepolloTrustProbe' } while (($info.LastRunTime.Year -lt 2026 -or (Get-ScheduledTask 'VibepolloTrustProbe').State -eq 'Running') -and (Get-Date) -lt $deadline)
+            Get-Content 'packaging/windows/trust-transcript.txt' -ErrorAction SilentlyContinue
+            if ($info.LastTaskResult -ne 0) { throw "SYSTEM probe failed: $($info.LastTaskResult)" }
           }
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: setupapi-trust-reproduction
+          name: setupapi-trust-reproduction-${{ matrix.identity }}
           path: C:/Windows/INF/setupapi.dev.log
