@@ -8,8 +8,10 @@
 #include <condition_variable>
 #include <functional>
 #include <mutex>
-#include <thread>
 #include <utility>
+
+// local includes
+#include "jthread.h"
 
 namespace proc {
   inline bool paused_app_poll_allowed(int app_id, bool launch_deferred, bool capture_owned) {
@@ -43,10 +45,10 @@ namespace proc {
     paused_app_monitor_t(std::function<void()> poll, std::chrono::milliseconds interval):
         poll_(std::move(poll)),
         interval_(interval),
-        worker_([this](std::stop_token stop) {
+        worker_([this](util::stop_token stop) {
           std::unique_lock lock(mutex_);
           while (!stop.stop_requested()) {
-            cv_.wait_for(lock, stop, interval_, [] { return false; });
+            cv_.wait_for(lock, interval_, [&stop] { return stop.stop_requested(); });
             if (stop.stop_requested()) break;
             lock.unlock();
             poll_();
@@ -64,6 +66,8 @@ namespace proc {
 
     void stop() {
       worker_.request_stop();
+      // Take the lock so a worker between its stop check and its wait still sees the notify.
+      { std::lock_guard lock(mutex_); }
       cv_.notify_all();
       if (worker_.joinable()) worker_.join();
     }
@@ -72,8 +76,8 @@ namespace proc {
     std::function<void()> poll_;
     std::chrono::milliseconds interval_;
     std::mutex mutex_;
-    std::condition_variable_any cv_;
+    std::condition_variable cv_;
     // Construct last, destroy/join before the callback and wait state.
-    std::jthread worker_;
+    util::jthread worker_;
   };
 }  // namespace proc
