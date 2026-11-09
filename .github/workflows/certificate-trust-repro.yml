@@ -27,8 +27,8 @@ jobs:
             <Product Id="*" Name="Vibepollo Trust Repro" Language="1033" Version="1.0.0" Manufacturer="Nonary" UpgradeCode="93BEAC46-8A90-456C-B443-D561C09122EC">
               <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
               <MediaTemplate />
-              <Directory Id="TARGETDIR" Name="SourceDir" />
-              <Feature Id="Main" Title="Probe" Level="1" />
+              <Directory Id="TARGETDIR" Name="SourceDir"><Component Id="Marker" Guid="*" Win64="yes"><RegistryValue Root="HKLM" Key="Software\Nonary\TrustProbe" Name="Installed" Type="integer" Value="1" KeyPath="yes" /></Component></Directory>
+              <Feature Id="Main" Title="Probe" Level="1"><ComponentRef Id="Marker" /></Feature>
               <CustomAction Id="SetProbe" Property="Probe" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;SCRIPT_PATH&quot;" />
               <CustomAction Id="Probe" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Impersonate="no" Return="check" />
               <InstallExecuteSequence>
