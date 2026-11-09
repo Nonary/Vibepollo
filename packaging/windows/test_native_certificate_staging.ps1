@@ -1,6 +1,12 @@
 Start-Transcript -Path (Join-Path $PSScriptRoot 'trust-transcript.txt')
 Write-Host ([Security.Principal.WindowsIdentity]::GetCurrent().Name)
 $ErrorActionPreference = 'Stop'
+Set-Location (Resolve-Path (Join-Path $PSScriptRoot '../..'))
+Get-CimInstance Win32_OperatingSystem | Format-List Caption,Version,BuildNumber
+& bcdedit.exe /enum '{current}'
+try { Write-Host "SecureBoot=$(Confirm-SecureBootUEFI)" } catch { Write-Host $_ }
+Get-ItemProperty 'HKLM:/SYSTEM/CurrentControlSet/Control/CI/Policy' -ErrorAction SilentlyContinue | Format-List
+
 foreach ($driver in @('sunshine/SunshineVirtualDisplayDriver', 'sudovda/SudoVDA')) {
   $base = Join-Path $PWD "src_assets/windows/drivers/$driver"
   $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new([IO.File]::ReadAllBytes("$base.cer"))

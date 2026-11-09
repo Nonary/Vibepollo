@@ -9,7 +9,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        identity: [administrator, system]
+        identity: [administrator, system, msi]
     runs-on: windows-2025
     steps:
       - uses: actions/checkout@v4
@@ -19,6 +19,33 @@ jobs:
           $scriptPath = Join-Path $PWD 'packaging/windows/test_native_certificate_staging.ps1'
           if ('${{ matrix.identity }}' -eq 'administrator') {
             & $scriptPath
+          } elseif ('${{ matrix.identity }}' -eq 'msi') {
+            $wix = Get-ChildItem "${env:ProgramFiles(x86)}/WiX Toolset v*/bin/candle.exe" | Select-Object -First 1 -ExpandProperty DirectoryName
+            if (!$wix) { throw 'WiX 3 missing on runner' }
+            $xml = @'
+          <Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+            <Product Id="*" Name="Vibepollo Trust Repro" Language="1033" Version="1.0.0" Manufacturer="Nonary" UpgradeCode="93BEAC46-8A90-456C-B443-D561C09122EC">
+              <Package InstallerVersion="500" Compressed="yes" InstallScope="perMachine" Platform="x64" />
+              <MediaTemplate />
+              <Directory Id="TARGETDIR" Name="SourceDir" />
+              <Feature Id="Main" Title="Probe" Level="1" />
+              <CustomAction Id="SetProbe" Property="Probe" Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;SCRIPT_PATH&quot;" />
+              <CustomAction Id="Probe" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Impersonate="no" Return="check" />
+              <InstallExecuteSequence>
+                <Custom Action="SetProbe" After="InstallInitialize">NOT Installed</Custom>
+                <Custom Action="Probe" After="SetProbe">NOT Installed</Custom>
+              </InstallExecuteSequence>
+            </Product>
+          </Wix>
+          '@
+            $xml.Replace('SCRIPT_PATH',$scriptPath) | Set-Content probe.wxs
+            & "$wix/candle.exe" probe.wxs
+            if ($LASTEXITCODE) { throw 'WiX compile failed' }
+            & "$wix/light.exe" -ext WixUtilExtension -sval probe.wixobj -out probe.msi
+            if ($LASTEXITCODE) { throw 'WiX link failed' }
+            $process = Start-Process msiexec.exe -ArgumentList @('/i', (Join-Path $PWD 'probe.msi'), '/qn', '/l*v', (Join-Path $PWD 'probe-msi.log')) -Wait -PassThru
+            Get-Content probe-msi.log
+            if ($process.ExitCode -notin @(0,3010)) { throw "MSI probe failed: $($process.ExitCode)" }
           } else {
             $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`"" -WorkingDirectory $PWD
             Register-ScheduledTask -TaskName 'VibepolloTrustProbe' -Action $action -User SYSTEM -RunLevel Highest -Force | Out-Null
