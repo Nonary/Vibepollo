@@ -24,25 +24,6 @@ foreach(dir ${MACOS_LINK_DIRECTORIES})
     endif()
 endforeach()
 
-# The paused app monitor uses std::jthread and std::stop_token. Xcode 16's libc++ still marks them
-# experimental and only provides them with -fexperimental-library; newer Xcodes ship them by default.
-include(CheckCXXSourceCompiles)
-set(_sunshine_jthread_probe
-        "#include <stop_token>\n#include <thread>\nint main() { std::jthread t([](std::stop_token) {}); return 0; }\n")
-check_cxx_source_compiles("${_sunshine_jthread_probe}" SUNSHINE_HAS_JTHREAD)
-if(NOT SUNSHINE_HAS_JTHREAD)
-    set(CMAKE_REQUIRED_FLAGS "-fexperimental-library")
-    set(CMAKE_REQUIRED_LINK_OPTIONS "-fexperimental-library")
-    check_cxx_source_compiles("${_sunshine_jthread_probe}" SUNSHINE_HAS_EXPERIMENTAL_JTHREAD)
-    unset(CMAKE_REQUIRED_FLAGS)
-    unset(CMAKE_REQUIRED_LINK_OPTIONS)
-    if(NOT SUNSHINE_HAS_EXPERIMENTAL_JTHREAD)
-        message(FATAL_ERROR "The C++ library has no std::jthread, even with -fexperimental-library.")
-    endif()
-    add_compile_options($<$<COMPILE_LANGUAGE:CXX,OBJCXX>:-fexperimental-library>)
-    add_link_options(-fexperimental-library)
-endif()
-
 if(NOT BOOST_USE_STATIC AND NOT FETCH_CONTENT_BOOST_USED)
     ADD_DEFINITIONS(-DBOOST_LOG_DYN_LINK)
 endif()
