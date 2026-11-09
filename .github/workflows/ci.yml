@@ -342,7 +342,8 @@ jobs:
       # Ad hoc signed DMGs for Apple Silicon and Intel; notarizing needs Apple signing secrets.
       publish_release: 'false'
       release_commit: ${{ needs.release-candidate.outputs.release_commit || github.sha }}
-      release_version: ${{ needs.release-candidate.outputs.release_version || '2.2.0' }}
+      release_version: ${{ needs.release-candidate.outputs.release_version || '2.0.0-pr-validation' }}
+      release_channel: ${{ needs.release-candidate.outputs.release_channel || 'legacy' }}
 
   awaiting-signing:
     name: Awaiting manual signing

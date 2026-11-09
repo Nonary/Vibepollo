@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: Version to build, for example 2.2.0
+        description: Version to build, for example 2.2.0. Empty uses the tag, or 0.0.0, as on Windows.
         required: false
-        default: '2.2.0'
+        default: ''
         type: string
   workflow_call:
     inputs:
@@ -22,6 +22,10 @@ on:
       release_version:
         required: true
         type: string
+      release_channel:
+        required: false
+        type: string
+        default: ''
     secrets:
       # email address
       APPLE_ID:
@@ -45,7 +49,7 @@ on:
 
 env:
   BRANCH: ${{ github.head_ref || github.ref_name }}
-  BUILD_VERSION: ${{ inputs.release_version || '2.2.0' }}
+  BUILD_CHANNEL: ${{ inputs.release_channel }}
   COMMIT: ${{ inputs.release_commit || github.sha }}
   MACOSX_DEPLOYMENT_TARGET: "15.0"
   OPENSSL_VERSION: 3.6.5
@@ -82,6 +86,20 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           submodules: recursive
+
+      - name: Resolve build version
+        env:
+          INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
+        run: |
+          # As on Windows: the requested version, else the tag being built, else 0.0.0.
+          build_version="${INPUT_RELEASE_VERSION}"
+          if [[ -z "${build_version}" && "${GITHUB_REF}" == refs/tags/* ]]; then
+            build_version="${GITHUB_REF_NAME}"
+          fi
+          build_version="${build_version:-0.0.0}"
+          build_version="${build_version#v}"
+          echo "Resolved macOS build version: ${build_version}"
+          echo "BUILD_VERSION=${build_version}" >> "${GITHUB_ENV}"
 
       - name: Install dependencies
         timeout-minutes: 5
