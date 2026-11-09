@@ -11,6 +11,18 @@ else()
     # .app build
     set(APPLE_CODESIGN_IDENTITY "" CACHE STRING "Codesign identity, e.g. 'Developer ID Application: Name (TEAMID)'")
 
+    # Hardened runtime and timestamps only matter for notarization, which needs a Developer ID.
+    # Ad-hoc ("-") and self-signed identities carry no Team ID, so hardened runtime's library
+    # validation would refuse to load the bundled dylibs.
+    if(APPLE_CODESIGN_IDENTITY MATCHES "^Developer ID Application")
+        set(_codesign_extra_args "--timestamp --options=runtime")
+        # The hardened runtime needs entitlements for audio capture.
+        set(_codesign_app_args "--entitlements \"${SUNSHINE_SOURCE_ASSETS_DIR}/macos/build/entitlements.plist\"")
+    else()
+        set(_codesign_extra_args "")
+        set(_codesign_app_args "")
+    endif()
+
     # Build an .app
     set(CMAKE_MACOSX_BUNDLE YES)
 
@@ -26,8 +38,12 @@ else()
             DESTINATION "${MAC_BUNDLE_CONTENTS}"
             COMPONENT Runtime)
 
-    install(FILES "${PROJECT_SOURCE_DIR}/src_assets/macos/build/sunshine.icns"
+    install(FILES "${PROJECT_SOURCE_DIR}/src_assets/macos/build/vibepollo.icns"
             DESTINATION "${MAC_BUNDLE_RESOURCES}"
+            COMPONENT Runtime)
+
+    install(FILES "${APPLE_LAUNCH_AGENT_FILE}"
+            DESTINATION "${MAC_BUNDLE_CONTENTS}/Library/LaunchAgents"
             COMPONENT Runtime)
 
     # macOS-specific assets (apps.json, etc.)
@@ -37,6 +53,21 @@ else()
             PATTERN ".DS_Store" EXCLUDE
             PATTERN "._*" EXCLUDE)
 
+    # copy assets to build directory, for running the build-tree .app without install
+    file(COPY "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/assets/"
+         DESTINATION "${CMAKE_BINARY_DIR}/assets")
+
+    # Search the linked dylibs' directories too: fixup_bundle can't follow the @rpath a library
+    # loads its own dependencies through, such as Homebrew's libwebp loading libsharpyuv.
+    set(_bundle_library_dirs "")
+    foreach(_library IN LISTS SUNSHINE_EXTERNAL_LIBRARIES)
+        if(IS_ABSOLUTE "${_library}" AND _library MATCHES "\\.dylib$")
+            get_filename_component(_library_dir "${_library}" DIRECTORY)
+            list(APPEND _bundle_library_dirs "${_library_dir}")
+        endif()
+    endforeach()
+    list(REMOVE_DUPLICATES _bundle_library_dirs)
+
     # Pull in non-system dylibs for a self-contained .app
     install(CODE "
         set(_app \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_PROJECT_NAME}.app\")
@@ -44,7 +75,7 @@ else()
         message(STATUS \"Running fixup_bundle for: \${_app}\")
         include(BundleUtilities)
         set(BU_CHMOD_BUNDLE_ITEMS TRUE)
-        fixup_bundle(\"\${_app}\" \"\" \"\")
+        fixup_bundle(\"\${_app}\" \"\" \"${_bundle_library_dirs}\")
 
         # Remove Finder/resource-fork metadata that breaks codesign.
         execute_process(COMMAND /usr/bin/xattr -rc \"\${_app}\")
@@ -72,7 +103,7 @@ else()
               foreach(item IN LISTS _sign_items)
                   execute_process(COMMAND /usr/bin/codesign --verbose=2
                       --sign \"${APPLE_CODESIGN_IDENTITY}\" \"\${item}\"
-                      --force --timestamp --options=runtime
+                      --force ${_codesign_extra_args}
                       RESULT_VARIABLE rc2
                   )
                   if(NOT rc2 EQUAL 0)
@@ -84,7 +115,7 @@ else()
           # Sign the app last
           execute_process(COMMAND /usr/bin/codesign --verbose=2
               --sign \"${APPLE_CODESIGN_IDENTITY}\" \"\${_app}\"
-              --force --timestamp --options=runtime
+              --force ${_codesign_extra_args} ${_codesign_app_args}
               RESULT_VARIABLE rc3
           )
           if(NOT rc3 EQUAL 0)
@@ -104,7 +135,9 @@ else()
     # DragNDrop
     set(CPACK_BUNDLE_NAME "${CMAKE_PROJECT_NAME}")
     set(CPACK_BUNDLE_PLIST "${APPLE_PLIST_FILE}")
-    set(CPACK_BUNDLE_ICON "${PROJECT_SOURCE_DIR}/src_assets/macos/build/sunshine.icns")
+    set(CPACK_BUNDLE_ICON "${PROJECT_SOURCE_DIR}/src_assets/macos/build/vibepollo.icns")
+    # The DMG volume icon must be .icns; the common sunshine.png no longer exists in this fork.
+    set(CPACK_PACKAGE_ICON "${CPACK_BUNDLE_ICON}")
     set(CPACK_PACKAGING_INSTALL_PREFIX "/")
     set(CPACK_DMG_BACKGROUND_IMAGE "${PROJECT_SOURCE_DIR}/src_assets/macos/build/sunshine-background-72dpi.jpg")
     set(CPACK_DMG_DS_STORE_SETUP_SCRIPT "${PROJECT_SOURCE_DIR}/src_assets/macos/build/dmg-finder-layout.applescript")

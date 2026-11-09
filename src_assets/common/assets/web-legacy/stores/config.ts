@@ -77,6 +77,7 @@ const defaultGroups = [
       session_token_ttl_seconds: 86400,
       remember_me_refresh_token_ttl_seconds: 604800,
       system_tray: true,
+      lid_close_ends_streams: true,
     },
   },
   {
@@ -143,6 +144,7 @@ const defaultGroups = [
       output_name: '',
       virtual_display_mode: 'per_client',
       virtual_display_layout: 'exclusive',
+      virtual_display_keep_while_paused: true,
       virtual_display_max_clients: 4,
       remote_monitor_mute_audio: false,
       remote_monitor_disconnect_on_stream_end: false,

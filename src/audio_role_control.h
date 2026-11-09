@@ -11,11 +11,12 @@
 #include <memory>
 #include <mutex>
 #include <optional>
-#include <stop_token>
 #include <string>
 #include <thread>
 #include <utility>
 #include <vector>
+
+#include "jthread.h"
 
 namespace audio {
   template<class Role, std::size_t Count>
@@ -55,9 +56,9 @@ namespace audio {
       pending_list_t pending;
       std::wstring steam;
       token_t token;
-      std::jthread worker;
+      util::jthread worker;
 
-      std::pair<handoff_t, std::jthread> begin(ids_t targets) {
+      std::pair<handoff_t, util::jthread> begin(ids_t targets) {
         std::scoped_lock lock(mutex);
         handoff_t handoff {std::move(steam), std::move(pending), 0};
         if (token) {
@@ -98,7 +99,7 @@ namespace audio {
                worker.get_id() == std::this_thread::get_id() && epoch == generation;
       }
 
-      bool owns(const std::stop_token &stop, const token_t &value, std::uint64_t generation) {
+      bool owns(const util::stop_token &stop, const token_t &value, std::uint64_t generation) {
         if (stop.stop_requested() || !value || !value->load(std::memory_order_acquire)) {
           return false;
         }
@@ -113,7 +114,7 @@ namespace audio {
       std::function<ids_t()> defaults;
       std::function<long(Role, const std::wstring &)> write;
       std::function<std::optional<std::wstring>(const std::wstring &)> resolve;
-      std::function<void(std::jthread)> retire;
+      std::function<void(util::jthread)> retire;
       std::function<void(const std::wstring &, pending_list_t, std::uint64_t)> schedule;
       std::function<void(std::uint64_t)> clear_preferred;
       std::function<void(Role, long)> write_failed;
@@ -286,7 +287,7 @@ namespace audio {
       schedule(steam, std::move(roles), inherited.assignment_epoch);
     }
 
-    retry_result_e retry(const pending_t &role, const std::stop_token &stop, const token_t &token, std::uint64_t epoch) {
+    retry_result_e retry(const pending_t &role, const util::stop_token &stop, const token_t &token, std::uint64_t epoch) {
       if (!registry_.owns(stop, token, epoch)) {
         return retry_result_e::inactive;
       }
