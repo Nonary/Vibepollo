@@ -388,6 +388,14 @@ set(SUNSHINE_TEST_FAST_FOUNDATION_SOURCES
 
 # Header-only VHF ownership recovery runs on every platform without a driver.
 find_package(Threads REQUIRED)
+# Compile the production crypto implementation with controlled failures at the
+# OpenSSL name and signing boundaries. No application or hardware is required.
+sunshine_add_test_target(
+    NAME test_component_crypto_compat
+    CATEGORY COMPONENT
+    TEST_SOURCES unit/test_crypto_compat.cpp
+    LINK_LIBRARIES OpenSSL::Crypto nlohmann_json::nlohmann_json)
+
 sunshine_add_test_target(
     NAME test_fast_vhf_gamepad_recovery
     CATEGORY FAST

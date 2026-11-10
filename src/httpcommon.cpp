@@ -373,6 +373,10 @@ namespace http {
     fs::path cert_path = cert;
 
     auto creds = crypto::gen_creds("Sunshine Gamestream Host"sv, 2048);
+    if (creds.x509.empty() || creds.pkey.empty()) {
+      BOOST_LOG(error) << "Couldn't generate host credentials"sv;
+      return -1;
+    }
 
     auto pkey_dir = pkey_path;
     auto cert_dir = cert_path;
