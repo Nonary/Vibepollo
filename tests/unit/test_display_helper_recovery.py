@@ -62,7 +62,7 @@ settlement_signatures = (
 has_settlement = all(signature in legacy_source for signature in settlement_signatures)
 # APPLY and MISC retain weak caller guards because their full paths depend on the
 # display controller and asynchronous pipe. REVERT is exercised as an actual handler below.
-handle_apply = function(legacy_source, "bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg)")
+handle_apply = function(legacy_source, "bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg, bool &refresh_shell)")
 assert "state.stop_restore_polling();" in handle_apply, "APPLY caller must stop restore polling"
 handle_revert = function(legacy_source, "void handle_revert(ServiceState &state, std::atomic<bool> &running, std::span<const uint8_t> payload)")
 if has_settlement:
