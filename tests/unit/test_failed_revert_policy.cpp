@@ -1,4 +1,5 @@
 #include <gtest/gtest.h>
+#include <stdexcept>
 #include <src/platform/windows/failed_revert_policy.h>
 
 namespace policy = display_helper::failed_revert_policy;
@@ -101,10 +102,13 @@ TEST(FailedRevertPolicy, RevertIssuedWhilePausedReplaysWithTheAppStillPaused) {
   EXPECT_FALSE(replay->retain_paused_app);
 }
 
-TEST(FailedRevertPolicy, ApplyClearsAndALaterFailureReplacesTheMissedRevert) {
+TEST(FailedRevertPolicy, SuccessfulApplyClearsAndALaterFailureReplacesTheMissedRevert) {
   policy::slot_t slot;
   slot.remember(paused_game_restore());
-  slot.clear();
+  {
+    policy::apply_scope_t apply {slot};
+    apply.applied(true);
+  }
   EXPECT_FALSE(slot.pending());
   EXPECT_FALSE(slot.take_if_replayable(idle).has_value());
 
@@ -114,4 +118,49 @@ TEST(FailedRevertPolicy, ApplyClearsAndALaterFailureReplacesTheMissedRevert) {
   ASSERT_TRUE(replay.has_value());
   EXPECT_FALSE(replay->retain_paused_app);
   EXPECT_TRUE(replay->remove_display_after_restore);
+}
+
+TEST(FailedRevertPolicy, FailedOrCancelledApplyKeepsTheOriginalRevertForReplay) {
+  policy::slot_t slot;
+  policy::request_t missed;
+  missed.prefer_golden_if_current_missing = false;
+  missed.override_managed_ownership = true;
+  missed.allow_disabled_recovery = true;
+  missed.remove_display_after_restore = true;
+  slot.remember(missed);
+
+  // A resume APPLY for a recreated display fails its setup, or is cancelled
+  // when the resume aborts: either way it never calls applied(true).
+  for (const bool cancelled : {false, true}) {
+    {
+      policy::apply_scope_t apply {slot};
+      // While the APPLY is in flight, the watchdog must not replay under it.
+      EXPECT_FALSE(slot.take_if_replayable(idle).has_value());
+      if (!cancelled) {
+        apply.applied(false);
+      }
+    }
+    EXPECT_TRUE(slot.pending());
+  }
+
+  // The helper is reachable again and the host is idle: the original REVERT
+  // replays with its original policies.
+  const auto replay = slot.take_if_replayable(idle);
+  ASSERT_TRUE(replay.has_value());
+  EXPECT_FALSE(replay->prefer_golden_if_current_missing);
+  EXPECT_TRUE(replay->override_managed_ownership);
+  EXPECT_TRUE(replay->allow_disabled_recovery);
+  EXPECT_TRUE(replay->remove_display_after_restore);
+  EXPECT_FALSE(slot.pending());
+}
+
+TEST(FailedRevertPolicy, ApplyThatThrowsKeepsTheMissedRevert) {
+  policy::slot_t slot;
+  slot.remember(final_stream_restore());
+  try {
+    policy::apply_scope_t apply {slot};
+    throw std::runtime_error("apply failed");
+  } catch (const std::runtime_error &) {
+  }
+  EXPECT_TRUE(slot.take_if_replayable(idle).has_value());
 }

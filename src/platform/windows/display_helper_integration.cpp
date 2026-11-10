@@ -2788,8 +2788,10 @@ namespace display_helper_integration {
       return false;
     }
     clear_pending_apply_queue_locked();
-    // The new layout's owner restores it when its own session ends.
-    g_failed_revert.clear();
+    // Keep a missed REVERT until this APPLY succeeds: the new layout's owner
+    // then restores it when its own session ends. If setup fails, is skipped
+    // or is cancelled, the watchdog still replays the original REVERT.
+    display_helper::failed_revert_policy::apply_scope_t failed_revert_apply {g_failed_revert};
 
     // Remember the session's virtual display before the APPLY payload is built so the
     // helper can exclude it from the pre-apply baseline it may capture.
@@ -2812,6 +2814,7 @@ namespace display_helper_integration {
       startup_deadline,
       shutdown_class_caller
     );
+    failed_revert_apply.applied(applied);
     if (!applied) return false;
     if (retry_policy == ApplyRetryPolicy::StreamStart) {
       // Legacy APPLY success already includes verification. V2 also returns a
@@ -3249,6 +3252,7 @@ namespace display_helper_integration {
     BOOST_LOG(info) << "Display helper: applying deferred configuration for session " << pending.session_id << ".";
     // This entry point's predicate belongs to an owned shutdown worker by
     // contract, so a caller that supplies one is shutdown-class.
+    display_helper::failed_revert_policy::apply_scope_t failed_revert_apply {g_failed_revert};
     const bool ok = apply_internal(
       pending.request,
       false,
@@ -3258,6 +3262,7 @@ namespace display_helper_integration {
       {},
       static_cast<bool>(cancellation_predicate)
     );
+    failed_revert_apply.applied(ok);
     if (ok && stream_was_live_when_claimed && session) {
       if (const auto generation = active_session_generation_for(*session)) {
         // This retry may complete after start_watchdog() observed no active
