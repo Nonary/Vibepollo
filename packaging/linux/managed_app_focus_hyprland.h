@@ -23,8 +23,11 @@
 #include <vector>
 
 namespace managed_app_focus::hyprland {
-  // One IPC request/reply; empty when the socket is unusable or unproven.
-  using transport = std::function<std::optional<std::string>(const std::string &)>;
+  // Gates the send of one request; empty sends unconditionally.
+  using send_gate = std::function<bool()>;
+  // One IPC request/reply; empty when the socket is unusable or unproven, or
+  // the gate refused the send.
+  using transport = std::function<std::optional<std::string>(const std::string &, const send_gate &)>;
 
   struct compositor {
     pid_t pid;
@@ -75,7 +78,9 @@ namespace managed_app_focus::hyprland {
              peer.uid == geteuid() && peer.pid == bound.pid && start_time(peer.pid) == bound.start;
     }
 
-    inline std::optional<std::string> exchange(const std::string &path, const compositor &bound, const std::string &request, std::chrono::milliseconds timeout) {
+    // may_send is asked after connecting and authenticating, immediately
+    // before the request leaves: nothing that can block lies in between.
+    inline std::optional<std::string> exchange(const std::string &path, const compositor &bound, const std::string &request, const send_gate &may_send, std::chrono::milliseconds timeout) {
       sockaddr_un address {};
       address.sun_family = AF_UNIX;
       // Hyprland reads 1023-byte chunks until a short read.
@@ -85,7 +90,7 @@ namespace managed_app_focus::hyprland {
       const timeval limit {static_cast<time_t>(timeout.count() / 1000), static_cast<suseconds_t>(timeout.count() % 1000 * 1000)};
       if (socket_fd.fd < 0 || setsockopt(socket_fd.fd, SOL_SOCKET, SO_SNDTIMEO, &limit, sizeof(limit)) ||
           connect(socket_fd.fd, reinterpret_cast<const sockaddr *>(&address), sizeof(address)) ||
-          !bound_peer(socket_fd.fd, bound) ||
+          !bound_peer(socket_fd.fd, bound) || (may_send && !may_send()) ||
           send(socket_fd.fd, request.data(), request.size(), MSG_NOSIGNAL) != static_cast<ssize_t>(request.size())) return std::nullopt;
       // The compositor writes one reply and closes the connection.
       constexpr std::size_t reply_limit = 4u << 20;
@@ -106,7 +111,7 @@ namespace managed_app_focus::hyprland {
   // Nothing is sent before the peer is the bound compositor; a restarted
   // compositor fails closed until the controller binds the new generation.
   inline transport socket_transport(std::filesystem::path runtime, compositor bound, std::chrono::milliseconds timeout) {
-    return [runtime = std::move(runtime), bound, timeout](const std::string &request) -> std::optional<std::string> {
+    return [runtime = std::move(runtime), bound, timeout](const std::string &request, const send_gate &may_send) -> std::optional<std::string> {
       const auto instances = runtime / "hypr";
       detail::descriptor directory {open(instances.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)};
       struct stat attributes {};
@@ -127,7 +132,7 @@ namespace managed_app_focus::hyprland {
         const auto socket = name + "/.socket.sock";
         if (fstatat(directory.fd, name.c_str(), &instance, AT_SYMLINK_NOFOLLOW) || !S_ISDIR(instance.st_mode) || instance.st_uid != geteuid() ||
             fstatat(directory.fd, socket.c_str(), &endpoint, AT_SYMLINK_NOFOLLOW) || !S_ISSOCK(endpoint.st_mode) || endpoint.st_uid != geteuid()) continue;
-        if (auto reply = detail::exchange((instances / socket).string(), bound, request, timeout)) return reply;
+        if (auto reply = detail::exchange((instances / socket).string(), bound, request, may_send, timeout)) return reply;
       }
       return std::nullopt;
     };
@@ -135,7 +140,7 @@ namespace managed_app_focus::hyprland {
 
   namespace detail {
     inline nlohmann::json request_json(const transport &ipc, const std::string &request) {
-      const auto reply = ipc(request);
+      const auto reply = ipc(request, {});
       return reply ? nlohmann::json::parse(*reply, nullptr, false) : nlohmann::json {};
     }
 
@@ -185,10 +190,11 @@ namespace managed_app_focus::hyprland {
   namespace detail {
     // Lua configs, now Hyprland's default, parse dispatch as Lua; legacy
     // configs only accept the dispatcher form.
-    // Each dispatch is preceded by a fresh allowance check.
-    inline bool focus_window(const transport &ipc, const std::string &address, const std::function<bool()> &allowed) {
-      return (allowed() && ipc("/dispatch hl.dsp.focus({ window = \"address:" + address + "\" })") == "ok") ||
-             (allowed() && ipc("/dispatch focuswindow address:" + address) == "ok");
+    // allowed() is asked before connecting, so an expired target costs no
+    // connection, and again by the transport right before the send.
+    inline bool focus_window(const transport &ipc, const std::string &address, const send_gate &allowed) {
+      return (allowed() && ipc("/dispatch hl.dsp.focus({ window = \"address:" + address + "\" })", allowed) == "ok") ||
+             (allowed() && ipc("/dispatch focuswindow address:" + address, allowed) == "ok");
     }
   }  // namespace detail
 

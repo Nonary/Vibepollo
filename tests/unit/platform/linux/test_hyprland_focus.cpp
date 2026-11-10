@@ -37,6 +37,10 @@ namespace {
   class fake_socket {
   public:
     explicit fake_socket(const std::filesystem::path &path, std::string reply):
+        fake_socket(path, [reply = std::move(reply)](const std::string &) { return reply; }) {}
+
+    // Answers each request through reply, e.g. to refuse one dispatch form.
+    explicit fake_socket(const std::filesystem::path &path, std::function<std::string(const std::string &)> reply):
         reply_(std::move(reply)) {
       fd_ = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
       require(fd_ >= 0, "socket");
@@ -52,7 +56,8 @@ namespace {
           const auto size = read(connection, buffer, sizeof(buffer));
           if (size > 0) {
             requests.emplace_back(buffer, static_cast<std::size_t>(size));
-            assert(write(connection, reply_.data(), reply_.size()) == static_cast<ssize_t>(reply_.size()));
+            const auto answer = reply_(requests.back());
+            assert(write(connection, answer.data(), answer.size()) == static_cast<ssize_t>(answer.size()));
           }
           ++connections;
           close(connection);
@@ -71,7 +76,7 @@ namespace {
 
   private:
     int fd_ = -1;
-    std::string reply_;
+    std::function<std::string(const std::string &)> reply_;
     std::thread worker_;
   };
 
@@ -112,7 +117,8 @@ namespace {
     std::function<void(const std::string &)> on_request;  // Simulates a slow reply.
 
     managed_app_focus::hyprland::transport transport() {
-      return [this](const std::string &request) -> std::optional<std::string> {
+      return [this](const std::string &request, const managed_app_focus::hyprland::send_gate &may_send) -> std::optional<std::string> {
+        if (may_send && !may_send()) return std::nullopt;
         requests.push_back(request);
         if (on_request) on_request(request);
         if (request == "j/clients") return listed;
@@ -286,7 +292,7 @@ int main() {
   const compositor self {getpid(), own_start_time()};
   const auto timeout = std::chrono::milliseconds(500);
   // The runtime has no hypr directory yet: nothing to connect to.
-  assert(!socket_transport(runtime, self, timeout)("j/clients"));
+  assert(!socket_transport(runtime, self, timeout)("j/clients", {}));
   const auto instances = runtime / "hypr";
   std::filesystem::create_directories(instances / "a-stale-instance");
   std::filesystem::create_directories(instances / "b-current-instance");
@@ -294,15 +300,63 @@ int main() {
   {
     // A stale instance directory without a listener is skipped.
     fake_socket server(instances / "b-current-instance/.socket.sock", "[]");
-    assert(socket_transport(runtime, self, timeout)("j/clients") == "[]");
+    assert(socket_transport(runtime, self, timeout)("j/clients", {}) == "[]");
     assert(wait_for(server.connections, 1));
     assert((server.requests == std::vector<std::string> {"j/clients"}));
     // Another PID or a reused PID with a different start time is never sent
     // a request: Hyprland itself does not authenticate its IPC clients.
-    assert(!socket_transport(runtime, {self.pid + 1, self.start}, timeout)("j/clients"));
-    assert(!socket_transport(runtime, {self.pid, self.start + 1}, timeout)("j/clients"));
+    assert(!socket_transport(runtime, {self.pid + 1, self.start}, timeout)("j/clients", {}));
+    assert(!socket_transport(runtime, {self.pid, self.start + 1}, timeout)("j/clients", {}));
     assert(wait_for(server.connections, 3));
     assert(server.connections == 3 && server.requests.size() == 1);
+  }
+  {
+    // The production transport scans, connects and authenticates after each
+    // allowance check. If that work carries the target across its allowance,
+    // or the hard cap, the dispatch is not sent: the Lua form, or the legacy
+    // form after Hyprland refused the Lua one. A fast transport sends.
+    // Only this instance listens, so each case reaches the send decision.
+    std::filesystem::remove(instances / "b-current-instance/.socket.sock");
+    std::filesystem::create_directories(instances / "c-dispatch-instance");
+    std::string lua_reply;
+    fake_socket server(instances / "c-dispatch-instance/.socket.sock", [&](const std::string &request) {
+      return request.starts_with("/dispatch hl.dsp") ? lua_reply : std::string {"ok"};
+    });
+    using managed_app_focus::budget;
+    const auto start = budget::clock::time_point(std::chrono::hours(1));
+    const auto ipc = socket_transport(runtime, self, timeout);
+    const std::string lua = "/dispatch hl.dsp.focus({ window = \"address:0x5a02\" })", legacy = "/dispatch focuswindow address:0x5a02";
+    struct gap {
+      budget::clock::duration seen, checked;
+      int slow_check;  // The allowance check after which the transport takes 300 ms.
+      const char *lua_reply;
+      int connections;
+      std::vector<std::string> sent;
+    };
+    int connections = 0;
+    for (const auto &[seen, checked, slow_check, reply, connected, sent] :
+         {gap {0s, 14900ms, 1, "ok", 1, {}}, gap {170s, 179900ms, 1, "ok", 1, {}}, gap {0s, 14s, 1, "ok", 1, {lua}},
+          gap {0s, 14900ms, 3, "Invalid dispatcher", 2, {lua}}, gap {170s, 179900ms, 3, "Invalid dispatcher", 2, {lua}},
+          gap {0s, 14s, 3, "Invalid dispatcher", 2, {lua, legacy}}}) {
+      lua_reply = reply;
+      budget focus({1, 15, false}, start);
+      focus.observe("701:0x5a02", start + seen);
+      auto now = start + checked;
+      int checks = 0;
+      const auto allowed = [&](const std::string &identity) {
+        const bool ok = focus.can_focus(identity, now);
+        if (++checks == slow_check) now += 300ms;
+        return ok;
+      };
+      const auto applied = apply([&](const std::string &request, const auto &may_send) {
+        return request.starts_with("j/") ? std::optional<std::string> {request == "j/clients" ? clients : R"({"address":"0x5a03","mapped":true,"hidden":false,"pid":900})"} : ipc(request, may_send);
+      }, {701}, {"701:0x5a02"}, allowed);
+      assert(applied.value("focused", true) == false);  // The fake activewindow never confirms.
+      connections += connected;
+      assert(wait_for(server.connections, connections));
+      assert(server.requests == sent);
+      server.requests.clear();
+    }
   }
   std::filesystem::remove_all(runtime);
   std::cout << "PASS: Hyprland focus adapter selects bound candidate windows through IPC\n";
