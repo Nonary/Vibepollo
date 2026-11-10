@@ -2316,9 +2316,9 @@ namespace platf {
     // Controller touch depends on which controller the client will get (see
     // vhf_gamepad::supports_controller_touch): plain `vhf` selects a pad-bearing profile
     // from the client's controller type (Steam Controller, PlayStation) whatever
-    // motion_as_ds4/touchpad_as_ds4 say, so only x360 and the explicit Xbox and Switch
-    // selections rule a touchpad out. Withholding the flag silences both Steam Controller
-    // trackpads: the client never sends a touch packet without it.
+    // motion_as_ds4/touchpad_as_ds4 say, so only x360 and the explicit Xbox selections rule
+    // a touchpad out. Withholding the flag silences both Steam Controller trackpads and all
+    // controller motion: the client never sends a touch or motion packet without it.
     const bool composite_dualsense = config::input.gamepad == "usbip_ds5"sv || dualsense_usbip_gamepad::enabled();
     if (vhf_gamepad::supports_controller_touch(config::input.gamepad, composite_dualsense)) {
       caps |= platform_caps::controller_touch;

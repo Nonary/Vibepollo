@@ -116,9 +116,10 @@ namespace platf::vhf_gamepad {
   [[nodiscard]] bool is_steam_controller_client(std::uint8_t client_type, std::uint16_t client_capabilities) noexcept;
 
   /**
-   * @brief Reports whether controller selection can create a touchpad-capable profile.
+   * @brief Reports whether controller selection can create a touchpad- or motion-capable profile.
    * @details Capabilities are advertised before controller arrival. Automatic modes can still
    *          select DualSense for a PlayStation client when both selection heuristics are off.
+   *          Clients gate controller motion on the same flag, so the Switch Pro keeps it.
    * @param configured_gamepad The selected gamepad setting.
    * @param composite_dualsense Whether the application forces a composite DualSense.
    * @return Whether the client should be allowed to send controller touch events.
