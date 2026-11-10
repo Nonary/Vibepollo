@@ -131,6 +131,8 @@ struct launch_session_t {
 bool effective_10bit_sdr_requested(const launch_session_t &){return false;}
 void apply_rtx_hdr_stream_policy(stream::monitor_t &){}
 bool activates_vulkan_hdr_layer_for_stream(const stream::monitor_t &){return false;}
+// HDR layer signaling is an external platform edge outside this composition.
+void set_vulkan_hdr_layer_streaming_active(bool){}
 struct OPTION_ITEM {char *option=nullptr,*content=nullptr;OPTION_ITEM *next=nullptr;};
 struct Request {int sequenceNumber=1;char *payload=nullptr;int payloadLength=0;OPTION_ITEM *options=nullptr;};using msg_t=std::shared_ptr<Request>;
 struct Address {operator int() const{return 0;} std::string to_string() const{return "local";}};
