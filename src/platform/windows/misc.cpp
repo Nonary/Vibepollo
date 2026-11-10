@@ -230,6 +230,10 @@ namespace platf {
 
   std::mutex mouse_keys_mutex;
   bool enabled_mouse_keys = false;
+  // Mouse Keys was left on after a stream because turning it off would have
+  // hidden the cursor (see restore_mouse_keys_locked).
+  bool mouse_keys_restore_deferred = false;
+  bool mouse_keys_restore_poll_scheduled = false;
   MOUSEKEYS previous_mouse_keys_state;
 
   HANDLE qos_handle = nullptr;
@@ -1732,6 +1736,119 @@ namespace platf {
     enable_mouse_keys();
   }
 
+  namespace {
+    MOUSEKEYS streaming_mouse_keys_state() {
+      MOUSEKEYS state = {};
+      state.cbSize = sizeof(state);
+      state.dwFlags = MKF_MOUSEKEYSON | MKF_AVAILABLE;
+      state.iMaxSpeed = 10;
+      state.iTimeToMaxSpeed = 1000;
+      return state;
+    }
+
+    /**
+     * @brief Whether the raw input stack lists any mouse.
+     *
+     * Unlike `SM_MOUSEPRESENT`, this is neither faked by Mouse Keys nor left stale
+     * when Windows misses a mouse arrival. On error this returns false, which keeps
+     * the original restore-on-stop behavior.
+     */
+    bool raw_input_mouse_present() {
+      for (int attempt = 0; attempt < 3; ++attempt) {
+        UINT count = 0;
+        if (GetRawInputDeviceList(nullptr, &count, sizeof(RAWINPUTDEVICELIST)) == static_cast<UINT>(-1)) {
+          return false;
+        }
+        if (count == 0) {
+          return false;
+        }
+
+        std::vector<RAWINPUTDEVICELIST> devices(count);
+        const auto listed = GetRawInputDeviceList(devices.data(), &count, sizeof(RAWINPUTDEVICELIST));
+        if (listed == static_cast<UINT>(-1)) {
+          if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+            continue;  // A device arrived between the two calls.
+          }
+          return false;
+        }
+
+        return std::any_of(devices.begin(), devices.begin() + listed, [](const RAWINPUTDEVICELIST &device) {
+          return device.dwType == RIM_TYPEMOUSE;
+        });
+      }
+      return false;
+    }
+
+    enum class mouse_keys_restore_e {
+      restored,  ///< Mouse Keys is back to the user's settings.
+      failed,  ///< Windows refused the restore; Mouse Keys is still on.
+      kept_on,  ///< Restoring would hide the cursor, so Mouse Keys was turned back on.
+    };
+
+    /**
+     * @brief Restore the user's Mouse Keys settings, unless that would hide the cursor.
+     *
+     * Windows only notices a mouse when the first one arrives after there were none.
+     * If that arrival happens while Mouse Keys is on (a KVM or monitor USB hub
+     * reconnecting during a stream, or a Bluetooth mouse waking up), Windows misses
+     * it: turning Mouse Keys off leaves `SM_MOUSEPRESENT` at 0 and the cursor hidden
+     * while the mouse still moves it, until every mouse is removed and reconnected.
+     * Detect that and turn Mouse Keys back on so the cursor stays visible.
+     *
+     * @pre `mouse_keys_mutex` is held and `enabled_mouse_keys` is true.
+     */
+    mouse_keys_restore_e restore_mouse_keys_locked() {
+      if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &previous_mouse_keys_state, 0)) {
+        auto winerr = GetLastError();
+        BOOST_LOG(warning) << "Unable to restore original state of Mouse Keys: "sv << winerr;
+        return mouse_keys_restore_e::failed;
+      }
+
+      if (GetSystemMetrics(SM_MOUSEPRESENT) || !raw_input_mouse_present()) {
+        enabled_mouse_keys = false;
+        mouse_keys_restore_deferred = false;
+        return mouse_keys_restore_e::restored;
+      }
+
+      auto streaming_state = streaming_mouse_keys_state();
+      if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &streaming_state, 0)) {
+        auto winerr = GetLastError();
+        BOOST_LOG(warning) << "Windows lost track of the connected mouse and its cursor is hidden; unable to turn Mouse Keys back on: "sv << winerr;
+        enabled_mouse_keys = false;
+        mouse_keys_restore_deferred = false;
+        return mouse_keys_restore_e::restored;
+      }
+      return mouse_keys_restore_e::kept_on;
+    }
+
+    /**
+     * @brief While Mouse Keys is kept on, restore it once no mouse is connected.
+     *
+     * With no mouse connected, restoring is safe: the next mouse to arrive is
+     * counted normally. A later stream's end also retries the restore.
+     */
+    void poll_deferred_mouse_keys_restore() {
+      const auto lock = std::lock_guard(mouse_keys_mutex);
+      if (!mouse_keys_restore_deferred || !enabled_mouse_keys) {
+        mouse_keys_restore_deferred = false;
+        mouse_keys_restore_poll_scheduled = false;
+        return;
+      }
+
+      if (!raw_input_mouse_present()) {
+        if (SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &previous_mouse_keys_state, 0)) {
+          BOOST_LOG(info) << "No mouse is connected anymore; restored the original state of Mouse Keys."sv;
+          enabled_mouse_keys = false;
+          mouse_keys_restore_deferred = false;
+          mouse_keys_restore_poll_scheduled = false;
+          return;
+        }
+      }
+
+      task_pool.pushDelayed(poll_deferred_mouse_keys_restore, 1s);
+    }
+  }  // namespace
+
   void enable_mouse_keys() {
     // Capture threads check every frame, including concurrent streams. Keep the
     // original snapshot until restoration succeeds instead of saving our own
@@ -1748,13 +1865,7 @@ namespace platf {
       // Get the current state of Mouse Keys so we can restore it when streaming is over
       previous_mouse_keys_state.cbSize = sizeof(previous_mouse_keys_state);
       if (SystemParametersInfoW(SPI_GETMOUSEKEYS, 0, &previous_mouse_keys_state, 0)) {
-        MOUSEKEYS new_mouse_keys_state = {};
-
-        // Enable Mouse Keys
-        new_mouse_keys_state.cbSize = sizeof(new_mouse_keys_state);
-        new_mouse_keys_state.dwFlags = MKF_MOUSEKEYSON | MKF_AVAILABLE;
-        new_mouse_keys_state.iMaxSpeed = 10;
-        new_mouse_keys_state.iTimeToMaxSpeed = 1000;
+        auto new_mouse_keys_state = streaming_mouse_keys_state();
         if (SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &new_mouse_keys_state, 0)) {
           // Remember to restore the previous settings when we stop streaming
           enabled_mouse_keys = true;
@@ -1792,12 +1903,15 @@ namespace platf {
 
     // Restore Mouse Keys back to the previous settings if we turned it on
     const auto lock = std::lock_guard(mouse_keys_mutex);
-    if (enabled_mouse_keys) {
-      if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &previous_mouse_keys_state, 0)) {
-        auto winerr = GetLastError();
-        BOOST_LOG(warning) << "Unable to restore original state of Mouse Keys: "sv << winerr;
-      } else {
-        enabled_mouse_keys = false;
+    if (enabled_mouse_keys && restore_mouse_keys_locked() == mouse_keys_restore_e::kept_on) {
+      if (!mouse_keys_restore_deferred) {
+        BOOST_LOG(warning) << "Keeping Mouse Keys on after the stream: a mouse reconnected while it was on and Windows lost track of it, "
+                              "so turning Mouse Keys off would hide the cursor. It will be restored once no mouse is connected."sv;
+      }
+      mouse_keys_restore_deferred = true;
+      if (!mouse_keys_restore_poll_scheduled) {
+        mouse_keys_restore_poll_scheduled = true;
+        task_pool.pushDelayed(poll_deferred_mouse_keys_restore, 1s);
       }
     }
   }
