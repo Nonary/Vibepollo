@@ -63,7 +63,7 @@ namespace {
       }
     }
 
-    nlohmann::json apply(const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate = {}, const std::function<bool(const std::string &)> &allowed = {}) {
+    nlohmann::json apply(const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate = {}, const std::function<bool(const std::string &)> &allowed = {}, std::optional<std::chrono::steady_clock::time_point> until = std::nullopt) {
       if (!registration_ || pids.empty() || cancelled) {
         return {};
       }
@@ -77,7 +77,10 @@ namespace {
         return {};
       }
       const std::string name = "vibepollo-focus-" + std::to_string(getpid());
-      const std::string script = managed_app_focus::kwin_script(pids, g_dbus_connection_get_unique_name(bus_), activate, ++call_);
+      // Sampled wall clock first, so the expiry can only come out early.
+      const auto wall = std::chrono::system_clock::now();
+      const auto expiry = managed_app_focus::kwin_expiry(activate, until, std::chrono::steady_clock::now(), wall);
+      const std::string script = managed_app_focus::kwin_script(pids, g_dbus_connection_get_unique_name(bus_), activate, ++call_, expiry);
       const bool written = write(fd, script.data(), script.size()) == static_cast<ssize_t>(script.size());
       close(fd);
       received_ = false;
@@ -248,7 +251,9 @@ int main(int argc, char **argv) {
     kwin.emplace();
   }
   const auto apply = [&](const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate, const std::function<bool(const std::string &)> &allowed) {
-    return kwin ? kwin->apply(pids, activate, allowed) : managed_app_focus::hyprland::apply(hyprland_ipc, pids, activate, allowed);
+    // focus_step hands over one window; its allowance travels into the script.
+    return kwin ? kwin->apply(pids, activate, allowed, activate.empty() ? std::nullopt : budget.until(activate.front())) :
+                  managed_app_focus::hyprland::apply(hyprland_ipc, pids, activate, allowed);
   };
   bool unavailable_reported = false;
   while (!cancelled && budget.active(managed_app_focus::budget::clock::now())) {

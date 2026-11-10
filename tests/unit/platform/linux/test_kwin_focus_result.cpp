@@ -9,6 +9,23 @@ using namespace std::chrono_literals;
 int main() {
   using managed_app_focus::kwin_result;
   using managed_app_focus::kwin_script;
+  {
+    // The allowance left on the steady clock becomes a wall-clock expiry.
+    const auto now = std::chrono::steady_clock::time_point(1h);
+    const auto wall = std::chrono::system_clock::time_point(10s);
+    const std::vector<std::string> target {"701:7"};
+    using managed_app_focus::kwin_expiry;
+    assert(kwin_expiry(target, now + 1500ms, now, wall) == 11500);
+    assert(kwin_expiry(target, now - 1500ms, now, wall) == 8500);
+    // Rounded down: a fraction of a millisecond never extends the allowance.
+    assert(kwin_expiry(target, now + 1500999us, now, wall) == 11500);
+    assert(kwin_expiry(target, now + 1s, now, std::chrono::system_clock::time_point(1999999us)) == 2999);
+    // An observation has no expiry; a target without a known allowance has
+    // one that already passed.
+    assert(kwin_expiry({}, now + 1500ms, now, wall) == 0);
+    assert(kwin_expiry(target, std::nullopt, now, wall) == 1);
+    assert(kwin_script({701}, ":1.42", {"701:7"}, 7, 11500).starts_with("var pids=[701];var activate=[\"701:7\"];var expiry=11500;"));
+  }
   // Each script echoes the call number it was generated for.
   assert(kwin_script({701}, ":1.42", {"701:7"}, 7).ends_with("result.call=7;callDBus(\":1.42\",'/Focus','dev.vibepollo.Focus','Result',JSON.stringify(result));"));
 

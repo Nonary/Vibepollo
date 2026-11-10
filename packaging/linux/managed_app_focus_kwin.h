@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <nlohmann/json.hpp>
@@ -13,12 +14,16 @@ namespace managed_app_focus {
   // Used by the real one-shot KWin adapter and executed with a mock workspace
   // in regression tests. internalId works for native Wayland and XWayland.
   // The result echoes call, so a late result from an earlier script is not
-  // taken for this one.
-  inline std::string kwin_script(const std::vector<std::uint64_t> &pids, const std::string &destination, const std::vector<std::string> &activate = {}, std::uint64_t call = 0) {
-    return "var pids=" + nlohmann::json(pids).dump() + ";var activate=" + nlohmann::json(activate).dump() + R"JS(;
+  // taken for this one. KWin reads and evaluates a script asynchronously after
+  // run, so the script itself rechecks Date.now() against expiry right before
+  // each activation (milliseconds since the epoch; 0 for none).
+  inline std::string kwin_script(const std::vector<std::uint64_t> &pids, const std::string &destination, const std::vector<std::string> &activate = {}, std::uint64_t call = 0, std::int64_t expiry = 0) {
+    return "var pids=" + nlohmann::json(pids).dump() + ";var activate=" + nlohmann::json(activate).dump() + ";var expiry=" + std::to_string(expiry) + R"JS(;
 var result={windows:[],focused:false};
 var active=workspace.activeWindow;
-result.foreground_pid=active && active.normalWindow && !active.minimized ? Number(active.pid) : 0;
+// KWin reports -1 for a window without a known process.
+var active_pid=active ? Number(active.pid) : 0;
+result.foreground_pid=active && active.normalWindow && !active.minimized && active_pid>0 ? active_pid : 0;
 result.foreground=result.foreground_pid && active.internalId ? String(active.pid)+":"+String(active.internalId) : "";
 var windows=workspace.windowList();
 // Prefer a fullscreen game over its launcher/dialog, without matching titles.
@@ -28,7 +33,7 @@ for (var i=0;i<windows.length;i++) {
   if (pids.indexOf(w.pid)<0 || !w.normalWindow || w.skipTaskbar || !w.internalId) continue;
   var identity=String(w.pid)+":"+String(w.internalId);
   result.windows.push(identity);
-  if (activate.indexOf(identity)<0 || result.focused || w===active) continue;
+  if (activate.indexOf(identity)<0 || result.focused || w===active || (expiry && Date.now()>=expiry)) continue;
   w.minimized=false;
   workspace.activeWindow=w;
   result.focused=workspace.activeWindow===w;
@@ -48,6 +53,22 @@ result.call=)JS" + std::to_string(call) + ";callDBus(" + nlohmann::json(destinat
       return std::nullopt;
     }
     return parsed;
+  }
+
+  // The script's expiry for the allowance end until, as KWin's wall clock sees
+  // it: none for an observation, already passed for a target without a known
+  // allowance. Rounded down, so it never extends the allowance. KWin's script
+  // engine has no monotonic clock; a backwards wall-clock step between here
+  // and the script's evaluation lengthens the allowance by that step.
+  inline std::int64_t kwin_expiry(const std::vector<std::string> &activate, std::optional<std::chrono::steady_clock::time_point> until, std::chrono::steady_clock::time_point now, std::chrono::system_clock::time_point wall) {
+    if (activate.empty()) {
+      return 0;
+    }
+    if (!until) {
+      return 1;
+    }
+    const auto left = std::chrono::duration_cast<std::chrono::system_clock::duration>(*until - now);
+    return std::max<std::int64_t>(1, std::chrono::floor<std::chrono::milliseconds>((wall + left).time_since_epoch()).count());
   }
 
   // Loading the script may block, and the script activates as soon as it

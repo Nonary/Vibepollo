@@ -266,10 +266,10 @@ def main():
     js = r'''
 const assert=require('assert'),vm=require('vm');
 const production=PRODUCTION;
-function run(windows,pids,activate,accept=()=>true,initial=null) {
+function run(windows,pids,activate,accept=()=>true,initial=null,expiry=0,clock=Date) {
  const workspace={windowList:()=>windows}; let active=initial;
  Object.defineProperty(workspace,'activeWindow',{get:()=>active,set:w=>{if(accept(w))active=w;}});
- const context={workspace,pids,activate};vm.runInNewContext(production,context);
+ const context={workspace,pids,activate,expiry,Date:clock};vm.runInNewContext(production,context);
  return {result:JSON.parse(JSON.stringify(context.result)),active};
 }
 function window(pid,id,extra={}){return {pid,internalId:id,normalWindow:true,skipTaskbar:false,fullScreen:false,minimized:true,...extra};}
@@ -282,6 +282,18 @@ assert.strictEqual(run([native],[7],['7:wayland-game'],()=>false).result.focused
 assert.deepStrictEqual(run([native,xwayland],[8],[]).result.windows,['8:xwayland-game']);
 assert.deepStrictEqual(run([native,xwayland],[],[]).result.windows,[]);
 assert.deepStrictEqual(run([], [7],[]).result.windows,[]);
+// KWin may evaluate the script after the allowance ended: it then activates nothing.
+assert.strictEqual(run([window(7,'late')],[7],['7:late'],()=>{throw Error('expired target activated');},null,Date.now()-1).result.focused,false);
+assert.strictEqual(run([window(7,'timely')],[7],['7:timely'],()=>true,null,Date.now()+60000).result.focused,true);
+// The clock is read right before the activation: time that passes while the
+// script walks the window list counts.
+let time=1000;const clock={now:()=>time};
+const slow=window(7,'slow');Object.defineProperty(slow,'internalId',{get:()=>{time=2000;return 'slow';}});
+assert.strictEqual(run([slow,window(7,'target')],[7],['7:target'],()=>{throw Error('expired target activated');},null,1500,clock).result.focused,false);
+time=1000;assert.strictEqual(run([window(7,'target')],[7],['7:target'],()=>true,null,1500,clock).result.focused,true);
+// KWin reports pid -1 for a window without a known process.
+assert.strictEqual(run([native],[1],[],()=>true,{pid:-1,internalId:'x',normalWindow:true,minimized:false}).result.foreground_pid,0);
+assert.strictEqual(run([native],[1],[],()=>true,{pid:-1,internalId:'x',normalWindow:true,minimized:false}).result.foreground,'');
 // A target that is already active is not activated again.
 assert.strictEqual(run([native],[7],['7:wayland-game'],()=>{throw Error('active target activated again');},native).result.focused,false);
 let fallback=run([xwayland,native],[7,8],['8:xwayland-game','7:wayland-game'],w=>w===native);assert.strictEqual(fallback.active,native);assert.strictEqual(fallback.result.focused,true);
