@@ -37,8 +37,11 @@ namespace display_helper::failed_revert_policy {
     return !host.app_running || request.issued_with_app_running;
   }
 
-  // Holds at most one missed REVERT. A later failure replaces it, and an APPLY
-  // clears it because the new layout's owner restores it when its session ends.
+  // Holds at most one missed REVERT. A later failure replaces it. Only an APPLY
+  // that succeeds clears it, because the new layout's owner then restores it
+  // when its session ends. An APPLY that fails, is skipped or is cancelled
+  // leaves it pending with its original arguments, and none is replayed while
+  // an APPLY is in flight.
   class slot_t {
   public:
     void remember(const request_t &request) {
@@ -51,6 +54,21 @@ namespace display_helper::failed_revert_policy {
       request_.reset();
     }
 
+    void begin_apply() {
+      std::lock_guard lock(mutex_);
+      ++applies_in_flight_;
+    }
+
+    void finish_apply(const bool applied) {
+      std::lock_guard lock(mutex_);
+      if (applies_in_flight_ > 0) {
+        --applies_in_flight_;
+      }
+      if (applied) {
+        request_.reset();
+      }
+    }
+
     bool pending() const {
       std::lock_guard lock(mutex_);
       return request_.has_value();
@@ -59,7 +77,7 @@ namespace display_helper::failed_revert_policy {
     // Removes and returns the missed REVERT if the host state allows replaying it.
     std::optional<request_t> take_if_replayable(const host_state_t &host) {
       std::lock_guard lock(mutex_);
-      if (!request_ || !may_replay(*request_, host)) {
+      if (!request_ || applies_in_flight_ != 0 || !may_replay(*request_, host)) {
         return std::nullopt;
       }
       return std::exchange(request_, std::nullopt);
@@ -68,5 +86,31 @@ namespace display_helper::failed_revert_policy {
   private:
     mutable std::mutex mutex_;
     std::optional<request_t> request_;
+    int applies_in_flight_ = 0;
+  };
+
+  // Brackets one APPLY attempt. It settles as failed unless `applied(true)` is
+  // called, including when the attempt returns early or throws.
+  class apply_scope_t {
+  public:
+    explicit apply_scope_t(slot_t &slot):
+        slot_(slot) {
+      slot_.begin_apply();
+    }
+
+    apply_scope_t(const apply_scope_t &) = delete;
+    apply_scope_t &operator=(const apply_scope_t &) = delete;
+
+    ~apply_scope_t() {
+      slot_.finish_apply(applied_);
+    }
+
+    void applied(const bool applied) {
+      applied_ = applied;
+    }
+
+  private:
+    slot_t &slot_;
+    bool applied_ = false;
   };
 }  // namespace display_helper::failed_revert_policy
