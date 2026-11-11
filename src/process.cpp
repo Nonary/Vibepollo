@@ -3206,7 +3206,7 @@ namespace proc {
     }
 #endif
     placebo = false;
-    std::chrono::seconds remaining_timeout = _app.exit_timeout;
+    std::chrono::seconds remaining_timeout = immediate ? 0s : _app.exit_timeout;
 #ifdef _WIN32
     _dualsense_usbip_session.reset();
     _dualsense_ready_deadline = {};

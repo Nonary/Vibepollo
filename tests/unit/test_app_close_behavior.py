@@ -15,6 +15,8 @@ start = source.index('  void closeApp(resp_https_t response, req_https_t request
 end = source.index('\n  }', start) + len('\n  }')
 handler = source[start:end]
 harness = r'''
+#include "src/host_stream_control.h"
+#include <future>
 #include <cassert>
 #include <memory>
 #include <sstream>
@@ -37,10 +39,19 @@ bool authenticate(resp_https_t, req_https_t) { return authorized; }
 void print_req(req_https_t) {}
 void bad_request(resp_https_t, req_https_t, const char *) { ++errors; }
 void send_response(resp_https_t, const nlohmann::json &j) { assert(j.at("status") == true); ++responses; }
-namespace rtsp_stream { void terminate_sessions(bool preserve) { assert(!preserve); effects.push_back("rtsp"); } }
+namespace rtsp_stream { void terminate_sessions(bool preserve) { assert(!preserve); effects.push_back("rtsp");
+  // Attempt a real concurrent admission at the former drain/terminate gap.
+  const auto stale = host_stream_control::request_ticket() - 1;
+  auto launch = std::async(std::launch::async, [stale] {
+    host_stream_control::start_guard_t current {host_stream_control::request_ticket()};
+    assert(!current); // no app mutation or pending RTSP publication permitted
+    host_stream_control::start_guard_t queued {stale};
+    assert(!queued);
+  });
+  launch.get(); } }
 namespace webrtc_stream { void shutdown_all_sessions() { effects.push_back("webrtc"); } }
 namespace proc {
-struct process_t { void terminate(bool force) { effects.push_back(force ? "force" : "graceful"); } } proc;
+struct process_t { void terminate(bool force) { host_stream_control::activity_guard_t cleanup; assert(cleanup); effects.push_back(force ? "force" : "graceful"); } } proc;
 }
 '''
 main = r'''
@@ -53,6 +64,7 @@ int main() {
   effects.clear();
   closeApp(0, std::make_shared<request_t>("{\"force\":true}"));
   assert((effects == std::vector<std::string>{"rtsp", "webrtc", "force"}));
+  { host_stream_control::start_guard_t reopened {host_stream_control::request_ticket()}; assert(reopened); }
   for (const std::string body : {"broken", "[]", "{\"force\":\"true\"}", "{\"force\":1}"}) {
     effects.clear();
     const int before = errors;
@@ -72,7 +84,8 @@ int main() {
 with tempfile.TemporaryDirectory(prefix='app-close-test-') as directory:
     cpp, binary = Path(directory) / 'test.cpp', Path(directory) / 'test'
     cpp.write_text(harness + handler + main)
-    subprocess.run([args.compiler, '-std=c++20', '-I', args.json_include,
+    subprocess.run([args.compiler, '-std=c++20', '-pthread', '-I', str(args.repository_root), '-I', args.json_include,
                     str(cpp), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True, timeout=10)
 print('PASS: close handler authorization, body validation, transport drain and graceful compatibility')
+

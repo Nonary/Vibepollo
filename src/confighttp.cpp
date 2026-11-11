@@ -2330,12 +2330,23 @@ namespace confighttp {
       }
     }
     if (force) {
-      // Drain transports before app teardown, outside the lifecycle mutex
-      // taken by terminate(). Also handle streams with no running process.
-      rtsp_stream::terminate_sessions(false);
-      webrtc_stream::shutdown_all_sessions();
+      // Close launch admission across both transport drain and app teardown.
+      // Session joins take lifecycle themselves, so do not hold it here.
+      const bool closed = host_stream_control::terminate([] { return true; }, [&] {
+        rtsp_stream::terminate_sessions(false);
+        webrtc_stream::shutdown_all_sessions();
+        proc::proc.terminate(true);
+      });
+      if (!closed) {
+        nlohmann::json output_tree;
+        output_tree["status"] = false;
+        output_tree["error"] = "Timed out waiting for active stream operations";
+        send_response(response, output_tree);
+        return;
+      }
+    } else {
+      proc::proc.terminate(false);
     }
-    proc::proc.terminate(force);
     nlohmann::json output_tree;
     output_tree["status"] = true;
     send_response(response, output_tree);
@@ -6866,3 +6877,4 @@ namespace confighttp {
     response->write(SimpleWeb::StatusCode::success_ok, tree.dump(), headers);
   }
 }  // namespace confighttp
+

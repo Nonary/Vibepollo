@@ -5,6 +5,7 @@ import io
 import json
 from pathlib import Path
 import shlex
+import stat
 import subprocess
 import sys
 import tempfile
@@ -85,9 +86,13 @@ class UpdatePolicy(unittest.TestCase):
     def test_update_does_not_generate_a_new_unenrolled_signing_key(self):
         request = {'kernel': FUTURE, 'modules': {name: base64.b64encode(b'\x7fELFtest').decode() for name in signer.NAMES},
                    'require_existing_key': True}
+        original_lstat = Path.lstat
         with tempfile.TemporaryDirectory() as temporary, \
              patch.object(signer.os, 'geteuid', return_value=0), \
              patch.object(signer, 'KEYDIR', Path(temporary)), \
+             patch.object(Path, 'lstat', autospec=True, side_effect=lambda path: (
+                 SimpleNamespace(st_mode=stat.S_IFDIR | 0o700, st_uid=0)
+                 if path == Path(temporary) else original_lstat(path))), \
              patch.object(Path, 'resolve', return_value=Path('/trusted/sign-file')), \
              patch.object(signer, 'trusted'), \
              patch.object(signer, 'run') as execute, \
