@@ -1120,6 +1120,9 @@ dualsense_haptics_gain = 1.5
             Vibepollo falls back to Opus. Dolby supports stereo and 5.1 channels.
             PCM sends 16-bit samples at 48 kHz in stereo, 5.1 or 7.1 and needs no encoder. It uses about 1.5 Mbps
             for stereo, 4.6 Mbps for 5.1 and 6.1 Mbps for 7.1, which is taken out of the video bitrate.
+            Every PCM packet fits one 1,400-byte datagram, so the client picks a shorter packet duration for
+            surround layouts (5 ms stereo, 2 ms 5.1, 1 ms 7.1). If the client's packet duration doesn't fit,
+            Vibepollo falls back to Opus.
         </td>
     </tr>
     <tr>
