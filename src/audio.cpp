@@ -3,6 +3,7 @@
  * @brief Definitions for audio capture and encoding.
  */
 #include <algorithm>
+#include <charconv>
 #include <mutex>
 #include <thread>
 
@@ -543,6 +544,8 @@ namespace audio {
     config_t &config,
     std::string_view offered,
     std::string_view accepted,
+    std::string_view packet_duration,
+    bool encrypted,
     bool ac3_encoder_available,
     bool eac3_encoder_available,
     bool high_quality
@@ -553,12 +556,26 @@ namespace audio {
     config.use_pcm = false;
     config.high_quality_dolby = false;
     if (offered == "PCM" && accepted == offered) {
-      // PCM audio needs no encoder, carries every channel layout and ignores the Opus-only settings.
-      config.use_pcm = true;
-      config.packetDuration = PCM_PACKET_DURATION;
-      config.flags[config_t::HIGH_QUALITY] = false;
-      config.flags[config_t::CUSTOM_SURROUND_PARAMS] = false;
-      return pcm;
+      // PCM audio keeps the client's packet duration only when it is a whole number of
+      // milliseconds whose data and parity datagrams all fit the datagram budget.
+      int duration = 0;
+      const auto parsed = std::from_chars(packet_duration.data(), packet_duration.data() + packet_duration.size(), duration);
+      const bool whole = parsed.ec == std::errc {} && parsed.ptr == packet_duration.data() + packet_duration.size();
+      if (whole && policy::pcm_packet_duration_fits(config.channels, duration, encrypted)) {
+        // PCM audio needs no encoder, carries every channel layout and ignores the Opus-only settings.
+        config.use_pcm = true;
+        config.packetDuration = duration;
+        config.flags[config_t::HIGH_QUALITY] = false;
+        config.flags[config_t::CUSTOM_SURROUND_PARAMS] = false;
+        return pcm;
+      }
+      if (!whole || duration < policy::PCM_MIN_PACKET_DURATION || duration > policy::PCM_MAX_PACKET_DURATION) {
+        BOOST_LOG(warning) << "Client proposed a PCM audio packet duration of ["sv << packet_duration << "], which is not a whole number of "sv
+                           << policy::PCM_MIN_PACKET_DURATION << '-' << policy::PCM_MAX_PACKET_DURATION << " ms; falling back to Opus"sv;
+      } else {
+        BOOST_LOG(warning) << "PCM audio packets of "sv << duration << " ms for "sv << config.channels << " channels exceed the "sv
+                           << policy::DATAGRAM_BUDGET << "-byte datagram budget; falling back to Opus"sv;
+      }
     }
     const bool supported_channels = config.channels == 2 || config.channels == 6;
     auto selected = opus;

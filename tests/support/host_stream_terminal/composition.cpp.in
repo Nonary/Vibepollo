@@ -2,7 +2,9 @@
 #include "src/display_target_lease.h"
 #include "src/app_audio_termination.h"
 #include "src/remote_display_topology.h"
+#include "src/audio_policy.h"
 #include <algorithm>
+#include <charconv>
 #include <array>
 #include <atomic>
 #include <bitset>
@@ -46,14 +48,14 @@ void notify_remote_input_transport_lost(const std::string &,std::uint64_t) { exp
 void mark_client_last_seen(const std::string &) {}
 }
 namespace util {
-long from_view(std::string_view s) { parser_pause.wait(); return std::stol(std::string(s)); }
+@FROM_CHARS@
+std::int64_t from_view(std::string_view s) { parser_pause.wait(); return from_chars(s.data(),s.data()+s.size()); }
 template<class F> struct guard {F fn; ~guard(){fn();}};
 template<class F> guard<F> fail_guard(F f){return {f};}
 }
 namespace audio {
 @AUDIO_PARAMS@
 @AUDIO_CONFIG@
-@PCM_PACKET_DURATION@
 @AUDIO_CODEC@
 // Encoder discovery is an external capability edge; negotiation stays production code.
 bool ac3_encoder=true,eac3_encoder=true;
@@ -364,31 +366,48 @@ int main() {
  // the adjusted video bitrate leaves room for the audio codec's bitrate and
  // 500 kbps of overhead. The base payload asks for high quality Opus audio.
  struct AudioCase {const char *offered,*accepted,*expected;int channels;bool encoder,quality;int status,bitrate;
-   int packet_duration=0;const char *surround_params="";int configured=100000;bool pyrowave=false;};
- for(const auto &test:std::array<AudioCase,20>{{
+   const char *packet_duration="";const char *surround_params="";int configured=100000;bool pyrowave=false;};
+ for(const auto &test:std::array<AudioCase,32>{{
    {"AC3","AC3","AC3",2,true,false,200,99372},
    {"EAC3","EAC3","EAC3",6,true,true,200,99116},
+   {"AC3","AC3","AC3",2,true,false,200,99372,"10"},
    {"AC3","","Opus",2,true,false,200,98988},
    {"EAC3","AC3","Opus",6,true,false,200,97964},
    {"AC3","AC3","",2,false,false,400,0},
    {"EAC3","EAC3","",6,false,false,400,0},
    {"AC3","AC3","",8,true,false,400,0},
    {"","EAC3","Opus",2,true,false,200,98988},
-   // PCM audio needs no encoder, carries every channel layout at 5 ms whatever the
-   // client sent, ignores the Opus-only flags, and reserves 48000 x 16 x channels.
-   {"PCM","PCM","PCM",2,false,false,200,97964,10},
-   {"PCM","PCM","PCM",6,false,false,200,94892,10,"642014523"},
-   {"PCM","PCM","PCM",8,false,false,200,93356,10,"85301234567"},
+   {"","","Opus",2,true,false,200,98988,"10"},
+   // PCM audio needs no encoder, carries every channel layout at the packet duration
+   // the client proposed when its datagrams fit the datagram budget, ignores the
+   // Opus-only flags, and reserves 48000 x 16 x channels.
+   {"PCM","PCM","PCM",2,false,false,200,97964,"5"},
+   {"PCM","PCM","PCM",6,false,false,200,94892,"2","642014523"},
+   {"PCM","PCM","PCM",8,false,false,200,93356,"1","85301234567"},
+   {"PCM","PCM","PCM",8,false,true,200,93356,"1","85301234567"},
+   {"PCM","PCM","PCM",6,false,false,200,94892,"1"},
+   // A missing proposal is 5 ms: stereo fits, surround falls back to Opus.
    {"PCM","PCM","PCM",2,false,true,200,97964},
-   {"PCM","PCM","PCM",8,false,true,200,93356,0,"85301234567"},
-   {"PCM","","Opus",2,false,false,200,98988,10},
+   {"PCM","PCM","Opus",8,false,true,200,97452,"","85301234567"},
+   // A proposal whose datagrams exceed the budget falls back to Opus with the
+   // client's own Opus configuration.
+   {"PCM","PCM","Opus",6,false,false,200,97964,"5","642014523"},
+   {"PCM","PCM","Opus",8,false,false,200,97452,"5"},
+   {"PCM","PCM","Opus",8,false,false,200,97452,"2"},
+   // A proposal that is not a whole number from 1 to 5 ms falls back to Opus.
+   {"PCM","PCM","Opus",2,false,false,200,98988,"0"},
+   {"PCM","PCM","Opus",2,false,false,200,98988,"6"},
+   {"PCM","PCM","Opus",2,false,false,200,98988,"10"},
+   {"PCM","PCM","Opus",2,false,false,200,98988,"abc"},
+   {"PCM","PCM","Opus",2,false,false,200,98988,"2.5"},
+   {"PCM","","Opus",2,false,false,200,98988,"10"},
    {"PCM","EAC3","Opus",6,true,false,200,97964},
    {"AC3","PCM","Opus",2,true,false,200,98988},
    // The normal reservation stays capped at 20%; PyroWave reserves 1.5 x in full.
-   {"PCM","PCM","PCM",8,false,false,200,7500,0,"",10000},
-   {"PCM","PCM","PCM",2,false,false,200,97196,0,"",100000,true},
-   {"PCM","PCM","PCM",8,false,false,200,90284,0,"",100000,true},
-   {"PCM","PCM","",8,false,false,400,0,0,"",9000,true},
+   {"PCM","PCM","PCM",8,false,false,200,7500,"1","",10000},
+   {"PCM","PCM","PCM",2,false,false,200,97196,"","",100000,true},
+   {"PCM","PCM","PCM",8,false,false,200,90284,"1","",100000,true},
+   {"PCM","PCM","",8,false,false,400,0,"1","",9000,true},
  }}) {
    reset();audio::ac3_encoder=test.encoder;audio::eac3_encoder=test.encoder;config::audio.high_quality_audio=test.quality;
    pending=std::make_shared<launch_session_t>();pending->audio_codec_offered=test.offered;pending->surround_params=test.surround_params;
@@ -396,10 +415,11 @@ int main() {
    server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
    auto audio_payload=payload;const auto channels=audio_payload.find("numChannels:2");audio_payload.replace(channels,13,"numChannels:"+std::to_string(test.channels));
    audio_payload+="a=x-ml-video.configuredBitrateKbps:"+std::to_string(test.configured)+"\n";
-   if(test.packet_duration)audio_payload+="a=x-nv-aqos.packetDuration:"+std::to_string(test.packet_duration)+"\n";
+   if(*test.packet_duration)audio_payload+="a=x-nv-aqos.packetDuration:"+std::string(test.packet_duration)+"\n";
    if(test.pyrowave)audio_payload+="a=x-nv-vqos[0].bitStreamFormat:99\n";
    if(*test.accepted)audio_payload+="a=x-ss-audio-codec-accept:"+std::string(test.accepted)+"\n";
    auto audio_request=std::make_shared<Request>();audio_request->payload=audio_payload.data();audio_request->payloadLength=audio_payload.size();
+   const int failures_before=failures;
    const bool admitted=cmd_announce(&server,std::make_shared<socket_t>(),pending,std::move(audio_request));
    check(admitted==(test.status==200),"actual ANNOUNCE rejects accepted Dolby with unavailable encoder or unsupported channels, or audio PyroWave cannot fit");
    server.startup_pool.run();server.io_context.run();
@@ -407,9 +427,14 @@ int main() {
    if(admitted) {
      const auto &selected=stream::session::allocated_audio;const std::string_view expected=test.expected;
      const bool pcm=expected=="PCM",dolby=expected=="AC3" || expected=="EAC3";
-     const int opus_packet_duration=test.packet_duration?test.packet_duration:5;
+     // The client's packet duration, or 5 ms when it sent none; a value that is not a
+     // whole number keeps whatever the unchanged Opus parser makes of it.
+     const std::string_view proposal=test.packet_duration;
+     const bool whole=proposal.empty() || std::all_of(proposal.begin(),proposal.end(),[](char c){return c>='0' && c<='9';});
+     const int client_packet_duration=proposal.empty()?5:whole?std::stoi(std::string(proposal)):-1;
      check(selected.use_ac3==(expected=="AC3") && selected.use_eac3==(expected=="EAC3") && selected.use_pcm==pcm &&
-           selected.high_quality_dolby==(dolby && test.quality) && selected.packetDuration==(dolby?32:pcm?5:opus_packet_duration) &&
+           selected.high_quality_dolby==(dolby && test.quality) &&
+           (dolby?selected.packetDuration==32:!whole || selected.packetDuration==client_packet_duration) &&
            (!dolby || (selected.flags[audio::config_t::HIGH_QUALITY] && !selected.flags[audio::config_t::CUSTOM_SURROUND_PARAMS])) &&
            (!pcm || (!selected.flags[audio::config_t::HIGH_QUALITY] && !selected.flags[audio::config_t::CUSTOM_SURROUND_PARAMS])),
            "production negotiation reaches capture with exact codec, quality and packet duration");
@@ -417,6 +442,8 @@ int main() {
      check(running==1 && !resource.expired(),"negotiated ANNOUNCE retains its active resource handoff");
    } else check(running==0 && server.startup_pool.queue.empty(),"rejected negotiation never queues capture");
    terminal();check(resource.expired() && running==0 && !late_ordinary,"terminal drains negotiated or rejected session resources before recovery");
+   if(failures!=failures_before)std::cout<<"  in audio case offered="<<test.offered<<" accepted="<<test.accepted<<" channels="<<test.channels
+                                         <<" packetDuration="<<test.packet_duration<<" got codec="<<response_audio_codec<<'\n';
  }
  auto fresh=host_stream_control::start_guard_t(host_stream_control::request_ticket());check(bool(fresh),"fresh starts remain eligible after terminal reopen");
  return failures?1:0;

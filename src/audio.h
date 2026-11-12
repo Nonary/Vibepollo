@@ -124,17 +124,20 @@ namespace audio {
   /** @brief Check whether the linked FFmpeg build provides the E-AC-3 encoder. */
   bool eac3_available();
 
-  /** @brief PCM audio's packet duration in milliseconds, fixed by the host. */
-  constexpr int PCM_PACKET_DURATION = 5;
-
   /** @brief The audio codec a session uses; AC-3 and E-AC-3 are Dolby audio. */
   enum class codec_e { opus, ac3, eac3, pcm };
 
-  /** @brief Select the offered audio codec only after an exact offer/accept match; otherwise retain Opus audio. */
+  /**
+   * @brief Select the offered audio codec only after an exact offer/accept match; otherwise retain Opus audio.
+   * PCM audio also needs the client's proposed packet duration to be a whole number of milliseconds
+   * whose datagrams fit the datagram budget for the session's channels and audio encryption.
+   */
   codec_e configure_codec(
     config_t &config,
     std::string_view offered,
     std::string_view accepted,
+    std::string_view packet_duration,
+    bool encrypted,
     bool ac3_encoder_available,
     bool eac3_encoder_available,
     bool high_quality

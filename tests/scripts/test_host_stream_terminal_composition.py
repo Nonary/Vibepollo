@@ -20,15 +20,16 @@ a = p.parse_args()
 root=a.source.resolve(); out=a.build_dir.resolve(); out.mkdir(parents=True, exist_ok=True)
 rtsp=(root/'src/rtsp.cpp').read_text(); nv=(root/'src/nvhttp.cpp').read_text(); web=(root/'src/webrtc_stream.cpp').read_text()
 audio_header=(root/'src/audio.h').read_text(); audio_source=(root/'src/audio.cpp').read_text()
+utility_header=(root/'src/utility.h').read_text()
 def body(s, signature, indent):
     start=s.index(signature); end=s.index('\n'+indent+'}',start)+len('\n'+indent+'}')
     return s[start:end]
 fragments={
+'FROM_CHARS':body(utility_header,'  inline std::int64_t from_chars(','  '),
 'CLAIM_STARTUP':body(rtsp,'    bool claim_launch_startup(','    '),
 'RELEASE_CLAIM':body(rtsp,'    void release_launch_startup_claim(','    '),
 'AUDIO_PARAMS':body(audio_header,'  struct stream_params_t {','  ')+';',
 'AUDIO_CONFIG':body(audio_header,'  struct config_t {','  ')+';',
-'PCM_PACKET_DURATION':audio_header[audio_header.index('  constexpr int PCM_PACKET_DURATION'):audio_header.index(';',audio_header.index('  constexpr int PCM_PACKET_DURATION'))+1],
 'AUDIO_CODEC':audio_header[audio_header.index('  enum class codec_e'):audio_header.index(';',audio_header.index('  enum class codec_e'))+1],
 'AUDIO_CONFIGURE':body(audio_source,'  codec_e configure_codec(','  '),
 'DOLBY_BITRATE':body(audio_source,'  int dolby_bitrate_kbps(','  '),
@@ -61,5 +62,5 @@ exe=out/'production-terminal-composition'
 cmd=[a.compiler,'-std=c++23','-Wall','-Wextra','-Werror','-Wno-sign-compare','-Wno-missing-field-initializers','-pthread','-I',str(root)]
 for inc in (a.json_include+';'+a.boost_include).split(';'):
     if inc: cmd+=['-I',str(Path(inc).resolve())]
-subprocess.run(cmd+[str(cpp),str(root/'src/remote_display_topology.cpp'),'-o',str(exe)],check=True)
+subprocess.run(cmd+[str(cpp),str(root/'src/remote_display_topology.cpp'),str(root/'src/audio_policy.cpp'),'-o',str(exe)],check=True)
 subprocess.run([str(exe)],check=True,timeout=20)
