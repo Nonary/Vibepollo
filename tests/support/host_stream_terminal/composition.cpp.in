@@ -367,7 +367,7 @@ int main() {
  // 500 kbps of overhead. The base payload asks for high quality Opus audio.
  struct AudioCase {const char *offered,*accepted,*expected;int channels;bool encoder,quality;int status,bitrate;
    const char *packet_duration="";const char *surround_params="";int configured=100000;bool pyrowave=false;};
- for(const auto &test:std::array<AudioCase,32>{{
+ for(const auto &test:std::array<AudioCase,36>{{
    {"AC3","AC3","AC3",2,true,false,200,99372},
    {"EAC3","EAC3","EAC3",6,true,true,200,99116},
    {"AC3","AC3","AC3",2,true,false,200,99372,"10"},
@@ -390,14 +390,19 @@ int main() {
    {"PCM","PCM","PCM",2,false,true,200,97964},
    {"PCM","PCM","Opus",8,false,true,200,97452,"","85301234567"},
    // A proposal whose datagrams exceed the budget falls back to Opus with the
-   // client's own Opus configuration.
+   // client's own Opus configuration, at 5 ms unless the proposal is an Opus frame duration.
    {"PCM","PCM","Opus",6,false,false,200,97964,"5","642014523"},
    {"PCM","PCM","Opus",8,false,false,200,97452,"5"},
    {"PCM","PCM","Opus",8,false,false,200,97452,"2"},
-   // A proposal that is not a whole number from 1 to 5 ms falls back to Opus.
+   {"PCM","PCM","Opus",6,false,false,200,97964,"3"},
+   {"PCM","PCM","Opus",8,false,false,200,97452,"4"},
+   // A proposal that is not a whole number from 1 to 5 ms falls back to Opus, which keeps
+   // a 10, 20, 40 or 60 ms Opus frame duration and otherwise uses 5 ms.
    {"PCM","PCM","Opus",2,false,false,200,98988,"0"},
    {"PCM","PCM","Opus",2,false,false,200,98988,"6"},
    {"PCM","PCM","Opus",2,false,false,200,98988,"10"},
+   {"PCM","PCM","Opus",8,false,false,200,97452,"20"},
+   {"PCM","PCM","Opus",6,false,false,200,97964,"60"},
    {"PCM","PCM","Opus",2,false,false,200,98988,"abc"},
    {"PCM","PCM","Opus",2,false,false,200,98988,"2.5"},
    {"PCM","","Opus",2,false,false,200,98988,"10"},
@@ -428,13 +433,19 @@ int main() {
      const auto &selected=stream::session::allocated_audio;const std::string_view expected=test.expected;
      const bool pcm=expected=="PCM",dolby=expected=="AC3" || expected=="EAC3";
      // The client's packet duration, or 5 ms when it sent none; a value that is not a
-     // whole number keeps whatever the unchanged Opus parser makes of it.
+     // whole number keeps whatever the unchanged Opus parser makes of it. PCM that falls
+     // back to Opus keeps only a 5, 10, 20, 40 or 60 ms Opus frame duration, otherwise 5 ms.
      const std::string_view proposal=test.packet_duration;
      const bool whole=proposal.empty() || std::all_of(proposal.begin(),proposal.end(),[](char c){return c>='0' && c<='9';});
-     const int client_packet_duration=proposal.empty()?5:whole?std::stoi(std::string(proposal)):-1;
+     int client_packet_duration=proposal.empty()?5:whole?std::stoi(std::string(proposal)):-1;
+     const bool pcm_fallback=std::string_view(test.offered)=="PCM" && std::string_view(test.accepted)=="PCM" && expected=="Opus";
+     if(pcm_fallback) {
+       constexpr std::array opus_frame_durations{5,10,20,40,60};
+       if(std::find(opus_frame_durations.begin(),opus_frame_durations.end(),client_packet_duration)==opus_frame_durations.end())client_packet_duration=5;
+     }
      check(selected.use_ac3==(expected=="AC3") && selected.use_eac3==(expected=="EAC3") && selected.use_pcm==pcm &&
            selected.high_quality_dolby==(dolby && test.quality) &&
-           (dolby?selected.packetDuration==32:!whole || selected.packetDuration==client_packet_duration) &&
+           (dolby?selected.packetDuration==32:!(whole || pcm_fallback) || selected.packetDuration==client_packet_duration) &&
            (!dolby || (selected.flags[audio::config_t::HIGH_QUALITY] && !selected.flags[audio::config_t::CUSTOM_SURROUND_PARAMS])) &&
            (!pcm || (!selected.flags[audio::config_t::HIGH_QUALITY] && !selected.flags[audio::config_t::CUSTOM_SURROUND_PARAMS])),
            "production negotiation reaches capture with exact codec, quality and packet duration");
@@ -443,7 +454,8 @@ int main() {
    } else check(running==0 && server.startup_pool.queue.empty(),"rejected negotiation never queues capture");
    terminal();check(resource.expired() && running==0 && !late_ordinary,"terminal drains negotiated or rejected session resources before recovery");
    if(failures!=failures_before)std::cout<<"  in audio case offered="<<test.offered<<" accepted="<<test.accepted<<" channels="<<test.channels
-                                         <<" packetDuration="<<test.packet_duration<<" got codec="<<response_audio_codec<<'\n';
+                                         <<" packetDuration="<<test.packet_duration<<" got codec="<<response_audio_codec
+                                         <<" duration="<<stream::session::allocated_audio.packetDuration<<'\n';
  }
  auto fresh=host_stream_control::start_guard_t(host_stream_control::request_ticket());check(bool(fresh),"fresh starts remain eligible after terminal reopen");
  return failures?1:0;

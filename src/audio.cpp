@@ -3,6 +3,7 @@
  * @brief Definitions for audio capture and encoding.
  */
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <mutex>
 #include <thread>
@@ -569,13 +570,14 @@ namespace audio {
         config.flags[config_t::CUSTOM_SURROUND_PARAMS] = false;
         return pcm;
       }
-      if (!whole || duration < policy::PCM_MIN_PACKET_DURATION || duration > policy::PCM_MAX_PACKET_DURATION) {
-        BOOST_LOG(warning) << "Client proposed a PCM audio packet duration of ["sv << packet_duration << "], which is not a whole number of "sv
-                           << policy::PCM_MIN_PACKET_DURATION << '-' << policy::PCM_MAX_PACKET_DURATION << " ms; falling back to Opus"sv;
-      } else {
-        BOOST_LOG(warning) << "PCM audio packets of "sv << duration << " ms for "sv << config.channels << " channels exceed the "sv
-                           << policy::DATAGRAM_BUDGET << "-byte datagram budget; falling back to Opus"sv;
-      }
+      // Opus keeps the proposal only when it is a whole-millisecond Opus frame duration.
+      constexpr std::array opus_frame_durations {5, 10, 20, 40, 60};
+      const bool opus_frame = whole && std::ranges::find(opus_frame_durations, duration) != opus_frame_durations.end();
+      config.packetDuration = opus_frame ? duration : 5;
+      BOOST_LOG(warning) << "Client proposed a PCM audio packet duration of ["sv << packet_duration << "] ms, which is not a whole number of "sv
+                         << policy::PCM_MIN_PACKET_DURATION << '-' << policy::PCM_MAX_PACKET_DURATION << " ms whose "sv << config.channels
+                         << "-channel datagrams fit the "sv << policy::DATAGRAM_BUDGET << "-byte datagram budget; falling back to Opus at "sv
+                         << config.packetDuration << " ms"sv;
     }
     const bool supported_channels = config.channels == 2 || config.channels == 6;
     auto selected = opus;
