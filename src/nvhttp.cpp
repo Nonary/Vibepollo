@@ -297,11 +297,16 @@ namespace nvhttp {
 #ifdef __APPLE__
     // The display a launching client asked for, for bringing its virtual display up early.
     video::config_t requested_display_config(const rtsp_stream::launch_session_t &session) {
-      const auto millihz = framegen::normalize_refresh_millihz(session.fps);
+      const auto millihz = session.client_display_refresh_millihz > 0 ?
+                             session.client_display_refresh_millihz :
+                           session.exact_requested_refresh_millihz > 0 ?
+                             session.exact_requested_refresh_millihz :
+                           session.fps > 0 ?
+                             framegen::saturating_refresh_millihz(static_cast<std::uint32_t>(session.fps), 1000) : 0u;
       video::config_t config {};
       config.width = session.width;
       config.height = session.height;
-      config.framerate = static_cast<int>(std::lround(millihz / 1000.0));
+      config.framerate = framegen::rounded_fps_from_millihz(millihz);
       config.framerateX100 = static_cast<int>(std::lround(millihz / 10.0));
       // An HDR stream needs the display to be HDR from the start.
       config.dynamicRange = rtsp_stream::effective_hdr_requested(session) ? 1 : 0;
