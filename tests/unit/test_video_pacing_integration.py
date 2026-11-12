@@ -87,6 +87,10 @@ rtsp_mapping = rtsp[rtsp.index('\n', rtsp_at) + 1:rtsp.index('        } catch (c
 if updated:
     assert 'startup_failed, startup_status, startup_error' in rtsp
     assert 'startup_status, startup_status == 400 ? "BAD REQUEST"' in rtsp
+    cleanup_at = rtsp.index('        if (failed_before_control_registration) server->retire_failed_monitor_start_locked')
+    config_unlock_at = rtsp.index('        _hot_apply_gate.unlock();', cleanup_at)
+    lifecycle_unlock_at = rtsp.index('        lifecycle_lock.unlock();', config_unlock_at)
+    assert lifecycle_unlock_at < rtsp.index('        server->post(', cleanup_at)
 template = (Path(__file__).with_suffix('.cpp.in')).read_text()
 program = template
 for key, text in {'HELPERS': helpers, 'BITRATE_INIT': bitrate_init, 'PUBLISH': publish, 'PACER': pacer, 'CLAMP': clamp, 'ADAPTIVE': adaptive,

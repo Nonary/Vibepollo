@@ -5505,7 +5505,7 @@ Uses NVIDIA intra refresh instead of full keyframes when supported.
 
 ### nvenc_temporal_aq
 
-Enables NVIDIA temporal adaptive quantization when supported.
+Enables NVIDIA temporal adaptive quantization when the encoder reports hardware support. Disabled by default.
 
 ### pacing_max_bitrate_kbps
 
@@ -5577,3 +5577,7 @@ Allow enabled paired streaming clients to request hardware metrics v1 during the
 ### hardware_metrics_interval
 
 Minimum time between completed client hardware samples in milliseconds. Default: `1000`; range: `500`–`10000`. Samples are collected on request and shared between clients. Enabling the setting alone does not poll hardware.
+
+### packetsize
+
+Optional maximum negotiated video packet size in bytes. `0` (default) disables the override; valid nonzero values are `200` through `65535`. It only lowers the packet size requested by the client, never raises it. Use a smaller value for low-MTU routes where fragmentation is a problem. Smaller packets increase header and FEC overhead, so reduce the requested bitrate if necessary.
