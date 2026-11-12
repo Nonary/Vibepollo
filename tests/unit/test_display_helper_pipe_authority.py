@@ -5,7 +5,16 @@ p=argparse.ArgumentParser();p.add_argument('--compiler',default='g++');a=p.parse
 r=Path(__file__).resolve().parents[2]
 s=(r/'src/platform/windows/ipc/pipes.cpp').read_text()
 start=s.index('  std::unique_ptr<INamedPipe> accept_server_pipe_client(')
-end=s.index('\n  std::unique_ptr<INamedPipe> NamedPipeFactory::create_client',start)
+# Extract this function's balanced body, not everything up to an unrelated
+# method. Adjacent factory methods may be added without changing this contract.
+opening=s.index('{',start)
+depth=1
+end=opening+1
+while depth:
+ if end >= len(s):
+  raise ValueError('Unterminated accept_server_pipe_client body')
+ depth += (s[end] == '{') - (s[end] == '}')
+ end += 1
 code=r'''
 #include <algorithm>
 #include <chrono>
