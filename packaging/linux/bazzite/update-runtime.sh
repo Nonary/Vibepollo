@@ -26,22 +26,26 @@ echo "Log: $log"
     --include=packaging/linux/vibepollo-display-power.h
     --include=packaging/linux/vibepollo-tray.py
     --include=src/confighttp.cpp
+    --include=src/process.cpp
     --include=src/platform/linux/display_power.cpp
     --include=src/platform/linux/display_power.h
     --include=src/platform/linux/private_display.cpp
     --include=tests/CMakeLists.txt
     --include=tests/unit/test_app_close_behavior.py
+    --include=tests/unit/test_force_termination.py
     --include=tests/unit/platform/linux/test_desktop_tray.py
     --include=tests/unit/platform/linux/test_display_power.c
     --include=tests/unit/platform/linux/test_display_power_lease.cpp
     --include=tests/unit/platform/linux/test_machine_service_contract.py
   )
-  if git -C "$source_dir" apply --reverse --check "${includes[@]}" "$output/update.patch" 2>/dev/null; then
-    echo 'Runtime changes already applied.'
-  else
-    git -C "$source_dir" apply --check "${includes[@]}" "$output/update.patch"
-    git -C "$source_dir" apply "${includes[@]}" "$output/update.patch"
-  fi
+  for include in "${includes[@]}"; do
+    if git -C "$source_dir" apply --allow-empty --reverse --check "$include" "$output/update.patch" 2>/dev/null; then
+      echo "Already applied or absent: ${include#--include=}"
+    else
+      git -C "$source_dir" apply --check "$include" "$output/update.patch"
+      git -C "$source_dir" apply "$include" "$output/update.patch"
+    fi
+  done
   # This replaces only the experimental package profile, retaining all runtime
   # account, tray-path and metadata fixes already present in the cached tree.
   cp "$source_dir/cmake/packaging/bazzite.cmake" "$output/bazzite.cmake.before"
@@ -56,6 +60,9 @@ echo "Log: $log"
       cmake --build build-local --parallel "$BUILD_JOBS"
       ctest --test-dir build-local --output-on-failure --no-tests=error \
         -R "^(test_component_linux_(display_power|display_power_command|display_power_lease|desktop_tray|machine_service_contract)|test_component_app_close_behavior)$"
+      python3 tests/unit/test_force_termination.py /workspace \
+        --boost-source /workspace/build-local/_deps/boost-src \
+        --boost-filesystem /workspace/build-local/_deps/boost-build/libs/filesystem/libboost_filesystem.a
       cpack -G RPM --config build-local/CPackConfig.cmake -B /workspace/runtime-fixed-output
       rpm -qp --scripts runtime-fixed-output/Vibepollo.rpm > runtime-fixed-output/scriptlets.txt
       test ! -s runtime-fixed-output/scriptlets.txt
@@ -68,3 +75,4 @@ echo "Log: $log"
 ) 2>&1 | tee "$log"
 echo "FINISHED: $source_dir/runtime-fixed-output/Vibepollo.rpm"
 echo 'Nothing installed or restarted. Keep the existing signed driver RPM installed.'
+
