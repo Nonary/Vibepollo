@@ -15,9 +15,12 @@
 #include <iterator>
 #include <string>
 #include <string_view>
+#include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <thread>
+#include <tuple>
 #include <unistd.h>
 #include <vector>
 
@@ -57,7 +60,9 @@ namespace {
           if (size > 0) {
             requests.emplace_back(buffer, static_cast<std::size_t>(size));
             const auto answer = reply_(requests.back());
-            assert(write(connection, answer.data(), answer.size()) == static_cast<ssize_t>(answer.size()));
+            // A client that timed out has closed its end already.
+            const auto sent = send(connection, answer.data(), answer.size(), MSG_NOSIGNAL);
+            assert(sent == static_cast<ssize_t>(answer.size()) || errno == EPIPE || errno == ECONNRESET);
           }
           ++connections;
           close(connection);
@@ -357,6 +362,136 @@ int main() {
       assert(server.requests == sent);
       server.requests.clear();
     }
+  }
+  {
+    // Hyprland leaves the sockets of earlier launches behind. Endpoints are
+    // tried newest first, the name breaking ties, and at most 64 of them, so
+    // any number of older stale entries never hides the live instance.
+    char scan_pattern[] = "/tmp/vibepollo-hyprland-scan-XXXXXX";
+    require(mkdtemp(scan_pattern), "mkdtemp");
+    const std::filesystem::path scan = scan_pattern;
+    const auto hypr = scan / "hypr";
+    std::filesystem::create_directories(hypr);
+    std::filesystem::permissions(hypr, std::filesystem::perms::owner_all, std::filesystem::perm_options::replace);
+    const auto age = [&](const std::string &name, time_t seconds, long nanoseconds = 0) {
+      const timespec times[2] {{seconds, nanoseconds}, {seconds, nanoseconds}};
+      require(!utimensat(AT_FDCWD, (hypr / name / ".socket.sock").c_str(), times, AT_SYMLINK_NOFOLLOW), "utimensat");
+    };
+    // A socket file nobody listens on any more, like a crashed launch leaves.
+    const auto stale = [&](const std::string &name, time_t seconds) {
+      std::filesystem::create_directories(hypr / name);
+      const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+      require(fd >= 0, "socket");
+      sockaddr_un address {};
+      address.sun_family = AF_UNIX;
+      std::snprintf(address.sun_path, sizeof(address.sun_path), "%s", (hypr / name / ".socket.sock").c_str());
+      require(!bind(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)), "bind");
+      close(fd);
+      age(name, seconds);
+    };
+    // Entries without a usable socket, all newer than any socket: they must
+    // not take a slot. A symlinked instance is never followed.
+    // The symlinks lead to a newer stale socket outside the instance directory.
+    std::filesystem::create_directories(scan / "elsewhere");
+    {
+      const int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+      require(fd >= 0, "socket");
+      sockaddr_un address {};
+      address.sun_family = AF_UNIX;
+      std::snprintf(address.sun_path, sizeof(address.sun_path), "%s", (scan / "elsewhere/.socket.sock").c_str());
+      require(!bind(fd, reinterpret_cast<sockaddr *>(&address), sizeof(address)), "bind");
+      close(fd);
+      const timespec times[2] {{9500, 0}, {9500, 0}};
+      require(!utimensat(AT_FDCWD, (scan / "elsewhere/.socket.sock").c_str(), times, AT_SYMLINK_NOFOLLOW), "utimensat");
+    }
+    const auto junk = [&] {
+      for (int i = 0; i < 70; ++i) {
+        const auto name = "j-" + std::to_string(i);
+        if (i % 3 == 0) {
+          std::filesystem::create_directories(hypr / name);
+        } else if (i % 3 == 1) {
+          std::filesystem::create_directories(hypr / name);
+          std::ofstream(hypr / name / ".socket.sock") << "not a socket";
+          age(name, 9000 + i);
+        } else {
+          std::filesystem::create_directory_symlink(scan / "elsewhere", hypr / name);
+        }
+      }
+    };
+    const auto clear = [&] {
+      for (const auto &entry : std::filesystem::directory_iterator(hypr)) std::filesystem::remove_all(entry.path());
+    };
+    for (const auto &[stale_count, stale_age, live_age, found] :
+         {std::tuple {200, 1000, 2000, true}, std::tuple {63, 3000, 2000, true}, std::tuple {64, 3000, 2000, false}}) {
+      for (const int before : {0, 100, stale_count}) {
+        // Stale names sort before and after the live one, and the live entry
+        // is created first, amid or last, so directory order cannot decide.
+        const auto stale_entries = [&](int from, int to) {
+          for (int i = from; i < to; ++i) stale((i % 2 ? "a-" : "zz-") + std::to_string(i), stale_age + i);
+        };
+        stale_entries(0, std::min(before, stale_count));
+        std::filesystem::create_directories(hypr / "m-live");
+        fake_socket live(hypr / "m-live/.socket.sock", "[]");
+        stale_entries(std::min(before, stale_count), stale_count);
+        junk();
+        age("m-live", live_age);
+        // A new transport has no instance that answered before.
+        assert(socket_transport(scan, self, timeout)("j/clients", {}).has_value() == found);
+        assert(wait_for(live.connections, found ? 1 : 0));
+        assert(live.connections == (found ? 1 : 0));
+        clear();
+      }
+    }
+    {
+      // Of two authenticating endpoints the newer socket answers, whatever
+      // the names, to the nanosecond; equal ages fall back to name order.
+      std::filesystem::create_directories(hypr / "a-older");
+      std::filesystem::create_directories(hypr / "b-newer");
+      fake_socket older(hypr / "a-older/.socket.sock", "older"), newer(hypr / "b-newer/.socket.sock", "newer");
+      const auto first = [&] {
+        return socket_transport(scan, self, timeout)("j/clients", {});
+      };
+      age("a-older", 1000, 200000000);
+      age("b-newer", 1000, 700000000);
+      assert(first() == "newer");
+      age("b-newer", 1000, 100000000);
+      assert(first() == "older");
+      age("b-newer", 1000, 200000000);
+      assert(first() == "older");
+      // The instance that answered is asked first while it answers, even
+      // once another one ranks higher; the directory is scanned again only
+      // when it stops answering.
+      age("b-newer", 2000);
+      const auto ipc = socket_transport(scan, self, timeout);
+      assert(ipc("j/clients", {}) == "newer");
+      age("b-newer", 500);
+      assert(ipc("j/clients", {}) == "newer");
+      assert(ipc("j/clients", {}) == "newer");
+      assert(wait_for(newer.connections, 4) && older.connections == 2);
+      std::filesystem::remove(hypr / "b-newer/.socket.sock");
+      assert(ipc("j/clients", {}) == "older");
+      assert(ipc("j/clients", {}) == "older");
+      assert(wait_for(older.connections, 4) && newer.connections == 4);
+    }
+    {
+      // An instance that took the request but timed out is not sent it again
+      // by the rescan that follows.
+      clear();
+      std::filesystem::create_directories(hypr / "s-slow");
+      std::atomic<bool> slow = false;
+      fake_socket server(hypr / "s-slow/.socket.sock", [&](const std::string &) {
+        if (slow) std::this_thread::sleep_for(timeout + 200ms);
+        return std::string {"ok"};
+      });
+      const auto ipc = socket_transport(scan, self, timeout);
+      assert(ipc("j/clients", {}) == "ok");
+      slow = true;
+      assert(!ipc("/dispatch focuswindow address:0x5a02", {}));
+      assert(wait_for(server.connections, 2));
+      std::this_thread::sleep_for(300ms);
+      assert(server.connections == 2 && server.requests.size() == 2);
+    }
+    std::filesystem::remove_all(scan);
   }
   std::filesystem::remove_all(runtime);
   std::cout << "PASS: Hyprland focus adapter selects bound candidate windows through IPC\n";

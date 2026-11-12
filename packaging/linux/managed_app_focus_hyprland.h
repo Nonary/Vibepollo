@@ -9,6 +9,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <memory>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <poll.h>
@@ -108,31 +109,71 @@ namespace managed_app_focus::hyprland {
     }
   }  // namespace detail
 
+  namespace detail {
+    // The instance's socket, if it is a socket owned by this user in a
+    // directory owned by this user; nothing is followed through a symlink.
+    inline std::optional<struct stat> endpoint(int directory, const std::string &name) {
+      struct stat instance {}, socket {};
+      if (fstatat(directory, name.c_str(), &instance, AT_SYMLINK_NOFOLLOW) || !S_ISDIR(instance.st_mode) || instance.st_uid != geteuid() ||
+          fstatat(directory, (name + "/.socket.sock").c_str(), &socket, AT_SYMLINK_NOFOLLOW) || !S_ISSOCK(socket.st_mode) || socket.st_uid != geteuid()) return std::nullopt;
+      return socket;
+    }
+  }  // namespace detail
+
   // Nothing is sent before the peer is the bound compositor; a restarted
   // compositor fails closed until the controller binds the new generation.
+  // The instance that last authenticated is asked first; the directory is
+  // scanned again only when it no longer answers.
   inline transport socket_transport(std::filesystem::path runtime, compositor bound, std::chrono::milliseconds timeout) {
-    return [runtime = std::move(runtime), bound, timeout](const std::string &request, const send_gate &may_send) -> std::optional<std::string> {
+    return [runtime = std::move(runtime), bound, timeout, last = std::make_shared<std::string>()](const std::string &request, const send_gate &may_send) -> std::optional<std::string> {
       const auto instances = runtime / "hypr";
       detail::descriptor directory {open(instances.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)};
       struct stat attributes {};
       if (directory.fd < 0 || fstat(directory.fd, &attributes) || attributes.st_uid != geteuid()) return std::nullopt;
-      std::vector<std::string> names;
+      const std::string cached = std::exchange(*last, std::string {});
+      if (!cached.empty() && detail::endpoint(directory.fd, cached)) {
+        if (auto reply = detail::exchange((instances / cached / ".socket.sock").string(), bound, request, may_send, timeout)) {
+          *last = cached;
+          return reply;
+        }
+      }
+      // Hyprland leaves the directories of earlier launches behind. Every
+      // usable endpoint is ranked, newest socket first, so stale entries cannot
+      // crowd out the live instance. A scan keeps at most 128 candidates in
+      // memory and connects to at most 64, each authenticated.
+      constexpr std::size_t attempt_limit = 64;
+      struct candidate {
+        timespec created;
+        std::string name;
+      };
+      const auto newer = [](const candidate &a, const candidate &b) {
+        if (a.created.tv_sec != b.created.tv_sec) return a.created.tv_sec > b.created.tv_sec;
+        if (a.created.tv_nsec != b.created.tv_nsec) return a.created.tv_nsec > b.created.tv_nsec;
+        return a.name < b.name;
+      };
+      std::vector<candidate> candidates;
       const int listing = dup(directory.fd);
       if (DIR *entries = listing < 0 ? nullptr : fdopendir(listing)) {
         while (const auto *entry = readdir(entries)) {
-          if (entry->d_name[0] != '.' && names.size() < 64) names.emplace_back(entry->d_name);
+          // The cached instance already had its one chance at this request.
+          if (entry->d_name[0] == '.' || entry->d_name == cached) continue;
+          if (const auto socket = detail::endpoint(directory.fd, entry->d_name)) candidates.push_back({socket->st_mtim, entry->d_name});
+          if (candidates.size() == 2 * attempt_limit) {
+            std::ranges::nth_element(candidates, candidates.begin() + attempt_limit, newer);
+            candidates.resize(attempt_limit);
+          }
         }
         closedir(entries);
       } else if (listing >= 0) {
         close(listing);
       }
-      std::ranges::sort(names);
-      for (const auto &name : names) {
-        struct stat instance {}, endpoint {};
-        const auto socket = name + "/.socket.sock";
-        if (fstatat(directory.fd, name.c_str(), &instance, AT_SYMLINK_NOFOLLOW) || !S_ISDIR(instance.st_mode) || instance.st_uid != geteuid() ||
-            fstatat(directory.fd, socket.c_str(), &endpoint, AT_SYMLINK_NOFOLLOW) || !S_ISSOCK(endpoint.st_mode) || endpoint.st_uid != geteuid()) continue;
-        if (auto reply = detail::exchange((instances / socket).string(), bound, request, may_send, timeout)) return reply;
+      std::ranges::sort(candidates, newer);
+      if (candidates.size() > attempt_limit) candidates.resize(attempt_limit);
+      for (const auto &[created, name] : candidates) {
+        if (auto reply = detail::exchange((instances / name / ".socket.sock").string(), bound, request, may_send, timeout)) {
+          *last = name;
+          return reply;
+        }
       }
       return std::nullopt;
     };
