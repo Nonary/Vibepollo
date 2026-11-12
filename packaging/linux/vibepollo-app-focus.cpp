@@ -90,10 +90,14 @@ namespace {
         if (GVariant *loaded = written ? call("/Scripting", "org.kde.kwin.Scripting", "loadScript", g_variant_new("(ss)", path.c_str(), name.c_str())) : nullptr) {
           g_variant_get(loaded, "(i)", &id);
           g_variant_unref(loaded);
+          // KWin refuses a name that is still loaded, e.g. after a failed unload.
+          if (id < 0 && failure_.empty()) failure_ = "KWin refused to load the focus script";
         }
         return id;
       };
+      bool ran = false;
       const auto run = [&](int id) {
+        ran = true;
         const auto object = "/Scripting/Script" + std::to_string(id);
         if (auto *reply = call(object.c_str(), "org.kde.kwin.Script", "run", nullptr)) {
           g_variant_unref(reply);
@@ -110,6 +114,14 @@ namespace {
         }
       }
       unlink(path.c_str());
+      // Each poll runs a script; a failure is logged once until a script
+      // reports again or the failure changes, not on every poll.
+      if (!received_ && ran && failure_.empty()) failure_ = "no result from the KWin focus script";
+      if (!cancelled && failure_ != reported_failure_) {
+        if (!failure_.empty()) report(LOG_WARNING, failure_);
+        reported_failure_ = failure_;
+      }
+      failure_.clear();
       return received_ ? result_ : nlohmann::json {};
     }
 
@@ -129,7 +141,7 @@ namespace {
       GError *error = nullptr;
       auto *reply = g_dbus_connection_call_sync(bus_, "org.kde.KWin", object, interface, method, args, nullptr, G_DBUS_CALL_FLAGS_NONE, timeout_ms_, nullptr, &error);
       if (error) {
-        report(LOG_WARNING, error->message);
+        if (failure_.empty()) failure_ = error->message;
         g_error_free(error);
       }
       return reply;
@@ -138,6 +150,7 @@ namespace {
     GDBusConnection *bus_ = nullptr;
     GDBusNodeInfo *schema_ = nullptr;
     guint registration_ = 0;
+    std::string failure_, reported_failure_;
     bool received_ = false;
     std::uint64_t call_ = 0;
     nlohmann::json result_;
@@ -279,9 +292,9 @@ int main(int argc, char **argv) {
       unavailable = unavailable || (activate.empty() && result.is_null());
       return result;
     }, budget, managed_app_focus::budget::clock::now);
-    if (bound_compositor && !pids.empty() && unavailable && !unavailable_reported) {
-      report(LOG_WARNING, "the bound Hyprland IPC socket is unavailable");
-      unavailable_reported = true;
+    if (bound_compositor && !pids.empty() && unavailable != unavailable_reported) {
+      report(unavailable ? LOG_WARNING : LOG_INFO, unavailable ? "the bound Hyprland IPC socket is unavailable" : "the bound Hyprland IPC socket is available again");
+      unavailable_reported = unavailable;
     }
     if (confirmed && !cancelled) {
       report(LOG_INFO, "confirmed " + provider + ':' + id);
