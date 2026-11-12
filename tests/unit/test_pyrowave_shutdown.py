@@ -71,6 +71,7 @@ program = r'''
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include "src/jthread.h"
 #include <utility>
 #include <vector>
 #include "src/utility.h"
