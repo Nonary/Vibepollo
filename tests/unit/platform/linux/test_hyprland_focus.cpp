@@ -106,16 +106,16 @@ namespace {
   // Shapes follow Hyprland 0.56 `j/clients` and `j/activewindow`. Titles are
   // omitted: selection must never depend on them.
   const char *clients = R"([
-    {"address":"0x5a01","mapped":true,"hidden":false,"pid":700,"xwayland":true,"fullscreen":1,"workspace":{"id":1,"name":"1"}},
-    {"address":"0x5a02","mapped":true,"hidden":false,"pid":701,"xwayland":true,"fullscreen":2,"workspace":{"id":1,"name":"1"}},
-    {"address":"0x5a03","mapped":true,"hidden":false,"pid":900,"xwayland":false,"fullscreen":0,"workspace":{"id":1,"name":"1"}},
-    {"address":"0x5a04","mapped":false,"hidden":false,"pid":700,"xwayland":true,"fullscreen":0,"workspace":{"id":1,"name":"1"}},
-    {"address":"0x5a05","mapped":true,"hidden":true,"pid":701,"xwayland":true,"fullscreen":0,"workspace":{"id":1,"name":"1"}}
+    {"address":"0x5a01","stableId":"5a01","mapped":true,"hidden":false,"pid":700,"xwayland":true,"fullscreen":1,"workspace":{"id":1,"name":"1"}},
+    {"address":"0x5a02","stableId":"5a02","mapped":true,"hidden":false,"pid":701,"xwayland":true,"fullscreen":2,"workspace":{"id":1,"name":"1"}},
+    {"address":"0x5a03","stableId":"5a03","mapped":true,"hidden":false,"pid":900,"xwayland":false,"fullscreen":0,"workspace":{"id":1,"name":"1"}},
+    {"address":"0x5a04","stableId":"5a04","mapped":false,"hidden":false,"pid":700,"xwayland":true,"fullscreen":0,"workspace":{"id":1,"name":"1"}},
+    {"address":"0x5a05","stableId":"5a05","mapped":true,"hidden":true,"pid":701,"xwayland":true,"fullscreen":0,"workspace":{"id":1,"name":"1"}}
   ])";
 
   struct fake_hyprland {
     std::string listed = clients;
-    std::string active = R"({"address":"0x5a03","mapped":true,"hidden":false,"pid":900})";
+    std::string active = R"({"address":"0x5a03","stableId":"5a03","mapped":true,"hidden":false,"pid":900})";
     bool steal_back = false;  // Another client takes focus again immediately.
     bool lua_config = false;  // Hyprland 0.56 Lua configs parse dispatch as Lua.
     std::vector<std::string> requests;
@@ -139,7 +139,10 @@ namespace {
           address = request.substr(lua.size(), request.size() - lua.size() - 4);
         }
         if (!address.empty()) {
-          if (!steal_back) active = R"({"address":")" + address + R"(","mapped":true,"hidden":false,"pid":701})";
+          // The focused window is the listed one, as Hyprland reports it.
+          for (const auto &window : nlohmann::json::parse(listed)) {
+            if (!steal_back && window.value("address", std::string {}) == address) active = window.dump();
+          }
           return "ok";
         }
         return std::nullopt;
@@ -162,14 +165,15 @@ int main() {
     const auto observed = apply(hyprland.transport(), {700, 701});
     assert(observed.value("focused", true) == false);
     assert(observed.value("foreground_pid", 0) == 900);
-    assert(observed.value("foreground", std::string {}) == "900:0x5a03");
-    assert((observed["windows"] == nlohmann::json {"701:0x5a02", "700:0x5a01"}));
+    assert(observed.value("foreground", std::string {}) == "900:5a03");
+    assert(observed["foreground_fullscreen"] == false);
+    assert((observed["windows"] == nlohmann::json {"701:5a02", "700:5a01"}));
     assert((hyprland.requests == std::vector<std::string> {"j/clients", "j/activewindow"}));
   }
   {
     // Only an allowed identity is activated, and Hyprland must confirm it.
     fake_hyprland hyprland;
-    const auto applied = apply(hyprland.transport(), {700, 701}, {"701:0x5a02", "900:0x5a03"}, always);
+    const auto applied = apply(hyprland.transport(), {700, 701}, {"701:5a02", "900:5a03"}, always);
     assert(applied.value("focused", false));
     assert(hyprland.requests.back() == "j/activewindow");
     assert(std::ranges::count(hyprland.requests, std::string {"/dispatch focuswindow address:0x5a02"}) == 1);
@@ -179,9 +183,9 @@ int main() {
     // A launcher of the game's own process in front of the fullscreen game
     // is lost focus, not the game.
     fake_hyprland hyprland;
-    hyprland.listed = R"([{"address":"0xaaaa","mapped":true,"hidden":false,"pid":700,"fullscreen":2},
-                          {"address":"0xbbbb","mapped":true,"hidden":false,"pid":700,"fullscreen":0}])";
-    hyprland.active = R"({"address":"0xbbbb","mapped":true,"hidden":false,"pid":700})";
+    hyprland.listed = R"([{"address":"0xaaaa","stableId":"aaaa","mapped":true,"hidden":false,"pid":700,"fullscreen":2},
+                          {"address":"0xbbbb","stableId":"bbbb","mapped":true,"hidden":false,"pid":700,"fullscreen":0}])";
+    hyprland.active = R"({"address":"0xbbbb","stableId":"bbbb","mapped":true,"hidden":false,"pid":700})";
     managed_app_focus::budget focus({1, 15, false}, managed_app_focus::budget::clock::now());
     const auto ipc = hyprland.transport();
     assert(focus_step([&](const auto &activate, const auto &allowed) { return apply(ipc, {700}, activate, allowed); }, focus, managed_app_focus::budget::clock::now));
@@ -190,7 +194,11 @@ int main() {
   {
     // The exact game window already active gets no dispatch and spends nothing.
     fake_hyprland hyprland;
-    hyprland.active = R"({"address":"0x5a02","mapped":true,"hidden":false,"pid":701})";
+    hyprland.active = R"({"address":"0x5a02","stableId":"5a02","mapped":true,"hidden":false,"pid":701,"fullscreen":2})";
+    assert(apply(hyprland.transport(), {701})["foreground_fullscreen"] == true);
+    hyprland.active = R"({"address":"0x5a02","mapped":true,"hidden":false,"pid":701,"fullscreen":2})";
+    assert(apply(hyprland.transport(), {701})["foreground_fullscreen"] == false);  // Not an identifiable window.
+    hyprland.active = R"({"address":"0x5a02","stableId":"5a02","mapped":true,"hidden":false,"pid":701})";
     const auto now = managed_app_focus::budget::clock::now();
     managed_app_focus::budget focus({1, 15, false}, now);
     const auto ipc = hyprland.transport();
@@ -199,11 +207,65 @@ int main() {
     assert(focus.can_focus(now));
   }
   {
+    // Hyprland moves the focused window to the end of j/clients. Of two
+    // windows of equal rank the newer one is preferred whatever the list
+    // order, so focus never flips between them.
+    fake_hyprland hyprland;
+    const std::string launcher = R"({"address":"0x10","stableId":"10","mapped":true,"hidden":false,"pid":701})";
+    const std::string game = R"({"address":"0x20","stableId":"20","mapped":true,"hidden":false,"pid":701})";
+    hyprland.on_request = [&](const std::string &request) {
+      if (request != "j/clients") return;
+      const bool game_focused = hyprland.active.find("0x20") != std::string::npos;
+      hyprland.listed = "[" + (game_focused ? launcher + "," + game : game + "," + launcher) + "]";
+    };
+    const auto ipc = hyprland.transport();
+    const auto now = managed_app_focus::budget::clock::now();
+    managed_app_focus::budget focus({3, 15, false}, now);
+    const auto step = [&] {
+      return focus_step([&](const auto &activate, const auto &allowed) { return apply(ipc, {701}, activate, allowed); }, focus, [now] { return now; });
+    };
+    hyprland.active = game;
+    for (int poll = 0; poll < 4; ++poll) assert(!step());
+    assert(dispatched(hyprland) == 0);
+    hyprland.active = launcher;
+    assert(step());
+    for (int poll = 0; poll < 4; ++poll) assert(!step());
+    assert(std::ranges::count(hyprland.requests, std::string {"/dispatch focuswindow address:0x20"}) == 1);
+    assert(std::ranges::none_of(hyprland.requests, [](const auto &request) { return request.find("0x10") != std::string::npos; }));
+    assert(hyprland.active.find("0x20") != std::string::npos);
+    assert((apply(ipc, {701})["windows"] == nlohmann::json {"701:20", "701:10"}));
+  }
+  {
+    // The identity is the stableId, never reused, not the address, which is
+    // a heap pointer a later window may get again. Windows without a valid
+    // stableId are skipped.
+    fake_hyprland hyprland;
+    hyprland.listed = R"([{"address":"0x10","stableId":"2A","mapped":true,"hidden":false,"pid":701},
+                          {"address":"0x11","stableId":"0x2b","mapped":true,"hidden":false,"pid":701},
+                          {"address":"0x12","stableId":"","mapped":true,"hidden":false,"pid":701},
+                          {"address":"0x13","stableId":"10000000000000000","mapped":true,"hidden":false,"pid":701},
+                          {"address":"0x14","stableId":44,"mapped":true,"hidden":false,"pid":701},
+                          {"address":"0x15","stableId":"0","mapped":true,"hidden":false,"pid":701},
+                          {"address":"0x16","mapped":true,"hidden":false,"pid":701}])";
+    assert((apply(hyprland.transport(), {701})["windows"] == nlohmann::json {"701:2a"}));
+    hyprland.listed = R"([{"address":"0x10","stableId":"2c","mapped":true,"hidden":false,"pid":701}])";
+    assert((apply(hyprland.transport(), {701})["windows"] == nlohmann::json {"701:2c"}));
+    // A window that got the address of the dispatched one after it closed
+    // does not confirm the focus.
+    const auto ipc = hyprland.transport();
+    const auto applied = apply([&](const std::string &request, const auto &may_send) {
+      auto reply = ipc(request, may_send);
+      if (request.starts_with("/dispatch")) hyprland.active = R"({"address":"0x10","stableId":"2d","mapped":true,"hidden":false,"pid":701})";
+      return reply;
+    }, {701}, {"701:2c"}, always);
+    assert(dispatched(hyprland) >= 1 && applied["focused"] == false);
+  }
+  {
     // A Lua config refuses dispatcher syntax; the same validated address is
     // then sent as the Lua focus expression.
     fake_hyprland hyprland;
     hyprland.lua_config = true;
-    const auto applied = apply(hyprland.transport(), {701}, {"701:0x5a02"}, always);
+    const auto applied = apply(hyprland.transport(), {701}, {"701:5a02"}, always);
     assert(applied.value("focused", false));
     assert(std::ranges::count(hyprland.requests, std::string {"/dispatch hl.dsp.focus({ window = \"address:0x5a02\" })"}) == 1);
   }
@@ -211,9 +273,9 @@ int main() {
     // An accepted dispatch without the window becoming active is not success.
     fake_hyprland hyprland;
     hyprland.steal_back = true;
-    const auto applied = apply(hyprland.transport(), {701}, {"701:0x5a02"}, always);
+    const auto applied = apply(hyprland.transport(), {701}, {"701:5a02"}, always);
     assert(!applied.value("focused", true));
-    assert(applied["windows"] == nlohmann::json {"701:0x5a02"});
+    assert(applied["windows"] == nlohmann::json {"701:5a02"});
   }
   {
     // A refused game focus does not fall through to its launcher: the step
@@ -234,7 +296,7 @@ int main() {
     fake_hyprland hyprland;
     int listings = 0;
     hyprland.on_request = [&](const std::string &request) {
-      if (request == "j/clients" && ++listings == 2) hyprland.active = R"({"address":"0x5a02","mapped":true,"hidden":false,"pid":701})";
+      if (request == "j/clients" && ++listings == 2) hyprland.active = R"({"address":"0x5a02","stableId":"5a02","mapped":true,"hidden":false,"pid":701})";
     };
     const auto now = managed_app_focus::budget::clock::now();
     managed_app_focus::budget focus({1, 15, false}, now);
@@ -256,13 +318,13 @@ int main() {
     for (const auto &[seen, checked, slow] : {gap {0s, 14900ms, "j/clients"}, gap {170s, 179900ms, "j/clients"},
                                              gap {0s, 14900ms, "/dispatch hl.dsp.focus"}}) {
       fake_hyprland hyprland;
-      hyprland.active = R"({"address":"0x5a02","mapped":true,"hidden":false,"pid":701})";
+      hyprland.active = R"({"address":"0x5a02","stableId":"5a02","mapped":true,"hidden":false,"pid":701})";
       budget focus({1, 15, false}, start);
       auto now = start + seen;
       const auto ipc = hyprland.transport();
       const auto step = [&] { return focus_step([&](const auto &activate, const auto &allowed) { return apply(ipc, {701}, activate, allowed); }, focus, [&] { return now; }); };
       assert(!step());
-      hyprland.active = R"({"address":"0x5a03","mapped":true,"hidden":false,"pid":900})";
+      hyprland.active = R"({"address":"0x5a03","stableId":"5a03","mapped":true,"hidden":false,"pid":900})";
       now = start + checked;
       int replies = 0;
       hyprland.on_request = [&](const std::string &request) {
@@ -275,10 +337,10 @@ int main() {
   {
     // Addresses are compositor data, never trusted dispatcher syntax.
     fake_hyprland hyprland;
-    hyprland.listed = R"([{"address":"0x5a01 class:.*","mapped":true,"hidden":false,"pid":700},
-                          {"address":"5a02","mapped":true,"hidden":false,"pid":700},
-                          {"address":"0x","mapped":true,"hidden":false,"pid":700}])";
-    const auto applied = apply(hyprland.transport(), {700}, {"700:0x5a01 class:.*", "700:5a02", "700:0x"}, always);
+    hyprland.listed = R"([{"address":"0x5a01 class:.*","stableId":"7f","mapped":true,"hidden":false,"pid":700},
+                          {"address":"5a02","stableId":"7f","mapped":true,"hidden":false,"pid":700},
+                          {"address":"0x","stableId":"7f","mapped":true,"hidden":false,"pid":700}])";
+    const auto applied = apply(hyprland.transport(), {700}, {"700:7f"}, always);
     assert(applied["windows"].empty() && !applied.value("focused", true));
     assert(hyprland.requests.size() == 2);
   }
@@ -345,7 +407,7 @@ int main() {
           gap {0s, 14s, 3, "Invalid dispatcher", 2, {lua, legacy}}}) {
       lua_reply = reply;
       budget focus({1, 15, false}, start);
-      focus.observe("701:0x5a02", start + seen);
+      focus.observe("701:5a02", start + seen);
       auto now = start + checked;
       int checks = 0;
       const auto allowed = [&](const std::string &identity) {
@@ -354,8 +416,8 @@ int main() {
         return ok;
       };
       const auto applied = apply([&](const std::string &request, const auto &may_send) {
-        return request.starts_with("j/") ? std::optional<std::string> {request == "j/clients" ? clients : R"({"address":"0x5a03","mapped":true,"hidden":false,"pid":900})"} : ipc(request, may_send);
-      }, {701}, {"701:0x5a02"}, allowed);
+        return request.starts_with("j/") ? std::optional<std::string> {request == "j/clients" ? clients : R"({"address":"0x5a03","stableId":"5a03","mapped":true,"hidden":false,"pid":900})"} : ipc(request, may_send);
+      }, {701}, {"701:5a02"}, allowed);
       assert(applied.value("focused", true) == false);  // The fake activewindow never confirms.
       connections += connected;
       assert(wait_for(server.connections, connections));

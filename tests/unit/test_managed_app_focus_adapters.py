@@ -275,7 +275,13 @@ function run(windows,pids,activate,accept=()=>true,initial=null,expiry=0,clock=D
 function window(pid,id,extra={}){return {pid,internalId:id,normalWindow:true,skipTaskbar:false,fullScreen:false,minimized:true,...extra};}
 let native=window(7,'wayland-game'),xwayland=window(8,'xwayland-game',{fullScreen:true}),splash=window(7,'splash');
 let ignored=[window(99,'unrelated'),window(7,'dialog',{normalWindow:false}),window(7,'taskbar',{skipTaskbar:true})];
-let scan=run([splash,native,xwayland,...ignored],[7,8],[]);assert.deepStrictEqual(scan.result.windows,['8:xwayland-game','7:splash','7:wayland-game']);assert.strictEqual(scan.active,null);
+// Fullscreen first, then the newest window: the game created after its splash.
+let scan=run([splash,native,xwayland,...ignored],[7,8],[]);assert.deepStrictEqual(scan.result.windows,['8:xwayland-game','7:wayland-game','7:splash']);assert.strictEqual(scan.active,null);
+// A fullscreen window comes first even when it is older.
+assert.deepStrictEqual(run([xwayland,splash],[7,8],[]).result.windows,['8:xwayland-game','7:splash']);
+// The order does not depend on which window is active.
+assert.deepStrictEqual(run([splash,native],[7],[],()=>true,{...splash,minimized:false}).result.windows,['7:wayland-game','7:splash']);
+assert.deepStrictEqual(run([splash,native],[7],[],()=>true,{...native,minimized:false}).result.windows,['7:wayland-game','7:splash']);
 let apply=run([splash,native,xwayland,...ignored],[7,8],['7:wayland-game']);assert.strictEqual(apply.active,native);assert.strictEqual(native.minimized,false);assert.strictEqual(apply.result.focused,true);
 assert.strictEqual(run([native],[7],['7:gone']).active,null);
 assert.strictEqual(run([native],[7],['7:wayland-game'],()=>false).result.focused,false);
@@ -289,7 +295,8 @@ assert.strictEqual(run([window(7,'timely')],[7],['7:timely'],()=>true,null,Date.
 // script walks the window list counts.
 let time=1000;const clock={now:()=>time};
 const slow=window(7,'slow');Object.defineProperty(slow,'internalId',{get:()=>{time=2000;return 'slow';}});
-assert.strictEqual(run([slow,window(7,'target')],[7],['7:target'],()=>{throw Error('expired target activated');},null,1500,clock).result.focused,false);
+// The newest window is walked first.
+assert.strictEqual(run([window(7,'target'),slow],[7],['7:target'],()=>{throw Error('expired target activated');},null,1500,clock).result.focused,false);
 time=1000;assert.strictEqual(run([window(7,'target')],[7],['7:target'],()=>true,null,1500,clock).result.focused,true);
 // KWin reports pid -1 for a window without a known process.
 assert.strictEqual(run([native],[1],[],()=>true,{pid:-1,internalId:'x',normalWindow:true,minimized:false}).result.foreground_pid,0);
@@ -303,6 +310,10 @@ let observe=run([native,xwayland],[1],[],()=>{throw Error('read-only query attem
 assert.strictEqual(observe.result.foreground_pid,7);assert.strictEqual(observe.active,native);
 // The exact active window, so a same-PID launcher is not mistaken for the game.
 assert.strictEqual(observe.result.foreground,'7:wayland-game');
+// Only a fullscreen foreground is reported as such; the focus step holds for it.
+assert.strictEqual(observe.result.foreground_fullscreen,false);
+assert.strictEqual(run([xwayland],[8],[],()=>true,{...xwayland,minimized:false}).result.foreground_fullscreen,true);
+assert.strictEqual(run([native],[1],[],()=>true,{pid:99,normalWindow:false,fullScreen:true}).result.foreground_fullscreen,false);
 assert.strictEqual(run([native,splash],[7],[],()=>true,{...splash,minimized:false}).result.foreground,'7:splash');
 assert.strictEqual(run([native],[1],[],()=>true,{pid:99,normalWindow:false}).result.foreground_pid,0);
 assert.strictEqual(run([native],[1],[],()=>true,{pid:99,normalWindow:false}).result.foreground,'');

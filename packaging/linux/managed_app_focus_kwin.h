@@ -25,11 +25,13 @@ var active=workspace.activeWindow;
 var active_pid=active ? Number(active.pid) : 0;
 result.foreground_pid=active && active.normalWindow && !active.minimized && active_pid>0 ? active_pid : 0;
 result.foreground=result.foreground_pid && active.internalId ? String(active.pid)+":"+String(active.internalId) : "";
-var windows=workspace.windowList();
-// Prefer a fullscreen game over its launcher/dialog, without matching titles.
-windows.sort(function(a,b) { return Number(b.fullScreen)-Number(a.fullScreen); });
+result.foreground_fullscreen=result.foreground!=="" && !!active.fullScreen;
+// windowList() keeps creation order. Prefer a fullscreen game over its
+// launcher/dialog, without matching titles, then the newest window.
+var windows=workspace.windowList().map(function(w,i) { return {w:w,i:i}; });
+windows.sort(function(a,b) { return Number(b.w.fullScreen)-Number(a.w.fullScreen) || b.i-a.i; });
 for (var i=0;i<windows.length;i++) {
-  var w=windows[i];
+  var w=windows[i].w;
   if (pids.indexOf(w.pid)<0 || !w.normalWindow || w.skipTaskbar || !w.internalId) continue;
   var identity=String(w.pid)+":"+String(w.internalId);
   result.windows.push(identity);
@@ -49,7 +51,8 @@ result.call=)JS" + std::to_string(call) + ";callDBus(" + nlohmann::json(destinat
     if (!parsed.is_object() || !parsed.contains("call") || !parsed["call"].is_number_unsigned() || parsed["call"].get<std::uint64_t>() != call ||
         !parsed.contains("focused") || !parsed["focused"].is_boolean() || !parsed.contains("windows") || !parsed["windows"].is_array() ||
         !std::ranges::all_of(parsed["windows"], is_string) || (parsed.contains("foreground") && !parsed["foreground"].is_string()) ||
-        (parsed.contains("foreground_pid") && !parsed["foreground_pid"].is_number_unsigned())) {
+        (parsed.contains("foreground_pid") && !parsed["foreground_pid"].is_number_unsigned()) ||
+        (parsed.contains("foreground_fullscreen") && !parsed["foreground_fullscreen"].is_boolean())) {
       return std::nullopt;
     }
     return parsed;

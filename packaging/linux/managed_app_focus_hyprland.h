@@ -14,6 +14,8 @@
 #include <optional>
 #include <poll.h>
 #include <sstream>
+#include <system_error>
+#include <tuple>
 #include <string>
 #include <string_view>
 #include <sys/socket.h>
@@ -214,17 +216,32 @@ namespace managed_app_focus::hyprland {
       return valid ? text : std::string {};
     }
 
-    inline std::string identity(const nlohmann::json &window) {
-      const auto pid = visible_pid(window);
-      const auto text = address(window);
-      return pid && !text.empty() ? std::to_string(pid) + ":" + text : std::string {};
+    // stableId counts up per window and is never reused, unlike the address,
+    // which is a heap pointer; 0 means missing or malformed.
+    inline std::uint64_t stable_id(const nlohmann::json &window) {
+      const auto *value = field(window, "stableId");
+      if (!value || !value->is_string()) return 0;
+      const auto &text = value->get_ref<const std::string &>();
+      std::uint64_t id = 0;
+      const auto [end, error] = std::from_chars(text.data(), text.data() + text.size(), id, 16);
+      return error == std::errc {} && end == text.data() + text.size() ? id : 0;
     }
 
-    // Hyprland has no window types but floats dialogs: fullscreen, then tiled.
-    // Mode 1 is maximized, which a launcher may be too.
-    inline std::pair<bool, bool> rank(const nlohmann::json &window) {
+    inline std::string identity(const nlohmann::json &window) {
+      const auto pid = visible_pid(window);
+      const auto id = stable_id(window);
+      if (!pid || !id || address(window).empty()) return {};
+      char hex[16];
+      const auto end = std::to_chars(hex, hex + sizeof(hex), id, 16).ptr;
+      return std::to_string(pid) + ":" + std::string(hex, end);
+    }
+
+    // Hyprland has no window types but floats dialogs: fullscreen, then tiled,
+    // then the newest window. Mode 1 is maximized, which a launcher may be too.
+    // j/clients reorders windows as they gain focus, so its order never decides.
+    inline std::tuple<bool, bool, std::uint64_t> rank(const nlohmann::json &window) {
       const auto *fullscreen = field(window, "fullscreen");
-      return {fullscreen && fullscreen->is_number_integer() && fullscreen->get<std::int64_t>() >= 2, !flag(window, "floating")};
+      return {fullscreen && fullscreen->is_number_integer() && fullscreen->get<std::int64_t>() >= 2, !flag(window, "floating"), stable_id(window)};
     }
   }  // namespace detail
 
@@ -239,7 +256,7 @@ namespace managed_app_focus::hyprland {
     }
   }  // namespace detail
 
-  // Same result shape as the KWin script; identities are pid:address. Every
+  // Same result shape as the KWin script; identities are pid:stableId. Every
   // request may block, so an identity is activated only while allowed() says so.
   inline nlohmann::json apply(const transport &ipc, const std::vector<std::uint64_t> &pids, const std::vector<std::string> &activate = {}, const std::function<bool(const std::string &)> &allowed = {}) {
     if (pids.empty()) return {};
@@ -249,10 +266,10 @@ namespace managed_app_focus::hyprland {
     std::vector<nlohmann::json> windows;
     for (const auto &window : clients) {
       const auto pid = detail::visible_pid(window);
-      if (pid && std::ranges::find(pids, pid) != pids.end() && !detail::address(window).empty()) windows.push_back(window);
+      if (pid && std::ranges::find(pids, pid) != pids.end() && !detail::identity(window).empty()) windows.push_back(window);
     }
     std::ranges::stable_sort(windows, std::greater {}, detail::rank);
-    nlohmann::json result {{"windows", nlohmann::json::array()}, {"focused", false}, {"foreground_pid", detail::visible_pid(active)}, {"foreground", detail::identity(active)}};
+    nlohmann::json result {{"windows", nlohmann::json::array()}, {"focused", false}, {"foreground_pid", detail::visible_pid(active)}, {"foreground", detail::identity(active)}, {"foreground_fullscreen", !detail::identity(active).empty() && std::get<0>(detail::rank(active))}};
     for (const auto &window : windows) {
       const auto address = detail::address(window);
       const auto identity = detail::identity(window);
@@ -263,7 +280,7 @@ namespace managed_app_focus::hyprland {
       // Only activewindow confirms the activation.
       if (!allowed || !detail::focus_window(ipc, address, [&] { return allowed(identity); })) continue;
       const auto focused = detail::request_json(ipc, "j/activewindow");
-      result["focused"] = detail::address(focused) == address;
+      result["focused"] = detail::identity(focused) == identity;
     }
     return result;
   }

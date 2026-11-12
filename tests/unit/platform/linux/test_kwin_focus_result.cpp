@@ -41,7 +41,8 @@ int main() {
   // The shape focus_step reads is still required.
   for (const char *other : {"", "not json", "[]", R"({"call":7,"windows":["701:7"]})", R"({"call":7,"windows":"701:7","focused":true})",
                             R"({"call":7,"windows":[701],"focused":true})", R"({"call":7,"windows":["701:7"],"focused":1})",
-                            R"({"call":7,"windows":[],"focused":false,"foreground":1})", R"({"call":7,"windows":[],"focused":false,"foreground_pid":"7"})"}) {
+                            R"({"call":7,"windows":[],"focused":false,"foreground":1})", R"({"call":7,"windows":[],"focused":false,"foreground_pid":"7"})",
+                            R"({"call":7,"windows":[],"focused":false,"foreground_fullscreen":1})"}) {
     assert(!kwin_result(other, 7));
   }
   {

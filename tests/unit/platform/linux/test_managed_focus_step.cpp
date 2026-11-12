@@ -13,6 +13,7 @@ namespace {
   struct fake_desktop {
     std::vector<std::string> windows {"701:0x5a02", "700:0x5a01"};  // Fullscreen game first.
     std::string foreground;
+    bool foreground_fullscreen = false;
     int activations = 0;
     std::function<void()> before_activation;  // The adapter's second observation.
 
@@ -25,7 +26,7 @@ namespace {
         ++activations;
         foreground = activate.front();
       }
-      return {{"windows", windows}, {"focused", focused}, {"foreground", foreground}};
+      return {{"windows", windows}, {"focused", focused}, {"foreground", foreground}, {"foreground_fullscreen", foreground_fullscreen}};
     }
   };
 }  // namespace
@@ -97,6 +98,53 @@ int main() {
     desktop.foreground = "900:0x5a04";
     assert(focus_step(desktop, focus, at(start + 19s)));
     assert(desktop.activations == 1 && desktop.foreground == "702:0x5a03");
+  }
+  {
+    // A fullscreen game window whose allowance ended keeps the foreground it
+    // has: a lower-ranked dialog that appeared later does not take it, and the
+    // game losing focus to another program still sends focus to the dialog.
+    fake_desktop desktop;
+    desktop.windows = {"701:0x5a02"};
+    budget focus({3, 15, false}, start);
+    desktop.foreground = "701:0x5a02";
+    desktop.foreground_fullscreen = true;
+    assert(!focus_step(desktop, focus, at(start)));
+    desktop.windows = {"701:0x5a02", "701:0x5a09"};
+    for (int second = 10; second < 20; ++second) {
+      assert(!focus_step(desktop, focus, at(start + std::chrono::seconds(second))));
+    }
+    assert(desktop.activations == 0 && focus.can_focus(start + 20s));
+    desktop.foreground = "900:0x5a04";
+    desktop.foreground_fullscreen = false;
+    assert(focus_step(desktop, focus, at(start + 20s)));
+    assert(desktop.activations == 1 && desktop.foreground == "701:0x5a09");
+  }
+  {
+    // A fullscreen program that takes the foreground is lost focus, and so is
+    // a fullscreen game window ranked below the target.
+    fake_desktop desktop;
+    budget focus({3, 15, false}, start);
+    desktop.foreground = "900:0x5a03";
+    desktop.foreground_fullscreen = true;
+    assert(focus_step(desktop, focus, at(start)));
+    assert(desktop.activations == 1 && desktop.foreground == "701:0x5a02");
+    desktop.foreground = "700:0x5a01";
+    desktop.foreground_fullscreen = true;
+    assert(focus_step(desktop, focus, at(start + 1s)));
+    assert(desktop.activations == 2 && desktop.foreground == "701:0x5a02");
+  }
+  {
+    // Ranking by tiling or age is a guess and never holds: a tiled launcher
+    // whose allowance ended stays lost focus for a game window that maps
+    // later, even one ranked below it.
+    fake_desktop desktop;
+    desktop.windows = {"700:0x5a01"};
+    budget focus({3, 15, false}, start);
+    desktop.foreground = "700:0x5a01";
+    assert(!focus_step(desktop, focus, at(start)));
+    desktop.windows = {"700:0x5a01", "701:0x5a02"};
+    assert(focus_step(desktop, focus, at(start + 30s)));
+    assert(desktop.activations == 1 && desktop.foreground == "701:0x5a02");
   }
   {
     // A compositor reply delayed past a window's allowance does not let the
