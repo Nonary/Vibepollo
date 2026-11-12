@@ -370,6 +370,12 @@ int main(void) {
   char *elevated_request[] = {"broker", "app-elevated", "", "/usr/bin/true", NULL};
   char *metadata_request[] = {"broker", "app", "", "/usr/bin/true", "APOLLO_APP_STATUS=TERMINATING", NULL};
   CHECK(application_request_is_safe(5, metadata_request));
+  struct session_identity metadata_greeter = {0};
+  strcpy(metadata_greeter.role, "greeter");
+  CHECK(execute_request(5, metadata_request, &metadata_greeter, getgid()) == 126);
+  metadata_request[1] = "app-wayland-hdr";
+  CHECK(execute_request(5, metadata_request, &metadata_greeter, getgid()) == 126);
+  metadata_request[1] = "app";
   metadata_request[4] = "LD_PRELOAD=unsafe";
   CHECK(!application_request_is_safe(5, metadata_request));
   metadata_request[1] = "app-elevated";

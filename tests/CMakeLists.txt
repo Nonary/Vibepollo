@@ -2060,6 +2060,11 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
     add_test(NAME regression_encoder_sync_compatibility
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_encoder_sync_compatibility.py"
             --compiler "${CMAKE_CXX_COMPILER}")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME regression_linux_managed_audio_sink
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_managed_audio_sink.py"
+                --compiler "${CMAKE_CXX_COMPILER}")
+    endif()
     add_test(NAME regression_display_helper_pipe_authority
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_pipe_authority.py"
             --compiler "${CMAKE_CXX_COMPILER}")
