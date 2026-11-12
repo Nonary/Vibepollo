@@ -366,8 +366,8 @@ int main() {
  // the adjusted video bitrate leaves room for the audio codec's bitrate and
  // 500 kbps of overhead. The base payload asks for high quality Opus audio.
  struct AudioCase {const char *offered,*accepted,*expected;int channels;bool encoder,quality;int status,bitrate;
-   const char *packet_duration="";const char *surround_params="";int configured=100000;bool pyrowave=false;};
- for(const auto &test:std::array<AudioCase,36>{{
+   const char *packet_duration="";const char *surround_params="";int configured=100000;bool pyrowave=false;bool encrypted=false;};
+ for(const auto &test:std::array<AudioCase,39>{{
    {"AC3","AC3","AC3",2,true,false,200,99372},
    {"EAC3","EAC3","EAC3",6,true,true,200,99116},
    {"AC3","AC3","AC3",2,true,false,200,99372,"10"},
@@ -405,6 +405,10 @@ int main() {
    {"PCM","PCM","Opus",6,false,false,200,97964,"60"},
    {"PCM","PCM","Opus",2,false,false,200,98988,"abc"},
    {"PCM","PCM","Opus",2,false,false,200,98988,"2.5"},
+   // Audio encryption pads each payload, which never changes the longest fitting duration.
+   {"PCM","PCM","PCM",2,false,false,200,97964,"5","",100000,false,true},
+   {"PCM","PCM","PCM",6,false,false,200,94892,"2","",100000,false,true},
+   {"PCM","PCM","Opus",8,false,false,200,97452,"2","",100000,false,true},
    {"PCM","","Opus",2,false,false,200,98988,"10"},
    {"PCM","EAC3","Opus",6,true,false,200,97964},
    {"AC3","PCM","Opus",2,true,false,200,98988},
@@ -422,6 +426,7 @@ int main() {
    audio_payload+="a=x-ml-video.configuredBitrateKbps:"+std::to_string(test.configured)+"\n";
    if(*test.packet_duration)audio_payload+="a=x-nv-aqos.packetDuration:"+std::string(test.packet_duration)+"\n";
    if(test.pyrowave)audio_payload+="a=x-nv-vqos[0].bitStreamFormat:99\n";
+   if(test.encrypted)audio_payload+="a=x-ss-general.encryptionEnabled:"+std::to_string(SS_ENC_AUDIO)+"\n";
    if(*test.accepted)audio_payload+="a=x-ss-audio-codec-accept:"+std::string(test.accepted)+"\n";
    auto audio_request=std::make_shared<Request>();audio_request->payload=audio_payload.data();audio_request->payloadLength=audio_payload.size();
    const int failures_before=failures;
