@@ -10,8 +10,8 @@ else()
             MACOSX_BUNDLE_GUI_IDENTIFIER "${PROJECT_FQDN}"
             MACOSX_BUNDLE_INFO_PLIST "${APPLE_PLIST_FILE}"
             MACOSX_BUNDLE_ICON_FILE "vibepollo.icns"
-            MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
-            MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION}")
+            MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION_NUMERIC}"
+            MACOSX_BUNDLE_BUNDLE_VERSION "${PROJECT_VERSION_NUMERIC}")
 
     # Sign the build-tree bundle with the packaging identity too. With a stable (non ad-hoc)
     # identity both copies satisfy the same designated requirement, so macOS privacy permissions
