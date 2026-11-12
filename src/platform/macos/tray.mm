@@ -124,7 +124,7 @@ namespace {
     NSString *path = @(state.icon.c_str());
     NSImage *image = [[NSImage alloc] initWithContentsOfFile:path];
     if (image == nil && [path hasSuffix:@".svg"]) {
-      NSString *png = [[path stringByDeletingPathExtension] stringByAppendingString:@"-45.png"];
+      NSString *png = [[path stringByDeletingPathExtension] stringByAppendingString:@"-16.png"];
       image = [[NSImage alloc] initWithContentsOfFile:png];
     }
     if (image != nil) {
