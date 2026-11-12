@@ -30,6 +30,35 @@ namespace audio::policy {
    */
   std::vector<std::uint8_t> pcm_payload(std::span<const float> samples);
 
+  /**
+   * @brief The largest audio datagram, headers and encryption padding included, that every
+   * Moonlight-protocol client receives intact: upstream moonlight-common-c's audio receive limit.
+   */
+  constexpr std::size_t DATAGRAM_BUDGET = 1400;
+
+  /** @brief The shortest and longest packet durations, in whole milliseconds, PCM audio may use. */
+  constexpr int PCM_MIN_PACKET_DURATION = 1;
+  constexpr int PCM_MAX_PACKET_DURATION = 5;
+
+  /** @brief On-the-wire sizes of one PCM packet's data datagram and of the parity datagrams sent with it. */
+  struct pcm_datagrams_t {
+    std::size_t data;
+    std::size_t parity;
+  };
+
+  /**
+   * @brief Size the datagrams carrying one PCM packet of the given packet duration.
+   * Data datagrams carry the RTP header; parity datagrams also carry the audio FEC header.
+   * With audio encryption, the payload grows by its AES-CBC PKCS#7 padding.
+   */
+  pcm_datagrams_t pcm_datagrams(int channels, int packet_duration_ms, bool encrypted);
+
+  /** @brief Whether every data and parity datagram of PCM audio at this packet duration fits the datagram budget. */
+  bool pcm_packet_duration_fits(int channels, int packet_duration_ms, bool encrypted);
+
+  /** @brief The largest whole-millisecond packet duration from 1 to 5 that fits the datagram budget, or 0 if none does. */
+  int pcm_max_packet_duration(int channels, bool encrypted);
+
   struct sink_catalog_t {
     std::string host;
     std::optional<std::string> stereo;
