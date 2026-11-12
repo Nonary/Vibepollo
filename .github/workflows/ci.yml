@@ -333,8 +333,9 @@ jobs:
       - release-candidate
     # Match Windows: release preparation must not build packages before the tag push.
     if: >-
-      ${{ github.event_name != 'push' ||
-          (github.ref_type == 'tag' && needs.release-candidate.outputs.should_release == 'true') }}
+      ${{ (github.event_name != 'workflow_dispatch' || inputs.validate_hosted_linux != true) &&
+          (github.event_name != 'push' ||
+           (github.ref_type == 'tag' && needs.release-candidate.outputs.should_release == 'true')) }}
     permissions:
       contents: read
     uses: ./.github/workflows/ci-macos.yml

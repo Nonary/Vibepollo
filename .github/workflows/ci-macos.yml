@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       release_version:
-        description: Version to build, for example 2.2.0. Empty uses the tag, or 0.0.0, as on Windows.
+        description: Version to build, for example 2.2.0. Empty uses the tag, or the CI-only 2.0.0-pr-validation version.
         required: false
         default: ''
         type: string
@@ -85,18 +85,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
+          ref: ${{ inputs.release_commit || github.sha }}
           submodules: recursive
 
       - name: Resolve build version
         env:
           INPUT_RELEASE_VERSION: ${{ inputs.release_version }}
         run: |
-          # As on Windows: the requested version, else the tag being built, else 0.0.0.
+          # Use the requested version or tag; unversioned manual builds use the same
+          # nonzero validation identity as main CI, never an allocated release.
           build_version="${INPUT_RELEASE_VERSION}"
           if [[ -z "${build_version}" && "${GITHUB_REF}" == refs/tags/* ]]; then
             build_version="${GITHUB_REF_NAME}"
           fi
-          build_version="${build_version:-0.0.0}"
+          build_version="${build_version:-2.0.0-pr-validation}"
           build_version="${build_version#v}"
           echo "Resolved macOS build version: ${build_version}"
           echo "BUILD_VERSION=${build_version}" >> "${GITHUB_ENV}"
@@ -207,14 +209,33 @@ jobs:
           # supports, and that it starts and serves its web UI and serverinfo.
           dmg="artifacts/Vibepollo-${MATRIX_NAME}.dmg"
           mnt="$(mktemp -d)"
+          pid=""
+          cleanup() {
+            if [[ -n "${pid}" ]]; then
+              kill "${pid}" 2>/dev/null || true
+              for _ in $(seq 1 20); do
+                kill -0 "${pid}" 2>/dev/null || break
+                sleep 0.25
+              done
+              kill -9 "${pid}" 2>/dev/null || true
+              wait "${pid}" 2>/dev/null || true
+              pid=""
+            fi
+            hdiutil detach "${mnt}" -quiet 2>/dev/null || true
+          }
+          trap cleanup EXIT
           # The DMG shows a license agreement; answer it without a pager.
-          yes | PAGER=cat hdiutil attach -nobrowse -readonly -mountpoint "${mnt}" "${dmg}" > /dev/null
+          (yes || true) | PAGER=cat hdiutil attach -nobrowse -readonly -mountpoint "${mnt}" "${dmg}" > /dev/null
           app="${mnt}/Vibepollo.app"
           codesign --verify --deep --strict --verbose=2 "${app}"
 
           min_macos="$(for f in "${app}"/Contents/MacOS/* "${app}"/Contents/Frameworks/*; do
             vtool -show-build "${f}" 2>/dev/null | awk '/minos/ {print $2}'
           done | sort -V | tail -1)"
+          if [[ -z "${min_macos}" ]]; then
+            echo "::error::No deployment target found in the packaged app"
+            exit 1
+          fi
           echo "${MATRIX_NAME} requires macOS ${min_macos} or later"
           echo "- ${MATRIX_NAME}: requires macOS ${min_macos} or later" >> "${GITHUB_STEP_SUMMARY}"
           # A bundled library built for a newer macOS raises the whole app's minimum.
@@ -230,16 +251,15 @@ jobs:
           pid=$!
           started=false
           for _ in $(seq 1 60); do
-            if curl -skf -o /dev/null https://localhost:47990/ && curl -sf -o /dev/null http://localhost:47989/serverinfo; then
+            if curl --max-time 2 -skf -o /dev/null https://localhost:47990/ && curl --max-time 2 -sf -o /dev/null http://localhost:47989/serverinfo; then
               started=true
               break
             fi
             kill -0 "${pid}" 2>/dev/null || break
             sleep 1
           done
-          kill "${pid}" 2>/dev/null || true
-          wait "${pid}" 2>/dev/null || true
-          hdiutil detach "${mnt}" -quiet || true
+          cleanup
+          trap - EXIT
           if [[ "${started}" != "true" ]]; then
             echo "Vibepollo didn't serve its web UI and serverinfo. Its output:"
             cat smoke.log
