@@ -187,8 +187,8 @@ TEST(AudioPcmDatagramBudget, LargestFittingDurationKeepsDataAndParityWithinBudge
     EXPECT_EQ(encrypted.data, test.encrypted_data) << test.channels;
     EXPECT_EQ(encrypted.parity, test.encrypted_parity) << test.channels;
     for (const auto &datagrams : {plain, encrypted}) {
-      EXPECT_LE(datagrams.data, 1400u) << test.channels;
-      EXPECT_LE(datagrams.parity, 1400u) << test.channels;
+      EXPECT_LE(datagrams.data, DATAGRAM_BUDGET) << test.channels;
+      EXPECT_LE(datagrams.parity, DATAGRAM_BUDGET) << test.channels;
     }
   }
 }

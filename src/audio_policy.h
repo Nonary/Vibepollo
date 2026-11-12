@@ -56,7 +56,10 @@ namespace audio::policy {
   /** @brief Whether every data and parity datagram of PCM audio at this packet duration fits the datagram budget. */
   bool pcm_packet_duration_fits(int channels, int packet_duration_ms, bool encrypted);
 
-  /** @brief The largest whole-millisecond packet duration from 1 to 5 that fits the datagram budget, or 0 if none does. */
+  /**
+   * @brief The largest whole-millisecond packet duration from PCM_MIN_PACKET_DURATION to
+   * PCM_MAX_PACKET_DURATION that fits the datagram budget, or 0 if none does.
+   */
   int pcm_max_packet_duration(int channels, bool encrypted);
 
   struct sink_catalog_t {

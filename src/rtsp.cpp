@@ -2525,7 +2525,7 @@ namespace rtsp_stream {
       session->audio_codec_offered,
       accepted_audio_codec,
       args.at("x-nv-aqos.packetDuration"sv),
-      config.encryptionFlagsEnabled & SS_ENC_AUDIO,
+      (config.encryptionFlagsEnabled & SS_ENC_AUDIO) != 0,
       ac3_encoder_available,
       eac3_encoder_available,
       config::audio.high_quality_audio
