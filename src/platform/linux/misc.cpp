@@ -465,6 +465,12 @@ namespace platf {
           // Empty optional toggles/numeric settings must not turn a bootstrap
           // request into a failed launch. Text fields preserve empty values.
           if (value.empty() && field.type != VIBEPOLLO_STREAM_TEXT) continue;
+          // This newly exported alias is optional. Existing paired identities
+          // may contain control characters that the broker cannot represent;
+          // omit the alias rather than failing a previously valid app launch.
+          if (std::string_view {field.name} == "SUNSHINE_CLIENT_NAME" &&
+              (value.find('\0') != std::string::npos ||
+               !vibepollo_stream_environment_value_is_safe(&field, value.c_str()))) continue;
           auto assignment = std::string {field.name} + '=' + value;
           if (!vibepollo_stream_environment_entry_is_safe(assignment.c_str(), nullptr) ||
               assignment.size() + 1 > VIBEPOLLO_STREAM_ENVIRONMENT_MAX_BYTES - stream_environment_bytes) {
