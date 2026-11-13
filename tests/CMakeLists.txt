@@ -1936,6 +1936,10 @@ if(Python3_Interpreter_FOUND AND UNIX AND SUNSHINE_TEST_ENABLE_COMPONENT)
     set_tests_properties(regression_macos_build_api_compatibility PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
 if(Python3_Interpreter_FOUND)
+    add_test(NAME regression_display_helper_engine_switch
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_engine_switch.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(regression_display_helper_engine_switch PROPERTIES LABELS "component" TIMEOUT 30)
     add_test(NAME regression_shutdown_deadline
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_shutdown_deadline.py"
             --compiler "${CMAKE_CXX_COMPILER}")
