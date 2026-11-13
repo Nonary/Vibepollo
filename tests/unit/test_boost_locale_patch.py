@@ -28,7 +28,7 @@ class BoostLocalePatch(unittest.TestCase):
                 return subprocess.run([CMAKE, "-S", str(root), "-B", str(root / "build")], capture_output=True, text=True)
             before = configure()
             if before.returncode != 0:
-                self.assertIn("is not a prefix of file", before.stderr)
+                self.assertIn("is not a prefix of file", " ".join(before.stderr.split()))
             # Some older CMake versions accept the invalid TREE; verify the
             # dependency invariant directly as well as corrected configuration.
             self.assertIn(ORIGINAL, cmake_file.read_text())
