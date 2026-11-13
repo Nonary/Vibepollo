@@ -33,6 +33,7 @@
 // local includes
 #include "audio_continuous_buffer.h"
 #include "audio_visibility_recovery.h"
+#include "misc.h"
 #include "src/audio_role_control.h"
 #include "src/config.h"
 #include "src/globals.h"
@@ -3245,6 +3246,9 @@ namespace platf {
     if (dxgi::init()) {
       return nullptr;
     }
+
+    // Mouse Keys changes outlive the process for the Windows session.
+    recover_mouse_keys();
 
     // Initialize COM
     auto co_init = std::make_unique<platf::audio::co_init_t>();
