@@ -820,6 +820,7 @@ endif()
 
 sunshine_register_component(NAME test_component_color_profile_policy TEST_SOURCE unit/test_color_profile_policy.cpp)
 sunshine_register_component(NAME test_component_legacy_restore_event_policy TEST_SOURCE unit/test_legacy_restore_event_policy.cpp)
+sunshine_register_component(NAME test_component_failed_revert_policy TEST_SOURCE unit/test_failed_revert_policy.cpp)
 sunshine_register_component(NAME test_component_recovery_status_policy TEST_SOURCE unit/test_recovery_status_policy.cpp)
 sunshine_register_component(NAME test_component_wake_recovery_cleanup_policy
     TEST_SOURCE unit/platform/windows/test_wake_recovery_cleanup_policy.cpp)

@@ -45,6 +45,7 @@
   #include "src/version_compare.h"
   #include "src/platform/windows/display_helper_coordinator.h"
   #include "src/platform/windows/display_helper_request_helpers.h"
+  #include "src/platform/windows/failed_revert_policy.h"
   #include "src/platform/windows/frame_limiter_nvcp.h"
   #include "src/platform/windows/impersonating_display_device.h"
   #include "src/platform/windows/ipc/display_settings_client.h"
@@ -894,6 +895,10 @@ namespace {
   // Tracks whether we've recently requested a helper REVERT and therefore expect a restore loop to be active.
   // Used to avoid spamming DISARM frames and to enable a kill-switch if IPC is wedged.
   static std::atomic<bool> g_restore_expected {false};
+
+  // A REVERT that could not reach the helper. The watchdog keeps restarting the
+  // helper and replays it once the host is idle; a later APPLY supersedes it.
+  static display_helper::failed_revert_policy::slot_t g_failed_revert;
 
   // Resolve the effective display helper engine. In automatic mode the v2 engine
   // only rides pre-release builds; stable releases keep the legacy engine until
@@ -2289,6 +2294,48 @@ namespace {
       );
     };
 
+    // Runs on this worker, so it reads the app id rather than calling running()
+    // for the same reason as the interval selection below.
+    auto retry_failed_revert_if_idle = []() {
+      if (!g_failed_revert.pending()) {
+        return;
+      }
+      bool reverted = false;
+      {
+        // Hold the gate so a launch cannot APPLY between this idle check and
+        // the REVERT. Never wait for it from this worker.
+        std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex(), std::try_to_lock);
+        if (!lifecycle_lock.owns_lock()) {
+          return;
+        }
+        const auto request = g_failed_revert.take_if_replayable({
+          stream_is_active_or_pending(),
+          rtsp_stream::has_pending_launch_or_startup(),
+          proc::proc.current_app_id() > 0,
+        });
+        if (!request) {
+          return;
+        }
+        BOOST_LOG(info) << "Display helper: helper is reachable again; retrying the REVERT it missed.";
+        reverted = display_helper_integration::revert(
+          request->prefer_golden_if_current_missing,
+          request->override_managed_ownership,
+          request->allow_disabled_recovery,
+          nullptr,
+          request->retain_paused_app ?
+            display_helper_integration::RevertOwnershipPolicy::RetainPausedNormalGame :
+            display_helper_integration::RevertOwnershipPolicy::AllOwnersMustRelease,
+          request->remove_display_after_restore ?
+            display_helper_integration::FinalRestoreDisplayPolicy::RemoveAfterRestore :
+            display_helper_integration::FinalRestoreDisplayPolicy::Retain
+        );
+      }
+      // A paused app still needs the watchdog's heartbeat until /resume or exit.
+      if (reverted && rtsp_stream::session_count_no_cleanup() == 0 && proc::proc.current_app_id() <= 0) {
+        display_helper_integration::stop_watchdog();
+      }
+    };
+
     while (!st.stop_requested()) {
       try {
         if (!dd_feature_enabled()) {
@@ -2332,6 +2379,9 @@ namespace {
           }
           // Do not re-apply automatically on reconnect; just confirm IPC is reachable.
           helper_ready = ping_with_stream_owner();
+        }
+        if (helper_ready) {
+          retry_failed_revert_if_idle();
         }
       } catch (const std::exception &e) {
         BOOST_LOG(error) << "Display helper watchdog failed: " << e.what();
@@ -2735,6 +2785,10 @@ namespace display_helper_integration {
       return false;
     }
     clear_pending_apply_queue_locked();
+    // Keep a missed REVERT until this APPLY succeeds: the new layout's owner
+    // then restores it when its own session ends. If setup fails, is skipped
+    // or is cancelled, the watchdog still replays the original REVERT.
+    display_helper::failed_revert_policy::apply_scope_t failed_revert_apply {g_failed_revert};
 
     // Remember the session's virtual display before the APPLY payload is built so the
     // helper can exclude it from the pre-apply baseline it may capture.
@@ -2757,6 +2811,7 @@ namespace display_helper_integration {
       startup_deadline,
       shutdown_class_caller
     );
+    failed_revert_apply.applied(applied);
     if (!applied) return false;
     if (retry_policy == ApplyRetryPolicy::StreamStart) {
       // Legacy APPLY success already includes verification. V2 also returns a
@@ -2810,8 +2865,28 @@ namespace display_helper_integration {
     // Saving automation as disabled must still finish old recovery. Keep
     // ordinary app-end REVERTs gated so an always-disabled configuration does
     // not unexpectedly launch the helper and restore a saved golden layout.
+    // The watchdog replays a REVERT the helper never received with these same
+    // arguments. It only runs while automation is enabled.
+    const auto remember_missed_revert = [&]() {
+      if (!dd_feature_enabled()) {
+        return false;
+      }
+      g_failed_revert.remember({
+        prefer_golden_if_current_missing,
+        override_managed_ownership,
+        allow_disabled_recovery,
+        ownership_policy == RevertOwnershipPolicy::RetainPausedNormalGame,
+        display_policy == FinalRestoreDisplayPolicy::RemoveAfterRestore,
+        proc::proc.current_app_id() > 0,
+      });
+      return true;
+    };
     if (!ensure_helper_started(false, allow_disabled_recovery)) {
-      BOOST_LOG(info) << "Display helper unavailable; cannot send revert.";
+      if (remember_missed_revert()) {
+        BOOST_LOG(info) << "Display helper unavailable; REVERT will be retried once the helper responds.";
+      } else {
+        BOOST_LOG(info) << "Display helper unavailable; cannot send revert.";
+      }
       return false;
     }
     BOOST_LOG(info) << "Display helper: sending REVERT request"
@@ -2830,6 +2905,7 @@ namespace display_helper_integration {
       &connection_generation);
     BOOST_LOG(info) << "Display helper: REVERT dispatch result=" << (ok ? "true" : "false");
     if (ok) {
+      g_failed_revert.clear();
       g_restore_expected.store(true, std::memory_order_relaxed);
       g_last_revert_us.store(now_steady_us(), std::memory_order_relaxed);
       if (recovery_ticket && connection_generation != 0) {
@@ -2846,6 +2922,8 @@ namespace display_helper_integration {
           g_last_apply_generation.load(std::memory_order_acquire),
         });
       }
+    } else {
+      (void) remember_missed_revert();
     }
     clear_active_session();
     return ok;
@@ -3171,6 +3249,7 @@ namespace display_helper_integration {
     BOOST_LOG(info) << "Display helper: applying deferred configuration for session " << pending.session_id << ".";
     // This entry point's predicate belongs to an owned shutdown worker by
     // contract, so a caller that supplies one is shutdown-class.
+    display_helper::failed_revert_policy::apply_scope_t failed_revert_apply {g_failed_revert};
     const bool ok = apply_internal(
       pending.request,
       false,
@@ -3180,6 +3259,7 @@ namespace display_helper_integration {
       {},
       static_cast<bool>(cancellation_predicate)
     );
+    failed_revert_apply.applied(ok);
     if (ok && stream_was_live_when_claimed && session) {
       if (const auto generation = active_session_generation_for(*session)) {
         // This retry may complete after start_watchdog() observed no active
@@ -3225,6 +3305,10 @@ namespace display_helper_integration {
       }
     }
     return ok;
+  }
+
+  bool has_failed_revert() {
+    return g_failed_revert.pending();
   }
 
   bool has_pending_apply() {
