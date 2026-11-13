@@ -1936,6 +1936,10 @@ if(Python3_Interpreter_FOUND AND UNIX AND SUNSHINE_TEST_ENABLE_COMPONENT)
     set_tests_properties(regression_macos_build_api_compatibility PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
 if(Python3_Interpreter_FOUND)
+    add_test(NAME regression_stream_start_capture_budget
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_stream_start_capture_budget.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(regression_stream_start_capture_budget PROPERTIES LABELS "component" TIMEOUT 30)
     add_test(NAME regression_display_helper_engine_switch
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_engine_switch.py"
             --compiler "${CMAKE_CXX_COMPILER}")
