@@ -3,6 +3,7 @@ import pathlib
 import subprocess
 import sys
 import tempfile
+import time
 
 
 root = pathlib.Path(sys.argv[1]).resolve()
@@ -86,11 +87,22 @@ void record(const char *message) {
   std::puts(message);
   std::fflush(stdout);
 }
+bool block_logging = false;
+void wait_forever() {
+  std::mutex mutex;
+  std::condition_variable never_released;
+  std::unique_lock lock(mutex);
+  never_released.wait(lock, [] { return false; });
+}
+void touch_logger() {
+  record("logger touched");
+  if (block_logging) wait_forever();
+}
 struct NullLog {
-  template<class T> NullLog &operator<<(const T &) { return *this; }
+  template<class T> NullLog &operator<<(const T &) { touch_logger(); return *this; }
 };
 #define BOOST_LOG(level) NullLog {}
-namespace logging { void log_flush() { record("deadline expired"); } }
+namespace logging { void log_flush() { touch_logger(); } }
 namespace lifetime {
   constexpr int desired_exit_code = 73;
   void debug_trap() { std::_Exit(74); }
@@ -105,10 +117,7 @@ namespace pyrowave::host {
     assert(streams_drained);
     record("pyrowave shutdown");
     if (block_vendor_release) {
-      std::mutex mutex;
-      std::condition_variable never_released;
-      std::unique_lock lock(mutex);
-      never_released.wait(lock, [] { return false; });
+      wait_forever();
     }
     record("pyrowave released");
   }
@@ -157,10 +166,10 @@ PRODUCTION_NORMAL_SHUTDOWN
 
 int main(int argc, char **argv) {
   assert(argc == 2);
-  const bool early = !std::strcmp(argv[1], "early") ||
-                     !std::strcmp(argv[1], "blocked-early");
-  block_vendor_release = !std::strcmp(argv[1], "blocked") ||
-                         !std::strcmp(argv[1], "blocked-early");
+  const std::string_view mode = argv[1];
+  const bool early = mode == "early" || mode.ends_with("-early");
+  block_vendor_release = mode.starts_with("blocked");
+  block_logging = mode == "blocked-logger" || mode == "blocked-logger-early";
   assert(run(early) == lifetime::desired_exit_code);
   // Both normal and probe-return paths must return here after the real
   // deadline worker has completed and joined, with no static driver release.
@@ -191,9 +200,12 @@ with tempfile.TemporaryDirectory(prefix="pyrowave-shutdown-") as temporary:
          "-I", str(root), *sys.argv[3:], str(cpp), "-o", str(executable)],
         check=True,
     )
-    for mode in ("normal", "early", "blocked", "blocked-early"):
+    for mode in ("normal", "early", "blocked", "blocked-early",
+                 "blocked-logger", "blocked-logger-early"):
+        started = time.monotonic()
         result = subprocess.run([str(executable), mode], capture_output=True,
                                 text=True, timeout=5)
+        elapsed = time.monotonic() - started
         expected = 73 if mode.startswith("blocked") else 0
         if result.returncode != expected:
             raise AssertionError(
@@ -204,15 +216,18 @@ with tempfile.TemporaryDirectory(prefix="pyrowave-shutdown-") as temporary:
         if events.index("streams drained") >= events.index("pyrowave shutdown"):
             raise AssertionError(f"{mode}: shared Vulkan instance released before stream resources")
         if mode.startswith("blocked"):
-            # Vibepollo intentionally exits before flushing the asynchronous log
-            # sink, so the source-only "deadline expired" marker is not observable.
-            # The expected process exit code plus this terminal event prove that
-            # the owned deadline fired while the vendor release remained blocked.
-            if events[-1] != "pyrowave shutdown" or "deadline completed" in events:
-                raise AssertionError(f"{mode}: blocked vendor release escaped the owned shutdown deadline")
+            # Exit 73 is specific to the extracted forced-exit path: normal
+            # main returns 0 below. Require the shortened 150ms deadline to
+            # fire after vendor entry, without relying on logger side effects.
+            if not 0.12 <= elapsed < 3:
+                raise AssertionError(f"{mode}: forced exit took {elapsed:.3f}s, expected a bounded deadline")
+            forbidden = {"pyrowave released", "deadline completed", "main returned", "logger touched"}
+            if forbidden.intersection(events):
+                raise AssertionError(f"{mode}: blocked release completed or touched logging: {events}")
         elif events[-3:] != ["pyrowave released", "deadline completed", "main returned"]:
             raise AssertionError(f"{mode}: finite vendor release did not complete before deadline teardown")
         if mode.endswith("early") and "shutdown observed" in events:
             raise AssertionError(f"{mode}: fixture did not take the production encoder-probe return")
+        print(f"PASS: PyroWave shutdown {mode} (exit {result.returncode}, {elapsed:.3f}s)")
 
-print("Production PyroWave shutdown order, probe-return cleanup and blocked-driver deadline passed")
+print("Production PyroWave shutdown order, probe-return cleanup and blocked vendor/logger deadlines passed")

@@ -34,7 +34,9 @@ def main():
 #include <optional>
 #include <string>
 #include <vector>
+#ifndef _WIN32
 #define _WIN32
+#endif
 using namespace std::literals;
 struct Clock {
   static inline std::chrono::steady_clock::time_point time {1s};
@@ -110,11 +112,19 @@ int main() {
 '''.replace('@PUBLISH@', publish).replace('@REMAINING@', remaining).replace('@RETRY@', retry)
     with tempfile.TemporaryDirectory(prefix='stream-start-budget-') as directory:
         source = Path(directory) / 'budget.cpp'
-        binary = Path(directory) / 'budget'
         source.write_text(program)
-        subprocess.run([args.compiler, '-std=c++20', '-Wall', '-Wextra', '-Werror',
-                        str(source), '-o', str(binary)], check=True)
-        subprocess.run([str(binary)], check=True)
+        # A forced include loads native host headers before defining _WIN32.
+        # This reproduces an already-defined Windows macro on non-Windows
+        # hosts without asking their standard libraries to target Windows.
+        predefined = Path(directory) / 'predefined_windows.h'
+        prelude = program[:program.index('#ifndef _WIN32')]
+        predefined.write_text(prelude + '#ifndef _WIN32\n#define _WIN32 1\n#endif\n')
+        for variant, flags in [('default', []), ('predefined-Windows', ['-include', str(predefined)])]:
+            binary = Path(directory) / ('budget-' + variant)
+            subprocess.run([args.compiler, '-std=c++20', '-Wall', '-Wextra', '-Werror',
+                            *flags, str(source), '-o', str(binary)], check=True)
+            subprocess.run([str(binary)], check=True)
+            print(f'PASS: capture budget compilation with {variant} platform macros')
 
 
 if __name__ == '__main__':
