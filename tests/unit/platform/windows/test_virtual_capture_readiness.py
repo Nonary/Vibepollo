@@ -39,6 +39,14 @@ harness = r'''
 #include <sstream>
 #include <string>
 #include <vector>
+// Select the production platform branch after the native standard library.
+#ifdef SUNSHINE_TEST_WINDOWS
+  #ifndef _WIN32
+    #define _WIN32
+  #endif
+#else
+  #undef _WIN32
+#endif
 struct TestClock {
   using time_point = std::chrono::steady_clock::time_point;
   static inline time_point current{std::chrono::seconds(1)};
@@ -195,7 +203,7 @@ int main() {
 with tempfile.TemporaryDirectory(prefix="virtual-capture-readiness-") as temporary:
     cpp = Path(temporary) / "test.cpp"
     cpp.write_text(harness)
-    for platform, flags in [("Windows", ["-D_WIN32"]), ("non-Windows", [])]:
+    for platform, flags in [("Windows", ["-DSUNSHINE_TEST_WINDOWS"]), ("non-Windows", [])]:
         exe = Path(temporary) / platform
         subprocess.run(["g++", "-std=c++20", "-Wall", "-Wextra", "-Werror", "-Wno-unused-parameter", *flags, str(cpp), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)

@@ -468,6 +468,34 @@ int main() {
     }.items():
         test_source = test_source.replace(f"/* PRODUCTION_{name} */", statements)
     test_path.write_text(test_source)
+    # Load the host C++ library before selecting the Windows production branch.
+    # Defining _WIN32 on the compiler command line breaks Apple's libc++ headers.
+    platform_header = directory_path / "host_platform.h"
+    platform_header.write_text("""
+#include <algorithm>
+#include <array>
+#include <cctype>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <functional>
+#include <iostream>
+#include <map>
+#include <mutex>
+#include <numeric>
+#include <optional>
+#include <set>
+#include <sstream>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+#ifndef _WIN32
+#define _WIN32
+#endif
+""")
     source = (
         pathlib.Path(sys.argv[2])
         if len(sys.argv) > 2
@@ -475,7 +503,7 @@ int main() {
     )
     subprocess.run(
         [
-            "g++", "-std=c++20", "-D_WIN32", "-pthread",
+            "g++", "-std=c++20", "-include", str(platform_header), "-pthread",
             "-I" + str(directory_path), "-I" + str(root),
             "-I" + str(root / "src/platform/windows"),
             str(source), str(directory_path / "test.cpp"),
