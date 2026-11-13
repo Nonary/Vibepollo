@@ -1,7 +1,7 @@
 """Exercise actual Avahi start/teardown with fake API lifetime recording."""
 from pathlib import Path
 import argparse, subprocess,tempfile
-p=argparse.ArgumentParser();p.add_argument('--repo',type=Path,default=Path(__file__).resolve().parents[2]);a=p.parse_args()
+p=argparse.ArgumentParser();p.add_argument('--repo',type=Path,default=Path(__file__).resolve().parents[2]);p.add_argument('--compiler',default='clang++');a=p.parse_args()
 s=(a.repo/'src/platform/linux/publish.cpp').read_text();start=s.index('  class deinit_t: public ::platf::deinit_t {');body=s[start:s.index('\n}  // namespace platf::publish',start)]
 program=r'''
 #include <cassert>
@@ -59,6 +59,6 @@ int main(){
 '''.replace('@BODY@',body)
 with tempfile.TemporaryDirectory(prefix='avahi-owner-') as d:
  cpp=Path(d)/'avahi.cpp';cpp.write_text(program);bin=Path(d)/'avahi'
- subprocess.run(['clang++','-std=c++23','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-fsanitize=address,undefined',str(cpp),'-o',str(bin)],check=True)
+ subprocess.run([a.compiler,'-std=c++23','-Wall','-Wextra','-Werror','-Wno-unused-parameter','-fsanitize=address,undefined',str(cpp),'-o',str(bin)],check=True)
  subprocess.run([str(bin)],check=True)
  print('PASS: actual Avahi loop exit releases client/group before owner reset, then poll teardown after join')

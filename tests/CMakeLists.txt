@@ -2422,7 +2422,7 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
     add_test(NAME test_component_avahi_lifetime
         COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
             "${CMAKE_CURRENT_LIST_DIR}/unit/test_avahi_lifetime.py"
-            --repo "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+            --repo "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}")
     set_tests_properties(test_component_avahi_lifetime
         PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
@@ -2442,5 +2442,14 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
             "${CMAKE_CURRENT_LIST_DIR}/unit/test_arm64_driver_dlls.py"
             --repo "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}")
     set_tests_properties(test_component_arm64_driver_dlls
+        PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
+
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    add_test(NAME test_component_macos_launch_role
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_macos_launch_role.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_macos_launch_role
         PROPERTIES LABELS "component" TIMEOUT 60)
 endif()

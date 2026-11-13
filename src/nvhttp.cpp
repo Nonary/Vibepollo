@@ -5883,9 +5883,10 @@ launch_session->exact_target_hold.reset();
       }
 #endif
 #ifdef __APPLE__
-        // As the Windows display helper does, bring the client's display up before probing: a
-        // Mac without a screen of its own has nothing else to probe.
+      // Bring the client's virtual display up before the encoder probe.
+      if (launch_session->role != remote_session::role_e::input) {
         platf::macos_virtual_display::hold_for_launch(requested_display_config(*launch_session));
+      }
 #endif
 
         // Probe encoders again before streaming to ensure our chosen
@@ -6749,8 +6750,8 @@ launch_session->exact_target_hold.reset();
 #endif
       }
 #ifdef __APPLE__
-      // As on launch: bring the client's display up before probing.
-      if (!launch_session->input_only) {
+      // Bring the client's virtual display up before the encoder probe.
+      if (launch_session->role != remote_session::role_e::input) {
         platf::macos_virtual_display::hold_for_launch(requested_display_config(*launch_session));
       }
 #endif
