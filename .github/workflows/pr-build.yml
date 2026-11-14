@@ -70,6 +70,7 @@ jobs:
         run: |
           python3 tests/input/test_vhf_keyboard_mouse_policy.py
           python3 tests/input/test_vhf_keyboard_mouse_integration.py
+          python3 tests/input/test_vhf_idle_recovery.py
           python3 tests/input/test_scroll_backend_fallback.py
       - name: Check SC2026 client-to-driver click fidelity and the firmware attribute relay
         # Missing fixtures in a Steam source remain a failure.

@@ -420,6 +420,30 @@ namespace platf {
       }
     }
 
+    // Requires exclusive lifetime ownership and no active gamepads. There is
+    // nothing for the feedback worker to recreate, and it may not exist yet.
+    // Retire the suspect handle so the first controller connects afresh.
+    void retire_idle_connection_locked() {
+      if (keyboard_mouse_owned) {
+        keyboard_mouse_teardown_confirmed = client.abort_keyboard_mouse() == ERROR_SUCCESS;
+        keyboard_mouse_owned = false;
+        keyboard_mouse_faulted = true;
+        if (keyboard_mouse_teardown_confirmed) {
+          BOOST_LOG(warning) << "VHF keyboard/mouse stopped during driver recovery; using Windows SendInput for subsequent events"sv;
+        } else {
+          BOOST_LOG(error) << "VHF keyboard/mouse stopped during driver recovery; device removal could not be confirmed"sv;
+        }
+      }
+      // Closing an old connection is not proof that its PnP child disappeared.
+      // Keep fallback suppressed until the existing removal probe confirms it.
+      if (keyboard_mouse_faulted && !keyboard_mouse_teardown_confirmed) {
+        keyboard_mouse_recovery_needs_probe = true;
+      }
+      client.close();
+      recovery.reset();
+      recovery_failure_logged = false;
+    }
+
     void feedback_loop();
     template<class Request>
     bool submit_keyboard_mouse_locked(const Request &request) {
@@ -703,6 +727,13 @@ namespace platf {
 
       if (recovery.pending()) {
         std::unique_lock lock {lifetime};
+        // The last gamepad may have been freed, or allocation may have retired
+        // an idle connection, while this worker waited for exclusive ownership.
+        if (!recovery.pending()) continue;
+        if (active_count.load(std::memory_order_acquire) == 0) {
+          retire_idle_connection_locked();
+          continue;
+        }
         if (keyboard_mouse_owned) {
           // The recovery operation replaces the shared control handle. Do not
           // replay held keys or uncertain events onto the replacement child.
@@ -719,10 +750,6 @@ namespace platf {
           } else {
             BOOST_LOG(error) << "VHF keyboard/mouse stopped during driver recovery; device removal could not be confirmed"sv;
           }
-        }
-        if (active_count.load(std::memory_order_acquire) == 0) {
-          recovery.reset();
-          continue;
         }
         const auto result = recovery.attempt(client, slots, vhf_gamepad::connection_recovery_t::clock::now(), [](const auto nr, auto &slot) {
           // Retain logical ownership, profile and feedback routing, but not
@@ -1121,8 +1148,14 @@ namespace platf {
 
     std::unique_lock lock {impl->lifetime};
     if (impl->recovery.pending()) {
-      BOOST_LOG(warning) << "VHF controller allocation deferred while recovering a removed device"sv;
-      return -1;
+      if (impl->active_count.load(std::memory_order_acquire) != 0) {
+        BOOST_LOG(warning) << "VHF controller allocation deferred while recovering a removed device"sv;
+        return -1;
+      }
+      // Do this before the first allocation can fail: the session suppresses
+      // further state-packet retries, and the worker starts only after success.
+      BOOST_LOG(info) << "Reconnecting the idle VHF connection before controller allocation"sv;
+      impl->retire_idle_connection_locked();
     }
     auto &slot = impl->slots[id.globalIndex];
     if (slot.active) {
@@ -1130,39 +1163,50 @@ namespace platf {
       return -1;
     }
 
-    if (!impl->client.connected()) {
-      const DWORD connect_status = impl->client.connect();
-      if (connect_status != ERROR_SUCCESS) {
-        BOOST_LOG(error) << "Couldn't connect to the Vibepollo virtual gamepad driver ["sv
-                         << util::hex(connect_status).to_string_view() << ']';
+    lvg::profile profile {};
+    for (int attempt = 0; attempt < 2; ++attempt) {
+      if (!impl->client.connected()) {
+        const DWORD connect_status = impl->client.connect();
+        if (connect_status != ERROR_SUCCESS) {
+          BOOST_LOG(error) << "Couldn't connect to the Vibepollo virtual gamepad driver ["sv
+                           << util::hex(connect_status).to_string_view() << ']';
+          return -1;
+        }
+        BOOST_LOG(debug) << "Connected to the Vibepollo virtual gamepad driver"sv;
+      }
+
+      if (!select_profile(impl->client, desired, profile)) {
+        BOOST_LOG(error) << "Vibepollo virtual gamepad driver does not offer the requested gamepad profile"sv;
+        if (!vhf_keyboard_mouse::retain_control_handle(impl->active_count.load(std::memory_order_acquire), impl->keyboard_mouse_owned)) {
+          impl->client.close();
+        }
         return -1;
       }
-      BOOST_LOG(debug) << "Connected to the Vibepollo virtual gamepad driver"sv;
-    }
 
-    lvg::profile profile {};
-    if (!select_profile(impl->client, desired, profile)) {
-      BOOST_LOG(error) << "Vibepollo virtual gamepad driver does not offer the requested gamepad profile"sv;
-      if (!vhf_keyboard_mouse::retain_control_handle(impl->active_count.load(std::memory_order_acquire), impl->keyboard_mouse_owned)) {
-        impl->client.close();
+      const DWORD status = impl->client.create_controller(
+        static_cast<std::uint32_t>(id.globalIndex),
+        profile
+      );
+      if (status == ERROR_DEVICE_REMOVED && attempt == 0 &&
+          impl->active_count.load(std::memory_order_acquire) == 0) {
+        // Arrival can precede the session's mouse nudge that reports the lost
+        // connection. Retry this first controller once on a fresh connection.
+        BOOST_LOG(info) << "Retrying the first VHF controller on a fresh connection after device removal"sv;
+        impl->retire_idle_connection_locked();
+        continue;
       }
-      return -1;
-    }
-
-    const DWORD status = impl->client.create_controller(
-      static_cast<std::uint32_t>(id.globalIndex),
-      profile
-    );
-    if (status != ERROR_SUCCESS) {
-      if (impl->active_count.load(std::memory_order_acquire) > 0) {
-        impl->observe_status(status);
+      if (status != ERROR_SUCCESS) {
+        if (impl->active_count.load(std::memory_order_acquire) > 0) {
+          impl->observe_status(status);
+        }
+        BOOST_LOG(error) << "Couldn't create VHF gamepad "sv << id.globalIndex << " ["sv
+                         << util::hex(status).to_string_view() << ']';
+        if (!vhf_keyboard_mouse::retain_control_handle(impl->active_count.load(std::memory_order_acquire), impl->keyboard_mouse_owned)) {
+          impl->client.close();
+        }
+        return -1;
       }
-      BOOST_LOG(error) << "Couldn't create VHF gamepad "sv << id.globalIndex << " ["sv
-                       << util::hex(status).to_string_view() << ']';
-      if (!vhf_keyboard_mouse::retain_control_handle(impl->active_count.load(std::memory_order_acquire), impl->keyboard_mouse_owned)) {
-        impl->client.close();
-      }
-      return -1;
+      break;
     }
 
     slot.reset();
