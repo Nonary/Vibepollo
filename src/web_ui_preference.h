@@ -6,10 +6,14 @@
 
 #include <cctype>
 #include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 #include "file_handler.h"
@@ -108,11 +112,31 @@ namespace web_ui_preference {
     return result;
   }
 
+  // Read actual bytes (including CRLF), and distinguish a missing file
+  // from an existing file that cannot be read.
+  inline std::optional<std::string> read_conf_file(const std::filesystem::path &path) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) {
+      std::error_code ec;
+      const auto status = std::filesystem::symlink_status(path, ec);
+      if (status.type() == std::filesystem::file_type::not_found &&
+          (!ec || ec == std::errc::no_such_file_or_directory)) {
+        return std::string {};
+      }
+      return std::nullopt;
+    }
+    std::string content {(std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>()};
+    if (input.bad()) {
+      return std::nullopt;
+    }
+    return content;
+  }
+
   // The real host uses atomic file replacement via file_handler. Injected I/O
   // keeps the storage and concurrent tray/open contract testable.
   class store_t {
   public:
-    using reader_t = std::function<std::string(const std::filesystem::path &)>;
+    using reader_t = std::function<std::optional<std::string>(const std::filesystem::path &)>;
     using writer_t = std::function<bool(const std::filesystem::path &, std::string_view)>;
 
     store_t(std::filesystem::path path, reader_t reader, writer_t writer):
@@ -122,7 +146,8 @@ namespace web_ui_preference {
 
     std::string read() const {
       std::lock_guard lock(mutex_);
-      return parse_conf(reader_(path_));
+      const auto content = reader_(path_);
+      return content ? parse_conf(*content) : "legacy";
     }
 
     bool write(const std::string_view choice) {
@@ -130,7 +155,8 @@ namespace web_ui_preference {
         return false;
       }
       std::lock_guard lock(mutex_);
-      return writer_(path_, update_conf(reader_(path_), choice));
+      const auto content = reader_(path_);
+      return content && writer_(path_, update_conf(*content, choice));
     }
 
   private:
@@ -143,9 +169,7 @@ namespace web_ui_preference {
   inline store_t &host() {
     static store_t store {
       platf::appdata() / "web-ui-preference.conf",
-      [](const std::filesystem::path &path) {
-        return file_handler::read_file(path.string().c_str());
-      },
+      read_conf_file,
       [](const std::filesystem::path &path, const std::string_view choice) {
         return file_handler::write_file(path.string().c_str(), choice) == 0;
       },
