@@ -29,7 +29,10 @@ def function(signature):
 if 'void add_client_display_warning(' not in nvhttp:
     raise SystemExit('NEGATIVE CONTROL: successful responses have no warning observer')
 legacy_observer = 'bool client_display_warning_requested(' not in nvhttp
+host_message = 'void add_client_warning(' in nvhttp
 helper = ('template<class Client>\n' if legacy_observer else '') + function('void add_client_display_warning(')
+if host_message:
+    helper = function('void add_client_warning(') + '\n' + helper
 capture = '' if legacy_observer else 'template<class Client, class App>\n' + function('bool client_display_warning_requested(')
 observe_call = 'add_client_display_warning(tree, args, session, client, joining);' if legacy_observer else 'add_client_display_warning(tree, session, joining);'
 capture_call = '(void) args; (void) session; (void) client;' if legacy_observer else 'session.client_display_warning_requested = client_display_warning_requested(args, client, proc::proc.resolve_app(session.appid));'
@@ -38,7 +41,28 @@ layout_parser = function('  std::optional<config::video_t::virtual_display_layou
 linux = (source / 'platform/linux/private_display.cpp').read_text()
 start = linux.index('    const auto mode = session.virtual_display_mode_override.value_or(config::video.virtual_display_mode);', linux.index('  prepare_result_t prepare_session('))
 selection = linux[start:linux.index('\n    session.virtual_display = false;', start)]
-program = r'''
+precedence = r'''
+ {
+   // The first warning wins, and a refused stream never carries one.
+   pt::ptree first; first.put("root.<xmlattr>.status_code", 200); first.put("root.gamesession", 1);
+   add_client_warning(first, "first_code", "First message.");
+   add_client_warning(first, "second_code", "Second message.");
+   assert(first.get<std::string>("root.clientWarning") == "first_code");
+   assert(first.get<std::string>("root.clientWarningMessage") == "First message.");
+   pt::ptree refused; refused.put("root.<xmlattr>.status_code", 503); refused.put("root.gamesession", 0);
+   add_client_warning(refused, "code", "Message.");
+   assert(!refused.get_child_optional("root.clientWarning") && !refused.get_child_optional("root.clientWarningMessage"));
+   // Characters XML forbids are removed; an over-long message is left out.
+   pt::ptree cleaned; cleaned.put("root.<xmlattr>.status_code", 200); cleaned.put("root.resume", 1);
+   add_client_warning(cleaned, "code", "Line one\n\tLine\x01 two");
+   assert(cleaned.get<std::string>("root.clientWarningMessage") == "Line one\n Line two");
+   pt::ptree oversized; oversized.put("root.<xmlattr>.status_code", 200); oversized.put("root.resume", 1);
+   add_client_warning(oversized, "code", std::string(513, 'x'));
+   assert(oversized.get<std::string>("root.clientWarning") == "code" && !oversized.get_child_optional("root.clientWarningMessage"));
+   checks += 4;
+ }
+''' if host_message else ''
+program = (f'constexpr bool host_message = {"true" if host_message else "false"};\n') + r'''
 #include "src/session_display_policy.h"
 #include "src/app_display_policy.h"
 #include <boost/algorithm/string.hpp>
@@ -121,7 +145,11 @@ int main(int argc, char **argv) {
    const auto code = tree.get<std::string>("root.clientWarning", "");
    assert(!code.empty() == expected);
    assert(code.empty() || code == "virtual_display_disabled_by_client");
+   const auto message = tree.get<std::string>("root.clientWarningMessage", "");
+   assert(!host_message || message.empty() == code.empty()); // Code and message travel together.
+   assert(message.empty() || message.find("virtual display") != std::string::npos);
    tree.get_child("root").erase("clientWarning");
+   tree.get_child("root").erase("clientWarningMessage");
    assert(tree == before); // Observer changes neither status, URL nor success flag.
    assert(config::video.dd.configuration_option == Prep::verify_only);
    ++checks;
@@ -203,6 +231,7 @@ int main(int argc, char **argv) {
  observe(changed_client, zero, physical, client, false);
  assert(changed_client.get<std::string>("root.clientWarning", "").empty());
  ++checks;
+ ''' + precedence + r'''
  if (argc == 2) {
    pt::ptree tree; tree.put("root.<xmlattr>.status_code", 200); tree.put("root.resume", 1);
    tree.put("root.sessionUrl0", "rtsp://127.0.0.1:48010");

@@ -1,6 +1,9 @@
 class Sunshine < Formula
   include Language::Python::Virtualenv
 
+  # Linux exposes the fork product name; Homebrew macOS retains the target name.
+  HOST_BINARY = (OS.linux? ? "@PROJECT_NAME@".downcase : "sunshine").freeze
+
   CUDA_VERSION = "13.1".freeze
   CUDA_FORMULA = "cuda@#{CUDA_VERSION}".freeze
   GCC_VERSION = "14".freeze
@@ -10,7 +13,8 @@ class Sunshine < Formula
   desc "@PROJECT_DESCRIPTION@"
   homepage "@PROJECT_HOMEPAGE_URL@"
   url "@GITHUB_CLONE_URL@",
-    tag: "@GITHUB_TAG@"
+    tag:      "@GITHUB_TAG@",
+    revision: "@GITHUB_COMMIT@"
   version "@BUILD_VERSION@"
   license all_of: ["GPL-3.0-only"]
   head "@GITHUB_CLONE_URL@", branch: "@GITHUB_DEFAULT_BRANCH@"
@@ -261,7 +265,7 @@ class Sunshine < Formula
 
   def install_platform_specific_files
     # codesign the binary on intel macs
-    system "codesign", "-s", "-", "--force", "--deep", bin/"sunshine" if OS.mac? && Hardware::CPU.intel?
+    system "codesign", "-s", "-", "--force", "--deep", bin/HOST_BINARY if OS.mac? && Hardware::CPU.intel?
 
     bin.install "src_assets/linux/misc/postinst" if OS.linux?
   end
@@ -273,7 +277,7 @@ class Sunshine < Formula
   end
 
   service do
-    run [opt_bin/"sunshine", "~/.config/sunshine/sunshine.conf"]
+    run [opt_bin/HOST_BINARY, "~/.config/sunshine/sunshine.conf"]
   end
 
   def post_install
@@ -302,6 +306,6 @@ class Sunshine < Formula
 
   test do
     # test that the binary runs at all
-    system bin/"sunshine", "--version"
+    system bin/HOST_BINARY, "--version"
   end
 end

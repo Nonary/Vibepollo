@@ -17,6 +17,8 @@ namespace proc {
     ctx.name = "Virtual Display";
     ctx.image_path = expand("virtual_desktop.png");
     ctx.virtual_display = true;
+    ctx.virtual_screen = true;
+    ctx.output_name_override = "sunshine:virtual_display";
     ctx.scale_factor = 100;
     ctx.auto_detach = true;
     ctx.exit_timeout = std::chrono::seconds(5);

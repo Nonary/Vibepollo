@@ -3,7 +3,12 @@ import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
 
 import { AppButton, SettingRow } from '@/components/ui';
-import { normalizeCommandRows, serializeCommandRows, type CommandRow } from '@/utils/v2Parity';
+import {
+  normalizeCommandRows,
+  platformSupportsCommandElevation,
+  serializeCommandRows,
+  type CommandRow,
+} from '@/utils/v2Parity';
 
 const props = withDefaults(
   defineProps<{
@@ -23,7 +28,10 @@ function update(next: CommandRow[]): void {
 }
 
 function add(): void {
-  update([...rows.value, { do: '', undo: '', ...(isWindows.value ? { elevated: false } : {}) }]);
+  update([
+    ...rows.value,
+    { do: '', undo: '', ...(supportsElevation.value ? { elevated: false } : {}) },
+  ]);
 }
 
 function remove(index: number): void {
@@ -37,7 +45,7 @@ function updateRow(index: number, key: 'do' | 'undo' | 'elevated', value: unknow
   update(next);
 }
 
-const isWindows = computed(() => props.platform.toLocaleLowerCase().includes('windows'));
+const supportsElevation = computed(() => platformSupportsCommandElevation(props.platform));
 </script>
 
 <template>
@@ -47,7 +55,7 @@ const isWindows = computed(() => props.platform.toLocaleLowerCase().includes('wi
         <header class="global-prep-commands__header">
           <strong>{{ t('apps.prep_step', { number: index + 1 }) }}</strong>
           <div class="global-prep-commands__actions">
-            <label v-if="isWindows" class="vs-switch-label">
+            <label v-if="supportsElevation" class="vs-switch-label">
               <input
                 type="checkbox"
                 :checked="row.elevated === true"

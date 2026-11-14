@@ -6,6 +6,7 @@ import { useI18n } from 'vue-i18n';
 import { useRoute, useRouter } from 'vue-router';
 
 import { groupLibraryGames, providerLabels } from '@/utils/libraryGames';
+import { platformSupportsCommandElevation } from '@/utils/v2Parity';
 import {
   isRemoteMonitorApplication,
   preserveRemoteMonitorRouting,
@@ -616,6 +617,9 @@ const isWindowsHost = computed(() =>
 );
 const isLinuxHost = computed(() =>
   asString(overrideMetadata.value.platform).toLocaleLowerCase().includes('linux'),
+);
+const supportsCommandElevation = computed(() =>
+  platformSupportsCommandElevation(overrideMetadata.value.platform),
 );
 const hasNvidiaGpu = computed(() => {
   if (typeof overrideMetadata.value.has_nvidia_gpu === 'boolean') {
@@ -2940,15 +2944,18 @@ async function loadDisplayDevices(force = false): Promise<void> {
   }
 }
 
+const effectiveAppDisplayAction = computed(() =>
+  form.ddConfigurationOption || String(readConfigOverrides().dd_configuration_option || hostDisplayConfig.value?.dd_configuration_option || 'verify_only'),
+);
+
 const virtualDisplayLayoutBlocked = computed(() => {
   const layout =
     form.virtualDisplayLayout || hostDisplayConfig.value?.virtual_display_layout || 'exclusive';
-  const action =
-    form.ddConfigurationOption || hostDisplayConfig.value?.dd_configuration_option || 'verify_only';
+  const action = effectiveAppDisplayAction.value;
   return (
     displaySelection.value === 'virtual' &&
     layout !== 'exclusive' &&
-    (action === 'verify_only' || action === 'disabled')
+    action === 'disabled'
   );
 });
 
@@ -3598,7 +3605,7 @@ onBeforeUnmount(() => {
             </div>
           </SettingRow>
           <SettingRow
-            v-if="isWindowsHost && !isPlayniteLinked"
+            v-if="supportsCommandElevation && !isPlayniteLinked"
             :label="t('ui.application.fields.elevated.label')"
             :description="t('ui.application.fields.elevated.description')"
             control-id="app-elevated"
@@ -4397,6 +4404,9 @@ onBeforeUnmount(() => {
           <p v-if="displaySelection === 'virtual'" class="vs-field__helper">
             {{ t('config.app_virtual_display_layout_action_hint') }}
           </p>
+          <p v-if="displaySelection === 'virtual' && effectiveAppDisplayAction === 'verify_only'" class="vs-field__helper">
+            {{ t('config.app_virtual_display_verify_override') }}
+          </p>
           <InlineAlert
             v-if="virtualDisplayLayoutBlocked"
             tone="warning"
@@ -4461,7 +4471,7 @@ onBeforeUnmount(() => {
                 type="text"
               />
             </label>
-            <label v-if="isWindowsHost" class="vs-checkbox prep-entry__elevated">
+            <label v-if="supportsCommandElevation" class="vs-checkbox prep-entry__elevated">
               <input v-model="entry.elevated" type="checkbox" />
               <span>{{ t('ui.application.prep.elevated') }}</span>
             </label>
@@ -4711,7 +4721,7 @@ onBeforeUnmount(() => {
       </section>
 
       <section
-        v-if="!isNew && !isRemoteSession"
+        v-if="!isNew"
         class="editor-danger"
         aria-labelledby="danger-heading"
       >

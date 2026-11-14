@@ -4,9 +4,7 @@
 
 # path of the extracted AppRun
 HERE="$(dirname "$(readlink -f "${0}")")"
-SUNSHINE_PATH=/usr/bin/vibepollo
 SUNSHINE_BIN_HERE=$HERE/usr/bin/vibepollo
-SUNSHINE_SHARE_HERE=$HERE/usr/share/vibepollo
 
 # Set APPDIR when running directly from the AppDir:
 if [ -z "$APPDIR" ]; then
@@ -28,10 +26,10 @@ echo "
  ------            # This message
 
          $ARGV0  --install, -i
-                   # Install input rules and vibepollo.service files. Restart required.
+                   # Configure input rules and system services with the native package.
 
          $ARGV0  --remove, -r
-                   # Remove input rules and vibepollo.service files.
+                   # Remove a native installation with its package manager.
 
          $ARGV0  --appimage-help
                    # Show available AppImage options
@@ -43,35 +41,10 @@ echo "
 "$SUNSHINE_BIN_HERE" --help | sed -e "s#$SUNSHINE_BIN_HERE#$ARGV0#g"
 }
 
-function install() {
-  # user input rules
-  # shellcheck disable=SC2002
-  cat "$SUNSHINE_SHARE_HERE/udev/rules.d/60-sunshine.rules" | sudo tee /etc/udev/rules.d/60-sunshine.rules
-  cat "$SUNSHINE_SHARE_HERE/modules-load.d/60-sunshine.conf" | sudo tee /etc/modules-load.d/60-sunshine.conf
-  sudo modprobe uhid
-  sudo udevadm control --reload-rules
-  sudo udevadm trigger --property-match=DEVNAME=/dev/uinput
-  sudo udevadm trigger --property-match=DEVNAME=/dev/uhid
-
-  # Vibepollo service
-  mkdir -p ~/.config/systemd/user
-  cp -r "$SUNSHINE_SHARE_HERE/systemd/user/" ~/.config/systemd/
-  # patch service executable path
-  sed -i -e "s#$SUNSHINE_PATH#$(readlink -f $ARGV0)#g" ~/.config/systemd/user/app-io.github.Nonary.vibepollo.service
-
-  # setcap
-  sudo setcap cap_sys_admin,cap_sys_nice+p "$(readlink -f "$SUNSHINE_BIN_HERE")"
-}
-
-function remove() {
-  # remove input rules
-  sudo rm -f /etc/udev/rules.d/60-sunshine.rules
-
-  # remove uhid module loading config
-  sudo rm -f /etc/modules-load.d/60-sunshine.conf
-
-  # remove service
-  sudo rm -f ~/.config/systemd/user/app-io.github.Nonary.vibepollo.service
+function native_package_required() {
+  echo "Use the native Vibepollo package to manage input rules and system services." >&2
+  echo "The AppImage launcher supports portable execution without privilege changes." >&2
+  return 1
 }
 
 # process arguments
@@ -81,18 +54,18 @@ if [ "x$1" == "xhelp" ] || [ "x$1" == "x--help" ] || [ "x$1" == "x-h" ] ; then
 fi
 
 if [ "x$1" == "xinstall" ] || [ "x$1" == "x--install" ] || [ "x$1" == "x-i" ] ; then
-    install
+    native_package_required
     exit $?
 fi
 
 if [ "x$1" == "xremove" ] || [ "x$1" == "x--remove" ] || [ "x$1" == "x-r" ] ; then
-    remove
+    native_package_required
     exit $?
 fi
 
 # create config directory if it doesn't exist
 # https://github.com/LizardByte/Sunshine/issues/324
-mkdir -p ~/.config/vibepollo
+mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}/vibepollo"
 
 # run Vibepollo
-"$SUNSHINE_BIN_HERE" $@
+"$SUNSHINE_BIN_HERE" "$@"

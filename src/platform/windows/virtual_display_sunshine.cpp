@@ -8122,29 +8122,40 @@ namespace VDISPLAY_SUNSHINE {
     return !driver_lease_tracker().all().empty();
   }
 
-  // Catalog checks precede creation, which normally opens the transport.
-  // Startup probing may never open it when a physical display is available.
-  // Open for inspection without restarting the adapter or departing a target.
+  // Never recover the shared transport or apply driver configuration merely
+  // to inspect a catalog. Owned leases must use their bound producer.
+  std::shared_ptr<sunshine_driver::WindowsControlTransport> catalog_inspection_transport() {
+    if (!driver_lease_tracker().all().empty()) {
+      const auto transport = control_transport_snapshot();
+      return transport && transport->valid() ? transport : nullptr;
+    }
+    // Without owned leases, inspect a unique producer independently, even if
+    // the cached handle is stale; normal initialization will recover it later.
+    std::uint32_t error = 0;
+    const auto devices = sunshine_driver::enumerate_control_devices(&error);
+    if (error != 0 || devices.size() != 1 || !devices.front().openable) return {};
+    auto opened = sunshine_driver::open_first_control_device();
+    if (!opened.ok() || opened.device_path != devices.front().device_path) return {};
+    return std::move(opened.transport);
+  }
+
   bool allowsSharedCatalogCapture() {
-    if (!ensure_control_transport_responsive("Shared virtual display catalog preflight", {}, OpenRecoveryBehavior::transport_only)) return false;
-    const auto transport = control_transport_snapshot();
-    if (!transport || !transport->valid()) return false;
+    const auto transport = catalog_inspection_transport();
+    if (!transport) return false;
     sunshine_driver::ControlClient client {*transport};
     return VDISPLAY::catalog_policy::allows_shared_capture(client);
   }
 
   bool supportsRequestedResolutionCatalog() {
-    if (!ensure_control_transport_responsive("Virtual display catalog capability preflight", {}, OpenRecoveryBehavior::transport_only)) return false;
-    const auto transport = control_transport_snapshot();
-    if (!transport || !transport->valid()) return false;
+    const auto transport = catalog_inspection_transport();
+    if (!transport) return false;
     sunshine_driver::ControlClient client {*transport};
     return VDISPLAY::catalog_policy::supported(client);
   }
 
   std::optional<bool> virtualDisplayCatalogMatches(const GUID &guid, uint32_t width, uint32_t height, bool requested_only) {
-    if (!ensure_control_transport_responsive("Retained virtual display catalog preflight", {}, OpenRecoveryBehavior::transport_only)) return std::nullopt;
-    const auto transport = control_transport_snapshot();
-    if (!transport || !transport->valid()) return std::nullopt;
+    const auto transport = catalog_inspection_transport();
+    if (!transport) return std::nullopt;
     sunshine_driver::ControlClient client {*transport};
     const auto state = VDISPLAY::catalog_policy::inspect(client, client_uuid_to_virtual_display_id(guid), width, height, requested_only);
     if (state == VDISPLAY::catalog_policy::inspection::unknown) return std::nullopt;

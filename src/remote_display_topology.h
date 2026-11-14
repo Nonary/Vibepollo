@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 namespace remote_display_topology {
@@ -56,6 +57,13 @@ namespace remote_display_topology {
     // Implementations may safely downgrade requested state such as HDR.
     std::function<void(const std::string &client_uuid, mode_t &mode)> resolve_mode;
     std::function<bool(const std::vector<node_t> &composed)> apply_composed_topology;
+    // Read the exact active shared output's actual geometry, without changing it.
+    std::function<std::optional<mode_t>(const std::string &client_uuid)> observe_shared_mode;
+    // Some platforms cannot apply or verify the requested color state until
+    // the newly created output is active in the composed topology. Resolve
+    // the effective state for this owner before publishing capture readiness.
+    // `allow_mutation` is false while a normal role owns this same output.
+    std::function<bool(const std::string &client_uuid, mode_t &mode, bool allow_mutation)> finalize_mode;
     // The output is accepted only after this exact client identity has both the
     // requested mode and a capture-enumerated DXGI name.  Passing the mode here
     // prevents a callback from treating a GUID/device-id lookup as readiness.
@@ -69,6 +77,10 @@ namespace remote_display_topology {
     // A false result retains ownership for retry; shared normal-game outputs
     // and captures still prevent removal.
     std::function<bool(const std::string &client_uuid)> terminate_owned_display;
+    // Optional desktop footprint of a client display in the given mode, for
+    // platforms whose desktop coordinates aren't capture pixels (a Retina
+    // display at 3840x2160 occupies 1920x1080 points). Mode reporting stays native.
+    std::function<std::optional<std::pair<int, int>>(const std::string &client_uuid, const mode_t &mode)> layout_size;
   };
 
   struct activation_result_t {
@@ -92,9 +104,16 @@ namespace remote_display_topology {
     std::uint64_t token = 0;
   };
 
+  struct saved_stream_layout_t {
+    std::optional<node_t> position;
+    bool primary_requested = false;
+  };
+
   // Validates the persisted wire contract without mutating coordinator state.
   bool layout_schema_valid(const nlohmann::json &layout, std::string &error);
   nlohmann::json normalize_layout(const nlohmann::json &layout);
+  // Remove a deleted client's placement and detach direct dependent anchors.
+  nlohmann::json remove_client_from_layout(const nlohmann::json &layout, const std::string &client_uuid);
   bool validate_layout(const nlohmann::json &layout, const std::vector<std::string> &known_clients, const std::vector<std::string> &known_physical_ids, std::string &error);
 
   class coordinator_t {
@@ -103,8 +122,9 @@ namespace remote_display_topology {
     void set_layout(nlohmann::json layout);
     // Resolve only this normal stream's saved placement against live anchors.
     // Missing placement/anchor preserves Windows' current arrangement, and
-    // never recomposes or moves a peer owned by another session.
-    std::optional<node_t> saved_stream_placement(const node_t &target, const std::vector<node_t> &active_nodes) const;
+    // never recomposes or moves a peer owned by another session. Detached
+    // automatic fallback may request primary without overriding a position.
+    saved_stream_layout_t saved_stream_placement(const node_t &target, const std::vector<node_t> &active_nodes) const;
     void set_physical_baseline(std::vector<node_t> nodes);
     // Inventory reads must not replace a baseline while managed displays own it.
     void refresh_idle_physical_baseline(std::vector<node_t> nodes);
@@ -182,6 +202,12 @@ namespace remote_display_topology {
       bool monitor_release_pending = false;
       std::string monitor_release_reason;
       bool lease_held = false;
+      // A shared capture prevented this monitor from configuring its requested
+      // mode. Reconfigure after that capture drains, without dropping ownership.
+      bool deferred_monitor_reconfiguration = false;
+      // No topology may be composed from this requested mode while a shared
+      // normal owner has not confirmed it on the exact target.
+      bool shared_mode_unverified = false;
       uint64_t generation = 0;
       // Stable first-ownership order keeps existing displays in place when a
       // new owner has no saved layout. UUID ordering must not reshuffle the
@@ -201,6 +227,7 @@ namespace remote_display_topology {
     void release_locked(const std::string &client_uuid, client_state_t &state, const std::string &reason);
     static mode_t desired_mode(const client_state_t &state);
     void resolve_effective_mode_locked(const std::string &client_uuid, client_state_t &state);
+    bool refresh_unverified_shared_geometry_locked(const std::string &except = {});
     std::vector<node_t> compose_locked(std::vector<std::string> &warnings) const;
     static mode_t effective_mode(const node_t &node);
     static void place_relative(node_t &node, const node_t &anchor, const nlohmann::json &placement);

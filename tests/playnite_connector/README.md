@@ -8,7 +8,9 @@ compiles the production native pipe-open and Playnite connection code with
 syscall boundaries mocked to check scoped identification flags. It checks acceptance during Stop, queued launches across a
 restart, stalled writers, cancellation of pending UI queries, snapshot ordering
 and graceful shutdown handoff, waveform preparation routing and launcher
-readiness acknowledgments. It does not validate Windows pipe ACLs or native
+readiness acknowledgments. Busy-pipe failure injection exercises bounded retry delays,
+first-error logging and throttling, recovery with and without restarting, and
+cancellation during backoff. It does not validate Windows pipe ACLs or native
 WPF/Playnite runtime behavior.
 
 Run with .NET SDK 8 or later:
@@ -18,3 +20,7 @@ dotnet run --project tests/playnite_connector/ConnectorLifecycle.csproj -c Relea
 ```
 
 CTest runs the harness when a suitable dotnet SDK is available.
+
+For sandboxes that cannot create OS pipe sockets, `--retry-only` runs the
+retry policy and failure/cancellation checks without the recovery or other
+OS-pipe cases. This subset does not replace the full lifecycle suite.

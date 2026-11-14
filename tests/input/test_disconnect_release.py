@@ -4,6 +4,7 @@
 No live keyboard, mouse, touch, or gamepad devices are used.
 """
 import argparse
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -24,19 +25,32 @@ using PNV_MULTI_CONTROLLER_PACKET = controller_packet *;
 struct arrival_packet { uint8_t controllerNumber; uint8_t type; uint16_t capabilities; uint32_t supportedButtonFlags; };
 using PSS_CONTROLLER_ARRIVAL_PACKET = arrival_packet *;
 namespace platf {
+  bool native_repeat = false;
+  std::vector<uint16_t> repeat_queries;
+  bool keyboard_uses_native_repeat(input_t &, uint16_t key) {
+    repeat_queries.push_back(key);
+    return native_repeat;
+  }
   struct gamepad_id_t { int globalIndex; uint8_t clientRelativeIndex; };
   struct gamepad_arrival_t {
     uint8_t type;
     uint16_t capabilities;
     uint32_t supportedButtons;
     bool persist_after_disconnect = false;
+    uint64_t speaker_owner = 0;
   };
+  int alloc_result = 0, alloc_calls = 0;
   std::vector<gamepad_id_t> allocated_gamepads;
   int alloc_gamepad(int, gamepad_id_t id, gamepad_arrival_t, int) {
-    allocated_gamepads.push_back(id);
-    return 0;
+    ++alloc_calls;
+    if (alloc_result == 0) {
+      allocated_gamepads.push_back(id);
+    }
+    return alloc_result;
   }
 }
+// The forwarded attributes are not under test here; the fake gamepad_t keeps them as an int.
+void forward_steam_attributes(const gamepad_t &, int) {}
 int alloc_id(std::bitset<16> &mask) {
   for (int i = 0; i < 16; ++i) if (!mask[i]) { mask[i] = true; return i; }
   return -1;
@@ -54,7 +68,7 @@ constexpr int MULTI_CONTROLLER_MAGIC_GEN5 = 0x0c;
 constexpr int SS_HSCROLL_MAGIC = 0x55000001, SS_TOUCH_MAGIC = 0x55000002;
 constexpr int SS_PEN_MAGIC = 0x55000003, SS_CONTROLLER_ARRIVAL_MAGIC = 0x55000004;
 constexpr int SS_CONTROLLER_TOUCH_MAGIC = 0x55000005, SS_CONTROLLER_MOTION_MAGIC = 0x55000006;
-constexpr int SS_CONTROLLER_BATTERY_MAGIC = 0x55000007;
+constexpr int SS_CONTROLLER_BATTERY_MAGIC = 0x55000007, SS_STEAM_CONTROLLER_ATTRIBUTES_MAGIC = 0x55000008;
 // Models validation success; this suite tests enqueue permissions/lifetime, not wire parsing.
 struct validated_input_packet_t { uint32_t magic; };
 std::optional<validated_input_packet_t> validate_packet(const std::vector<uint8_t> &data) {
@@ -225,6 +239,45 @@ int main(int argc, char **argv) {
     key(a, VKEY_LMENU, true); platf::keyboard_events.clear();
     task_pool.fire(); expect({{0x41, false, 0}});
     disconnect(a);
+  } else if (test == "native_repeat_does_not_pulse_synthetic_modifiers") {
+    config::input.key_repeat_delay = 10ms;
+    key(a, 0x41, false, MODIFIER_SHIFT);
+    platf::native_repeat = true;
+    platf::keyboard_events.clear();
+    task_pool.fire();
+#ifdef _WIN32
+    expect({});
+#else
+    // The native VHF branch only exists on Windows.
+    expect({{VKEY_SHIFT, false, 0}, {0x41, false, 0}, {VKEY_SHIFT, true, 0}});
+#endif
+    disconnect(a);
+  } else if (test == "native_repeat_needs_no_software_timer") {
+    config::input.key_repeat_delay = 10ms;
+    platf::native_repeat = true;
+    key(a, 0x41, false, MODIFIER_SHIFT);
+#ifdef _WIN32
+    assert(task_pool.timers.empty());
+#else
+    assert(task_pool.timers.size() == 1);
+#endif
+    disconnect(a);
+    assert(task_pool.timers.empty() && host_keys.empty());
+  } else if (test == "native_repeat_uses_first_owner_alias") {
+    config::input.key_repeat_delay = 10ms;
+    platf::native_repeat = true;
+    key(a, VKEY_SHIFT); key(b, VKEY_LSHIFT);
+#ifdef _WIN32
+    assert((platf::repeat_queries == std::vector<uint16_t>{VKEY_SHIFT, VKEY_SHIFT}));
+    assert(task_pool.timers.empty());
+#else
+    assert(platf::repeat_queries.empty());
+#endif
+    disconnect(a);
+    expect({{VKEY_SHIFT, false, 0}});
+    disconnect(b);
+    expect({{VKEY_SHIFT, false, 0}, {VKEY_SHIFT, true, 0}});
+    assert(task_pool.timers.empty() && host_keys.empty());
   } else if (test == "all_mouse_buttons") {
     for (int button_id = 1; button_id <= 5; ++button_id) button(a, button_id);
     disconnect(a);
@@ -267,6 +320,39 @@ int main(int argc, char **argv) {
     passthrough(a, packet_bytes(KEY_DOWN_EVENT_MAGIC), crypto::PERM::_all_inputs);
     assert(a->input_queue.empty() && task_pool.tasks.empty());
     expect({{0x41, false, 0}, {0x41, true, 0}});
+  } else if (test == "pending_attributes_removed_with_mask") {
+    // Attributes may precede arrival, so a removed slot can have no platform ID
+    // and no failure flag yet. Another controller's inventory still retires it.
+    a->gamepads[1].pending_steam_attributes = 111;
+    a->gamepads[2].pending_steam_attributes = 222;
+    controller_packet p {0, 5}; passthrough(a, &p);
+    assert(!a->gamepads[1].pending_steam_attributes);
+    assert(a->gamepads[2].pending_steam_attributes == 222);
+    assert(platf::freed_gamepads.empty());
+    p.activeGamepadMask = 1; passthrough(a, &p);
+    assert(!a->gamepads[2].pending_steam_attributes);
+  } else if (test == "legacy_exhausted_ids_retire_attributes") {
+    a->gamepads[0].pending_steam_attributes = 123;
+    gamepadMask.set();
+    controller_packet p {0, 1}; passthrough(a, &p);
+    assert(a->gamepads[0].alloc_failed && !a->gamepads[0].pending_steam_attributes);
+    gamepadMask.reset(9); passthrough(a, &p);
+    assert(platf::alloc_calls == 0 && a->gamepads[0].id < 0);
+    p.activeGamepadMask = 0; passthrough(a, &p);
+    assert(!a->gamepads[0].alloc_failed);
+    p.activeGamepadMask = 1; passthrough(a, &p);
+    assert(platf::alloc_calls == 1 && a->gamepads[0].id == 9);
+  } else if (test == "failed_allocation_not_retried_per_packet") {
+    a->gamepads[0].pending_steam_attributes = 123;
+    platf::alloc_result = -1;
+    controller_packet p {0, 1}; passthrough(a, &p); passthrough(a, &p); passthrough(a, &p);
+    assert(platf::alloc_calls == 1 && a->gamepads[0].id == -1 && a->gamepads[0].alloc_failed);
+    assert(!a->gamepads[0].pending_steam_attributes);
+    p.activeGamepadMask = 0; passthrough(a, &p);
+    assert(!a->gamepads[0].alloc_failed && platf::alloc_calls == 1);
+    platf::alloc_result = 0; p.activeGamepadMask = 1; passthrough(a, &p);
+    assert(platf::alloc_calls == 2 && a->gamepads[0].id >= 0 && !a->gamepads[0].alloc_failed);
+    disconnect(a); assert(!a->gamepads[0].alloc_failed);
   } else if (test == "controller_hold_disconnect") {
     controller_packet p {0, 1, platf::BACK, 0, 255, 255, 32767, -32768, 123, -456};
     passthrough(a, &p);
@@ -312,7 +398,7 @@ int main(int argc, char **argv) {
     assert(platf::allocated_gamepads[2].globalIndex == first_host_id);
     assert(platf::allocated_gamepads[2].clientRelativeIndex == 0);
     disconnect(a);
-    assert(platf::freed_gamepads == std::vector<int>{first_host_id, first_host_id, second_host_id});
+    assert((platf::freed_gamepads == std::vector<int>{first_host_id, first_host_id, second_host_id}));
   } else if (test == "touch_pen_destroyed_while_context_retained") {
     a->client_context = std::make_unique<platf::client_input_t>();
     auto retained = a; disconnect(a);
@@ -474,6 +560,7 @@ int main(int argc, char **argv) {
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source', type=Path, default=ROOT / 'src/input.cpp')
+    parser.add_argument('--compiler', choices=('c++', 'msvc'), default='c++')
     args = parser.parse_args()
     source = args.source.read_text()
     prelude = production_prelude(source).replace('std::list<int> input_queue;', 'std::list<std::vector<uint8_t>> input_queue;\n  std::atomic_bool input_queue_task_scheduled {false};\n  int feedback_queue = 0;\n  bool persist_gamepads = false;')
@@ -509,11 +596,16 @@ def main():
     cases = list(dict.fromkeys(re.findall(r'test == "([^"]+)"', TESTS)))
     failed = []
     with tempfile.TemporaryDirectory(prefix='input-disconnect-') as temp:
-        cpp, binary = Path(temp) / 'test.cpp', Path(temp) / 'test'
+        cpp, binary = Path(temp) / 'test.cpp', Path(temp) / ('test.exe' if os.name == 'nt' else 'test')
         cpp.write_text(prelude + EXTRA + handlers + TESTS)
-        subprocess.run(['c++', '-I', str(ROOT), '-std=c++20', '-Wall', '-Wextra', '-Wno-sign-compare',
-                        '-Wno-unused-const-variable', '-Wno-missing-field-initializers',
-                        str(cpp), '-o', str(binary)], check=True)
+        if args.compiler == 'msvc':
+            command = ['cl', '/nologo', '/std:c++20', '/EHsc', f'/I{ROOT}',
+                       str(cpp), f'/Fe:{binary}', f'/Fo:{Path(temp) / "test.obj"}']
+        else:
+            command = ['c++', '-I', str(ROOT), '-std=c++20', '-Wall', '-Wextra', '-Wno-sign-compare',
+                       '-Wno-unused-const-variable', '-Wno-missing-field-initializers',
+                       str(cpp), '-o', str(binary)]
+        subprocess.run(command, check=True)
         for case in cases:
             result = subprocess.run([str(binary), case], capture_output=True, text=True)
             print(f'{"PASS" if result.returncode == 0 else "FAIL"}: {case}')

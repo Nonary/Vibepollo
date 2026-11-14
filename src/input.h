@@ -42,6 +42,12 @@ namespace input {
 
   std::shared_ptr<input_t> alloc(safe::mail_t mail, guide_button_config_t guide_button, bool persist_gamepads = false);
 
+  /**
+   * @brief Whether any gamepad slot of this input context is currently allocated.
+   * @details Reads an atomic summary published by the input worker; no gamepad state is shared.
+   */
+  bool has_gamepad(const std::shared_ptr<input_t> &input);
+
   struct touch_port_t: public platf::touch_port_t {
     int env_width;
     int env_height;

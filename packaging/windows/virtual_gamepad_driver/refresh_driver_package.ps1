@@ -37,9 +37,9 @@ $localTestCertificate = 'driver/VibeshineVhfGamepad.cer'
 $releaseLockFile = 'release-lock.json'
 $consumerReleaseLockFile = 'consumer-release-lock.json'
 
-# A package that ships unsigned because SignPath is not available on
-# Nonary/libvirtualgamepad. Its catalogue is signed later, by the consumer MSI
-# signing request. At ingest every manifest/fresh-Inf2Cat hash is checked and
+# The producer package ships unsigned for downstream consumer MSI signing.
+# Its catalogue is signed later, by that signing request. At ingest every
+# manifest/fresh-Inf2Cat hash is checked and
 # CAT, DLL, and setup tool must explicitly report NotSigned with no signer.
 $msiRequestChannel = 'msi-request-signing'
 
@@ -129,9 +129,13 @@ function Assert-ExactList {
         [Parameter(Mandatory = $true)][string] $Name
     )
 
-    $actualText = @($Actual | ForEach-Object { [string] $_ }) -join "`n"
-    $expectedText = @($Expected | ForEach-Object { [string] $_ }) -join "`n"
-    if ($actualText -cne $expectedText) {
+    $listsEqual = $Actual.Count -eq $Expected.Count
+    for ($index = 0; $listsEqual -and $index -lt $Actual.Count; $index++) {
+        $listsEqual = [string] $Actual[$index] -ceq [string] $Expected[$index]
+    }
+    if (-not $listsEqual) {
+        $actualText = @($Actual | ForEach-Object { [string] $_ }) -join "`n"
+        $expectedText = @($Expected | ForEach-Object { [string] $_ }) -join "`n"
         throw "[VibeshineVhfGamepad] $Name does not match.`nExpected:`n$expectedText`nActual:`n$actualText"
     }
 }
@@ -455,6 +459,14 @@ function Write-ReleaseLock {
     foreach ($name in @('install.ps1', 'cleanup.ps1')) {
         $scriptHashes[$name] = Get-Sha256 -Path (Join-Path $Root $name)
     }
+    # Self-signed manifests do not declare downstream signing. Preserve that
+    # as an empty JSON array rather than an array containing a null element.
+    $signedDownstream = if ($null -eq $Manifest.signing.signed_downstream) {
+        @()
+    } else {
+        @($Manifest.signing.signed_downstream)
+    }
+    if ($null -eq $signedDownstream) { $signedDownstream = @() }
     $lock = [ordered]@{
         schema_version = 2
         channel = if ($AllowLocalTest) { 'self-signed-local-test' } else { 'production' }
@@ -467,7 +479,7 @@ function Write-ReleaseLock {
         driver_ver = $Manifest.driver_ver
         protocol_version = [uint16] $Manifest.protocol_version
         manifest_sha256 = Get-Sha256 -Path (Join-Path $Root 'manifest.json')
-        signed_downstream = @($Manifest.signing.signed_downstream)
+        signed_downstream = @($signedDownstream)
         producer_payload_sha256 = $payloadHashes
         installer_script_sha256 = $scriptHashes
     }
@@ -505,7 +517,16 @@ function Assert-ReleaseLock {
         $lock.signing_channel -cne $Manifest.signing.channel) {
         throw '[VibeshineVhfGamepad] Release lock does not describe the driver manifest.'
     }
-    Assert-ExactList -Actual @($lock.signed_downstream) -Expected @($Manifest.signing.signed_downstream) -Name 'release-lock signed_downstream'
+    if ($null -eq $lock.signed_downstream) {
+        throw '[VibeshineVhfGamepad] Release lock signed_downstream must be an array.'
+    }
+    $signedDownstream = if ($null -eq $Manifest.signing.signed_downstream) {
+        @()
+    } else {
+        @($Manifest.signing.signed_downstream)
+    }
+    if ($null -eq $signedDownstream) { $signedDownstream = @() }
+    Assert-ExactList -Actual @($lock.signed_downstream) -Expected @($signedDownstream) -Name 'release-lock signed_downstream'
     foreach ($entry in @($Manifest.files)) {
         $property = $lock.producer_payload_sha256.PSObject.Properties[[string] $entry.path]
         if ($null -eq $property -or [string] $property.Value -cne [string] $entry.sha256) {

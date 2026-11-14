@@ -19,7 +19,7 @@ namespace nvhttp::tls_identity {
       if (!client) {
         return std::nullopt;
       }
-      views.push_back({client->uuid, client->name, client->cert, !!(client->perm & crypto::PERM::_all), client->allow_sleep});
+      views.push_back({client->uuid, client->name, client->cert, client->enabled && !!(client->perm & crypto::PERM::_all), client->allow_sleep});
     }
     return views;
   }
@@ -41,14 +41,15 @@ namespace nvhttp::tls_identity {
 
   authentication_result_t native_store_t::authenticate_certificate(
     const request_t &request, crypto::x509_t &certificate,
-    crypto::cert_chain_t &chain, std::span<const crypto::p_named_cert_t> clients
+    crypto::cert_chain_t &chain, std::span<const crypto::p_named_cert_t> clients,
+    pending_peer_factory_t pending_peer
   ) {
     const auto views = native_client_views(clients);
     if (!views) {
       store.reset(request);
       return {{}, "Pairing state contains an invalid native record"};
     }
-    return store.authenticate_certificate(request, certificate, chain, *views);
+    return store.authenticate_certificate(request, certificate, chain, *views, std::move(pending_peer));
   }
 
   std::optional<crypto::named_cert_t> native_store_t::resolve_snapshot(

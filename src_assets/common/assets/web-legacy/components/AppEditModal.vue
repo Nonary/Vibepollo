@@ -105,7 +105,7 @@
               t('apps.wait_all')
             }}</n-checkbox>
             <n-checkbox
-              v-if="isWindows && !isPlayniteManaged"
+              v-if="supportsElevation && !isPlayniteManaged"
               v-model:checked="form.elevated"
               size="small"
             >
@@ -278,6 +278,9 @@
               <p class="text-[11px] opacity-70">{{ t('config.dd_config_hint') }}</p>
               <p v-if="displaySelection === 'virtual'" class="text-[11px] opacity-70">
                 {{ t('config.app_virtual_display_layout_action_hint') }}
+              </p>
+              <p v-if="displaySelection === 'virtual' && effectiveAppDisplayAction === 'verify_only'">
+                {{ t('config.app_virtual_display_verify_override') }}
               </p>
               <div
                 v-if="virtualDisplayLayoutBlocked"
@@ -456,7 +459,7 @@
 
           <AppEditPrepCommandsSection
             v-model:form="form"
-            :is-windows="isWindows"
+            :supports-elevation="supportsElevation"
             @add-prep="addPrep"
           />
 
@@ -559,6 +562,7 @@ import {
   isRemoteMonitorApplication,
   preserveRemoteMonitorRouting,
 } from '../utils/remoteMonitorPolicy';
+import { preservePlayniteFullscreen } from '../utils/playniteFullscreenPolicy';
 import { computed, ref, watch, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import { useMessage } from 'naive-ui';
 import { http } from '@/http';
@@ -1110,7 +1114,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
     'prep-cmd': f.prepCmd.map((p) => ({
       do: p.do,
       undo: p.undo,
-      ...(isWindows.value ? { elevated: !!p.elevated } : {}),
+      ...(supportsElevation.value ? { elevated: !!p.elevated } : {}),
     })),
     'state-cmd': f.stateCmd.map((p) => ({
       do: p.do,
@@ -1215,6 +1219,7 @@ function toServerPayload(f: AppForm): Record<string, any> {
     payload['dd-configuration-option'] = f.ddConfigurationOption;
   }
   preserveRemoteMonitorRouting(props.app, payload);
+  preservePlayniteFullscreen(props.app, payload);
   return payload;
 }
 let liveRtxHdrSuppress = false;
@@ -1961,7 +1966,7 @@ function addPrep() {
   form.value.prepCmd.push({
     do: '',
     undo: '',
-    ...(isWindows.value ? { elevated: false } : {}),
+    ...(supportsElevation.value ? { elevated: false } : {}),
   });
   requestAnimationFrame(() => updateShadows());
 }
@@ -2094,6 +2099,7 @@ const platformName = computed(() => (configStore.metadata?.platform || '').toLow
 const isWindows = computed(() => platformName.value === 'windows');
 const isLinux = computed(() => platformName.value === 'linux');
 const isMac = computed(() => platformName.value === 'macos');
+const supportsElevation = computed(() => isWindows.value || isLinux.value);
 const rtxHdrSupported = computed(() => (configStore.metadata as any)?.rtx_hdr_supported === true);
 const gamepadOptions = computed(() => {
   const options = [
@@ -2180,15 +2186,19 @@ const appDdConfigurationOptions = computed(() => [
   { label: t('config.dd_config_ensure_only_display') as string, value: 'ensure_only_display' },
 ]);
 
+const effectiveAppDisplayAction = computed(() =>
+  form.value.ddConfigurationOption ||
+  form.value.configOverrides?.dd_configuration_option ||
+  (configStore.config as any)?.dd_configuration_option ||
+  'verify_only',
+);
+
 const virtualDisplayLayoutBlocked = computed(() => {
-  const action =
-    form.value.ddConfigurationOption ??
-    (configStore.config as any)?.dd_configuration_option ??
-    'verify_only';
+  const action = effectiveAppDisplayAction.value;
   return (
     displaySelection.value === 'virtual' &&
     resolvedVirtualDisplayLayout.value !== 'exclusive' &&
-    (action === 'verify_only' || action === 'disabled')
+    action === 'disabled'
   );
 });
 

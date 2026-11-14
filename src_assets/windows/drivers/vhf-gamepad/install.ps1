@@ -72,18 +72,16 @@ $manifestPayload = @(
 )
 $localTestCertificate = 'driver/VibeshineVhfGamepad.cer'
 $expectedProducerRepository = 'Nonary/libvirtualgamepad'
-$expectedProducerTag = 'v0.1.0-beta.9'
-$expectedProducerAsset = 'libvirtualgamepad-0.1.0-beta.9-windows-x64.zip'
-$expectedProducerArchiveSha256 = '59e89ab90c6e360e3e23bb4717b43339c4ec0050aedc52fe05e4f3ef306d62ee'
-$expectedProducerSourceRevision = '7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a'
-$expectedDriverVer = '10/16/2026,0.1.0.53'
+$expectedProducerTag = 'v0.1.0-beta.10'
+$expectedProducerAsset = 'libvirtualgamepad-0.1.0-beta.10-windows-x64.zip'
+$expectedProducerArchiveSha256 = '650cf8281d95d1fb9388f8117cadeab195727e3dcb4105607df45080b15d312c'
+$expectedProducerSourceRevision = '5a3e4d222dd0b87556d4c564eb58b450ab579fb0'
+$expectedDriverVer = '10/29/2026,0.1.0.92'
 $expectedProtocolVersion = 2
 $expectedSignPathFoundationSignerSubject = 'CN=SignPath Foundation, O=SignPath Foundation, L=Lewes, S=Delaware, C=US'
 
-# Signing channel for a package that ships unsigned and is signed by the
-# consumer MSI signing request instead. SignPath is not available on
-# Nonary/libvirtualgamepad, so its releases cannot carry a production
-# signature; the catalogue is signed downstream, inside the MSI.
+# The producer package ships unsigned for downstream consumer MSI signing.
+# The catalogue is signed inside the consumer MSI signing request.
 $msiRequestChannel = 'msi-request-signing'
 
 # Under that channel these two files are re-signed after the manifest was
@@ -842,10 +840,15 @@ function Install-DriverPackage {
     $trustState = $null
     try {
         if ($null -ne $package.LocalCertificate) {
+            $trustConsent = $AllowLocalGamepadCertificateTrust
+            $trustConsentThumbprint = $ConsentCertificateThumbprint
             if ($package.LocalCertificate.Thumbprint -ine '7F1868BF86698A8674F40E686B02C8C702BD3B88') {
-                throw 'Beta gamepad catalog is not signed by the expected reusable release identity. Driver and trust unchanged.'
+                # Other local signers may be used only when already trusted in
+                # both stores; never import a new identity through beta consent.
+                $trustConsent = 0
+                $trustConsentThumbprint = ''
             }
-            $trustState = Ensure-ConsentedLocalGamepadTrust -Certificate $package.LocalCertificate -Consent $AllowLocalGamepadCertificateTrust -ConsentThumbprint $ConsentCertificateThumbprint
+            $trustState = Ensure-ConsentedLocalGamepadTrust -Certificate $package.LocalCertificate -Consent $trustConsent -ConsentThumbprint $trustConsentThumbprint
             if ((Get-AuthenticodeSignature -LiteralPath $package.CatalogPath).Status -ne 'Valid' -or (Get-AuthenticodeSignature -LiteralPath $package.SetupToolPath).Status -ne 'Valid') {
                 throw 'Windows still does not trust the validated VHF package after approved certificate setup. Driver retained; boot/signing settings unchanged.'
             }

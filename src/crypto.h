@@ -117,6 +117,7 @@ namespace crypto {
     bool requested_resolution_only = false;
     // Per-client opt-in to serve HDR requests as 10-bit SDR.
     bool prefer_10bit_sdr = false;
+    bool enabled = true; // Independent access toggle; never erases Apollo permissions.
     bool allow_sleep = false; // Separate administrator opt-in, never inferred from PERM.
     std::optional<std::int64_t> last_seen;
     std::unordered_map<std::string, std::string> config_overrides;
@@ -143,6 +144,7 @@ namespace crypto {
 
   creds_t gen_creds(const std::string_view &cn, std::uint32_t key_bits);
 
+  // The returned binary view borrows storage from the certificate.
   std::string_view signature(const X509 *x);
   std::string_view signature(const x509_t &x);
 

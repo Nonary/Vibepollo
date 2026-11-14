@@ -36,9 +36,11 @@ program = r'''
 #include <thread>
 #include <vector>
 #include "src/platform/windows/vhf_gamepad_recovery.h"
+#include "src/platform/windows/vhf_keyboard_mouse_policy.h"
 using DWORD = std::uint32_t;
 constexpr DWORD ERROR_SUCCESS = 0, ERROR_DEVICE_REMOVED = 1617;
 constexpr int MAX_GAMEPADS = 4;
+constexpr unsigned LI_CCAP_SC26_BUTTONS = 0x1000;
 constexpr unsigned LI_BATTERY_PERCENTAGE_UNKNOWN = 255;
 constexpr unsigned LI_BATTERY_STATE_NOT_PRESENT = 1, LI_BATTERY_STATE_DISCHARGING = 2,
   LI_BATTERY_STATE_CHARGING = 3, LI_BATTERY_STATE_FULL = 4, LI_BATTERY_STATE_NOT_CHARGING = 5;
@@ -50,7 +52,9 @@ namespace util {
   struct hex { explicit hex(DWORD) {} std::string_view to_string_view() { return {}; } };
 }
 namespace lvg {
-  enum class profile { xbox, dualsense };
+  enum class profile { xbox, dualsense, steam_controller };
+  namespace button_mask { constexpr unsigned sc26_buttons_explicit = 0x80000000u; }
+  struct steam_controller_attributes {};
   enum class battery_state { unknown, not_present, discharging, charging, full, not_charging };
   struct battery_state_request {
     struct header_t { unsigned size{}, version{}; } header;
@@ -66,7 +70,9 @@ namespace lvg {
 // REAL_PRODUCER
 namespace platf {
 using namespace std::literals;
-using feedback_queue_t = std::shared_ptr<int>;
+struct gamepad_feedback_msg_t { int id; };
+struct feedback_queue_stub { template<class Predicate> void discard_if(Predicate) {} };
+using feedback_queue_t = std::shared_ptr<feedback_queue_stub>;
 struct gamepad_state_t {
   unsigned buttonFlags{}, lt{}, rt{};
   int lsX{}, lsY{}, rsX{}, rsY{};
@@ -81,6 +87,7 @@ namespace vhf_gamepad {
   };
   constexpr unsigned supported_button_mask = 0xffffffff;
   struct rumble_rgb_t {};
+  struct synthesized_rumble_t {};
   struct rumble_poll_summary_t {};
   void clear_rumble_poll_summary(rumble_poll_summary_t &) {}
   // REAL_BATTERY_NORMALIZER
@@ -130,6 +137,7 @@ struct client_t {
     return 0;
   }
 };
+void log_feedback_counters(client_t &, int, lvg::profile) {}
 class vhf_gamepad_t {
 public:
   struct impl_t {
@@ -139,6 +147,10 @@ public:
     vhf_gamepad::connection_recovery_t recovery;
     std::atomic<unsigned> active_count{};
     bool recovery_failure_logged{};
+    bool keyboard_mouse_owned{};
+    bool keyboard_mouse_faulted{};
+    bool keyboard_mouse_teardown_confirmed{};
+    bool keyboard_mouse_recovery_needs_probe{};
     // REAL_OBSERVE
   };
   std::unique_ptr<impl_t> impl{std::make_unique<impl_t>()};

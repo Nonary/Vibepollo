@@ -47,6 +47,8 @@
 #endif
 // local includes
 #include "config.h"
+#include "config_http_log_policy.h"
+#include "config_http_login_limiter.h"
 #include "host_stream_control.h"
 #include "update.h"
 #include "confighttp.h"
@@ -56,6 +58,7 @@
 #include "globals.h"
 #include "http_auth.h"
 #include "httpcommon.h"
+#include "jthread.h"
 #include "https_listener_diagnostics.h"
 #include "platform/common.h"
 #ifdef _WIN32
@@ -201,6 +204,9 @@ namespace confighttp {
     bool changed = false;
     for (const auto control : {remote_session::control_e::input, remote_session::control_e::monitor}) {
       const auto synthetic = remote_session::synthetic(control);
+      const auto key = control == remote_session::control_e::input ? "input" : "monitor";
+      if (file_tree.contains("removed-system-apps") && file_tree["removed-system-apps"].is_object() &&
+          file_tree["removed-system-apps"].contains(key)) continue;
       const auto artwork = remote_session::synthetic_artwork_filename(control);
       if (!artwork) {
         continue;
@@ -629,7 +635,6 @@ namespace confighttp {
 
   // SESSION COOKIE
   std::string sessionCookie;
-  static std::chrono::time_point<std::chrono::steady_clock> cookie_creation_time;
 
   /**
    * @brief Log the request details.
@@ -647,7 +652,7 @@ namespace confighttp {
       BOOST_LOG(verbose) << "Headers:"sv;
       for (auto &[name, val] : request->header) {
         BOOST_LOG(verbose) << name << " -- "
-                           << (name == "Authorization" ? "CREDENTIALS REDACTED" : val);
+                           << (policy::is_sensitive_http_field(name) ? "CREDENTIALS REDACTED" : val);
       }
     }
 
@@ -655,7 +660,8 @@ namespace confighttp {
     if (!query.empty()) {
       BOOST_LOG(verbose) << "Query Params:"sv;
       for (auto &[name, val] : query) {
-        BOOST_LOG(verbose) << name << " -- " << val;
+        BOOST_LOG(verbose) << name << " -- "
+                           << (policy::is_sensitive_http_field(name) ? "CREDENTIALS REDACTED" : val);
       }
     }
   }
@@ -1080,6 +1086,15 @@ namespace confighttp {
       } else {
         response->write(result.code);
       }
+      return false;
+    }
+    return true;
+  }
+
+  bool authorize_remote(resp_https_t response, const req_https_t &request) {
+    const auto address = net::addr_to_normalized_string(request->remote_endpoint().address());
+    if (auto result = check_remote_access(address); !result.ok) {
+      response->write(result.code, result.body, result.headers);
       return false;
     }
     return true;
@@ -1940,6 +1955,18 @@ namespace confighttp {
         }
       }
 
+      nlohmann::json restorable = nlohmann::json::array();
+      const auto &apps = file_tree["apps"];
+      for (const auto &[key, name] : std::array<std::pair<const char *, const char *>, 3> {{{"desktop", "Desktop"}, {"monitor", "Remote Monitor"}, {"input", "Remote Input"}}}) {
+        bool present = std::any_of(apps.begin(), apps.end(), [&](const auto &app) {
+          if (!app.is_object()) return false;
+          if (std::string_view {key} == "desktop") return app.value("name", std::string {}) == "Desktop";
+          const auto control = std::string_view {key} == "input" ? remote_session::control_e::input : remote_session::control_e::monitor;
+          return app.value("uuid", std::string {}) == remote_session::synthetic_uuid(control);
+        });
+        if (!present) restorable.push_back({{"id", key}, {"name", name}});
+      }
+      file_tree["restorable-system-apps"] = std::move(restorable);
       send_response(response, file_tree, "no-store");
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "GetApps: "sv << e.what();
@@ -2551,10 +2578,17 @@ namespace confighttp {
       } else if (target_index && *target_index < apps_node.size()) {
         protected_index = *target_index;
       }
-      if (!provider_maintenance && protected_index &&
-          configurable_remote_session(apps_node[*protected_index].value("uuid", "")) != remote_session::control_e::none) {
-        bad_request(response, request, "Remote session applications cannot be deleted");
-        return;
+      if (!provider_maintenance && protected_index) {
+        const auto &app = apps_node[*protected_index];
+        const auto control = configurable_remote_session(app.value("uuid", std::string {}));
+        const char *key = control == remote_session::control_e::input ? "input" :
+                          control == remote_session::control_e::monitor ? "monitor" :
+                          app.value("name", std::string {}) == "Desktop" ? "desktop" : nullptr;
+        if (key) {
+          if (!file_tree.contains("removed-system-apps") || !file_tree["removed-system-apps"].is_object())
+            file_tree["removed-system-apps"] = nlohmann::json::object();
+          file_tree["removed-system-apps"][key] = app;
+        }
       }
 
       nlohmann::json::array_t new_apps;
@@ -2663,6 +2697,40 @@ namespace confighttp {
       send_response(response, output_tree);
     } catch (std::exception &e) {
       BOOST_LOG(warning) << "DeleteApp: "sv << e.what();
+      bad_request(response, request, e.what());
+    }
+  }
+
+  void restoreSystemApp(resp_https_t response, req_https_t request) {
+    if (!authenticate(response, request)) return;
+    try {
+      std::lock_guard lock {apps_file_mutex()};
+      const auto key = request->path_match[1].str();
+      auto file_tree = nlohmann::json::parse(file_handler::read_file(config::stream.file_apps.c_str()));
+      auto &apps = file_tree["apps"];
+      if (!apps.is_array()) throw std::invalid_argument("Apps configuration missing or invalid");
+      const auto control = key == "input" ? remote_session::control_e::input : remote_session::control_e::monitor;
+      const auto uuid = key == "desktop" ? std::string {} : remote_session::synthetic_uuid(control);
+      for (const auto &app : apps) {
+        if (app.is_object() && (key == "desktop" ? app.value("name", std::string {}) == "Desktop" : app.value("uuid", std::string {}) == uuid)) {
+          bad_request(response, request, "System application already exists");
+          return;
+        }
+      }
+      nlohmann::json restored;
+      if (file_tree.contains("removed-system-apps") && file_tree["removed-system-apps"].is_object() && file_tree["removed-system-apps"].contains(key)) {
+        restored = file_tree["removed-system-apps"][key];
+        file_tree["removed-system-apps"].erase(key);
+      } else if (key == "desktop") {
+        restored = {{"name", "Desktop"}, {"image-path", "desktop.png"}, {"uuid", uuid_util::uuid_t::generate().string()}};
+      } else {
+        restored = {{"name", key == "input" ? "Remote Input" : "Remote Monitor"}, {"uuid", uuid},
+                    {"image-path", std::string {"remote-session/"} + std::string {*remote_session::synthetic_artwork_filename(control)}}};
+      }
+      apps.push_back(std::move(restored));
+      if (!refresh_client_apps_cache(file_tree)) throw std::runtime_error("Could not restore system application");
+      send_response(response, nlohmann::json {{"status", true}});
+    } catch (const std::exception &e) {
       bad_request(response, request, e.what());
     }
   }
@@ -2977,16 +3045,24 @@ namespace confighttp {
         input_tree.contains("do") ||
         input_tree.contains("undo");
 
+      if (input_tree.contains("enabled") && !input_tree["enabled"].is_boolean()) {
+        bad_request(response, request, "enabled must be a boolean");
+        return;
+      }
       if (input_tree.contains("allow_sleep") && !input_tree["allow_sleep"].is_boolean()) {
         bad_request(response, request, "allow_sleep must be a boolean");
         return;
       }
-      if (!has_extended_fields && (hdr_profile.has_value() || input_tree.contains("allow_sleep"))) {
+      if (!has_extended_fields && (hdr_profile.has_value() || input_tree.contains("allow_sleep") || input_tree.contains("enabled"))) {
         bool updated = true;
         if (hdr_profile.has_value()) updated = nvhttp::set_client_hdr_profile(uuid, *hdr_profile);
         if (input_tree.contains("allow_sleep")) {
           output_tree["allow_sleep_updated"] = nvhttp::set_client_sleep_allowed(uuid, input_tree["allow_sleep"].get<bool>());
           updated = output_tree["allow_sleep_updated"].get<bool>() && updated;
+        }
+        if (input_tree.contains("enabled")) {
+          output_tree["enabled_updated"] = nvhttp::set_client_enabled(uuid, input_tree["enabled"].get<bool>());
+          updated = output_tree["enabled_updated"].get<bool>() && updated;
         }
         output_tree["status"] = updated;
         send_response(response, output_tree);
@@ -3069,6 +3145,10 @@ namespace confighttp {
       if (input_tree.contains("allow_sleep")) {
         output_tree["allow_sleep_updated"] = nvhttp::set_client_sleep_allowed(uuid, input_tree["allow_sleep"].get<bool>());
         updated = output_tree["allow_sleep_updated"].get<bool>() && updated;
+      }
+      if (input_tree.contains("enabled")) {
+        output_tree["enabled_updated"] = nvhttp::set_client_enabled(uuid, input_tree["enabled"].get<bool>());
+        updated = output_tree["enabled_updated"].get<bool>() && updated;
       }
       output_tree["status"] = updated;
       send_response(response, output_tree);
@@ -3199,6 +3279,7 @@ namespace confighttp {
     output_tree["architecture"] = "unknown";
 #endif
     output_tree["version"] = PROJECT_VERSION;
+    output_tree["channel"] = PROJECT_BUILD_CHANNEL;
     output_tree["commit"] = PROJECT_VERSION_COMMIT;
 #ifdef PROJECT_VERSION_PRERELEASE
     output_tree["prerelease"] = PROJECT_VERSION_PRERELEASE;
@@ -4919,6 +5000,7 @@ namespace confighttp {
    * @api_examples{/api/password| POST| {"currentUsername":"admin","currentPassword":"admin","newUsername":"admin","newPassword":"admin","confirmNewPassword":"admin"}}
    */
   void savePassword(resp_https_t response, req_https_t request) {
+    if (!authorize_remote(response, request)) return;
     if ((!config::sunshine.username.empty() && !authenticate(response, request)) || !validateContentType(response, request, "application/json")) {
       return;
     }
@@ -6328,6 +6410,10 @@ namespace confighttp {
     configure_https_listener_diagnostics(server, [](std::string_view message) {
       BOOST_LOG(warning) << message;
     });
+    // Bound unauthenticated header and body buffering before route dispatch.
+    // Configuration payloads may include base64 artwork, so keep a generous
+    // ceiling while preventing request-driven memory exhaustion.
+    server.config.max_request_streambuf_size = 16U * 1024U * 1024U;
     server.default_resource["DELETE"] = [](resp_https_t response, req_https_t request) {
       bad_request(response, request);
     };
@@ -6372,13 +6458,15 @@ namespace confighttp {
       };
       record_token_route(normalize_route_pattern(pattern), method);
     };
-    auto register_blocking_api_route = [&](const char *pattern, const char *method, const auto &handler, thread_pool_util::ThreadPool *route_pool = nullptr, bool stream_start = false) {
+    // By value: capturing a function reference in the nested lambdas below trips up Apple Clang 15.
+    auto register_blocking_api_route = [&](const char *pattern, const char *method, auto handler, thread_pool_util::ThreadPool *route_pool = nullptr, bool stream_start = false) {
       auto *worker_pool = route_pool ? route_pool : &blocking_route_pool;
       register_api_route(pattern, method, [worker_pool, handler, stream_start](resp_https_t response, req_https_t request, host_stream_control::ticket_t ticket) {
         if (!authenticate(response, request)) {
           return;
         }
         auto task = [handler, response, request = std::move(request), ticket]() mutable {
+          (void) ticket;  // Unused where no handler takes a ticket, as on macOS.
           try {
             if constexpr (std::is_invocable_v<decltype(handler), resp_https_t, req_https_t, host_stream_control::ticket_t>) {
               handler(response, request, ticket);
@@ -6421,6 +6509,7 @@ namespace confighttp {
     register_api_route("^/api/apps/delete$", "POST", deleteApp);
     register_blocking_api_route("^/api/apps/launch$", "POST", launchApp, nullptr, true);
     register_api_route("^/api/apps/close$", "POST", closeApp);
+    register_api_route("^/api/apps/system/(desktop|monitor|input)/restore$", "POST", restoreSystemApp);
 #if defined(_WIN32) || defined(__linux__)
     register_api_route("^/api/apps/rtx_hdr/live$", "POST", updateAppRtxHdrLive);
 #endif
@@ -6577,7 +6666,7 @@ namespace confighttp {
     std::thread tcp {accept_and_run, &server};
 
     // Start a background task to clean up expired session tokens every hour
-    std::jthread cleanup_thread([shutdown_event]() {
+    util::jthread cleanup_thread([shutdown_event]() {
       while (!shutdown_event->view(std::chrono::hours(1))) {
         if (session_token_manager.cleanup_expired_session_tokens()) {
           session_token_manager.save_session_tokens();
@@ -6596,7 +6685,7 @@ namespace confighttp {
     blocking_route_pool.join();
     metadata_route_pool.join();
     webrtc_stream::shutdown_all_sessions();
-    // std::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
+    // util::jthread (cleanup_thread) auto-joins on destruction, no need for joinable/join
   }
 
   /**
@@ -6665,7 +6754,24 @@ namespace confighttp {
    * @api_examples{/api/auth/login| POST| {"username": "admin", "password": "password"}}
    */
   void loginUser(resp_https_t response, req_https_t request) {
+    if (!authorize_remote(response, request)) {
+      return;
+    }
     print_req(request);
+
+    static policy::LoginAttemptLimiter login_attempts;
+    const std::string remote_address = net::addr_to_normalized_string(request->remote_endpoint().address());
+    const auto admission = login_attempts.consume(remote_address);
+    if (!admission.allowed) {
+      nlohmann::json body {{"status", false}, {"error", "Too many login attempts"}};
+      SimpleWeb::CaseInsensitiveMultimap headers {
+        {"Content-Type", "application/json"},
+        {"Retry-After", std::to_string(admission.retry_after.count())},
+      };
+      add_cors_headers(headers);
+      response->write(SimpleWeb::StatusCode::client_error_too_many_requests, body.dump(), headers);
+      return;
+    }
 
     std::stringstream ss;
     ss << request->content.rdbuf();
@@ -6692,9 +6798,10 @@ namespace confighttp {
       if (auto ua = request->header.find("user-agent"); ua != request->header.end()) {
         user_agent = ua->second;
       }
-      std::string remote_address = net::addr_to_normalized_string(request->remote_endpoint().address());
-
       APIResponse api_response = session_token_api.login(username, password, redirect_url, remember_me, user_agent, remote_address);
+      if (api_response.status_code == StatusCode::success_ok) {
+        login_attempts.reset(remote_address);
+      }
       write_api_response(response, api_response);
 
     } catch (const nlohmann::json::exception &e) {

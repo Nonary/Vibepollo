@@ -76,6 +76,34 @@ namespace remote_session {
     std::vector<app_t> catalogue;
   };
 
+  enum class cached_game_status_e : std::uint8_t { unknown, resolved, unavailable };
+
+  struct cached_game_resolution_t {
+    cached_game_status_e status {cached_game_status_e::unknown};
+    std::optional<app_t> app;
+  };
+
+  // A client may launch an advertised running-game tile after a catalogue
+  // refresh has removed it. Retain its original target for that client.
+  class cached_game_tiles_t {
+  public:
+    void remember(std::string_view client_uuid, std::int32_t tile_id, const app_t &game);
+    [[nodiscard]] cached_game_resolution_t resolve(
+      std::string_view client_uuid,
+      std::int32_t tile_id,
+      std::string_view tile_uuid,
+      const std::vector<app_t> &configured
+    ) const;
+
+  private:
+    struct entry_t {
+      std::int32_t tile_id;
+      app_t game;
+    };
+    mutable std::mutex mutex_;
+    std::unordered_map<std::string, std::vector<entry_t>> clients_;
+  };
+
   struct dispatch_t {
     control_e control {control_e::none};
     permission_e permission {permission_e::view};

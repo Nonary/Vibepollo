@@ -32,6 +32,10 @@ on:
       release_version:
         required: true
         type: string
+      release_channel:
+        required: false
+        type: string
+        default: ''
 
 jobs:
   build_archlinux:
@@ -47,6 +51,7 @@ jobs:
       VALIDATION_ONLY: ${{ inputs.validation_only }}
       BRANCH: ${{ github.head_ref || github.ref_name }}
       BUILD_VERSION: ${{ inputs.release_version }}
+      BUILD_CHANNEL: ${{ inputs.release_channel }}
       CLONE_URL: ${{ github.event.repository.clone_url }}
       COMMIT: ${{ inputs.release_commit }}
     permissions:

@@ -25,8 +25,8 @@ namespace display_helper::v2 {
       recovery_validation_operation_(recovery_validation_operation),
       virtual_display_(virtual_display),
       clock_(clock),
-      worker_([this](std::stop_token stop) { worker_loop(stop); }),
-      timer_worker_([this](std::stop_token stop) { timer_loop(stop); }) {}
+      worker_([this](util::stop_token stop) { worker_loop(stop); }),
+      timer_worker_([this](util::stop_token stop) { timer_loop(stop); }) {}
 
   AsyncDispatcher::~AsyncDispatcher() {
     if (timer_worker_.joinable()) {
@@ -199,7 +199,7 @@ namespace display_helper::v2 {
       token,
       delay,
       completion = std::move(completion)
-    ](std::stop_token stop_token) mutable {
+    ](util::stop_token stop_token) mutable {
       auto remaining_delay = delay;
       constexpr auto kCancellationSlice = std::chrono::milliseconds(100);
       while (remaining_delay > std::chrono::milliseconds::zero()) {
@@ -319,7 +319,7 @@ namespace display_helper::v2 {
     cv_.notify_one();
   }
 
-  void AsyncDispatcher::enqueue_delayed_task(std::function<void(std::stop_token)> task) {
+  void AsyncDispatcher::enqueue_delayed_task(std::function<void(util::stop_token)> task) {
     {
       std::lock_guard<std::mutex> lock(timer_mutex_);
       timer_tasks_.push_back(std::move(task));
@@ -327,7 +327,7 @@ namespace display_helper::v2 {
     timer_cv_.notify_one();
   }
 
-  void AsyncDispatcher::worker_loop(std::stop_token st) {
+  void AsyncDispatcher::worker_loop(util::stop_token st) {
     while (!st.stop_requested()) {
       std::function<void()> task;
       {
@@ -357,9 +357,9 @@ namespace display_helper::v2 {
     }
   }
 
-  void AsyncDispatcher::timer_loop(std::stop_token st) {
+  void AsyncDispatcher::timer_loop(util::stop_token st) {
     while (!st.stop_requested()) {
-      std::function<void(std::stop_token)> task;
+      std::function<void(util::stop_token)> task;
       {
         std::unique_lock<std::mutex> lock(timer_mutex_);
         timer_cv_.wait(lock, [&]() { return st.stop_requested() || !timer_tasks_.empty(); });

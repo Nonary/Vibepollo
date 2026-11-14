@@ -5,10 +5,47 @@
 #pragma once
 
 #include "config.h"
+#include "legacy_generated_app_identities.h"
 #include "platform/windows/virtual_display_policy.h"
 
 namespace proc::display_policy {
   using preparation_e = config::video_t::dd_t::config_option_e;
+
+  // Selecting the desktop applet is an explicit virtual target selection,
+  // including when the client's usual game preference is a physical display.
+  // The neutral token leaves provider selection to the configured driver.
+  template <class Session>
+  void apply_builtin_virtual_display(Session &session, const std::string_view app_uuid, const config::video_t &video) {
+    if (app_uuid != VIRTUAL_DISPLAY_UUID) return;
+    session.virtual_display = true;
+    session.output_name_override = "sunshine:virtual_display";
+    if (session.virtual_display_mode_override.value_or(video.virtual_display_mode) == config::video_t::virtual_display_mode_e::disabled) {
+      session.virtual_display_mode_override = config::video_t::virtual_display_mode_e::per_client;
+    }
+    if (!session.dd_config_option_override &&
+        (video.dd.configuration_option == preparation_e::disabled || video.dd.configuration_option == preparation_e::verify_only)) {
+      session.dd_config_option_override = preparation_e::ensure_active;
+    }
+  }
+
+  // Launch/resume never fail because this screen is missing: the stream starts
+  // on the existing display, and the client receives this warning code together
+  // with the fallback text below as its message.
+  inline constexpr std::string_view virtual_display_unavailable_warning = "virtual_display_unavailable";
+
+  /**
+   * @brief Describe a built-in Virtual Display stream that starts without its own screen.
+   * @return Text for the host log and the client warning, or empty when the app is not the
+   *         built-in desktop or its screen exists.
+   */
+  inline std::string builtin_virtual_display_fallback(const std::string_view app_uuid, const bool created, const config::video_t &video) {
+    if (app_uuid != VIRTUAL_DISPLAY_UUID || created) return {};
+    // Creation also fails while another stream is ending or a display restore
+    // is running, so do not present a driver repair as the only cause.
+    return video.dd.use_sunshine_virtual_display_driver ?
+      "Virtual Display could not create a virtual screen with the Vibepollo display driver; streaming the existing display instead. Wait for any other stream or display restore to finish, then launch it again. If it keeps happening, repair the driver." :
+      "Virtual Display could not create a virtual screen with the SudoVDA driver; streaming the existing display instead. Wait for any other stream or display restore to finish, then launch it again. If it keeps happening, check that SudoVDA is installed or select the Vibepollo display driver.";
+  }
 
   /**
    * @brief Read the generic representation of a session preparation override.
@@ -73,8 +110,8 @@ namespace proc::display_policy {
    * @param client_virtual Whether the client explicitly requests a virtual target/layout.
    * @param session_virtual Whether the assembled session explicitly requests one.
    * @return Ephemeral preparation and whether a higher virtual choice may lift VerifyOnly.
-   * @note A higher-level virtual choice lifts inherited VerifyOnly to layout preparation.
-   *       An equally or more specific explicit preparation remains authoritative.
+   * @note An application's explicit virtual choice also lifts its own VerifyOnly;
+   *       a client preparation still takes precedence over an application choice.
    */
   inline preparation_t resolve_preparation(
     const preparation_e inherited,
@@ -86,7 +123,9 @@ namespace proc::display_policy {
     const auto explicit_preparation = client ? client : application;
     const int preparation_level = client ? 2 : application ? 1 : 0;
     const int virtual_level = client_virtual ? 2 : session_virtual ? 1 : 0;
-    if (explicit_preparation.value_or(inherited) == preparation_e::verify_only && virtual_level > preparation_level) {
+    const bool virtual_choice_wins = virtual_level > preparation_level ||
+                                     (virtual_level == 1 && preparation_level == 1);
+    if (explicit_preparation.value_or(inherited) == preparation_e::verify_only && virtual_choice_wins) {
       return {explicit_preparation, true};
     }
     return {explicit_preparation, false};

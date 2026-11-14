@@ -70,6 +70,48 @@ async function setupWindowsHost(
   });
 }
 
+test('unobserved driver is informational and refresh preserves real runtime outcomes', async ({
+  page,
+}) => {
+  const options = {
+    driverStatus: 1 as DriverStatus | number,
+    activeDriver: null as 'vibeshine' | null,
+  };
+  await setupWindowsHost(page, options);
+  const mutations: string[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname.startsWith('/api/') && request.method() !== 'GET')
+      mutations.push(`${request.method()} ${new URL(request.url()).pathname}`);
+  });
+  await page.goto('/v2/settings?category=display');
+  const status = page.locator('#windows-display-status');
+  const badge = status.locator('.vs-status-badge');
+  const alert = status.locator('.vs-inline-alert');
+  await expect(badge).toHaveText('No driver result');
+  await expect(badge).toHaveClass(/vs-status-badge--neutral/);
+  await expect(alert).toHaveClass(/vs-inline-alert--info/);
+  await expect(alert).toContainText('This status alone does not indicate a failure.');
+  await expect(status).not.toContainText('restart');
+  await expect(status).not.toContainText('ready for virtual-display use');
+  await status.getByRole('button', { name: 'Refresh status', exact: true }).click();
+  await expect(badge).toHaveText('No driver result');
+
+  options.activeDriver = 'vibeshine';
+  for (const [result, tone, title] of [
+    ['ready', 'success', 'Driver responded'],
+    ['failed', 'danger', 'Driver is unavailable'],
+    ['version_incompatible', 'warning', 'Driver version mismatch'],
+    ['watchdog_failed', 'danger', 'Driver watchdog failed'],
+    ['unknown', 'neutral', 'Driver status is unknown'],
+  ] as const) {
+    options.driverStatus = result;
+    await status.getByRole('button', { name: 'Refresh status', exact: true }).click();
+    await expect(alert).toContainText(title);
+    await expect(badge).toHaveClass(new RegExp(`vs-status-badge--${tone}`));
+  }
+  expect(mutations).toEqual([]);
+});
+
 for (const [name, status] of [
   ['incompatible', 'version_incompatible'],
   ['watchdog', 'watchdog_failed'],
@@ -80,7 +122,7 @@ for (const [name, status] of [
     await page.goto('/v2/settings?category=display');
     await expect(page.locator('#windows-display-status')).toBeVisible();
     await expect(page.locator('#windows-display-status .vs-status-badge')).toContainText(
-        name === 'incompatible'
+      name === 'incompatible'
         ? 'Driver version mismatch'
         : name === 'watchdog'
           ? 'Watchdog failed'

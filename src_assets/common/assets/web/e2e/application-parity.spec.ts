@@ -230,7 +230,8 @@ test('Linux applications hide Windows-only controls', async ({ page }) => {
   });
   await page.goto(`/v2/library/${appUuid}`);
   await expect(page.locator('#app-auto-detach')).toBeVisible();
-  await expect(page.locator('#app-elevated')).toHaveCount(0);
+  // Linux runs elevated commands as root through the machine service.
+  await expect(page.locator('#app-elevated')).toBeVisible();
   await expect(page.locator('.lossless-editor')).toHaveCount(0);
 });
 

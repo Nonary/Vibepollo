@@ -20,7 +20,7 @@
         <div class="flex items-center justify-between gap-2 mb-2">
           <div class="text-xs opacity-70">{{ $t('apps.prep_step', { number: i + 1 }) }}</div>
           <div class="flex items-center gap-2">
-            <n-checkbox v-if="isWindows" v-model:checked="p.elevated" size="small">
+            <n-checkbox v-if="supportsElevation" v-model:checked="p.elevated" size="small">
               {{ $t('_common.elevated') }}
             </n-checkbox>
             <n-button size="small" type="error" strong @click="remove(i)">
@@ -61,8 +61,10 @@ import type { AppForm } from './types';
 
 const form = defineModel<AppForm>('form', { required: true });
 
-const props = defineProps<{
-  isWindows: boolean;
+// Windows elevates with administrator rights; the Linux machine service runs
+// elevated commands as root.
+defineProps<{
+  supportsElevation: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -73,5 +75,4 @@ function remove(index: number) {
   form.value.prepCmd.splice(index, 1);
 }
 
-const isWindows = props.isWindows;
 </script>

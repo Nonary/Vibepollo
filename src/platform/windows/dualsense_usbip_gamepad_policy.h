@@ -86,9 +86,20 @@ namespace platf::dualsense_usbip_gamepad {
       const bool rumble_valid =
         (report.valid_flag0 & lvg::driver::k_ds5_flag0_compatible_vibration) ||
         (report.valid_flag2 & lvg::driver::k_ds5_flag2_compatible_vibration);
+      // SDL disables emulated rumble with an unflagged zero-motor report.
+      // Reports carrying other validity flags can be partial updates, so their
+      // unused motor bytes cannot safely be interpreted as a stop.
+      const bool rumble_disabled = !report.valid_flag0 && !report.valid_flag1 &&
+                                   !report.valid_flag2 && !report.motor_left && !report.motor_right &&
+                                   (previous.low_frequency || previous.high_frequency);
+      if (rumble_disabled) {
+        state_.low_frequency = 0;
+        state_.high_frequency = 0;
+      }
       result.rumble = rumble_valid &&
                       (!have_rumble_ || previous.low_frequency != state_.low_frequency ||
                        previous.high_frequency != state_.high_frequency);
+      result.rumble = result.rumble || rumble_disabled;
       have_rumble_ = have_rumble_ || rumble_valid;
       result.rgb = (report.valid_flag1 & lvg::driver::k_ds5_flag1_lightbar) &&
                    (!(previous.valid & lvg::ps_output_lightbar_valid) ||

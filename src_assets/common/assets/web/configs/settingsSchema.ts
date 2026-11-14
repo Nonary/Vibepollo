@@ -282,6 +282,7 @@ const gamepadOptions = [
   option('vhf_ds5', 'config.gamepad_vhf_ds5'),
   option('usbip_ds5', 'config.gamepad_usbip_ds5'),
   option('vhf_switch', 'config.gamepad_vhf_switch'),
+  option('vhf_steam', 'config.gamepad_vhf_steam'),
 ];
 
 export function gamepadOptionsForPlatform(platform: string): SettingsOption[] {
@@ -298,6 +299,7 @@ export function gamepadOptionsForPlatform(platform: string): SettingsOption[] {
         'vhf_ds5',
         'usbip_ds5',
         'vhf_switch',
+        'vhf_steam',
       ])
     : normalized.includes('linux')
       ? new Set(['auto', 'xone', 'ds4', 'ds5', 'switch'])
@@ -414,6 +416,9 @@ const virtualDisplayCustomizationFields = (): SettingsField[] => [
     platform: 'linux',
     labelKey: 'ui.settings.fields.wayland_hdr_compatibility.label',
     descriptionKey: 'ui.settings.fields.wayland_hdr_compatibility.description',
+    visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
+  }),  boolean('virtual_display_keep_while_paused', {
+    platform: 'macos',
     visibleWhen: { key: 'virtual_display_mode', notEquals: 'disabled' },
   }),
 ];
@@ -629,7 +634,7 @@ export const settingsCategories: SettingsCategory[] = [
           extendedField('qsv_preset', { encoderFamily: 'intel', platform: 'windows' }),
           extendedField('amd_quality', { encoderFamily: 'amd', platform: 'windows' }),
           number('fec_percentage', {
-            min: 1,
+            min: 0,
             max: 255,
             step: 1,
             labelKey: 'ui.settings.fields.fec_percentage.label',
@@ -805,7 +810,7 @@ export const settingsCategories: SettingsCategory[] = [
           number('dd_paused_virtual_display_timeout_secs', {
             min: 0,
             step: 1,
-            platform: ['windows', 'linux'],
+            platform: ['windows', 'linux', 'macos'],
           }),
           text('dd_snapshot_restore_hotkey', { platform: 'windows' }),
           text('dd_snapshot_restore_hotkey_modifiers', { platform: 'windows' }),
@@ -875,6 +880,15 @@ export const settingsCategories: SettingsCategory[] = [
         fields: [
           boolean('keyboard'),
           boolean('mouse'),
+          select(
+            'keyboard_mouse_backend',
+            [
+              option('auto', 'config.keyboard_mouse_backend_auto'),
+              option('sendinput', 'config.keyboard_mouse_backend_sendinput'),
+              option('vhf', 'config.keyboard_mouse_backend_vhf'),
+            ],
+            { platform: 'windows', restartRequired: true },
+          ),
           boolean('controller'),
           boolean('enable_input_only_mode'),
           boolean('forward_rumble'),
@@ -919,6 +933,12 @@ export const settingsCategories: SettingsCategory[] = [
           boolean('stream_audio'),
           boolean('keep_sink_default'),
           boolean('auto_capture_sink'),
+          select('audio_format', [
+            option('opus', 'config.audio_format_opus'),
+            option('ac3', 'config.audio_format_ac3'),
+            option('eac3', 'config.audio_format_eac3'),
+          ]),
+          boolean('high_quality_audio', { visibleWhen: { key: 'audio_format', notEquals: 'opus' } }),
           text('audio_sink', { monospace: true, stacked: true }),
           boolean('audio_sink_capture_only', { platform: 'windows' }),
           text('virtual_sink', { monospace: true, stacked: true }),
@@ -972,7 +992,7 @@ export const settingsCategories: SettingsCategory[] = [
           number('minimum_fps_target', { min: 0, max: 1000, step: 0.1 }),
           extendedField('min_threads', { min: 1, step: 1 }),
           number('qp', { min: 0, max: 51, step: 1 }),
-          number('fec_percentage', { min: 1, max: 255, step: 1 }),
+          number('fec_percentage', { min: 0, max: 255, step: 1 }),
           number('video_max_batch_size_kb', { min: 1, step: 1 }),
           number('pyrowave_critical_fec_percentage', {
             min: 0,
@@ -1068,6 +1088,7 @@ export const settingsCategories: SettingsCategory[] = [
           extendedField('update_check_interval'),
           text('sunshine_name', { placeholderKey: 'ui.settings.placeholders.host_name' }),
           boolean('system_tray'),
+          boolean('lid_close_ends_streams', { platform: 'macos' }),
           boolean('hide_tray_controls'),
           boolean('envvar_compatibility_mode'),
           boolean('notify_pre_releases'),
@@ -1147,6 +1168,7 @@ export const settingsDefaults: Record<string, unknown> = {
   gamepad: 'auto',
   virtual_display_mode: 'per_client',
   virtual_display_layout: 'exclusive',
+  virtual_display_keep_while_paused: true,
   virtual_display_max_clients: 4,
   remote_monitor_mute_audio: false,
   remote_monitor_disconnect_on_stream_end: false,
@@ -1202,6 +1224,7 @@ export const settingsDefaults: Record<string, unknown> = {
   dd_snapshot_restore_hotkey_modifiers: 'ctrl+alt+shift',
   keyboard: true,
   mouse: true,
+  keyboard_mouse_backend: 'auto',
   proton_dualsense_compatibility: true,
   dualsense_haptics_gain: 1,
   motion_as_ds4: true,
@@ -1213,6 +1236,8 @@ export const settingsDefaults: Record<string, unknown> = {
   key_repeat_delay: 500,
   key_repeat_frequency: 24.9,
   install_steam_audio_drivers: true,
+  audio_format: 'opus',
+  high_quality_audio: false,
   audio_sink: '',
   audio_sink_capture_only: false,
   virtual_sink: '',
@@ -1257,6 +1282,7 @@ export const settingsDefaults: Record<string, unknown> = {
   wan_encryption_mode: 1,
   csrf_allowed_origins: '',
   system_tray: true,
+  lid_close_ends_streams: true,
   notify_pre_releases: true,
   min_log_level: 2,
   global_prep_cmd: [],

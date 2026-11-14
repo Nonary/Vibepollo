@@ -360,3 +360,90 @@ test('saved opt-in survives unsupported producer state and can be disabled', asy
   await expect.poll(() => calls.updates.length).toBe(1);
   expect(calls.updates[0]).toMatchObject({ uuid: 'beta', requested_resolution_only: false });
 });
+
+test('access toggle preserves permissions and reads back failed saves', async ({ page }) => {
+  await installFixture(page, { platform: 'linux' });
+  let enabled = true;
+  let reject = false;
+  const mutations: Record<string, unknown>[] = [];
+  await localRoute(page, '**/api/clients/**', async (route) => {
+    if (new URL(route.request().url()).pathname === '/api/clients/list') {
+      await route.fulfill({ json: { status: true, platform: 'linux', named_certs: [
+        { uuid: 'alpha', name: 'Input only', enabled, connected: false, perm: 0x100 },
+      ] } });
+    } else if (new URL(route.request().url()).pathname === '/api/clients/update') {
+      const payload = route.request().postDataJSON() as Record<string, unknown>;
+      mutations.push(payload);
+      if (!reject || payload.enabled === false) enabled = Boolean(payload.enabled);
+      await route.fulfill({ json: { status: !reject, enabled_updated: !reject } });
+    } else await route.fallback();
+  });
+  await page.goto('/v2/devices');
+  const row = page.locator('.device-row');
+  const toggle = row.locator('.device-row__actions').getByRole('checkbox', { name: 'Enabled', exact: true });
+  await expect(toggle).toBeChecked();
+  await expect(row).not.toContainText('Blocked'); // input-only is still authorized
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  expect(mutations.at(-1)).toEqual({ uuid: 'alpha', enabled: false });
+  reject = true;
+  await toggle.click(); // failed grant must remain disabled
+  await expect(toggle).not.toBeChecked();
+  reject = false;
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  reject = true;
+  await toggle.click(); // failed save still revoked access in this process
+  await expect(toggle).not.toBeChecked();
+  await expect(row).toContainText('Blocked');
+});
+
+test('access mutation fences an older refresh and preserves an unsaved device draft', async ({ page }) => {
+  await installFixture(page, { platform: 'linux' });
+  let enabled = true;
+  let lists = 0;
+  let staleRequested = false;
+  let mutationRequested = false;
+  let readbackRequested = false;
+  let releaseReadback!: () => void;
+  const readbackReady = new Promise<void>((resolve) => { releaseReadback = resolve; });
+  let releaseStale!: () => void;
+  let releaseMutation!: () => void;
+  const staleReady = new Promise<void>((resolve) => { releaseStale = resolve; });
+  const mutationReady = new Promise<void>((resolve) => { releaseMutation = resolve; });
+  await localRoute(page, '**/api/clients/**', async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/clients/list') {
+      const snapshot = enabled;
+      if (++lists === 2) { staleRequested = true; await staleReady; }
+      if (lists === 3) { readbackRequested = true; await readbackReady; }
+      await route.fulfill({ json: { status: true, platform: 'linux', named_certs: [
+        { uuid: 'alpha', name: 'Living room', enabled: snapshot, connected: false, perm: 0x02000000 },
+      ] } });
+    } else if (path === '/api/clients/update') {
+      mutationRequested = true;
+      await mutationReady;
+      enabled = Boolean(route.request().postDataJSON().enabled);
+      await route.fulfill({ json: { status: true, enabled_updated: true } });
+    } else await route.fallback();
+  });
+  await page.goto('/v2/devices');
+  const row = page.locator('.device-row');
+  await row.locator('.device-editor__toggle').click();
+  const draftName = row.locator('input[id$="-name"]');
+  await draftName.fill('Unsaved local name');
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect.poll(() => staleRequested).toBe(true);
+  const toggle = row.locator('.device-row__actions').getByRole('checkbox', { name: 'Enabled', exact: true });
+  await toggle.click();
+  await expect.poll(() => mutationRequested).toBe(true);
+  releaseStale();
+  releaseMutation();
+  await expect.poll(() => readbackRequested).toBe(true);
+  await expect(toggle).toBeDisabled();
+  releaseReadback();
+  await expect(toggle).not.toBeChecked();
+  await expect(toggle).toBeEnabled();
+  await expect(draftName).toHaveValue('Unsaved local name');
+  await expect(row).toContainText('Blocked');
+});

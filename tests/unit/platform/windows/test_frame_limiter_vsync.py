@@ -11,6 +11,34 @@ import sys
 import tempfile
 
 root = pathlib.Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else pathlib.Path(__file__).resolve().parents[4]
+
+
+def between(source, start, end):
+    """Take exact production call-site statements, with unambiguous boundaries."""
+    assert source.count(start) == 1, start
+    return source.split(start, 1)[1].split(end, 1)[0]
+
+
+stream = (root / "src/stream.cpp").read_text()
+webrtc = (root / "src/webrtc_stream.cpp").read_text()
+process = (root / "src/process.cpp").read_text()
+# Compile the actual Windows release/join statements as well as the provider
+# orchestrator. This catches a correct suspend API left unwired in either protocol.
+rtsp_release = "const bool shared_runtime_still_owned =" + between(
+    stream, "const bool shared_runtime_still_owned =", "#else"
+)
+webrtc_release = between(
+    between(webrtc, "if (teardown.capture_was_active) {", "#elif defined(__linux__)"),
+    "#ifdef _WIN32", "#elif"
+)
+secondary_join = between(
+    between(stream, "if (first_rtsp_session && !first_frame_limiter_session) {", "#else"),
+    "#ifdef _WIN32", "#else"
+)
+application_end = "_app_id = -1;" + between(
+    process, "_app_id = -1;\n#ifdef _WIN32", "#endif"
+)
+
 with tempfile.TemporaryDirectory(prefix="frame-limiter-vsync-test-") as directory:
     directory_path = pathlib.Path(directory)
 
@@ -48,6 +76,7 @@ struct null_log { template<class T> null_log& operator<<(const T&) { return *thi
 #include <string_view>
 #include <vector>
 namespace platf {
+ inline bool is_running_as_system() { return false; }
  struct gpu { std::string name, pnp; std::uint32_t vendor_id; int memory; };
  inline const gpu nvidia{"NVIDIA", "nv-id", 0x10de, 8192}, amd{"AMD", "amd-id", 0x1002, 512}, intel{"Intel", "intel-id", 0x8086, 512};
  inline std::vector<gpu> gpus{nvidia};
@@ -116,6 +145,7 @@ namespace {
  struct call { int fps; bool limit; bool disable_limit; bool vsync; };
  std::vector<call> calls;
  int stops=0;
+ int rtss_starts=0, rtss_stops=0, applied_rate=0;
  bool stalled=false;
  std::string applied_sync;
  auto rtss_result=platf::rtss_apply_result::applied;
@@ -123,10 +153,13 @@ namespace {
 namespace platf {
  bool rtss_is_configured() { return true; }
  rtss_recovery_audit_result rtss_audit_pending_recovery() { return rtss_recovery_audit_result::clear; }
- rtss_apply_result rtss_streaming_start(int, int) { applied_sync=config::rtss.frame_limit_type; return rtss_result; }
+ rtss_apply_result rtss_streaming_start(int numerator, int denominator) {
+  ++rtss_starts; applied_rate=numerator/denominator;
+  applied_sync=config::rtss.frame_limit_type; return rtss_result;
+ }
  rtss_apply_result rtss_streaming_refresh(int, int) { return rtss_apply_result::safe_to_fallback; }
  bool rtss_hooks_stalled() { return stalled; }
- void rtss_streaming_stop(bool) {}
+ void rtss_streaming_stop(bool) { ++rtss_stops; applied_rate=0; applied_sync.clear(); }
  bool rtss_warmup_process() { return true; }
  rtss_status_t rtss_get_status() { return {}; }
  namespace frame_limiter_nvcp {
@@ -136,6 +169,35 @@ namespace platf {
   }
   void streaming_stop() { ++stops; }
  }
+}
+namespace proc {
+ struct process_t { int app_id=1; int current_app_id() const { return app_id; } };
+ process_t proc;
+}
+namespace session {
+ bool has_shared_runtime_owner(int) { return false; }
+ void start_shared_platform_if_needed() {}
+}
+namespace platf::dualsense_usbip_gamepad { void set_application_active(bool) {} }
+bool user_session_ready() { return true; }
+void defer_stream_start_actions(int) {}
+void release_transport(platf::frame_limiter_owner owner, bool app_alive) {
+ proc::proc.app_id=app_alive ? 1 : -1;
+ if(owner==platf::frame_limiter_owner::rtsp) {
+  const int finalize_context=0;
+  /* PRODUCTION_RTSP_RELEASE */
+ } else {
+  const bool rtsp_owns_runtime=false;
+  /* PRODUCTION_WEBRTC_RELEASE */
+ }
+}
+void join_secondary_rtsp() {
+ /* PRODUCTION_SECONDARY_JOIN */
+}
+void end_application() {
+ int _app_id=proc::proc.app_id;
+ /* PRODUCTION_APPLICATION_END */
+ proc::proc.app_id=_app_id;
 }
 int main() {
  int scenarios=0;
@@ -190,6 +252,124 @@ int main() {
  std::cout << scenarios << " frame limiter VSYNC lifecycle scenarios passed\n";
 
  using namespace platf;
+ // Exercise provider calls across real suspend/resume ownership transitions.
+ // A resumed or joining client's policy deliberately differs from the original.
+ int suspend_scenarios=0;
+ for(const auto* provider:{"rtss", "nvidia-control-panel"}) {
+  for(const auto first:{frame_limiter_owner::rtsp,frame_limiter_owner::webrtc}) {
+   const auto peer=first==frame_limiter_owner::rtsp ? frame_limiter_owner::webrtc : frame_limiter_owner::rtsp;
+   for(int end_order=0;end_order<3;++end_order) {
+    config::frame_limiter={}; config::rtss={}; config::video={};
+    config::frame_limiter.provider=provider;
+    calls.clear(); stops=0; rtss_starts=0; rtss_stops=0; stalled=false;
+    const auto original=framegen::make_stream_start_policy({
+     .fps=120, .uses_virtual_display=true, .capture_mode="wgc",
+     .auto_virtual_framegen_limiter=true,
+    });
+    auto joining=original;
+    joining.fps=30; joining.frame_limit_millihz=30000;
+    joining.uses_virtual_display=false; joining.auto_virtual_framegen_limiter=false;
+    joining.smooth_motion=true;
+    frame_limiter_streaming_start(first,original);
+    const auto applied_provider=frame_limiter_active_provider();
+    const auto starts=rtss_starts;
+    assert(calls.size()==1 && calls.back().fps==120);
+    assert(config::frame_limiter.enable);
+    auto unchanged=[&] {
+     assert(calls.size()==1 && stops==0 && rtss_starts==starts && rtss_stops==0);
+     assert(frame_limiter_active_provider()==applied_provider);
+     assert(config::frame_limiter.enable);
+     if(std::string(provider)=="rtss") {
+      assert(applied_rate==120 && applied_sync=="nvidia reflex");
+     }
+    };
+    auto restored=[&] {
+     assert(stops==1);
+     assert(rtss_stops==1); // NVCP also audits RTSS and owns its cleanup.
+     assert(frame_limiter_active_provider()==frame_limiter_provider::none);
+     assert(!config::frame_limiter.enable);
+     assert(config::frame_limiter.provider==provider);
+     assert(config::rtss.frame_limit_type=="async");
+    };
+    // A peer cannot change policy while the original client is streaming.
+    frame_limiter_streaming_start(peer,joining);
+    unchanged();
+    frame_limiter_streaming_stop(peer);
+    unchanged();
+    // Suspend keeps both providers and their original restoration snapshots.
+    for(int cycle=0;cycle<3;++cycle) {
+     release_transport(first,true);
+     release_transport(first,true); // duplicate/late disconnect
+     unchanged();
+     // A failed resume drops only its transport reservation.
+     frame_limiter_streaming_start(peer,joining);
+     frame_limiter_streaming_stop(peer);
+     unchanged();
+     frame_limiter_streaming_start(first,joining);
+     frame_limiter_streaming_start(first,joining); // repeated start
+     unchanged();
+    }
+    frame_limiter_streaming_start(peer,joining);
+    if(end_order==0) {
+     // App exits while both protocols still capture: defer restoration.
+     end_application();
+     unchanged();
+     release_transport(first,false);
+     unchanged();
+     release_transport(peer,false);
+    } else if(end_order==1) {
+     // Cancel/timeout/application exit while fully suspended.
+     release_transport(first,true);
+     release_transport(peer,true);
+     unchanged();
+     end_application();
+    } else {
+     // A secondary RTSP client joins a retained session without a new policy.
+     release_transport(first,true);
+     release_transport(peer,true);
+     join_secondary_rtsp();
+     end_application();
+     unchanged();
+     release_transport(frame_limiter_owner::rtsp,false);
+    }
+    restored();
+    // Late callbacks cannot recreate an ended application owner or restore twice.
+    frame_limiter_streaming_suspend(first);
+    frame_limiter_streaming_suspend(peer);
+    frame_limiter_streaming_join(first);
+    frame_limiter_streaming_stop(first);
+    frame_limiter_streaming_stop(peer);
+    frame_limiter_streaming_stop(frame_limiter_owner::application);
+    restored();
+    // The next application can select a new rate, with a fresh snapshot.
+    auto next=original; next.fps=60; next.frame_limit_millihz=60000;
+    frame_limiter_streaming_start(first,next);
+    assert(calls.size()==2 && calls.back().fps==60);
+    frame_limiter_streaming_stop(first,true); // process retention is not suspension
+    assert(stops==2 && rtss_stops==2 && !config::frame_limiter.enable);
+    ++suspend_scenarios;
+   }
+  }
+ }
+ std::cout << suspend_scenarios << " suspend/resume, joining-client and termination scenarios passed\n";
+
+ // An intentionally uncapped session also owns its policy. Joining clients
+ // cannot turn limiting on, either during capture or after a retained pause.
+ config::frame_limiter={}; config::rtss={};
+ calls.clear(); stops=0; rtss_starts=0; rtss_stops=0;
+ framegen::stream_start_policy_t uncapped; uncapped.fps=60;
+ auto wants_cap=uncapped; wants_cap.auto_virtual_framegen_limiter=true;
+ frame_limiter_streaming_start(frame_limiter_owner::rtsp,uncapped);
+ frame_limiter_streaming_start(frame_limiter_owner::webrtc,wants_cap);
+ assert(!config::frame_limiter.enable && calls.empty() && rtss_starts==0);
+ release_transport(frame_limiter_owner::rtsp,true);
+ release_transport(frame_limiter_owner::webrtc,true);
+ frame_limiter_streaming_start(frame_limiter_owner::rtsp,wants_cap);
+ assert(!config::frame_limiter.enable && calls.empty() && rtss_starts==0);
+ release_transport(frame_limiter_owner::rtsp,true);
+ end_application();
+ assert(stops==0 && rtss_stops==0);
+
  int adapter_scenarios=0;
  auto check=[&](const framegen::stream_start_policy_t& policy, const std::string& expected,
                 const std::string& provider="auto", bool sync_override=false,
@@ -278,6 +458,16 @@ int main() {
  std::cout << adapter_scenarios << " selected-adapter and explicit-option lifecycle scenarios passed\n";
 }
 ''')
+    test_path = directory_path / "test.cpp"
+    test_source = test_path.read_text()
+    for name, statements in {
+        "RTSP_RELEASE": rtsp_release,
+        "WEBRTC_RELEASE": webrtc_release,
+        "SECONDARY_JOIN": secondary_join,
+        "APPLICATION_END": application_end,
+    }.items():
+        test_source = test_source.replace(f"/* PRODUCTION_{name} */", statements)
+    test_path.write_text(test_source)
     source = (
         pathlib.Path(sys.argv[2])
         if len(sys.argv) > 2

@@ -17,8 +17,11 @@ class Program
     static object Field(object target, string name) => target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(target);
     static void Call(object target, string name, params object[] args) => target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic).Invoke(target, args);
     static void Assert(bool condition, string text) { if (!condition) throw new Exception(text); Console.WriteLine("PASS: " + text); }
-    static void Main()
+    static void Main(string[] args)
     {
+        BusyPipeBackoff(!args.Contains("--retry-only"));
+        if (args.Contains("--retry-only")) return;
+        BusyPipeRecovery();
         AuthenticationTests.Run();
         AcceptDuringStop("launcher", false);
         AcceptDuringStop("sunshine", true);
@@ -29,6 +32,62 @@ class Program
         TemporaryEnvironmentDoesNotBlockGameStatus();
         WaveformPrelaunchRouting();
         RoundTrip();
+    }
+    static void BusyPipeBackoff(bool verifyRecovery)
+    {
+        Console.WriteLine("CASE: busy pipe does not spin and Stop interrupts backoff");
+        ConnectorPipeTransport.ControlAttempts = 0;
+        ConnectorPipeTransport.FailControlCreation = true;
+        ConnectorPipeTransport.TestSuffix = Guid.NewGuid().ToString("N");
+        while (ConnectorLog.Warnings.TryDequeue(out _)) { }
+        using var service = new ConnectorService(new Api(), new Logger(), false);
+        try
+        {
+            service.Start();
+            Assert(SpinWait.SpinUntil(() => Volatile.Read(ref ConnectorPipeTransport.ControlAttempts) >= 4, 5000), "Busy pipe is retried after backoff");
+            Thread.Sleep(100);
+            Assert(Volatile.Read(ref ConnectorPipeTransport.ControlAttempts) == 4, "No immediate retry while the pipe remains busy");
+            Assert(ConnectorLog.Warnings.Count == 1 && ConnectorLog.Warnings.First().Contains("All pipe instances are busy"), "Busy-pipe initial error is retained without log flooding");
+            var worker = (Task)Field(service, "serverTask");
+            var elapsed = Stopwatch.StartNew();
+            service.Stop();
+            Assert(worker.IsCompleted && elapsed.ElapsedMilliseconds < 750, "Stop cancels a two-second retry wait promptly");
+            if (!verifyRecovery) return;
+            ConnectorPipeTransport.FailControlCreation = false;
+            service.Start();
+            using var client = Connect("launcher", "");
+            Assert(SpinWait.SpinUntil(() => ((ConcurrentDictionary<string, PipeConnection>)Field(service, "launchers")).Count == 1, 5000), "Connector accepts connections after the busy owner disappears and a restart");
+        }
+        finally
+        {
+            ConnectorPipeTransport.FailControlCreation = false;
+            service.Stop();
+        }
+    }
+    static void BusyPipeRecovery()
+    {
+        Console.WriteLine("CASE: recovery without restart resets failure throttling");
+        ConnectorPipeTransport.ControlAttempts = 0;
+        ConnectorPipeTransport.FailControlCreation = true;
+        ConnectorPipeTransport.TestSuffix = Guid.NewGuid().ToString("N");
+        while (ConnectorLog.Warnings.TryDequeue(out _)) { }
+        using var service = new ConnectorService(new Api(), new Logger(), false);
+        try
+        {
+            service.Start();
+            Assert(SpinWait.SpinUntil(() => Volatile.Read(ref ConnectorPipeTransport.ControlAttempts) >= 2, 5000), "Service observes repeated busy errors before recovery");
+            ConnectorPipeTransport.FailControlCreation = false;
+            ConnectorPipeTransport.FailAfterValidation = true;
+            using var client = Connect("launcher");
+            Assert(SpinWait.SpinUntil(() => ConnectorLog.Warnings.Count >= 2, 5000), "An accepted connection resets initial-error logging without restart");
+            Assert(((ConcurrentDictionary<string, PipeConnection>)Field(service, "launchers")).Count == 1, "Busy-pipe recovery publishes the accepted client");
+        }
+        finally
+        {
+            ConnectorPipeTransport.FailAfterValidation = false;
+            ConnectorPipeTransport.FailControlCreation = false;
+            service.Stop();
+        }
     }
     static void AcceptDuringStop(string role, bool restart)
     {

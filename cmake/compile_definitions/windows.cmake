@@ -94,6 +94,9 @@ add_custom_target(generate_windows_versioninfo
             "-DPROJECT_VERSION_MINOR=${PROJECT_VERSION_MINOR}"
             "-DPROJECT_VERSION_PATCH=${PROJECT_VERSION_PATCH}"
             "-DPROJECT_VERSION_PRERELEASE=${PROJECT_VERSION_PRERELEASE}"
+            "-DPROJECT_BUILD_CHANNEL=${PROJECT_BUILD_CHANNEL}"
+            "-DPROJECT_STABLE_ANCHOR_TAG=$ENV{STABLE_ANCHOR_TAG}"
+            "-DPROJECT_STABLE_ANCHOR_COMMIT=$ENV{STABLE_ANCHOR_COMMIT}"
             -P "${CMAKE_SOURCE_DIR}/cmake/prep/emit_windows_versioninfo.cmake"
     COMMAND ${CMAKE_COMMAND} -E touch "${SUNSHINE_WINDOWS_VERSIONINFO_STAMP}"
     BYPRODUCTS
@@ -362,6 +365,7 @@ list(PREPEND PLATFORM_LIBRARIES
         synchronization.lib
         Windowscodecs
         userenv
+        wintrust
         ws2_32
         wsock32
 )

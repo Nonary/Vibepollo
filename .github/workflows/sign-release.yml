@@ -26,7 +26,7 @@ on:
         default: false
 
 concurrency:
-  group: "sign-release-${{ inputs.release_tag }}"
+  group: vibepollo-release-version-allocation
   cancel-in-progress: false
 
 jobs:
@@ -37,6 +37,10 @@ jobs:
       arch_artifact_id: ${{ steps.resolve.outputs.arch_artifact_id }}
       build_run_id: ${{ steps.resolve.outputs.build_run_id }}
       release_commit: ${{ steps.resolve.outputs.release_commit }}
+      release_channel: ${{ steps.resolve.outputs.release_channel }}
+      release_source_branch: ${{ steps.resolve.outputs.release_source_branch }}
+      stable_anchor_tag: ${{ steps.resolve.outputs.stable_anchor_tag }}
+      stable_anchor_commit: ${{ steps.resolve.outputs.stable_anchor_commit }}
       release_version: ${{ steps.resolve.outputs.release_version }}
       signed_artifact_id: ${{ steps.resolve.outputs.signed_artifact_id }}
       signed_run_id: ${{ steps.resolve.outputs.signed_run_id }}
@@ -78,8 +82,53 @@ jobs:
           fi
 
           notes_file="release_notes/${release_version}.md"
-          if ! git cat-file -e "${release_commit}:${notes_file}"; then
+          if [[ ! "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && ! git cat-file -e "${release_commit}:${notes_file}"; then
             echo "::error::Exact release notes '${notes_file}' are missing from ${source_tag}."
+            exit 1
+          fi
+
+          release_channel=""
+          release_source_branch=""
+          if [[ "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            tag_message="$(git for-each-ref --format='%(contents)' "refs/tags/${source_tag}")"
+            release_channel="$(sed -n '1s/^Vibepollo release channel: //p' <<< "${tag_message}")"
+            release_source_branch="$(sed -n '2s/^Source branch: //p' <<< "${tag_message}")"
+            if [[ "${release_channel}" != "stable" ]]; then
+              echo "::error::Numeric signing currently accepts stable allocation tags only; nightly prereleases use the daily publisher."
+              exit 1
+            fi
+            if [[ -z "${release_source_branch}" ]]; then
+              echo "::error::Numeric release tag is missing its allocated source branch metadata."
+              exit 1
+            fi
+            primary_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)"
+            RELEASE_CHANNEL="${release_channel}" \
+              RELEASE_SOURCE_BRANCH="${release_source_branch}" \
+              RELEASE_PRIMARY_BRANCH="${primary_branch}" \
+              RELEASE_SOURCE_CONFIRMED="${GITHUB_REPOSITORY}:${release_source_branch}" \
+              RELEASE_TAG="${source_tag}" \
+              RELEASE_SOURCE_COMMIT="${release_commit}" \
+              python scripts/numeric_release.py validate-tag
+            echo "release_channel=${release_channel}" >> "${GITHUB_OUTPUT}"
+            echo "release_source_branch=${release_source_branch}" >> "${GITHUB_OUTPUT}"
+          fi
+
+          existing_release="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" |
+            jq -s --arg source_tag "${source_tag}" --arg legacy_tag "v${source_tag}" \
+              '[.[] | .[]? | select(.tag_name == $source_tag or .tag_name == $legacy_tag)] | first // {}')"
+          existing_release_id="$(jq -r '.id // empty' <<< "${existing_release}")"
+          if [[ -n "${existing_release_id}" ]]; then
+            if [[ "$(jq -r '.draft' <<< "${existing_release}")" != "true" ]]; then
+              echo "::error::Published releases are immutable; refusing to update release ${source_tag}."
+              exit 1
+            fi
+            if [[ "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ \
+                  && "$(jq -r '.tag_name' <<< "${existing_release}")" != "${source_tag}" ]]; then
+              echo "::error::Numeric recovery draft must use the exact allocated tag, not a v-prefixed alias."
+              exit 1
+            fi
+          elif [[ ! "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::New suffix-tag releases are disabled. Existing legacy drafts may use this workflow only for recovery."
             exit 1
           fi
 
@@ -128,7 +177,7 @@ jobs:
               return 1
             fi
 
-            if [[ "${source_status}" != "completed" || "${source_conclusion}" != "success" || "${source_event}" != "push" || "${source_sha}" != "${release_commit}" || "${source_branch}" != "${source_tag}" ]]; then
+            if [[ "${source_status}" != "completed" || "${source_conclusion}" != "success" || ( "${source_event}" != "push" && "${source_event}" != "workflow_dispatch" ) || "${source_sha}" != "${release_commit}" || "${source_branch}" != "${source_tag}" ]]; then
               echo "CI run ${candidate_run_id} does not match completed successful ci.yml tag build ${source_tag} at ${release_commit}." >&2
               return 1
             fi
@@ -156,7 +205,7 @@ jobs:
             echo "::notice::Using explicitly requested exact CI build ${build_run_id}."
           else
             matching_runs="$(
-              gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?event=push&status=completed&head_sha=${release_commit}&per_page=100" |
+              gh api --paginate "repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?status=completed&head_sha=${release_commit}&per_page=100" |
                 jq -rs --arg release_commit "${release_commit}" --arg source_tag "${source_tag}" '
                   [
                     .[]
@@ -164,7 +213,7 @@ jobs:
                     | select(
                         .status == "completed"
                         and .conclusion == "success"
-                        and .event == "push"
+                        and (.event == "push" or .event == "workflow_dispatch")
                         and (
                           .path == ".github/workflows/ci.yml"
                           or ((.path // "") | startswith(".github/workflows/ci.yml@"))
@@ -355,6 +404,9 @@ jobs:
       release_commit: ${{ needs.resolve_release.outputs.release_commit }}
       release_version: ${{ needs.resolve_release.outputs.release_version }}
       release_tag: ${{ needs.resolve_release.outputs.tag_name }}
+      release_channel: ${{ needs.resolve_release.outputs.release_channel || 'legacy' }}
+      stable_anchor_tag: ${{ needs.resolve_release.outputs.stable_anchor_tag }}
+      stable_anchor_commit: ${{ needs.resolve_release.outputs.stable_anchor_commit }}
       symbol_product_name: Vibepollo
       publish_symbols: true
       symbol_release_draft: true
@@ -391,6 +443,7 @@ jobs:
         env:
           RELEASE_COMMIT: ${{ needs.resolve_release.outputs.release_commit }}
           RELEASE_TAG: ${{ needs.resolve_release.outputs.tag_name }}
+          RELEASE_SOURCE_COMMIT: ${{ needs.resolve_release.outputs.release_commit }}
           SIGNED_RUN_ID: ${{ needs.resolve_release.outputs.signed_run_id }}
           SOURCE_BUILD_RUN_ID: ${{ needs.resolve_release.outputs.build_run_id }}
         run: |
@@ -482,11 +535,20 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           ref: ${{ needs.resolve_release.outputs.release_commit }}
+          fetch-depth: 0
 
       - name: Resolve release metadata
         id: release-metadata
         env:
           TAG_NAME: ${{ needs.resolve_release.outputs.tag_name }}
+          RELEASE_TAG: ${{ needs.resolve_release.outputs.tag_name }}
+          RELEASE_CHANNEL: ${{ needs.resolve_release.outputs.release_channel }}
+          ALLOCATED_CHANNEL: ${{ needs.resolve_release.outputs.release_channel }}
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          RELEASE_SOURCE_COMMIT: ${{ needs.resolve_release.outputs.release_commit }}
+          RELEASE_SOURCE_BRANCH: ${{ needs.resolve_release.outputs.release_source_branch }}
+          RELEASE_PRIMARY_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SOURCE_CONFIRMED: ${{ github.repository }}:${{ needs.resolve_release.outputs.release_source_branch }}
         run: |
           set -euo pipefail
 
@@ -501,7 +563,10 @@ jobs:
           tag_lower="$(printf '%s' "${release_version}" | tr '[:upper:]' '[:lower:]')"
           prerelease=false
           channel=stable
-          if [[ "${tag_lower}" == *alpha* ]]; then
+          if [[ -n "${ALLOCATED_CHANNEL}" ]]; then
+            channel="${ALLOCATED_CHANNEL}"
+            if [[ "${channel}" == "prerelease" ]]; then prerelease=true; fi
+          elif [[ "${tag_lower}" == *alpha* ]]; then
             prerelease=true
             channel=alpha
           elif [[ "${tag_lower}" == *beta* ]]; then
@@ -524,6 +589,7 @@ jobs:
           product_name="Vibepollo"
 
           notes_file=""
+          notes_dir="release_notes"
           for candidate in \
             "release_notes/${release_version}.md" \
             "release_notes/${TAG_NAME}.md"; do
@@ -534,14 +600,23 @@ jobs:
           done
 
           if [[ -z "${notes_file}" ]]; then
-            echo "::error::Release notes file not found. Expected exact release notes at release_notes/${release_version}.md or release_notes/${TAG_NAME}.md"
-            exit 1
+            if [[ -z "${ALLOCATED_CHANNEL}" ]]; then
+              echo "::error::Release notes file not found. Expected exact release notes at release_notes/${release_version}.md or release_notes/${TAG_NAME}.md"
+              exit 1
+            fi
+            notes_dir="${RUNNER_TEMP}/numeric-release-notes"
+            mkdir -p "${notes_dir}"
+            generated="${notes_dir}/${release_version}.md"
+            RELEASE_TAG="${TAG_NAME}" RELEASE_CHANNEL="${ALLOCATED_CHANNEL}" \
+              RELEASE_NOTES_OUTPUT="${generated}" \
+              python scripts/numeric_release.py generate-notes
+            notes_file="${generated}"
           fi
 
           release_body_file="${RUNNER_TEMP}/release-notes-${release_version}.md"
           python .github/scripts/compose_release_notes.py \
             --release-version "${release_version}" \
-            --notes-dir release_notes \
+            --notes-dir "${notes_dir}" \
             --product-name "${product_name}" \
             --output "${release_body_file}"
 
@@ -631,6 +706,27 @@ jobs:
       - name: Debug artifacts
         run: ls -l artifacts
 
+      - name: Revalidate numeric release candidate and immutable tag before publication
+        if: needs.resolve_release.outputs.release_channel != ''
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ needs.resolve_release.outputs.tag_name }}
+          RELEASE_SOURCE_COMMIT: ${{ needs.resolve_release.outputs.release_commit }}
+          RELEASE_SOURCE_BRANCH: ${{ needs.resolve_release.outputs.release_source_branch }}
+          RELEASE_PRIMARY_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SOURCE_CONFIRMED: ${{ github.repository }}:${{ needs.resolve_release.outputs.release_source_branch }}
+          RELEASE_CHANNEL: ${{ needs.resolve_release.outputs.release_channel }}
+        run: |
+          set -euo pipefail
+          git fetch --force --tags origin
+          git fetch --no-tags origin "refs/heads/$RELEASE_SOURCE_BRANCH:refs/remotes/origin/release-source"
+          python scripts/numeric_release.py validate-tag
+          tag_object="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq .object.sha)"
+          tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_object")"
+          test "$(jq -r '.object.sha' <<< "$tag_json")" = "$RELEASE_SOURCE_COMMIT"
+          test "$(jq -r '.message' <<< "$tag_json" | sed -n '1p')" = "Vibepollo release channel: $RELEASE_CHANNEL"
+          test "$(jq -r '.message' <<< "$tag_json" | sed -n '2p')" = "Source branch: $RELEASE_SOURCE_BRANCH"
+
       - name: Create or update GitHub release
         id: create-release
         env:
@@ -644,6 +740,15 @@ jobs:
           RELEASE_DRAFT: ${{ inputs.release_draft }}
           RELEASE_VERSION: ${{ steps.release-metadata.outputs.release_version }}
           TAG_NAME: ${{ needs.resolve_release.outputs.tag_name }}
+          RELEASE_TAG: ${{ needs.resolve_release.outputs.tag_name }}
+          RELEASE_CHANNEL: ${{ needs.resolve_release.outputs.release_channel }}
+          ALLOCATED_CHANNEL: ${{ needs.resolve_release.outputs.release_channel }}
+          RELEASE_SOURCE_COMMIT: ${{ needs.resolve_release.outputs.release_commit }}
+          RELEASE_SOURCE_BRANCH: ${{ needs.resolve_release.outputs.release_source_branch }}
+          RELEASE_PRIMARY_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_SOURCE_CONFIRMED: ${{ github.repository }}:${{ needs.resolve_release.outputs.release_source_branch }}
+          EXPECTED_STABLE_ANCHOR_TAG: ${{ needs.resolve_release.outputs.stable_anchor_tag }}
+          EXPECTED_STABLE_ANCHOR_COMMIT: ${{ needs.resolve_release.outputs.stable_anchor_commit }}
         run: |
           set -euo pipefail
           release_title="v${RELEASE_VERSION}"
@@ -679,18 +784,46 @@ jobs:
           )"
           release_id="$(jq -r '.id // empty' <<< "${release_match}")"
           publish_tag="$(jq -r --arg source_tag "${TAG_NAME}" '.tag_name // $source_tag' <<< "${release_match}")"
+          allocated_numeric=false
+          if [[ -n "${ALLOCATED_CHANNEL}" ]]; then
+            allocated_numeric=true
+            if [[ -n "${release_id}" && "${publish_tag}" != "${TAG_NAME}" ]]; then
+              echo "::error::Numeric draft must be attached to the exact allocated tag."
+              exit 1
+            fi
+          fi
+          if [[ -n "${release_id}" ]]; then
+            current_existing="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}")"
+            if [[ "$(jq -r '.draft' <<< "${current_existing}")" != "true" \
+                  || "$(jq -r '.tag_name' <<< "${current_existing}")" != "${publish_tag}" \
+                  || "$(jq -r '.prerelease' <<< "${current_existing}")" != "${PRERELEASE}" ]]; then
+              echo "::error::Only the exact matching draft can be resumed; published or mismatched releases are immutable."
+              exit 1
+            fi
+            if [[ "$(jq -r '.name' <<< "${current_existing}")" != "${release_title}" ]]; then
+              echo "::error::Existing draft release title does not match this candidate."
+              exit 1
+            fi
+            existing_body="${RUNNER_TEMP}/existing-release-body.md"
+            jq -j '.body' <<< "${current_existing}" > "${existing_body}"
+            if ! cmp -s "${NOTES_FILE}" "${existing_body}"; then
+              echo "::error::Existing draft release notes do not match this candidate."
+              exit 1
+            fi
+          fi
 
           release_make_latest="${MAKE_LATEST}"
           if [[ "${RELEASE_DRAFT}" == "true" ]]; then
             release_make_latest=false
           fi
+          create_as_draft=true
 
           release_payload="$(
             jq -n \
               --arg tag_name "${publish_tag}" \
               --arg name "${release_title}" \
               --rawfile body "${NOTES_FILE}" \
-              --argjson draft "${RELEASE_DRAFT}" \
+              --argjson draft "${create_as_draft}" \
               --argjson prerelease "${PRERELEASE}" \
               --arg make_latest "${release_make_latest}" \
               '{
@@ -704,12 +837,7 @@ jobs:
           )"
 
           if [[ -n "${release_id}" ]]; then
-            release_json="$(
-              gh api \
-                --method PATCH \
-                "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
-                --input - <<< "${release_payload}"
-            )"
+            release_json="${current_existing}"
           else
             release_json="$(
               gh api \
@@ -720,6 +848,11 @@ jobs:
           fi
 
           release_id="$(jq -r '.id // empty' <<< "${release_json}")"
+          created_numeric_release_id="${release_id}"
+          if [[ -z "${created_numeric_release_id}" || "$(jq -r '.draft' <<< "${release_json}")" != "true" ]]; then
+            echo "::error::Release was not created or resumed as a draft."
+            exit 1
+          fi
           upload_url="$(jq -r '.upload_url // "" | split("{")[0]' <<< "${release_json}")"
           if [[ -z "${release_id}" || -z "${upload_url}" ]]; then
             echo "::error::Failed to resolve release id/upload URL for ${publish_tag}."
@@ -738,19 +871,39 @@ jobs:
             echo "release_url=${release_url}"
           } >> "${GITHUB_OUTPUT}"
 
-          existing_asset_ids="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
-              --jq '.[].id'
-          )"
-          while IFS= read -r asset_id; do
-            [[ -z "${asset_id}" ]] && continue
-            gh api --method DELETE "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >/dev/null
-          done <<< "${existing_asset_ids}"
+          remote_assets="${RUNNER_TEMP}/existing-release-assets.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" > "${remote_assets}"
+          existing_asset_names="${RUNNER_TEMP}/existing-release-asset-names.txt"
+          python - "${remote_assets}" "${existing_asset_names}" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          expected = {
+              path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in Path("artifacts").iterdir()
+              if path.is_file() and path.name != "release-provenance.json"
+          }
+          remote = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          actual = {asset.get("name"): asset.get("digest") for asset in remote}
+          if len(actual) != len(remote):
+              raise SystemExit("Duplicate existing release asset names cannot be recovered safely")
+          if not set(actual).issubset(expected):
+              raise SystemExit("Existing release draft contains unexpected assets")
+          for name, digest in actual.items():
+              if digest != f"sha256:{expected[name]}":
+                  raise SystemExit(f"Existing release draft asset differs from this exact build: {name}")
+          Path(sys.argv[2]).write_text("".join(name + "\n" for name in actual), encoding="utf-8")
+          PY
 
           for asset in artifacts/*; do
             [[ -f "${asset}" ]] || continue
             asset_name="$(basename "${asset}")"
             [[ "${asset_name}" == "release-provenance.json" ]] && continue
+            if grep -Fxq "${asset_name}" "${existing_asset_names}"; then
+              continue
+            fi
             encoded_asset_name="$(jq -rn --arg name "${asset_name}" '$name|@uri')"
             gh api \
               --method POST \
@@ -759,3 +912,53 @@ jobs:
               --input "${asset}" \
               >/dev/null
           done
+
+          remote_assets="${RUNNER_TEMP}/complete-release-assets.json"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets?per_page=100" > "${remote_assets}"
+          python - "${remote_assets}" <<'PY'
+          import hashlib
+          import json
+          import sys
+          from pathlib import Path
+
+          expected = {
+              path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+              for path in Path("artifacts").iterdir()
+              if path.is_file() and path.name != "release-provenance.json"
+          }
+          remote = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+          actual = {asset.get("name"): asset.get("digest") for asset in remote}
+          if len(actual) != len(remote) or set(actual) != set(expected):
+              raise SystemExit(f"Release asset set mismatch: expected={sorted(expected)}, actual={sorted(actual)}")
+          for name, digest in expected.items():
+              if actual[name] != f"sha256:{digest}":
+                  raise SystemExit(f"Uploaded release asset digest mismatch or missing digest: {name}")
+          PY
+          current_release="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}")"
+          if [[ "${release_id}" != "${created_numeric_release_id}" \
+                || "$(jq -r '.tag_name' <<< "${current_release}")" != "${publish_tag}" \
+                || "$(jq -r '.draft' <<< "${current_release}")" != "true" \
+                || "$(jq -r '.name' <<< "${current_release}")" != "${release_title}" \
+                || "$(jq -r '.prerelease' <<< "${current_release}")" != "${PRERELEASE}" ]]; then
+            echo "::error::Release draft identity changed before publication."
+            exit 1
+          fi
+          jq -j '.body' <<< "${current_release}" > "${RUNNER_TEMP}/current-release-body.md"
+          cmp -s "${NOTES_FILE}" "${RUNNER_TEMP}/current-release-body.md"
+          tag_object="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${publish_tag}" --jq .object.sha)"
+          tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}" 2>/dev/null || true)"
+          if [[ -n "${ALLOCATED_CHANNEL}" ]]; then
+            git fetch --force --tags origin
+            python scripts/numeric_release.py validate-tag
+            test "$(jq -r '.object.sha' <<< "${tag_json}")" = "${RELEASE_SOURCE_COMMIT}"
+            test "$(jq -r '.message' <<< "${tag_json}")" = "$(printf 'Vibepollo release channel: %s\nSource branch: %s' "${RELEASE_CHANNEL}" "${RELEASE_SOURCE_BRANCH}")"
+          else
+            git fetch --force --tags origin
+            test "$(git rev-parse "refs/tags/${publish_tag}^{commit}")" = "${RELEASE_SOURCE_COMMIT}"
+          fi
+          if [[ "${RELEASE_DRAFT}" != "true" ]]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
+              -F draft=false -F prerelease="${PRERELEASE}" -f make_latest="${release_make_latest}" >/dev/null
+            current_release="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}")"
+            jq -e --argjson prerelease "${PRERELEASE}" '.draft == false and .prerelease == $prerelease and (.published_at | type == "string" and length > 0)' <<< "${current_release}" >/dev/null
+          fi

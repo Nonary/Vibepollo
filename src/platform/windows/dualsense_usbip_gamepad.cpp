@@ -96,10 +96,13 @@ namespace platf {
         if (pending_rgb && publish_latest(gamepad_feedback_msg_t::make_rgb_led(client_index, last_output.red, last_output.green, last_output.blue))) {
           pending_rgb = false;
         }
-        // A later right-only command must not replace an unsent left-only
-        // command in the shared queue. Preserve these enables and order;
-        // only commands rejected by a full queue merge in pending_triggers.
-        if (pending_triggers && feedback_queue->try_raise(gamepad_feedback_msg_t::make_adaptive_triggers(client_index, pending_triggers, last_output.left_effect.mode, last_output.right_effect.mode, last_output.left_effect.parameters, last_output.right_effect.parameters))) {
+        // Coalesced admission keyed by the enable set (left, right, both): a later
+        // right-only program never replaces an unsent left-only one, a newer program
+        // for the same enables replaces its pending predecessor, and a stalled
+        // consumer cannot pile up programs that would exhaust another controller's
+        // protected slots. Programs rejected by a stopped mailbox keep their
+        // enables merged in pending_triggers for the next flush.
+        if (pending_triggers && raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_adaptive_triggers(client_index, pending_triggers, last_output.left_effect.mode, last_output.right_effect.mode, last_output.left_effect.parameters, last_output.right_effect.parameters))) {
           pending_triggers = 0;
         }
       }

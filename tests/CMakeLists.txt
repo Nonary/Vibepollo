@@ -16,6 +16,14 @@ if(WIN32)
     # tests that link the static FFmpeg archives must provide the system import
     # library because they do not inherit the application's platform libraries.
     list(APPEND SUNSHINE_TEST_FFMPEG_PLATFORM_LIBRARIES bcrypt)
+elseif(APPLE)
+    # FFmpeg's static archives include the VideoToolbox encoder and hardware context.
+    list(APPEND SUNSHINE_TEST_FFMPEG_PLATFORM_LIBRARIES
+        "-framework CoreFoundation"
+        "-framework CoreMedia"
+        "-framework CoreVideo"
+        "-framework VideoToolbox"
+        "-framework AudioToolbox")
 endif()
 
 # Test categories make the dependency scope of a target visible at configuration
@@ -280,6 +288,13 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
             "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_pyrowave_capture_guard.py"
             "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
     set_tests_properties(test_component_pyrowave_capture_guard PROPERTIES LABELS "component" TIMEOUT 60)
+    # Source-text pin: a refused client slice count keeps the driver's count
+    # instead of failing native AMF setup.
+    add_test(NAME test_component_amf_client_slices
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_amf_client_slices.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    set_tests_properties(test_component_amf_client_slices PROPERTIES LABELS "component" TIMEOUT 30)
     # V6 extracts actual source staging, completion, collection, release, and
     # teardown bodies with controlled CPU leaves. The separate conversion
     # matrix covers preparation/copy/producer/consumer failure paths. Neither
@@ -314,6 +329,21 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
                 "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_hardware_metrics_${_metrics_boundary} PROPERTIES LABELS "component" TIMEOUT 30)
     endforeach()
+endif()
+
+# Dolby encoder failure isolation is a source-driven, CPU-only regression test.
+# It runs on Windows and Unix hosts and needs neither FFmpeg nor audio hardware.
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+    add_test(NAME test_component_dolby_session_isolation
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_dolby_session_isolation.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_dolby_session_isolation PROPERTIES LABELS "component" TIMEOUT 30)
+
+    add_test(NAME test_component_ffmpeg_package_pin
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_ffmpeg_package_pin.py")
+    set_tests_properties(test_component_ffmpeg_package_pin PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
 
 if(WIN32)
@@ -358,6 +388,14 @@ set(SUNSHINE_TEST_FAST_FOUNDATION_SOURCES
 
 # Header-only VHF ownership recovery runs on every platform without a driver.
 find_package(Threads REQUIRED)
+# Compile the production crypto implementation with controlled failures at the
+# OpenSSL name and signing boundaries. No application or hardware is required.
+sunshine_add_test_target(
+    NAME test_component_crypto_compat
+    CATEGORY COMPONENT
+    TEST_SOURCES unit/test_crypto_compat.cpp
+    LINK_LIBRARIES OpenSSL::Crypto nlohmann_json::nlohmann_json)
+
 sunshine_add_test_target(
     NAME test_fast_vhf_gamepad_recovery
     CATEGORY FAST
@@ -429,6 +467,12 @@ sunshine_add_test_target(
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
 
 sunshine_add_test_target(
+    NAME test_fast_legacy_nightly_update
+    CATEGORY fast
+    TEST_SOURCES unit/test_legacy_nightly_update_standalone.cpp
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
+
+sunshine_add_test_target(
     NAME test_component_update_notification_state
     CATEGORY component
     TEST_SOURCES unit/test_update_notification_state_standalone.cpp
@@ -436,7 +480,7 @@ sunshine_add_test_target(
 
 # The source standalone harnesses use assert. Preserve their checks when the
 # application and CI test targets are configured in Release mode.
-foreach(_update_test IN ITEMS test_fast_update_release test_component_update_notification_state)
+foreach(_update_test IN ITEMS test_fast_update_release test_fast_legacy_nightly_update test_component_update_notification_state)
     if(TARGET ${_update_test})
         if(MSVC)
             target_compile_options(${_update_test} PRIVATE /UNDEBUG)
@@ -654,11 +698,20 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 endif()
 sunshine_register_component(NAME test_component_hdr_request_policy TEST_SOURCE unit/test_hdr_request_policy.cpp)
 sunshine_register_component(NAME test_component_single_flight TEST_SOURCE unit/test_single_flight.cpp)
+sunshine_register_component(NAME test_component_paused_app_monitor TEST_SOURCE unit/test_paused_app_monitor.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/power_action.cpp"
+    LINK_LIBRARIES Threads::Threads Boost::property_tree OpenSSL::Crypto)
 sunshine_register_component(NAME test_component_display_helper_request_policy TEST_SOURCE unit/test_display_helper_request_policy.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_request_policy.cpp")
+sunshine_register_component(NAME test_component_display_clone_group_policy TEST_SOURCE unit/test_display_clone_group_policy.cpp
+    LINK_LIBRARIES sunshine_test_displaydevice_headers)
 sunshine_register_component(NAME test_component_remote_display_topology TEST_SOURCE unit/test_remote_display_topology.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/remote_display_topology.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
+sunshine_register_component(NAME test_component_display_helper_saved_placement TEST_SOURCE unit/test_display_helper_saved_placement.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/remote_display_topology.cpp"
+                    "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/display_helper_builder.cpp"
+    LINK_LIBRARIES sunshine_test_displaydevice_headers nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_config_parse TEST_SOURCE unit/test_config_parse.cpp
     PRODUCT_SOURCES)
 sunshine_register_component(NAME test_component_web_ui_preference TEST_SOURCE unit/test_web_ui_preference.cpp
@@ -922,6 +975,13 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_tests_properties(test_component_linux_steamos_replace_sunshine PROPERTIES LABELS "component")
     find_program(SUNSHINE_TEST_PYTHON_EXECUTABLE NAMES python3)
     if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+        add_test(NAME test_component_cached_game_launch_composition
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/scripts/test_cached_game_launch_composition.py"
+                --source "${SUNSHINE_TEST_REPOSITORY_ROOT}"
+                --compiler "${CMAKE_CXX_COMPILER}"
+            --json-include "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>")
+        set_tests_properties(test_component_cached_game_launch_composition PROPERTIES LABELS "component" TIMEOUT 60)
         if(TEST_PYROWAVE_IMPORT_DRM_FOUND)
             add_test(NAME test_component_linux_kmsgrab_hdr_worker
                 COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
@@ -943,6 +1003,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 --json-include "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>"
                 --boost-include "$<TARGET_PROPERTY:Boost::property_tree,INTERFACE_INCLUDE_DIRECTORIES>")
         set_tests_properties(test_component_host_stream_route_composition PROPERTIES LABELS "component" TIMEOUT 60)
+        add_test(NAME test_component_linux_nvhttp_handoff_route_composition
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/scripts/test_linux_nvhttp_handoff_route_composition.py"
+                --source "${SUNSHINE_TEST_REPOSITORY_ROOT}"
+                --build-dir "${CMAKE_CURRENT_BINARY_DIR}/linux-nvhttp-handoff-route-composition"
+                --compiler "${CMAKE_CXX_COMPILER}"
+                --json-include "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>"
+                --boost-include "$<TARGET_PROPERTY:Boost::property_tree,INTERFACE_INCLUDE_DIRECTORIES>")
+        set_tests_properties(test_component_linux_nvhttp_handoff_route_composition PROPERTIES LABELS "component" TIMEOUT 60)
         add_test(NAME test_component_host_stream_terminal_composition
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/scripts/test_host_stream_terminal_composition.py"
@@ -1060,6 +1129,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_recovery.py"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_display_helper_recovery PROPERTIES LABELS "component")
+        add_test(NAME test_component_display_helper_shell_refresh
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_shell_refresh.py"
+                "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_display_helper_shell_refresh PROPERTIES LABELS "component" TIMEOUT 30)
         add_test(NAME test_component_recovery_status_integration
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_recovery_status_integration.py"
@@ -1174,9 +1248,54 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     endif()
 endif()
 
+# Compile the actual Windows recovery wrapper with the portable display core.
+# Keep dependency usage requirements on the native target (including modular
+# Boost headers), rather than launching an unconfigured compiler from CTest.
+if(NOT WIN32 AND SUNSHINE_TEST_ENABLE_COMPONENT)
+    if(NOT SUNSHINE_TEST_PYTHON_EXECUTABLE)
+        message(FATAL_ERROR "Python 3 is required for the display recovery confirmation component")
+    endif()
+    set(_recovery_confirmation_fixture "${CMAKE_CURRENT_BINARY_DIR}/display-recovery-confirmation/test.cpp")
+    add_custom_command(
+        OUTPUT "${_recovery_confirmation_fixture}"
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_recovery_confirmation.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}" --generate-only --output "${_recovery_confirmation_fixture}"
+        DEPENDS
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_recovery_confirmation.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/win_display_settings.cpp"
+        VERBATIM)
+    add_executable(test_component_display_recovery_confirmation
+        "${_recovery_confirmation_fixture}"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/diagnostics.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/text_storage.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/topology_policy.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/golden_health.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/operations.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/display_helper_v2/snapshot_codec.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/src/windows/types.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/src/common/types.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/src/common/json.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/src/common/json_serializer.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libdisplaydevice/src/common/logging.cpp")
+    target_include_directories(test_component_display_recovery_confirmation PRIVATE
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}"
+        "${CMAKE_CURRENT_LIST_DIR}/support/display_helper_core")
+    target_compile_definitions(test_component_display_recovery_confirmation PRIVATE SUNSHINE_TEST_PORTABLE_WINDOWS_TYPES)
+    target_compile_options(test_component_display_recovery_confirmation PRIVATE -UNDEBUG)
+    target_link_libraries(test_component_display_recovery_confirmation PRIVATE
+        sunshine_test_displaydevice_headers Boost::algorithm nlohmann_json::nlohmann_json Threads::Threads)
+    set_target_properties(test_component_display_recovery_confirmation PROPERTIES
+        CXX_STANDARD 23 CXX_STANDARD_REQUIRED ON CXX_EXTENSIONS OFF FOLDER "tests/component")
+    add_test(NAME test_component_display_recovery_confirmation COMMAND test_component_display_recovery_confirmation)
+    set_tests_properties(test_component_display_recovery_confirmation PROPERTIES LABELS "component" TIMEOUT 30)
+endif()
+
 if(NOT WIN32)
     sunshine_register_component(NAME test_component_windows_display_recovery
         TEST_SOURCE unit/test_display_helper_v2_state_machine.cpp
+        EXTRA_TEST_SOURCES "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_v2_restore_engine.cpp"
         DEFINITIONS SUNSHINE_TEST_PORTABLE_WINDOWS_TYPES
         INCLUDE_DIRECTORIES "${CMAKE_CURRENT_LIST_DIR}/support/display_helper_core"
         PRODUCT_SOURCES
@@ -1231,6 +1350,10 @@ sunshine_register_component(NAME test_component_tls_client_identity TEST_SOURCE 
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/http_pairing_policy.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/crypto.cpp"
     LINK_LIBRARIES nlohmann_json::nlohmann_json sunshine_test_simple_web_headers ${SUNSHINE_TEST_SOCKET_LIBRARIES})
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND TARGET test_component_tls_client_identity)
+    target_sources(test_component_tls_client_identity PRIVATE unit/test_nvhttp_handoff_tls.cpp)
+    target_link_libraries(test_component_tls_client_identity PRIVATE Boost::property_tree)
+endif()
 sunshine_register_component(NAME test_component_power_action TEST_SOURCE unit/test_power_action.cpp
     PRODUCT_SOURCES
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/power_action.cpp"
@@ -1314,6 +1437,8 @@ if(SUNSHINE_TEST_ENABLE_COMPONENT AND CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
     endif()
 endif()
 sunshine_register_component(NAME test_component_present_timing_policy TEST_SOURCE unit/test_present_timing_policy.cpp)
+sunshine_register_component(NAME test_component_video_adaptive_pacing TEST_SOURCE unit/test_video_adaptive_pacing.cpp)
+sunshine_register_component(NAME test_component_video_fec_status TEST_SOURCE unit/test_video_fec_status.cpp)
 sunshine_register_component(NAME test_component_encoder_probe_policy TEST_SOURCE unit/test_encoder_probe_policy.cpp)
 sunshine_register_component(NAME test_component_gpu_priority_lifetime
     TEST_SOURCE unit/platform/windows/test_gpu_priority_lifetime.cpp)
@@ -1432,6 +1557,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
     add_executable(test_linux_hyprland_broker
         "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_broker.c")
     target_include_directories(test_linux_hyprland_broker PRIVATE "${LIBCAP_INCLUDE_DIRS}")
+    # The fixture asserts the production dispatch boundary; keep it in release builds.
+    target_compile_options(test_linux_hyprland_broker PRIVATE -UNDEBUG)
     target_link_libraries(test_linux_hyprland_broker PRIVATE "${LIBCAP_LIBRARIES}")
     add_test(NAME test_component_linux_hyprland_broker COMMAND test_linux_hyprland_broker)
     set_tests_properties(test_component_linux_hyprland_broker PROPERTIES LABELS "component")
@@ -1517,11 +1644,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibepollo-session-controller")
         set_tests_properties(test_component_linux_session_command_timeout PROPERTIES LABELS "component" TIMEOUT 15)
         add_test(
-            NAME test_component_linux_machine_host_manifest
+            NAME test_component_linux_machine_host_retired_authorization
             COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
-                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_machine_host_manifest.sh"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_machine_host_retired_authorization.sh"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/linux/vibepollo-machine-host")
-        set_tests_properties(test_component_linux_machine_host_manifest PROPERTIES LABELS "component")
+        set_tests_properties(test_component_linux_machine_host_retired_authorization PROPERTIES LABELS "component")
     else()
         message(WARNING "bash was not found; skipping the Linux VKMS setup shell test")
     endif()
@@ -1747,12 +1874,24 @@ if(APPLE)
         PROPERTIES LANGUAGE CXX)
     sunshine_register_component(NAME test_component_av_audio_policy TEST_SOURCE unit/platform/macos/test_av_audio.mm
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/macos/av_audio_policy.cpp")
+    sunshine_register_component(NAME test_component_macos_display_policy TEST_SOURCE unit/platform/macos/test_display_policy.cpp
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/macos/display_policy.cpp")
 endif()
 
 
 # Production-code regression harnesses exercise Windows policies on the native host.
 find_package(Python3 COMPONENTS Interpreter)
 if(Python3_Interpreter_FOUND AND UNIX AND SUNSHINE_TEST_ENABLE_COMPONENT)
+    add_test(NAME regression_macos_link_dependencies
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/platform/macos/test_link_dependencies.py"
+            --cmake "${CMAKE_COMMAND}")
+    set_tests_properties(regression_macos_link_dependencies PROPERTIES LABELS "component" TIMEOUT 60)
+    add_test(NAME regression_file_clock_compatibility
+        COMMAND "${Python3_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/platform/macos/test_file_clock_compatibility.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(regression_file_clock_compatibility PROPERTIES LABELS "component" TIMEOUT 60)
     add_library(sunshine_test_macos_build_api_dependencies INTERFACE)
     target_link_libraries(sunshine_test_macos_build_api_dependencies INTERFACE
         Boost::process Boost::program_options Boost::filesystem Boost::algorithm)
@@ -1765,6 +1904,10 @@ if(Python3_Interpreter_FOUND AND UNIX AND SUNSHINE_TEST_ENABLE_COMPONENT)
     set_tests_properties(regression_macos_build_api_compatibility PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
 if(Python3_Interpreter_FOUND)
+    add_test(NAME regression_boost_locale_source_group
+        COMMAND "${CMAKE_COMMAND}" -E env "CMAKE_COMMAND=${CMAKE_COMMAND}"
+            "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_boost_locale_patch.py")
+    set_tests_properties(regression_boost_locale_source_group PROPERTIES LABELS "component" TIMEOUT 30)
     if(UNIX AND SUNSHINE_TEST_ENABLE_COMPONENT)
         find_program(SUNSHINE_TEST_WEB_MAKE NAMES gmake make)
         find_program(SUNSHINE_TEST_WEB_NINJA NAMES ninja ninja-build)
@@ -1816,11 +1959,13 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_close_grace.py")
     add_test(NAME regression_playnite_plugin_upgrade
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_plugin_upgrade.py")
+    add_test(NAME regression_playnite_duplicate_migration
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_playnite_duplicate_migration.py")
     find_program(SUNSHINE_TEST_DOTNET NAMES dotnet dotnet.exe)
     add_test(NAME regression_playnite_connector_lifecycle
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/playnite_connector/test_lifecycle.py"
             --dotnet "${SUNSHINE_TEST_DOTNET}")
-    set_tests_properties(regression_playnite_connector_lifecycle regression_playnite_close_grace regression_playnite_plugin_upgrade
+    set_tests_properties(regression_playnite_connector_lifecycle regression_playnite_close_grace regression_playnite_plugin_upgrade regression_playnite_duplicate_migration
         PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME regression_rtss_profile_version
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_rtss_profile_version.py")
@@ -1833,6 +1978,14 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
             "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${SUNSHINE_TEST_GXX}")
     add_test(NAME regression_cancel_after_app_exit
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_cancel_after_app_exit.py")
+    add_test(NAME regression_encoder_probe_lookup_behavior
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_encoder_probe_lookup_behavior.py"
+            --compiler "${SUNSHINE_TEST_GXX}")
+    set_tests_properties(regression_encoder_probe_lookup_behavior PROPERTIES LABELS "component" TIMEOUT 120)
+    add_test(NAME regression_continuous_audio_request
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_continuous_audio_request.py"
+            --compiler "${SUNSHINE_TEST_GXX}")
+    set_tests_properties(regression_continuous_audio_request PROPERTIES LABELS "component" TIMEOUT 30)
     add_test(NAME regression_remote_input_reconnect
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_remote_input_reconnect.py"
             --compiler "${SUNSHINE_TEST_GXX}"
@@ -1843,6 +1996,17 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_stream_disconnect_lifecycle.py"
             --compiler "${SUNSHINE_TEST_GXX}")
     set_tests_properties(regression_stream_disconnect_lifecycle PROPERTIES LABELS "component" TIMEOUT 45)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME regression_rtss_trust_call_sites
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_rtss_trust_compile.py"
+                --compiler "${CMAKE_CXX_COMPILER}")
+    endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_test(NAME regression_windows_frame_limiter_lifecycle
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_frame_limiter_vsync.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+        set_tests_properties(regression_windows_frame_limiter_lifecycle PROPERTIES LABELS "component" TIMEOUT 60)
+    endif()
     add_test(NAME regression_display_policy_adapter
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_policy_adapter.py")
     add_library(sunshine_test_session_display_precedence_dependencies INTERFACE)
@@ -1851,10 +2015,25 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_session_display_precedence.py"
             --compiler "${CMAKE_CXX_COMPILER}"
             --include-dir "$<TARGET_PROPERTY:sunshine_test_session_display_precedence_dependencies,INTERFACE_INCLUDE_DIRECTORIES>")
+    add_library(sunshine_test_virtual_display_applet_dependencies INTERFACE)
+    target_link_libraries(sunshine_test_virtual_display_applet_dependencies INTERFACE nlohmann_json::nlohmann_json)
+    add_test(NAME regression_virtual_display_applet
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_virtual_display_applet.py"
+            --compiler "${CMAKE_CXX_COMPILER}"
+            --include-dir "$<TARGET_PROPERTY:sunshine_test_virtual_display_applet_dependencies,INTERFACE_INCLUDE_DIRECTORIES>")
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         add_test(NAME regression_touch_mapping_environment
             COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_touch_mapping_environment.py")
     endif()
+    add_test(NAME regression_display_helper_pipe_authority
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_pipe_authority.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
+    add_test(NAME regression_remote_monitor_hdr_windows
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_remote_monitor_hdr_windows.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
+    add_test(NAME regression_remote_monitor_color_observation
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_remote_monitor_color_observation.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
     add_test(NAME regression_selected_output_fallback
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_selected_output_fallback.py")
     add_test(NAME regression_virtual_display_refresh
@@ -2069,6 +2248,10 @@ if(Python3_Interpreter_FOUND AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 --compiler "${CMAKE_CXX_COMPILER}" --node "${SUNSHINE_TEST_FOCUS_NODE}")
         set_tests_properties(regression_managed_app_focus_adapters PROPERTIES LABELS "component" TIMEOUT 60)
     endif()
+    add_test(NAME regression_windows_autofocus_foreground
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_windows_autofocus_foreground.py"
+            --repo "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(regression_windows_autofocus_foreground PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
 
 if(SUNSHINE_TEST_ENABLE_COMPONENT AND SUNSHINE_TEST_PYTHON_EXECUTABLE)
@@ -2080,3 +2263,72 @@ if(SUNSHINE_TEST_ENABLE_COMPONENT AND SUNSHINE_TEST_PYTHON_EXECUTABLE)
 endif()
 
 include("${CMAKE_CURRENT_LIST_DIR}/cmake/WindowsPortablePackagingTest.cmake")
+
+# The production Windows loopback timeline is platform independent, so its
+# pacing and late-packet behavior can also be qualified on non-Windows hosts.
+sunshine_add_test_target(
+    NAME test_component_audio_continuous_buffer
+    CATEGORY COMPONENT
+    TEST_SOURCES "${CMAKE_CURRENT_LIST_DIR}/unit/test_audio_continuous_buffer.cpp")
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    add_test(NAME test_component_windows_audio_continuous_adapter
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_windows_audio_continuous_adapter.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_windows_audio_continuous_adapter
+        PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    add_test(NAME test_component_client_enabled_mutation
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/input/test_client_enabled_mutation.py"
+            --compiler "${CMAKE_CXX_COMPILER}"
+            --json-include "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>")
+    set_tests_properties(test_component_client_enabled_mutation PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    add_test(NAME test_component_truehdr_install
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_truehdr_install.py")
+    set_tests_properties(test_component_truehdr_install PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    add_test(NAME test_component_appimage_launcher
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_appimage_launcher.py")
+    set_tests_properties(test_component_appimage_launcher PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
+
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    add_test(NAME test_component_homebrew_formula
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_homebrew_formula.py")
+    set_tests_properties(test_component_homebrew_formula PROPERTIES LABELS "component;packaging" TIMEOUT 60)
+endif()
+
+# Exercise installer host commands through stubs, including literal file contents
+# and failed privileged operations, without changing the running host.
+if(NOT WIN32)
+    foreach(_flatpak_scenario IN ITEMS success literal modules missing rules)
+        add_test(NAME test_script_flatpak_install_${_flatpak_scenario}
+            COMMAND sh "${CMAKE_CURRENT_LIST_DIR}/scripts/test_additional_install.sh" ${_flatpak_scenario})
+        set_tests_properties(test_script_flatpak_install_${_flatpak_scenario}
+            PROPERTIES LABELS "component;packaging" TIMEOUT 30)
+    endforeach()
+endif()
+
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+    add_test(NAME test_component_upnp_igd_status
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_upnp_igd_status.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_upnp_igd_status
+        PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
+
+sunshine_register_component(NAME test_component_utility_hex TEST_SOURCE unit/test_utility_hex.cpp
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
+
+sunshine_register_component(NAME test_component_round_robin TEST_SOURCE unit/test_round_robin.cpp)
+sunshine_register_component(NAME test_component_stat_tracker_bounds TEST_SOURCE unit/test_stat_tracker_bounds.cpp
+    LINK_LIBRARIES Boost::format)

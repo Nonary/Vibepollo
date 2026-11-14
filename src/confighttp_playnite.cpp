@@ -43,6 +43,7 @@
   #include "log_export.h"
   #include "src/platform/windows/ipc/misc_utils.h"
   #include "src/platform/windows/playnite_integration.h"
+  #include "src/platform/windows/playnite_plugin_migration.h"
   #include "state_storage.h"
   #include "uuid.h"
 
@@ -72,6 +73,7 @@ namespace confighttp {
   struct playnite_install_state_t {
     std::optional<bool> installed;
     bool legacy_plugin = false;
+    bool migration_pending = false;
     std::filesystem::path extensions_dir;
   };
 
@@ -84,6 +86,7 @@ namespace confighttp {
       std::string destPath;
       if (platf::playnite::get_extension_target_dir(destPath)) {
         state.extensions_dir = destPath;
+        state.migration_pending = platf::playnite::migration::migration_pending(state.extensions_dir);
         const bool has_manifest = std::filesystem::exists(state.extensions_dir / "extension.yaml");
         const bool has_dll = std::filesystem::exists(state.extensions_dir / "VibepolloPlaynite.dll");
         const bool has_legacy_sunshine_dll = std::filesystem::exists(state.extensions_dir / "SunshinePlaynite.dll");
@@ -222,9 +225,9 @@ namespace confighttp {
     }
     // A script or differently named DLL needs migration even if its manifest
     // version is equal to the bundled compiled connector's version.
-    bool update_available = install_state.legacy_plugin;
+    bool update_available = install_state.legacy_plugin || install_state.migration_pending;
     if (out["installed"].is_boolean() && out["installed"].get<bool>() && have_installed && have_packaged) {
-      update_available = semver_cmp(installed_ver, packaged_ver) < 0;
+      update_available = install_state.migration_pending || semver_cmp(installed_ver, packaged_ver) < 0;
     }
     out["update_available"] = update_available;
     // No session readiness flag; IPC works through RDP/lock. Frontend derives readiness from installed/active.

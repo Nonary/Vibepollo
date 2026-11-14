@@ -47,8 +47,8 @@ namespace platf::display_helper_client {
     // retired a connection it was about to answer.
     constexpr int kRefreshRateResultTimeoutMs = 12000;
     // Best-effort adaptive refresh has its own retry, so it must never pay the full
-    // connect budget (anonymous transport, then named fallback) when the helper is
-    // down: that stalls the poll loop for seconds per attempt.
+    // connect budget when the helper is down: even the private endpoint retry
+    // would otherwise stall the poll loop for seconds per attempt.
     constexpr int kRefreshRateConnectTimeoutMs = 600;
     // Per-stage cap for SNAPSHOT_CURRENT. A bounded snapshot shares the caller's
     // stream-start budget, so without its own cap a slow snapshot can consume the
@@ -57,6 +57,46 @@ namespace platf::display_helper_client {
     // Retiring a stale connection is a lock acquisition, not helper work, so it
     // gets its own short budget: the deadlines that lead here are already spent.
     constexpr int kStaleConnectionRetireTimeoutMs = 250;
+
+    std::atomic<std::uint32_t> &expected_helper_process_id() {
+      static std::atomic<std::uint32_t> pid {0};
+      return pid;
+    }
+
+    std::mutex &private_control_pipe_mutex() {
+      static std::mutex mutex;
+      return mutex;
+    }
+
+    std::string &private_control_pipe_name() {
+      static std::string name;
+      return name;
+    }
+
+    std::atomic<std::uint64_t> &private_control_pipe_generation() {
+      static std::atomic<std::uint64_t> generation {0};
+      return generation;
+    }
+
+    std::shared_ptr<winrt::file_handle> &private_control_server() {
+      static std::shared_ptr<winrt::file_handle> server;
+      return server;
+    }
+
+    struct PrivateControlEndpoint {
+      std::string pipe_name;
+      std::shared_ptr<winrt::file_handle> server;
+      std::uint64_t generation;
+    };
+
+    PrivateControlEndpoint current_private_control_endpoint() {
+      std::lock_guard lock(private_control_pipe_mutex());
+      return {
+        private_control_pipe_name(),
+        private_control_server(),
+        private_control_pipe_generation().load(std::memory_order_relaxed),
+      };
+    }
 
     bool shutdown_requested() {
       if (!mail::man) {
@@ -79,6 +119,10 @@ namespace platf::display_helper_client {
     }
 
   }  // namespace
+
+  void set_expected_helper_process_id(const std::uint32_t process_id) {
+    expected_helper_process_id().store(process_id, std::memory_order_release);
+  }
 
   /**
    * @brief IPC message types used by the display settings helper protocol.
@@ -125,11 +169,12 @@ namespace platf::display_helper_client {
     // finishing a short receive slice, but it can never clear or reclassify
     // the reply state of the connection that replaced it.
     struct ConnectionSession {
-      ConnectionSession(PipePtr pipe_in, std::uint64_t generation_in)
-        : pipe(std::move(pipe_in)), generation(generation_in) {}
+      ConnectionSession(PipePtr pipe_in, std::uint64_t generation_in, std::uint64_t endpoint_generation_in)
+        : pipe(std::move(pipe_in)), generation(generation_in), endpoint_generation(endpoint_generation_in) {}
 
       PipePtr pipe;
       const std::uint64_t generation;
+      const std::uint64_t endpoint_generation;
       std::atomic<std::uint64_t> configured_apply_id {0};
       std::atomic<ApplyResponseProtocol> protocol {ApplyResponseProtocol::Unknown};
       // An untagged response on an unknown or legacy helper cannot safely
@@ -731,6 +776,8 @@ namespace platf::display_helper_client {
 
   static bool session_is_current(const SessionPtr &session) {
     return session &&
+           expected_helper_process_id().load(std::memory_order_acquire) != 0 &&
+           private_control_pipe_generation().load(std::memory_order_acquire) == session->endpoint_generation &&
            connection_generation().load(std::memory_order_acquire) == session->generation;
   }
 
@@ -803,6 +850,27 @@ namespace platf::display_helper_client {
     return m;
   }
 
+  void set_private_control_pipe_name(std::string pipe_name, void *server_handle) {
+    HANDLE duplicate = nullptr;
+    if (server_handle && !DuplicateHandle(GetCurrentProcess(), server_handle, GetCurrentProcess(), &duplicate,
+                                         0, FALSE, DUPLICATE_SAME_ACCESS)) pipe_name.clear();
+    auto server = duplicate ? std::make_shared<winrt::file_handle>(duplicate) : nullptr;
+    // Endpoint rotation follows the command path's write -> connection lock
+    // order, so a frame cannot be written after the old endpoint is retired.
+    std::lock_guard<std::timed_mutex> write_lock(write_mutex());
+    std::lock_guard<std::timed_mutex> connection_lock(connection_mutex());
+    {
+      std::lock_guard endpoint_lock(private_control_pipe_mutex());
+      private_control_pipe_name() = std::move(pipe_name);
+      private_control_server() = std::move(server);
+      private_control_pipe_generation().fetch_add(1, std::memory_order_release);
+    }
+    expected_helper_process_id().store(0, std::memory_order_release);
+    if (retire_session_locked()) {
+      reset_log_level_cache();
+    }
+  }
+
   static int remaining_timeout_ms(const std::chrono::steady_clock::time_point &deadline);
 
   // A cancellation/control generation is ordered with the short command
@@ -856,8 +924,12 @@ namespace platf::display_helper_client {
     if (shutdown_requested() || (cancelled && cancelled())) {
       return false;
     }
+    const auto expected_pid = expected_helper_process_id().load(std::memory_order_acquire);
+    const auto endpoint = current_private_control_endpoint();
+    const auto endpoint_generation = endpoint.generation;
     auto &session = session_singleton();
-    if (session && session->pipe && session->pipe->is_connected()) {
+    if (expected_pid != 0 && session && session->pipe && session->pipe->is_connected() &&
+        session->endpoint_generation == endpoint_generation) {
       return true;
     }
     if (session) {
@@ -865,7 +937,17 @@ namespace platf::display_helper_client {
       reset_log_level_cache();
     }
 
-    BOOST_LOG(debug) << "Display helper IPC: connecting to server pipe 'sunshine_display_helper'";
+    if (expected_pid == 0) {
+      BOOST_LOG(error) << "Display helper IPC: refusing an unbound helper connection.";
+      return false;
+    }
+
+    const std::string &pipe_name = endpoint.pipe_name;
+    if (pipe_name.empty() || !endpoint.server) {
+      BOOST_LOG(error) << "Display helper IPC: refusing a connection without a preclaimed private endpoint.";
+      return false;
+    }
+    BOOST_LOG(debug) << "Display helper IPC: connecting to preclaimed private endpoint.";
     const int connect_timeout_ms = connect_timeout_override_ms.value_or(effective_connect_timeout());
     const auto connect_deadline = std::min(
       std::chrono::steady_clock::now() + std::chrono::milliseconds(connect_timeout_ms),
@@ -889,32 +971,25 @@ namespace platf::display_helper_client {
           !pipe->is_connected()) {
         return false;
       }
+      if (expected_helper_process_id().load(std::memory_order_acquire) != expected_pid ||
+          private_control_pipe_generation().load(std::memory_order_acquire) != endpoint_generation) {
+        return false;
+      }
       const auto generation = allocate_connection_generation();
-      session = std::make_shared<ConnectionSession>(std::move(pipe), generation);
+      session = std::make_shared<ConnectionSession>(std::move(pipe), generation, endpoint_generation);
       connection_generation().store(generation, std::memory_order_release);
       return true;
     };
 
-    // Create fresh pipe - try anonymous first, then named fallback. The
-    // normal connection path is allowed to negotiate the anonymous transport;
-    // fast paths below intentionally never call this function.
-    if (remaining_ms() > 0 && create_session([cancelled, connect_deadline]() -> std::unique_ptr<platf::dxgi::INamedPipe> {
-          platf::dxgi::AnonymousPipeFactory factory;
-          auto pipe = factory.create_client("sunshine_display_helper", cancelled, connect_deadline);
+    // The privileged host retains the preclaimed server. Authenticate the exact
+    // launched child before constructing a framed pipe or exchanging any bytes.
+    if (remaining_ms() > 0 && create_session([cancelled, connect_deadline, server = endpoint.server, expected_pid]() -> std::unique_ptr<platf::dxgi::INamedPipe> {
+          auto current = [&] {
+            return (cancelled && cancelled()) || expected_helper_process_id().load(std::memory_order_acquire) != expected_pid;
+          };
+          auto pipe = platf::dxgi::accept_server_pipe_client(server->get(), expected_pid, current, connect_deadline);
           return pipe ? std::make_unique<platf::dxgi::FramedPipe>(std::move(pipe)) : nullptr;
-        })) {
-      return true;
-    }
-    if (remaining_ms() > 0) {
-      BOOST_LOG(debug) << "Display helper IPC: anonymous connect failed; trying named fallback";
-      if (create_session([cancelled, connect_deadline]() -> std::unique_ptr<platf::dxgi::INamedPipe> {
-            platf::dxgi::NamedPipeFactory factory;
-            auto pipe = factory.create_client("sunshine_display_helper", cancelled, connect_deadline);
-            return pipe ? std::make_unique<platf::dxgi::FramedPipe>(std::move(pipe)) : nullptr;
-          })) {
-        return true;
-      }
-    }
+        })) return true;
     BOOST_LOG(warning) << "Display helper IPC: connection failed";
     return false;
   }

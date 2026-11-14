@@ -55,6 +55,7 @@
 #include "crypto.h"
 #include "display_device.h"
 #include "deferred_action.h"
+#include "file_clock.h"
 #include "file_handler.h"
 #include "globals.h"
 #include "logging.h"
@@ -63,6 +64,7 @@
   #include "display_helper_integration.h"
   #include "remote_display_topology.h"
 #endif
+#include "paused_app_monitor.h"
 #ifdef _WIN32
   #include "config_playnite.h"
   #include "platform/windows/dualsense_launch_policy.h"
@@ -76,7 +78,6 @@
   #include "platform/windows/virtual_display_cleanup.h"
   #include "tools/playnite_launcher/focus_utils.h"
   #include "tools/playnite_launcher/lossless_scaling.h"
-  #include "tools/playnite_launcher/lossless_scaling_policy.h"
 
   #include <Psapi.h>
 #elif defined(__linux__)
@@ -97,10 +98,16 @@
   #include <unistd.h>
 #endif
 #include "builtin_virtual_display.h"
+#include "session_display_policy.h"
 #include "httpcommon.h"
 #include "nvhttp.h"
 #include "prep_command_lifetime.h"
 #include "process.h"
+#ifdef __APPLE__
+  #include "platform/macos/virtual_display.h"
+#endif
+// Header-only policy used by shared launch code; safe on every platform.
+#include "tools/playnite_launcher/lossless_scaling_policy.h"
 #include "remote_monitor_profile_policy.h"
 #ifdef _WIN32
   #include "platform/windows/virtual_display.h"
@@ -137,7 +144,6 @@ namespace proc {
     constexpr const char *LOSSLESS_PROFILE_CUSTOM = "custom";
     constexpr int LOSSLESS_DEFAULT_FLOW_SCALE = 50;
     constexpr int LOSSLESS_DEFAULT_RESOLUTION_SCALE = 100;
-    constexpr bool LOSSLESS_DEFAULT_PERFORMANCE_MODE = true;
     constexpr int LOSSLESS_MIN_FLOW_SCALE = 0;
     constexpr int LOSSLESS_MAX_FLOW_SCALE = 100;
     constexpr int LOSSLESS_MIN_RESOLUTION_SCALE = 10;
@@ -162,6 +168,7 @@ namespace proc {
     constexpr const char *ENV_LOSSLESS_ANIME4K_VRS = "SUNSHINE_LOSSLESS_SCALING_ANIME4K_VRS";
     constexpr const char *ENV_LOSSLESS_LAUNCH_DELAY = "SUNSHINE_LOSSLESS_SCALING_LAUNCH_DELAY";
     constexpr const char *ENV_LOSSLESS_LEGACY_AUTO_DETECT = "SUNSHINE_LOSSLESS_SCALING_LEGACY_AUTO_DETECT";
+#if defined(_WIN32) || defined(__linux__)  // RTX Video HDR runs on Windows and Linux
     constexpr std::array<std::string_view, 6> RTX_HDR_LIVE_KEYS {
       "rtx_hdr"sv,
       "rtx_hdr_sdr_brightness"sv,
@@ -170,6 +177,7 @@ namespace proc {
       "rtx_hdr_middle_gray"sv,
       "rtx_hdr_peak_brightness"sv,
     };
+#endif
 
 #ifdef _WIN32
     std::optional<std::filesystem::path> lossless_to_path(const std::string &utf8) {
@@ -1268,6 +1276,7 @@ namespace proc {
     }
 
     ~deinit_t() {
+      paused_app_monitor_.stop();
       proc.terminate();
     }
 
@@ -1275,6 +1284,18 @@ namespace proc {
 #ifdef _WIN32
     std::unique_ptr<platf::deinit_t> playnite_integration_;
 #endif
+    paused_app_monitor_t paused_app_monitor_ {
+      [] {
+        try {
+          proc.poll_paused_app();
+        } catch (const std::exception &e) {
+          BOOST_LOG(error) << "Paused app monitor: liveness check failed: " << e.what();
+        } catch (...) {
+          BOOST_LOG(error) << "Paused app monitor: liveness check failed.";
+        }
+      },
+      3s,
+    };
   };
 
   std::unique_ptr<platf::deinit_t> init() {
@@ -1529,6 +1550,7 @@ namespace proc {
     // resolve the same app/client display policy locally before any VDD exists.
     bool should_use_virtual_display = launch_session->virtual_display;
     if (!launch_session->virtual_display_request_resolved) {
+      proc::display_policy::apply_builtin_virtual_display(*launch_session, _app.uuid, config::video);
       using dd_config_option_e = config::video_t::dd_t::config_option_e;
       const auto dd_config_option =
         launch_session->dd_config_option_override.value_or(config::video.dd.configuration_option);
@@ -2752,8 +2774,32 @@ namespace proc {
   }
 
   int proc_t::running() {
+    return observe_app(false);
+  }
+
+  void proc_t::poll_paused_app() {
+    (void) observe_app(true);
+  }
+
+  int proc_t::observe_app(bool paused_only) {
     host_stream_control::activity_guard_t activity;
     if (!activity) return current_app_id();
+    return observe_app_liveness(
+      nvhttp::stream_lifecycle_mutex(),
+      [this] { return current_app_id(); },
+      [this, paused_only] {
+        if (!paused_only) return true;
+        // Never start a login/controller-deferred app without a client. Check
+        // under the same gate as execute(), not before acquiring that gate.
+        if (current_app_id() <= 0) return false;
+        return paused_app_poll_allowed(current_app_id(), is_launch_deferred(),
+                                       stream::session::has_capture_runtime_owner());
+      },
+      [this] { return running_locked(); }
+    );
+  }
+
+  int proc_t::running_locked() {
 #ifndef _WIN32
     // Detached launchers still need collecting, but other children retain
     // their own wait status (Boost, provider scans and GLib helpers).
@@ -2764,13 +2810,6 @@ namespace proc {
 
 #ifdef _WIN32
     if (_deferred_launch) {
-      // Discovery and the control thread can observe readiness together.
-      // Admit exactly one launch/cleanup owner without blocking discovery
-      // behind another stream lifecycle operation.
-      std::unique_lock deferred_lock {nvhttp::stream_lifecycle_mutex(), std::try_to_lock};
-      if (!deferred_lock.owns_lock() || !_deferred_launch) {
-        return _app_id;
-      }
       if (platf::is_running_as_system()) {
         HANDLE user_token = platf::dxgi::retrieve_users_token(false);
         if (!user_token) {
@@ -2927,16 +2966,6 @@ namespace proc {
 
     // Perform cleanup actions now if needed
     if (_process) {
-      std::unique_lock<std::mutex> stream_lifecycle_lock {nvhttp::stream_lifecycle_mutex(), std::try_to_lock};
-      if (!stream_lifecycle_lock.owns_lock()) {
-        // Teardown is already in flight on another thread. Blocking here
-        // parks the caller - including the single serverinfo worker, which
-        // made the host undiscoverable for the whole teardown tail
-        // (vibepollo#326). The gate owner performs the cleanup; report
-        // not-running without waiting on it.
-        BOOST_LOG(debug) << "[running] App exited but stream teardown is already in flight; deferring cleanup to the gate owner.";
-        return 0;
-      }
       BOOST_LOG(info) << "[running] _process.running() is false; calling terminate(). App exited with code ["sv << _process.native_exit_code() << "] for app '" << _app.name << "' (id=" << _app_id << ")";
       // running() owns the lifecycle gate above; prevent terminate() from
       // acquiring the non-recursive mutex a second time.
@@ -3387,6 +3416,14 @@ namespace proc {
       (void) config::clear_runtime_output_name_override_if_lease(*_runtime_output_override_lease);
       _runtime_output_override_lease.reset();
     }
+#elif defined(__APPLE__)
+    // As on Windows: a paused game's display goes with the game, unless another stream still owns
+    // the runtime, in which case the final stream's cleanup releases it.
+    if (!other_streaming_session_active) {
+      platf::macos_virtual_display::end_pause_hold();
+    } else {
+      BOOST_LOG(info) << "Deferring virtual display removal after app termination because shared stream runtime is still owned.";
+    }
 #endif
 
     // Only show the Stopped notification if we actually have an app to stop
@@ -3442,6 +3479,10 @@ namespace proc {
     _app_launch_time = {};
     _app_id = -1;
 #ifdef _WIN32
+    // A suspended application owns its limiter independently of RTSP/WebRTC.
+    // Drop that lifetime under the stream lifecycle gate before restoring config;
+    // live transports still defer provider restoration until their final stop.
+    platf::frame_limiter_streaming_stop(platf::frame_limiter_owner::application);
     platf::dualsense_usbip_gamepad::set_application_active(false);
 #endif
     _app_name.clear();
@@ -3923,7 +3964,7 @@ namespace proc {
         if (ec) return std::nullopt;
         const auto size = std::filesystem::file_size(path, ec);
         if (ec) return std::nullopt;
-        return std::to_string(modified.time_since_epoch().count()) + "-" + std::to_string(size);
+        return file_clock::count_string(modified.time_since_epoch().count()) + "-" + std::to_string(size);
       });
   }
 

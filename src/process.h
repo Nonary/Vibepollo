@@ -116,7 +116,13 @@ namespace proc {
     /**
      * @return `_app_id` if a process is running, otherwise returns `0`
      */
+    // Caller must not hold stream_lifecycle_mutex(). Contention returns the
+    // current logical owner without inspecting mutable process state.
     int running();
+
+    // Background observation never advances a deferred launch or polls a
+    // session with live, pending or draining capture owners.
+    void poll_paused_app();
 
     /**
      * @return A side-effect-free snapshot of the current application ID.
@@ -168,6 +174,8 @@ namespace proc {
     bp::environment release_env();
 
   private:
+    int observe_app(bool paused_only);
+    int running_locked();
     friend void refresh(const std::string &file_name, bool needs_terminate);
     catalog::state_view_t catalog_state();
     int launch_app_commands(bool stream_lifecycle_lock_held, bool config_read_gate_held = false);

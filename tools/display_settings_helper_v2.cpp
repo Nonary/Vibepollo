@@ -52,6 +52,7 @@
   #include "src/platform/windows/display_helper_v2/win_virtual_display_driver.h"
   #include "src/platform/windows/ipc/pipes.h"
   #include "tools/display_helper_paths.h"
+  #include "tools/display_helper_ipc.h"
   #include "src/platform/windows/display_restore_policy.h"
 
   #include <display_device/json.h>
@@ -651,7 +652,6 @@ int run_v2_helper(int argc, char *argv[]) {
 
   // Initialize logging early so we can log singleton conflicts and other early exits
   const auto log_dir = display_helper_paths::compute_log_dir();
-  const auto snapshot_dir = display_helper_paths::compute_snapshot_dir();
   const auto log_file = log_dir / L"sunshine_display_helper.log";
   const int min_log_level = log_level_override.value_or(2);
   auto log_guard = logging::init(min_log_level, log_file);
@@ -663,6 +663,22 @@ int run_v2_helper(int argc, char *argv[]) {
     BOOST_LOG(warning) << "Display helper: another instance is already running (singleton conflict). Exiting with code 3.";
     logging::log_flush();
     return 3;
+  }
+
+  std::optional<display_helper_ipc::endpoint_t> ipc_endpoint;
+  if (!restore_mode) {
+    ipc_endpoint = display_helper_ipc::endpoint_from_command_line(argc, argv);
+    if (!ipc_endpoint) {
+      BOOST_LOG(error) << "Display helper: missing or invalid private IPC endpoint.";
+      return 2;
+    }
+  }
+
+  // Every mode holds the singleton while resolving and mutating shared state.
+  const auto snapshot_dir = display_helper_paths::compute_snapshot_dir();
+  if (snapshot_dir.empty()) {
+    BOOST_LOG(error) << "Display helper v2: refusing SYSTEM startup because no trusted shared snapshot directory is available.";
+    return 2;
   }
 
   DisplayDeviceLogBridge log_bridge;
@@ -958,21 +974,21 @@ int run_v2_helper(int argc, char *argv[]) {
   auto last_connect_wait_log = std::chrono::steady_clock::time_point::min();
   constexpr auto kReconnectLogInterval = std::chrono::hours(1);
   while (running.load(std::memory_order_acquire)) {
-    platf::dxgi::FramedPipeFactory pipe_factory(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
-    auto server_pipe = pipe_factory.create_server("sunshine_display_helper");
+    platf::dxgi::NamedPipeFactory factory;
+    factory.set_client_identification_only();
+    factory.set_client_data_access_only();
+    factory.set_expected_server_process_id(ipc_endpoint->parent_pid);
+    auto raw_pipe = factory.create_client(ipc_endpoint->pipe_name);
+    if (!raw_pipe) {
+      process_queue();
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      continue;
+    }
+    auto server_pipe = raw_pipe ? std::make_unique<platf::dxgi::FramedPipe>(std::move(raw_pipe)) : nullptr;
     if (!server_pipe) {
-      platf::dxgi::FramedPipeFactory fallback_factory(std::make_unique<platf::dxgi::NamedPipeFactory>());
-      server_pipe = fallback_factory.create_server("sunshine_display_helper");
-      if (!server_pipe) {
-        BOOST_LOG(error) << "Failed to create control pipe; retrying while keeping recovery timers alive.";
-        // Listener creation is incidental to recovery. Continue driving the
-        // FSM and restore scheduler while it is unavailable, matching v1's
-        // listener-independent restore poll.
-        for (int retry_slice = 0; retry_slice < 5 && running.load(std::memory_order_acquire); ++retry_slice) {
-          process_queue();
-        }
-        continue;
-      }
+      BOOST_LOG(error) << "Display helper v2: authenticated IPC client could not be created.";
+      event_pump.stop();
+      return 2;
     }
 
     platf::dxgi::AsyncNamedPipe async_pipe(std::move(server_pipe));

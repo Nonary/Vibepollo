@@ -58,15 +58,18 @@ namespace nvhttp::tls_identity {
       const request_t &request,
       SSL *ssl,
       crypto::cert_chain_t &chain,
-      std::span<const client_record_view_t> clients
+      std::span<const client_record_view_t> clients,
+      pending_peer_factory_t pending_peer = {}
     );
     authentication_result_t authenticate_certificate(
       const request_t &request,
       crypto::x509_t &certificate,
       crypto::cert_chain_t &chain,
-      std::span<const client_record_view_t> clients
+      std::span<const client_record_view_t> clients,
+      pending_peer_factory_t pending_peer = {}
     );
     std::optional<identity_t> resolve(const request_t &request, std::span<const client_record_view_t> clients);
+    pending_peer_factory_t pending_peer(const request_t &request);
     void reset(const request_t &request);
     void revoke(std::string_view uuid);
     void clear();
@@ -76,12 +79,14 @@ namespace nvhttp::tls_identity {
       const identity_t identity;
       const std::string certificate;
       const std::string certificate_identity;
+      const pending_peer_factory_t pending_peer;
       std::atomic_bool authorized {true};
 
-      authority_t(identity_t value, std::string_view pem, std::string_view der):
+      authority_t(identity_t value, std::string_view pem, std::string_view der, pending_peer_factory_t peer):
           identity(std::move(value)),
           certificate(pem),
-          certificate_identity(der) {}
+          certificate_identity(der),
+          pending_peer(std::move(peer)) {}
     };
 
     std::mutex mutex;

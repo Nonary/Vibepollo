@@ -6,11 +6,13 @@
 #ifdef _WIN32
 
   // standard includes
+  #include <algorithm>
   #include <array>
   #include <atomic>
   #include <chrono>
   #include <cstdio>
   #include <cwchar>
+  #include <cwctype>
   #include <filesystem>
   #include <fstream>
   #include <future>
@@ -30,7 +32,10 @@
 // clang-format off
   #include <winsock2.h>
   #include <Windows.h>
+  #include <Aclapi.h>
+  #include <Softpub.h>
   #include <tlhelp32.h>
+  #include <wintrust.h>
 // clang-format on
 
   // local includes
@@ -119,6 +124,496 @@ namespace platf {
 
     const std::array<const wchar_t *, 2> k_rtss_process_names = {L"RTSS.exe", L"RTSS64.exe"};
     const std::array<const wchar_t *, 2> k_rtss_executable_names = {L"RTSS.exe", L"RTSS64.exe"};
+
+    using signer_fingerprint_t = std::array<BYTE, 32>;
+
+    struct verified_code_file_t {
+      HANDLE handle = INVALID_HANDLE_VALUE;
+      fs::path path;
+      signer_fingerprint_t signer {};
+
+      verified_code_file_t() = default;
+      verified_code_file_t(const verified_code_file_t &) = delete;
+      verified_code_file_t &operator=(const verified_code_file_t &) = delete;
+
+      verified_code_file_t(verified_code_file_t &&other) noexcept:
+          handle(std::exchange(other.handle, INVALID_HANDLE_VALUE)),
+          path(std::move(other.path)),
+          signer(other.signer) {
+      }
+
+      verified_code_file_t &operator=(verified_code_file_t &&other) noexcept {
+        if (this != &other) {
+          if (handle != INVALID_HANDLE_VALUE) {
+            CloseHandle(handle);
+          }
+          handle = std::exchange(other.handle, INVALID_HANDLE_VALUE);
+          path = std::move(other.path);
+          signer = other.signer;
+        }
+        return *this;
+      }
+
+      ~verified_code_file_t() {
+        if (handle != INVALID_HANDLE_VALUE) {
+          CloseHandle(handle);
+        }
+      }
+    };
+
+    struct pinned_directory_t {
+      HANDLE handle = INVALID_HANDLE_VALUE;
+      fs::path path;
+
+      pinned_directory_t() = default;
+      pinned_directory_t(const pinned_directory_t &) = delete;
+      pinned_directory_t &operator=(const pinned_directory_t &) = delete;
+
+      pinned_directory_t(pinned_directory_t &&other) noexcept:
+          handle(std::exchange(other.handle, INVALID_HANDLE_VALUE)),
+          path(std::move(other.path)) {
+      }
+
+      ~pinned_directory_t() {
+        if (handle != INVALID_HANDLE_VALUE) {
+          CloseHandle(handle);
+        }
+      }
+    };
+
+    std::optional<fs::path> environment_path(const wchar_t *name) {
+      const DWORD required = GetEnvironmentVariableW(name, nullptr, 0);
+      if (required <= 1) {
+        return std::nullopt;
+      }
+      std::wstring value(required, L'\0');
+      const DWORD written = GetEnvironmentVariableW(name, value.data(), required);
+      if (written == 0 || written >= required) {
+        return std::nullopt;
+      }
+      value.resize(written);
+      return fs::path(value);
+    }
+
+    std::wstring normalized_path_key(const fs::path &path) {
+      std::wstring value = path.lexically_normal().generic_wstring();
+      std::transform(value.begin(), value.end(), value.begin(), [](wchar_t ch) {
+        return std::towlower(ch);
+      });
+      while (value.size() > 1 && value.back() == L'/') {
+        value.pop_back();
+      }
+      return value;
+    }
+
+    bool is_strict_path_descendant(const fs::path &candidate, const fs::path &root) {
+      const auto candidate_key = normalized_path_key(candidate);
+      auto root_key = normalized_path_key(root);
+      root_key.push_back(L'/');
+      return candidate_key.size() > root_key.size() && candidate_key.starts_with(root_key);
+    }
+
+    bool existing_path_has_reparse_component(const fs::path &path) {
+      fs::path current = path.root_path();
+      for (const auto &component : path.relative_path()) {
+        current /= component;
+        const DWORD attributes = GetFileAttributesW(current.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES) {
+          const DWORD error = GetLastError();
+          if (error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND) {
+            return false;
+          }
+          BOOST_LOG(warning) << "RTSS trust check could not inspect: "sv << current.string();
+          return true;
+        }
+        if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+          BOOST_LOG(warning) << "RTSS trust check rejected a reparse point: "sv << current.string();
+          return true;
+        }
+      }
+      return false;
+    }
+
+    std::vector<fs::path> trusted_program_files_roots() {
+      std::vector<fs::path> roots;
+      for (const auto *name : {L"PROGRAMFILES", L"PROGRAMFILES(X86)", L"PROGRAMW6432"}) {
+        const auto configured = environment_path(name);
+        if (!configured) {
+          continue;
+        }
+        std::error_code ec;
+        const auto canonical = fs::weakly_canonical(*configured, ec);
+        if (ec || canonical.empty() || existing_path_has_reparse_component(configured->lexically_normal())) {
+          continue;
+        }
+        const auto key = normalized_path_key(canonical);
+        if (std::ranges::none_of(roots, [&](const fs::path &existing) {
+              return normalized_path_key(existing) == key;
+            })) {
+          roots.push_back(canonical);
+        }
+      }
+      return roots;
+    }
+
+    std::optional<fs::path> canonical_trusted_rtss_root(const fs::path &path) {
+      if (path.empty() || !path.is_absolute()) {
+        return std::nullopt;
+      }
+      const auto native = path.native();
+      if (native.size() >= 2 && native[0] == L'\\' && native[1] == L'\\') {
+        return std::nullopt;
+      }
+
+      std::error_code ec;
+      const auto absolute = fs::absolute(path, ec).lexically_normal();
+      if (ec || absolute.empty() || existing_path_has_reparse_component(absolute)) {
+        return std::nullopt;
+      }
+      const auto canonical = fs::weakly_canonical(absolute, ec);
+      if (ec || canonical.empty() || existing_path_has_reparse_component(canonical)) {
+        return std::nullopt;
+      }
+
+      for (const auto &program_files : trusted_program_files_roots()) {
+        // Require both the configured spelling and resolved target to remain
+        // below the same trusted root. The first condition rejects an
+        // outside-root path that happens to traverse a junction into Program
+        // Files; the second rejects a Program Files junction that escapes it.
+        if (is_strict_path_descendant(absolute, program_files) &&
+            is_strict_path_descendant(canonical, program_files)) {
+          return canonical;
+        }
+      }
+      return std::nullopt;
+    }
+
+    std::optional<fs::path> final_dos_path(HANDLE handle) {
+      const DWORD required = GetFinalPathNameByHandleW(
+        handle,
+        nullptr,
+        0,
+        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS
+      );
+      if (required == 0) {
+        return std::nullopt;
+      }
+      std::wstring value(required, L'\0');
+      const DWORD written = GetFinalPathNameByHandleW(
+        handle,
+        value.data(),
+        required,
+        FILE_NAME_NORMALIZED | VOLUME_NAME_DOS
+      );
+      if (written == 0 || written >= required) {
+        return std::nullopt;
+      }
+      value.resize(written);
+      constexpr std::wstring_view extended_prefix = L"\\\\?\\";
+      if (value.starts_with(extended_prefix)) {
+        value.erase(0, extended_prefix.size());
+      }
+      return fs::path(value);
+    }
+
+    bool active_console_user_has_mutating_access(HANDLE object, DWORD mutation_mask) {
+      PSECURITY_DESCRIPTOR descriptor = nullptr;
+      PACL dacl = nullptr;
+      PSID owner = nullptr;
+      PSID group = nullptr;
+      const DWORD security_result = GetSecurityInfo(
+        object,
+        SE_FILE_OBJECT,
+        OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        &owner,
+        &group,
+        &dacl,
+        nullptr,
+        &descriptor
+      );
+      if (security_result != ERROR_SUCCESS || !descriptor) {
+        if (descriptor) {
+          LocalFree(descriptor);
+        }
+        return true;
+      }
+
+      HANDLE primary_token = retrieve_users_token(false);
+      if (!primary_token) {
+        LocalFree(descriptor);
+        return true;
+      }
+      HANDLE impersonation_token = nullptr;
+      const BOOL duplicated = DuplicateToken(primary_token, SecurityIdentification, &impersonation_token);
+      CloseHandle(primary_token);
+      if (!duplicated || !impersonation_token) {
+        LocalFree(descriptor);
+        return true;
+      }
+
+      GENERIC_MAPPING mapping {
+        .GenericRead = FILE_GENERIC_READ,
+        .GenericWrite = FILE_GENERIC_WRITE,
+        .GenericExecute = FILE_GENERIC_EXECUTE,
+        .GenericAll = FILE_ALL_ACCESS,
+      };
+      std::array<BYTE, 1024> privilege_storage {};
+      auto *privileges = reinterpret_cast<PRIVILEGE_SET *>(privilege_storage.data());
+      DWORD privilege_size = static_cast<DWORD>(privilege_storage.size());
+      DWORD granted_access = 0;
+      BOOL access_status = FALSE;
+      const BOOL checked = AccessCheck(
+        descriptor,
+        impersonation_token,
+        MAXIMUM_ALLOWED,
+        &mapping,
+        privileges,
+        &privilege_size,
+        &granted_access,
+        &access_status
+      );
+
+      CloseHandle(impersonation_token);
+      LocalFree(descriptor);
+      if (!checked || !access_status) {
+        return true;
+      }
+      return (granted_access & mutation_mask) != 0;
+    }
+
+    std::optional<pinned_directory_t> pin_trusted_rtss_root(const fs::path &root) {
+      const auto canonical = canonical_trusted_rtss_root(root);
+      if (!canonical) {
+        return std::nullopt;
+      }
+      HANDLE handle = CreateFileW(
+        canonical->c_str(),
+        FILE_READ_ATTRIBUTES | READ_CONTROL,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr
+      );
+      if (handle == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+      }
+      FILE_ATTRIBUTE_TAG_INFO tag_info {};
+      if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &tag_info, sizeof(tag_info)) ||
+          (tag_info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+          (tag_info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) {
+        CloseHandle(handle);
+        return std::nullopt;
+      }
+      const auto opened_path = final_dos_path(handle);
+      const auto opened_trusted = opened_path ? canonical_trusted_rtss_root(*opened_path) : std::nullopt;
+      if (!opened_trusted || normalized_path_key(*opened_trusted) != normalized_path_key(*canonical)) {
+        BOOST_LOG(warning) << "RTSS trust check detected a changed installation directory while pinning it."sv;
+        CloseHandle(handle);
+        return std::nullopt;
+      }
+      constexpr DWORD root_mutation_rights =
+        FILE_ADD_FILE |
+        FILE_ADD_SUBDIRECTORY |
+        FILE_WRITE_EA |
+        FILE_WRITE_ATTRIBUTES |
+        FILE_DELETE_CHILD |
+        DELETE |
+        WRITE_DAC |
+        WRITE_OWNER;
+      if (active_console_user_has_mutating_access(handle, root_mutation_rights)) {
+        BOOST_LOG(warning) << "RTSS trust check rejected an installation directory mutable by the active console user: "sv << canonical->string();
+        CloseHandle(handle);
+        return std::nullopt;
+      }
+      pinned_directory_t result;
+      result.handle = handle;
+      result.path = *canonical;
+      return result;
+    }
+
+    std::optional<signer_fingerprint_t> verify_authenticode_signature(
+      const fs::path &path,
+      HANDLE file
+    ) {
+      WINTRUST_FILE_INFO file_info {};
+      file_info.cbStruct = sizeof(file_info);
+      file_info.pcwszFilePath = path.c_str();
+      file_info.hFile = file;
+
+      WINTRUST_DATA trust_data {};
+      trust_data.cbStruct = sizeof(trust_data);
+      trust_data.dwUIChoice = WTD_UI_NONE;
+      trust_data.fdwRevocationChecks = WTD_REVOKE_NONE;
+      trust_data.dwUnionChoice = WTD_CHOICE_FILE;
+      trust_data.pFile = &file_info;
+      trust_data.dwStateAction = WTD_STATEACTION_VERIFY;
+      trust_data.dwProvFlags = WTD_REVOCATION_CHECK_NONE | WTD_DISABLE_MD2_MD4;
+
+      GUID action = WINTRUST_ACTION_GENERIC_VERIFY_V2;
+      // WinVerifyTrust uses this sentinel to indicate there is no interactive user.
+      const HWND no_interactive_user = reinterpret_cast<HWND>(INVALID_HANDLE_VALUE);
+      const LONG trust_result = WinVerifyTrust(no_interactive_user, &action, &trust_data);
+      std::optional<signer_fingerprint_t> fingerprint;
+      if (trust_result == ERROR_SUCCESS) {
+        CRYPT_PROVIDER_DATA *provider = WTHelperProvDataFromStateData(trust_data.hWVTStateData);
+        CRYPT_PROVIDER_SGNR *signer = provider ? WTHelperGetProvSignerFromChain(provider, 0, FALSE, 0) : nullptr;
+        if (signer && signer->csCertChain > 0 && signer->pasCertChain[0].pCert) {
+          signer_fingerprint_t value {};
+          DWORD value_size = static_cast<DWORD>(value.size());
+          if (CertGetCertificateContextProperty(
+                signer->pasCertChain[0].pCert,
+                CERT_SHA256_HASH_PROP_ID,
+                value.data(),
+                &value_size
+              ) &&
+              value_size == value.size()) {
+            fingerprint = value;
+          }
+        }
+      }
+
+      trust_data.dwStateAction = WTD_STATEACTION_CLOSE;
+      WinVerifyTrust(no_interactive_user, &action, &trust_data);
+      return fingerprint;
+    }
+
+    std::optional<verified_code_file_t> open_verified_code_file(
+      const fs::path &path,
+      const std::optional<signer_fingerprint_t> &required_signer = std::nullopt
+    ) {
+      const auto trusted_parent = canonical_trusted_rtss_root(path.parent_path());
+      if (!trusted_parent) {
+        return std::nullopt;
+      }
+
+      std::error_code canonical_ec;
+      const auto canonical_path = fs::weakly_canonical(path, canonical_ec);
+      if (canonical_ec ||
+          normalized_path_key(canonical_path.parent_path()) != normalized_path_key(*trusted_parent) ||
+          existing_path_has_reparse_component(canonical_path)) {
+        return std::nullopt;
+      }
+
+      HANDLE file = CreateFileW(
+        canonical_path.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr
+      );
+      if (file == INVALID_HANDLE_VALUE) {
+        return std::nullopt;
+      }
+
+      FILE_ATTRIBUTE_TAG_INFO tag_info {};
+      if (!GetFileInformationByHandleEx(file, FileAttributeTagInfo, &tag_info, sizeof(tag_info)) ||
+          (tag_info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
+          (tag_info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        CloseHandle(file);
+        return std::nullopt;
+      }
+      constexpr DWORD file_mutation_rights =
+        FILE_WRITE_DATA |
+        FILE_APPEND_DATA |
+        FILE_WRITE_EA |
+        FILE_WRITE_ATTRIBUTES |
+        DELETE |
+        WRITE_DAC |
+        WRITE_OWNER;
+      if (active_console_user_has_mutating_access(file, file_mutation_rights)) {
+        BOOST_LOG(warning) << "RTSS trust check rejected a code file mutable by the active console user: "sv << canonical_path.string();
+        CloseHandle(file);
+        return std::nullopt;
+      }
+
+      auto signer = verify_authenticode_signature(canonical_path, file);
+      if (!signer || (required_signer && *signer != *required_signer)) {
+        BOOST_LOG(warning) << "RTSS trust check rejected an unsigned, untrusted, or mismatched file: "sv << canonical_path.string();
+        CloseHandle(file);
+        return std::nullopt;
+      }
+
+      verified_code_file_t result;
+      result.handle = file;
+      result.path = canonical_path;
+      result.signer = *signer;
+      return result;
+    }
+
+    bool same_file_identity(HANDLE left, HANDLE right) {
+      BY_HANDLE_FILE_INFORMATION left_info {};
+      BY_HANDLE_FILE_INFORMATION right_info {};
+      return GetFileInformationByHandle(left, &left_info) &&
+             GetFileInformationByHandle(right, &right_info) &&
+             left_info.dwVolumeSerialNumber == right_info.dwVolumeSerialNumber &&
+             left_info.nFileIndexHigh == right_info.nFileIndexHigh &&
+             left_info.nFileIndexLow == right_info.nFileIndexLow;
+    }
+
+    bool loaded_module_matches_verified_file(HMODULE module, const verified_code_file_t &verified) {
+      std::wstring module_path(32768, L'\0');
+      const DWORD length = GetModuleFileNameW(
+        module,
+        module_path.data(),
+        static_cast<DWORD>(module_path.size())
+      );
+      if (length == 0 || length >= module_path.size()) {
+        return false;
+      }
+      module_path.resize(length);
+
+      HANDLE loaded_file = CreateFileW(
+        module_path.c_str(),
+        FILE_READ_ATTRIBUTES,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+        nullptr
+      );
+      if (loaded_file == INVALID_HANDLE_VALUE) {
+        return false;
+      }
+      const bool matches = same_file_identity(verified.handle, loaded_file);
+      CloseHandle(loaded_file);
+      return matches;
+    }
+
+    std::optional<verified_code_file_t> find_verified_rtss_executable(const fs::path &root) {
+      const auto canonical_root = canonical_trusted_rtss_root(root);
+      if (!canonical_root) {
+        return std::nullopt;
+      }
+      for (const auto *name : k_rtss_executable_names) {
+        if (auto verified = open_verified_code_file(*canonical_root / name)) {
+          return verified;
+        }
+      }
+      BOOST_LOG(warning) << "No trusted RTSS executable was found in: "sv << canonical_root->string();
+      return std::nullopt;
+    }
+
+    bool rtss_installation_is_trusted(const fs::path &root) {
+      const auto pinned_root = pin_trusted_rtss_root(root);
+      if (!pinned_root) {
+        return false;
+      }
+      auto executable = find_verified_rtss_executable(pinned_root->path);
+      if (!executable) {
+        return false;
+      }
+      for (const auto *name : {L"RTSSHooks64.dll", L"RTSSHooks.dll"}) {
+        const fs::path hook = pinned_root->path / name;
+        std::error_code ec;
+        if (fs::exists(hook, ec) && !ec && open_verified_code_file(hook, executable->signer)) {
+          return true;
+        }
+      }
+      return false;
+    }
 
     rtss_apply_result mark_safe_to_fallback() {
       g_limit_active = false;
@@ -1094,16 +1589,6 @@ namespace platf {
       return find_rtss_process_id().has_value();
     }
 
-    std::optional<fs::path> find_rtss_executable(const fs::path &root) {
-      for (auto name : k_rtss_executable_names) {
-        fs::path candidate = root / name;
-        if (fs::exists(candidate)) {
-          return candidate;
-        }
-      }
-      return std::nullopt;
-    }
-
     void reset_rtss_process_state() {
       if (g_rtss_process_info.hProcess) {
         CloseHandle(g_rtss_process_info.hProcess);
@@ -1169,6 +1654,19 @@ namespace platf {
     }
 
     bool ensure_rtss_running(const fs::path &root) {
+      // The service host remains LocalSystem while RTSS itself is launched as the
+      // console user. Pin the trusted root without delete sharing, then pin a
+      // signed executable before consulting or starting the process so a Web UI
+      // path cannot swap the directory or select user-controlled code.
+      auto pinned_root = pin_trusted_rtss_root(root);
+      if (!pinned_root) {
+        return false;
+      }
+      auto trusted_executable = find_verified_rtss_executable(pinned_root->path);
+      if (!trusted_executable) {
+        return false;
+      }
+
       // If we previously launched RTSS, check if the process is still alive.
       if (g_rtss_process_info.hProcess) {
         DWORD exit_code = 0;
@@ -1184,14 +1682,10 @@ namespace platf {
         return true;
       }
 
-      auto exe = find_rtss_executable(root);
-      if (!exe) {
-        BOOST_LOG(warning) << "RTSS executable not found in: "sv << root.string();
-        return false;
-      }
-
-      std::wstring exe_path = exe->wstring();
-      std::wstring working_dir = root.wstring();
+      // Keep the verified file handle open until CreateProcess has opened the
+      // image. FILE_SHARE_READ prevents a post-verification replacement.
+      std::wstring exe_path = trusted_executable->path.wstring();
+      std::wstring working_dir = pinned_root->path.wstring();
       std::string cmd_utf8 = "\"" + to_utf8(exe_path) + "\"";
 
       std::error_code startup_ec;
@@ -1323,10 +1817,42 @@ namespace platf {
         return false;
       }
 
+      // There is no LoadLibrary-by-handle API. Hold the verified installation
+      // directory without delete sharing for the full verify/load transaction,
+      // and hold each verified file without write/delete sharing while the
+      // loader opens it by pathname.
+      const auto pinned_root = pin_trusted_rtss_root(root);
+      if (!pinned_root) {
+        return false;
+      }
+      const auto trusted_executable = find_verified_rtss_executable(pinned_root->path);
+      if (!trusted_executable) {
+        return false;
+      }
+
       auto try_load = [&](const wchar_t *dll_name) -> bool {
-        fs::path p = root / dll_name;
-        HMODULE m = LoadLibraryW(p.c_str());
+        fs::path p = pinned_root->path / dll_name;
+        // RTSS' executable and hook DLL must chain to the same trusted signing
+        // certificate. Keep the verified DLL handle open without write/delete
+        // sharing across LoadLibraryExW to close the pathname replacement race.
+        auto trusted_dll = open_verified_code_file(p, trusted_executable->signer);
+        if (!trusted_dll) {
+          return false;
+        }
+        HMODULE m = LoadLibraryExW(
+          p.c_str(),
+          nullptr,
+          // The top-level hook uses its absolute, verified path. Resolve all
+          // transitive imports only from System32 so a separately writable
+          // auxiliary DLL in the RTSS directory cannot enter the SYSTEM host.
+          LOAD_LIBRARY_SEARCH_SYSTEM32
+        );
         if (!m) {
+          return false;
+        }
+        if (!loaded_module_matches_verified_file(m, *trusted_dll)) {
+          BOOST_LOG(error) << "RTSS trust check rejected a loaded module identity mismatch: "sv << p.string();
+          FreeLibrary(m);
           return false;
         }
         g_hooks.module = m;
@@ -1356,42 +1882,56 @@ namespace platf {
       return true;
     }
 
-    // Resolve RTSS root path from config (absolute path or relative to Program Files)
+    // Resolve RTSS only below a canonical, non-reparse Program Files root. A
+    // configured portable/custom location is no longer safe for code loaded by
+    // the LocalSystem host, so reject it and retain the conventional default.
     fs::path resolve_rtss_root() {
-      // Default subfolder if not configured
-      std::string sub = config::rtss.install_path;
-      if (sub.empty()) {
-        sub = "RivaTuner Statistics Server";
-      }
-
-      auto is_abs = sub.size() > 1 && (sub[1] == ':' || (sub[0] == '\\' && sub[1] == '\\'));
-      if (is_abs) {
-        return fs::path(sub);
-      }
-
-      // Prefer Program Files (x86) on 64-bit Windows if present
-      {
-        wchar_t buf[MAX_PATH] = {};
-        DWORD len = GetEnvironmentVariableW(L"PROGRAMFILES(X86)", buf, ARRAYSIZE(buf));
-        if (len > 0 && len < ARRAYSIZE(buf)) {
-          fs::path base = buf;
-          fs::path candidate = base / fs::path(std::wstring(sub.begin(), sub.end()));
-          if (fs::exists(candidate)) {
-            return candidate;
+      const std::array<const wchar_t *, 3> preferred_roots = {
+        L"PROGRAMFILES(X86)",
+        L"PROGRAMFILES",
+        L"PROGRAMW6432",
+      };
+      const auto below_preferred_root = [&](const fs::path &relative, bool require_existing) -> std::optional<fs::path> {
+        std::optional<fs::path> first_trusted;
+        for (const auto *name : preferred_roots) {
+          const auto base = environment_path(name);
+          if (!base) {
+            continue;
+          }
+          const auto trusted = canonical_trusted_rtss_root(*base / relative);
+          if (!trusted) {
+            continue;
+          }
+          if (!first_trusted) {
+            first_trusted = trusted;
+          }
+          std::error_code exists_ec;
+          if (fs::exists(*trusted, exists_ec) && !exists_ec) {
+            return trusted;
           }
         }
+        return require_existing ? std::nullopt : first_trusted;
+      };
+
+      if (!config::rtss.install_path.empty()) {
+        const fs::path configured = fs::path(config::rtss.install_path);
+        std::optional<fs::path> trusted;
+        if (configured.is_absolute()) {
+          trusted = canonical_trusted_rtss_root(configured);
+        } else {
+          trusted = below_preferred_root(configured, false);
+        }
+        if (trusted) {
+          return *trusted;
+        }
+        BOOST_LOG(warning) << "Configured RTSS install path is outside a trusted, non-reparse Program Files directory; using the default installation path instead."sv;
       }
 
-      // Resolve %PROGRAMFILES%\<sub>
-      wchar_t buf[MAX_PATH] = {};
-      DWORD len = GetEnvironmentVariableW(L"PROGRAMFILES", buf, ARRAYSIZE(buf));
-      fs::path base;
-      if (len == 0 || len >= ARRAYSIZE(buf)) {
-        base = L"C:\\Program Files";
-      } else {
-        base = buf;
+      if (const auto fallback = below_preferred_root(L"RivaTuner Statistics Server", false)) {
+        return *fallback;
       }
-      return base / fs::path(std::wstring(sub.begin(), sub.end()));
+      BOOST_LOG(warning) << "No trusted Program Files root is available for RTSS."sv;
+      return {};
     }
   }  // namespace
 
@@ -1983,7 +2523,7 @@ namespace platf {
 
   bool rtss_is_configured() {
     auto st = rtss_get_status();
-    return st.path_exists && st.hooks_found;
+    return st.path_exists && st.hooks_found && st.trust_valid;
   }
 
   rtss_status_t rtss_get_status() {
@@ -1997,12 +2537,13 @@ namespace platf {
     fs::path root = resolve_rtss_root();
     st.resolved_path = root.string();
     st.path_exists = fs::exists(root);
-    st.can_bootstrap_profile = st.path_exists;
     if (st.path_exists) {
       // Check for hooks DLL presence
       bool hooks64 = fs::exists(root / "RTSSHooks64.dll");
       bool hooks = fs::exists(root / "RTSSHooks.dll");
       st.hooks_found = hooks64 || hooks;
+      st.trust_valid = st.hooks_found && rtss_installation_is_trusted(root);
+      st.can_bootstrap_profile = st.trust_valid;
       st.profile_found = fs::exists(root / "Profiles" / "Global");
     }
     st.process_running = is_rtss_process_running();

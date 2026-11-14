@@ -336,6 +336,35 @@ the authenticated, CSRF-protected `POST /api/web-ui-preference` endpoint.
     </tr>
 </table>
 
+### lid_close_ends_streams
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            End streams when a MacBook's lid closes. When the lid closes, the running app quits, or
+            the stream ends if no app is running.
+            @note{Turn this off to keep streaming with the lid closed. That only works while the Mac
+            stays awake, which is up to macOS (for example, a Mac on power with an external display)
+            or another utility that keeps it awake. Vibepollo doesn't change power settings or keep
+            the Mac awake itself, and it still ends streams when the Mac goes to sleep.}
+            @note{Applies to macOS only.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            lid_close_ends_streams = disabled
+            @endcode</td>
+    </tr>
+</table>
+
 <!-- The update command mechanism was removed. Sunshine now only notifies about updates. -->
 
 ## Input
@@ -408,9 +437,10 @@ the authenticated, CSRF-protected `POST /api/web-ui-preference` endpoint.
             @note{This option applies to Windows only and requires the Vibepollo virtual gamepad
             driver to be installed. It presents a DualSense to clients that report a PlayStation
             controller, or when motion_as_ds4 or touchpad_as_ds4 applies, and an Xbox Series
-            controller otherwise. On an older driver it falls back to a generic HID pad that
-            publishes the DirectInput Physical Interface Device report set, so force feedback still
-            works in DirectInput games.}</td>
+            controller otherwise. A client that reports a Steam Controller, Switch or PlayStation
+            controller gets that profile when the driver offers it, and the driver's automatic
+            profile otherwise. A driver that offers no console profile is reported as unusable
+            (the reserved generic HID profiles are never selected).}</td>
     </tr>
     <tr>
         <td>vhf_switch</td>
@@ -419,6 +449,24 @@ the authenticated, CSRF-protected `POST /api/web-ui-preference` endpoint.
             driver to be installed. Includes motion sensors, battery reporting, rumble, and the
             Capture button. This controller has no analog triggers, so trigger travel is reported
             as ZL and ZR presses, and it has no touchpad.}</td>
+    </tr>
+    <tr>
+        <td>vhf_steam</td>
+        <td>Steam Controller (2026) on Vibepollo's own virtual gamepad driver
+            @note{This option applies to Windows only and requires a Vibepollo virtual gamepad
+            driver with the Steam Controller profile. Steam recognises it as a real Steam
+            Controller: two trackpads (the client's touchpad 0 and 1), four grip buttons, motion
+            sensors, battery and pad haptics rendered as rumble. Plain `vhf` and `auto` select it
+            for clients that report a Steam Controller. Whether selected here or automatically, only
+            a client controller that reports the Steam type together with the Steam extensions (grip
+            sense, the pad haptic relay or explicit pad clicks) gets this profile; any other controller
+            the same client forwards, a keyboard's joystick interface for instance, or a Steam Deck's
+            built-in controls through SDL, gets the automatic choice instead of becoming a second
+            Steam Controller. A client that reads the real controller's
+            firmware attributes (firmware and bootloader build times, board revision, build id,
+            serials) relays them, so Steam sees the real firmware build and offers an update only
+            when the real controller needs one; a driver that predates this keeps its defaults.}
+            @warning{Do not start a Steam Controller firmware update from Steam while streaming: the update would target this virtual controller, not the real one. Update with the controller connected directly to a PC.}</td>
     </tr>
     <tr>
         <td>vhf_xbox</td>
@@ -513,7 +561,7 @@ the authenticated, CSRF-protected `POST /api/web-ui-preference` endpoint.
             <br>
             <br>
             When disabled, motion sensors will not be taken into account during gamepad type selection.
-            @hint{Only applies when gamepad is set to auto.}
+            @hint{Applies when gamepad is set to auto or vhf.}
         </td>
     </tr>
     <tr>
@@ -541,7 +589,7 @@ the authenticated, CSRF-protected `POST /api/web-ui-preference` endpoint.
             <br>
             <br>
             When disabled, touchpad presence will not be taken into account during gamepad type selection.
-            @hint{Only applies when gamepad is set to auto.}
+            @hint{Applies when gamepad is set to auto or vhf.}
         </td>
     </tr>
     <tr>
@@ -644,7 +692,7 @@ controller of another client. This option does not create or redirect controller
         <td>Description</td>
         <td colspan="2">
             The initial delay, in milliseconds, before repeating keys. Controls how fast keys will
-            repeat themselves.
+            repeat themselves. When VHF is active for keyboard input, Windows controls key repeat.
         </td>
     </tr>
     <tr>
@@ -667,7 +715,8 @@ controller of another client. This option does not create or redirect controller
     <tr>
         <td>Description</td>
         <td colspan="2">
-            How often keys repeat every second.
+            How often keys repeat every second. When VHF is active for keyboard input, Windows
+            controls key repeat.
             @tip{This configurable option supports decimals.}
         </td>
     </tr>
@@ -762,6 +811,45 @@ controller of another client. This option does not create or redirect controller
     </tr>
 </table>
 
+### keyboard_mouse_backend
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Select how Vibepollo sends keyboard and mouse input on Windows. `auto` (the default)
+            prefers VHF when a compatible driver is available at input initialization and otherwise
+            uses Windows SendInput. `sendinput` always uses Windows SendInput; `vhf` explicitly
+            prefers virtual HID devices. Existing explicit settings are preserved. Backend selection
+            does not switch automatically just because a game starts or stops.
+            VHF requires a compatible virtual input driver
+            and Vibepollo running as SYSTEM or an elevated administrator. If the driver is missing,
+            lacks the capability, or access is denied, Vibepollo uses SendInput. Auto logs this normal
+            fallback as informational; an explicitly selected VHF backend logs a warning.
+            The bundled driver supports VHF keyboard and mouse input.
+            VHF keyboard repeat follows Windows settings; a modifier sent only as a temporary
+            packet flag may not remain active during a repeated key. Mouse scrolling uses whole detents.
+            Unicode text, unsupported keys, and absolute pointer positions outside the primary display
+            use SendInput. Mixed VHF and SendInput events may be processed in a different order, which
+            can affect absolute dragging on secondary displays. The keyboard and mouse enable settings
+            still apply. Restart Vibepollo after changing this setting.
+            @caution{Applies to Windows only. VHF requires a compatible virtual input driver.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            auto
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            keyboard_mouse_backend = vhf
+            @endcode</td>
+    </tr>
+</table>
+
 ### high_resolution_scrolling
 
 <table>
@@ -771,7 +859,7 @@ controller of another client. This option does not create or redirect controller
             When enabled, Sunshine will pass through high resolution scroll events from Moonlight clients.
             <br>
             This can be useful to disable for older applications that scroll too fast with high resolution scroll
-            events.
+            events. When VHF is active for mouse input, scrolling uses whole detents.
         </td>
     </tr>
     <tr>
@@ -797,6 +885,11 @@ controller of another client. This option does not create or redirect controller
             When enabled, Sunshine will pass through native pen/touch events from Moonlight clients.
             <br>
             This can be useful to disable for older applications without native pen/touch support.
+            <br>
+            <br>
+            On macOS, a pen is posted as a tablet device, so apps that read pressure, tilt, and the eraser
+            see them. macOS has no public way to inject multi-touch, so a tap clicks, one or two fingers
+            scroll, and holding a finger before moving it drags. This needs the same Accessibility permission as mouse and keyboard input.
         </td>
     </tr>
     <tr>
@@ -1068,6 +1161,43 @@ dualsense_haptics_gain = 1.5
             virtual_sink = Steam Streaming Speakers
             @endcode</td>
     </tr>
+</table>
+
+### audio_format
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Selects the encoded audio format sent to a compatible client. Opus remains the default.
+            AC-3 (Dolby Digital) and E-AC-3 (Dolby Digital Plus) are offered only when the linked FFmpeg build
+            includes the selected encoder. The client must explicitly accept the exact codec offer; otherwise
+            Vibepollo falls back to Opus. Dolby supports stereo and 5.1 channels.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2"><code>opus</code></td>
+    </tr>
+    <tr><td>Choices</td><td>opus</td><td>Use Opus encoding.</td></tr>
+    <tr><td></td><td>ac3</td><td>Use Dolby Digital AC-3 encoding.</td></tr>
+    <tr><td></td><td>eac3</td><td>Use Dolby Digital Plus E-AC-3 encoding.</td></tr>
+    <tr><td>Example</td><td colspan="2"><code>audio_format = ac3</code></td></tr>
+</table>
+
+### high_quality_audio
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            When AC-3 or E-AC-3 is accepted by the client, selects a higher Dolby bitrate at the cost of increased
+            network bandwidth. Stereo uses 128 kbit/s by default or 192 kbit/s with high quality; AC-3 5.1 uses
+            384 or 640 kbit/s; E-AC-3 5.1 uses 192 or 384 kbit/s. This setting has no effect when Opus is selected.
+        </td>
+    </tr>
+    <tr><td>Default</td><td colspan="2"><code>disabled</code></td></tr>
+    <tr><td>Example</td><td colspan="2"><code>high_quality_audio = enabled</code></td></tr>
 </table>
 
 ### install_steam_audio_drivers
@@ -1501,6 +1631,34 @@ eight outputs. An existing four-output pool is preserved during updates; reboot
 or safely reprovision the pool with the host and compositor stopped before
 requesting more than four clients. The topology editor reports the effective
 limit. Arbitrarily many displays are not supported.
+
+### virtual_display_keep_while_paused
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Keep the virtual display while a session is paused: when a client disconnects and the
+            game keeps running, the virtual display stays, and so do any displays turned off by the
+            exclusive layout, until the session resumes, the game quits, or
+            [dd_paused_virtual_display_timeout_secs](#dd_paused_virtual_display_timeout_secs) passes.
+            Turn it off to bring the displays back as soon as the stream ends.
+            @note{Applies to macOS only. Windows keeps a paused virtual display through its display helper.}
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            virtual_display_keep_while_paused = disabled
+            @endcode</td>
+    </tr>
+</table>
 
 ### Remote Monitor display policy
 
@@ -2729,6 +2887,58 @@ These settings are host-wide and are not application runtime overrides.
     </tr>
 </table>
 
+### pacing_group_demand_limit
+
+Experimental opt-in for ordinary video streams. Derive a fixed pacing quantum
+from the negotiated bitrate and this frame's actual FEC-expanded packet count.
+This bounds each send call and uses the quantum as the pacing wait threshold.
+A short FEC block tail can let a group exceed that threshold before the next
+wait. It does not guarantee a wire-level burst limit. The existing `pacing_batch_demand_limit`
+option remains an independent batch-only bound. Both options default to `false`.
+
+When combined with `host_adaptive_pacing`, use the smaller group and the later
+of the demand and adaptive deadlines. The operator's `pacing_max_bitrate_kbps`
+ceiling always applies, and accepted packets retain their debt across frames.
+PyroWave is unchanged. Example: `pacing_group_demand_limit = true`.
+
+### host_adaptive_pacing
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Experimental opt-in for ordinary H.264, HEVC and AV1 streams. Vibepollo spaces video packets using a rate that
+            starts at twice the encoder bitrate or 1.25 times the stream's packetized wire demand (including FEC), whichever
+            is higher, within the usual 800 Mbps ceiling. It then probes upward by up to 12.5% at most every half second,
+            but only while video is busy, recent standard client pings arrive and the control stream's round trip time is
+            stable and nonzero. Loss reported by the client during a probe restores the previous rate and extends the
+            recovery hold (8 seconds, up to a minute). Outside probes, the rate is halved only after two distinct failed
+            frames, or several recovered frames missing at least 2% of the packets sent, in a half-second sample.
+            The rate never drops below 1.25 times the current wire demand unless the configured ceiling is lower.
+            A nonzero <code>pacing_max_bitrate_kbps</code> remains a hard UDP-datagram ceiling, including cumulative
+            pacing debt across frames. <code>pacing_batch_demand_limit</code> remains an independent per-call batch bound.
+            Encoder bitrate and frame rate never change.
+            <br><br>
+            Loss reports (<code>SS_FRAME_FEC_STATUS</code>) come from Moonlight clients that send them to Sunshine-family
+            hosts. Clients that do not send them cannot trigger a cut or reject a probe, so
+            such a stream keeps its conservative starting rate or probes without loss feedback. Startup adds transmission time, mostly to a large first
+            keyframe. Batches hold at most about one millisecond of traffic at the selected rate.
+            This does not guarantee a wire-level burst limit or establish the cause of a reported streaming failure.
+            PyroWave streams are unaffected. Rate changes are logged at info level.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}false@endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            host_adaptive_pacing = true
+            @endcode</td>
+    </tr>
+</table>
+
 ## Config Files
 
 ### file_apps
@@ -2961,6 +3171,7 @@ These settings are host-wide and are not application runtime overrides.
         <td>Description</td>
         <td colspan="2">
             Percentage of error correcting packets per data packet in each video frame.
+            Set to <code>0</code> to disable standard forward error correction.
             PyroWave ignores this setting; its parity is controlled by `pyrowave_critical_fec_percentage`.
             @warning{Higher values can correct for more network packet loss,
             but at the cost of increasing bandwidth usage.}
@@ -2974,7 +3185,7 @@ These settings are host-wide and are not application runtime overrides.
     </tr>
     <tr>
         <td>Range</td>
-        <td colspan="2">1-255</td>
+        <td colspan="2">0-255</td>
     </tr>
     <tr>
         <td>Example</td>
@@ -3609,7 +3820,10 @@ are detected during the stream. The host log reports hook readiness or failure.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Full path to the RTSS install directory. If empty, Sunshine will attempt to auto-detect it.
+            Full path to the RTSS install directory under Program Files. If empty, Vibepollo will
+            attempt to auto-detect it. Paths outside Program Files and paths containing reparse
+            points are ignored because the Windows service loads signed RTSS integration code in
+            its privileged host process; Vibepollo falls back to the default Program Files location.
         </td>
     </tr>
     <tr>
@@ -5279,7 +5493,8 @@ Sets the display mode used when the requested streaming mode cannot be applied.
 
 ### forward_rumble
 
-Forwards controller rumble events to the emulated host gamepad.
+Forwards controller rumble events (and, for a Steam Controller, the haptic reports Steam writes
+to its pads) from the emulated host gamepad to the client's physical controller.
 
 ### global_state_cmd
 

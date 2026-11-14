@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <syslog.h>
 #include <sys/un.h>
 #include <sys/capability.h>
 #include <sys/prctl.h>
@@ -156,7 +157,11 @@ static bool send_request(int socket_fd, int argc, char **argv, uint64_t generati
   return true;
 }
 
+static const char *request_operation = "request";
+
 static int relay_responses(int socket_fd, uint64_t generation) {
+  char reason[1025] = {0};
+  size_t reason_length = 0;
   unsigned char packet[sizeof(struct vibepollo_session_message) +
                        VIBEPOLLO_SESSION_PROTOCOL_OUTPUT_CHUNK];
   for (;;) {
@@ -200,6 +205,15 @@ static int relay_responses(int socket_fd, uint64_t generation) {
         (void) fail("invalid broker output frame");
         return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
       }
+      // Keep only a bounded, printable failure detail, even when the caller
+      // discards output. The helper already observes completion asynchronously
+      // from the host's stream-control thread.
+      if (header.type == VIBEPOLLO_SESSION_STDERR) {
+        for (size_t i = 0; i < payload_length && reason_length < sizeof(reason) - 1; ++i) {
+          unsigned char ch = packet[sizeof(header) + i];
+          reason[reason_length++] = ch >= 32 && ch < 127 ? (char) ch : ' ';
+        }
+      }
       if (!write_all(header.type == VIBEPOLLO_SESSION_STDOUT ? STDOUT_FILENO : STDERR_FILENO,
                      packet + sizeof(header), payload_length)) {
         (void) fail("could not forward broker output");
@@ -210,6 +224,10 @@ static int relay_responses(int socket_fd, uint64_t generation) {
         errno = EPROTO;
         (void) fail("invalid broker exit frame");
         return VIBEPOLLO_SESSION_COMPLETION_UNKNOWN;
+      }
+      if (header.status) {
+        syslog(LOG_WARNING, "broker operation %.64s failed (status=%d): %s",
+               request_operation, header.status, reason_length ? reason : "no failure detail returned");
       }
       return header.status;
     } else {
@@ -237,6 +255,8 @@ int main(int argc, char **argv) {
     errno = saved_errno;
     return fail("could not send request to the session broker");
   }
+  request_operation = argv[1];
+  openlog("vibeshine-session-exec", LOG_PID, LOG_USER);
   const int status = relay_responses(socket_fd, generation);
   close(socket_fd);
   return status;

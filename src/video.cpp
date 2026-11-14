@@ -63,6 +63,10 @@ extern "C" {
   #include "platform/linux/rtx_hdr_runtime.h"
 #endif
 
+#ifdef __APPLE__
+  #include "src/platform/macos/misc.h"
+#endif
+
 #ifdef _WIN32
   #include "src/platform/windows/display.h"
   #include "src/platform/windows/display_helper_integration.h"
@@ -469,7 +473,7 @@ namespace video {
 
 #endif
 
-    probe_target_t resolve_probe_target() {
+    probe_target_t resolve_probe_target(const bool materialize_capture_output = true) {
 #ifdef _WIN32
       const auto active_output = config::get_active_output_name();
       const auto mapped_output = display_device::map_output_name(active_output);
@@ -504,6 +508,21 @@ namespace video {
       }
       if (pending_virtual_display_adapter_hint) {
         const auto pending_adapter = adapter_id_from_luid(*pending_virtual_display_adapter_hint);
+        // A cache lookup needs only the expected adapter identity. Materializing
+        // a capture output here creates a D3D device even on a positive cache
+        // hit, repeatedly waking the GPU while clients poll /serverinfo.
+        // Actual probes still select a capture target and must observe this
+        // adapter before they can own a successful capability entry.
+        if (!materialize_capture_output) {
+          return probe_target_t {
+            .required_adapter = pending_adapter,
+            .adapter_identity = probe_adapter_identity_t {
+              .identity = luid_cache_identity(*pending_virtual_display_adapter_hint),
+              .source = "pending-virtual-display-adapter-cache-lookup",
+              .resolved = true,
+            },
+          };
+        }
         std::optional<LUID> observed_adapter;
         std::string_view observed_source;
         if (current_wgc_identity) {
@@ -583,6 +602,16 @@ namespace video {
         );
         if (configured_adapter) {
           const auto configured_adapter_id = adapter_id_from_luid(*configured_adapter.luid);
+          if (!materialize_capture_output) {
+            return probe_target_t {
+              .required_adapter = configured_adapter_id,
+              .adapter_identity = probe_adapter_identity_t {
+                .identity = luid_cache_identity(*configured_adapter.luid),
+                .source = "configured-adapter-cache-lookup",
+                .resolved = true,
+              },
+            };
+          }
           const bool preferred_output_matches_adapter =
             mapped_output_matches_adapter(*configured_adapter.luid);
           const bool wgc_mismatches_configured_adapter =
@@ -694,6 +723,7 @@ namespace video {
         },
       };
 #else
+      (void) materialize_capture_output;
       const auto active_output = display_device::map_output_name(config::get_active_output_name());
       return probe_target_t {
         .display_name =
@@ -757,7 +787,7 @@ namespace video {
       oss << "|amf_quarantined=" << (native_amf_lifecycle_gate.is_quarantined() ? 1 : 0);
       const auto adapter_identity = probe_target ?
                                       probe_target->adapter_identity :
-                                      resolve_probe_target().adapter_identity;
+                                      resolve_probe_target(false).adapter_identity;
       return probe_cache_key_t {
         .encoder_configuration = oss.str(),
         .adapter_identity = adapter_identity.identity,
@@ -1842,6 +1872,10 @@ namespace video {
 #elif defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
   std::shared_ptr<platf::display_t> make_black_display(const config_t &config) {
     return ::cuda::make_black_display(config);
+  }
+#elif defined(__APPLE__)
+  std::shared_ptr<platf::display_t> make_black_display(const config_t &config) {
+    return platf::black_display(config);
   }
 #else
   std::shared_ptr<platf::display_t> make_black_display(const config_t &) {
@@ -3627,7 +3661,8 @@ namespace video {
     void *channel_data,
     std::optional<std::chrono::steady_clock::time_point> frame_timestamp,
     std::optional<std::chrono::steady_clock::time_point> capture_timestamp,
-    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp
+    std::optional<std::chrono::steady_clock::time_point> host_processing_timestamp,
+    const bool drain = false
   ) {
     auto &frame = session.device->frame;
     frame->pts = frame_nr;
@@ -3637,8 +3672,8 @@ namespace video {
     auto &sps = session.sps;
     auto &vps = session.vps;
 
-    // send the frame to the encoder
-    auto ret = avcodec_send_frame(ctx.get(), frame);
+    // send the frame to the encoder, or with drain, the end of input so it emits what it holds
+    auto ret = avcodec_send_frame(ctx.get(), drain ? nullptr : frame);
     if (ret < 0) {
       char err_str[AV_ERROR_MAX_STRING_SIZE] {0};
       BOOST_LOG(error) << "Could not send a frame for encoding: "sv << av_make_error_string(err_str, AV_ERROR_MAX_STRING_SIZE, ret);
@@ -5124,7 +5159,7 @@ namespace video {
 #ifdef _WIN32
     const bool legacy_amf_session = session_encoder == &amdvce_ffmpeg;
 #else
-    const bool legacy_amf_session = false;
+    bool legacy_amf_session = false;  // no AMF here; not const, so the teardown thread captures it as on Windows
 #endif
     bool native_amf_runtime_failed = false;
     const auto session_encoder_flags = session_encoder->flags;
@@ -5362,6 +5397,15 @@ namespace video {
         BOOST_LOG(error) << "Could not encode dummy video packet"sv;
         return native_amf_failure();
       }
+#ifdef __APPLE__
+      // VideoToolbox emits asynchronously, so a frame's packet only comes out of a later call.
+      // Input-only sessions have no later frame, so drain the encoder for it, as AMF does below.
+      if (auto *avcodec_session = dynamic_cast<avcodec_encode_session_t *>(session.get());
+          avcodec_session && encode_avcodec(dummy_frame_index, *avcodec_session, packets, channel_data, now, now, now, true)) {
+        BOOST_LOG(error) << "Could not drain the input-only dummy packet"sv;
+        return native_amf_failure();
+      }
+#endif
 
       if (auto *amf_session = dynamic_cast<amf_encode_session_t *>(session.get())) {
         const auto acceptance_deadline = std::chrono::steady_clock::now() + 2s;
@@ -6382,10 +6426,13 @@ namespace video {
     hdr_info = std::make_unique<hdr_info_raw_t>(false);
     if (colorspace_is_hdr(colorspace)) {
       SS_HDR_METADATA metadata {};
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
       if (config.rtx_hdr_active) {
         metadata = synthesize_rtx_hdr_metadata(config.rtx_hdr_peak_nits);
         hdr_info = std::make_unique<hdr_info_raw_t>(true, metadata);
-      } else if (display_is_hdr && disp.get_hdr_metadata(metadata)) {
+      } else
+#endif
+      if (display_is_hdr && disp.get_hdr_metadata(metadata)) {
         hdr_info = std::make_unique<hdr_info_raw_t>(true, metadata);
       } else {
         BOOST_LOG(error) << "Couldn't get display hdr metadata when colorspace selection indicates it should have one";
@@ -6482,7 +6529,9 @@ namespace video {
     std::vector<std::uint8_t> frame;
     std::size_t critical_bytes = 0;
     pyrowave::policy::detail_fec_controller_t detail_fec_controller(config.framerate);
+#ifdef SUNSHINE_ENABLE_NV_TRUEHDR
     rtx_hdr_metadata_refresh_state_t metadata_refresh;
+#endif
     while (true) {
       raise_touch_port_if_geometry_changed(touch_port_event, disp.get(), config);
       // Capture can change before the first encoded packet too.
@@ -7624,7 +7673,16 @@ namespace video {
 
     if (new_encoder == nullptr) {
       BOOST_LOG(fatal) << "Unable to initialize a working video encoder during startup."sv;
-      if (!config::video.adapter_name.empty() || !config::video.adapter_pnp_id.empty()) {
+#ifdef __APPLE__
+      // Encoders are validated on a captured frame, so without the permission every one fails.
+      const bool screen_capture_denied = !platf::is_screen_capture_allowed();
+#else
+      constexpr bool screen_capture_denied = false;
+#endif
+      if (screen_capture_denied) {
+        BOOST_LOG(fatal) << "Vibepollo isn't allowed to record the screen. Allow it in 'System Settings' -> "
+                            "'Privacy & Security', then restart Vibepollo."sv;
+      } else if (!config::video.adapter_name.empty() || !config::video.adapter_pnp_id.empty()) {
         BOOST_LOG(fatal) << "Please ensure the selected GPU is available and its encoder driver is working."sv;
       } else {
         BOOST_LOG(fatal) << "Please check the GPU driver and configured encoder."sv;

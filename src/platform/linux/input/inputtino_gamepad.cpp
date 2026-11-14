@@ -126,14 +126,10 @@ namespace platf::gamepad {
 
     auto gamepad = std::make_shared<joypad_state>(joypad_state {});
     auto on_rumble_fn = [feedback_queue, idx = id.clientRelativeIndex, gamepad](int low_freq, int high_freq) {
-      // Don't resend duplicate rumble data
-      if (gamepad->last_rumble.type == platf::gamepad_feedback_e::rumble && gamepad->last_rumble.data.rumble.lowfreq == low_freq && gamepad->last_rumble.data.rumble.highfreq == high_freq) {
-        return;
-      }
-
-      gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rumble(idx, low_freq, high_freq);
-      feedback_queue->raise(msg);
-      gamepad->last_rumble = msg;
+      // Coalesced admission, deduplicated against the last rumble this backend delivered; the
+      // cache follows acceptance, so a message the mailbox refused is retried by the next
+      // callback instead of being suppressed as already delivered.
+      static_cast<void>(platf::raise_gamepad_feedback_deduped(*feedback_queue, gamepad_feedback_msg_t::make_rumble(idx, low_freq, high_freq), gamepad->last_rumble));
     };
 
     switch (selectedGamepadType) {
@@ -171,15 +167,11 @@ namespace platf::gamepad {
             (*ds4).set_motion(ds4_joypad_t::motion_type_e::acceleration, 0.0f, 9.80665f, 0.0f);
             (*ds4).set_on_rumble(on_rumble_fn);
             (*ds4).set_on_led([feedback_queue, idx = id.clientRelativeIndex, gamepad](int r, int g, int b) {
-              if (gamepad->last_rgb_led.type == platf::gamepad_feedback_e::set_rgb_led && gamepad->last_rgb_led.data.rgb_led.r == r && gamepad->last_rgb_led.data.rgb_led.g == g && gamepad->last_rgb_led.data.rgb_led.b == b) {
-                return;
-              }
-              auto msg = gamepad_feedback_msg_t::make_rgb_led(idx, r, g, b);
-              feedback_queue->raise(msg);
-              gamepad->last_rgb_led = msg;
+              // Coalesced admission; the duplicate cache follows acceptance.
+              static_cast<void>(platf::raise_gamepad_feedback_deduped(*feedback_queue, gamepad_feedback_msg_t::make_rgb_led(idx, r, g, b), gamepad->last_rgb_led));
             });
-            feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(id.clientRelativeIndex, LI_MOTION_TYPE_ACCEL, 100));
-            feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(id.clientRelativeIndex, LI_MOTION_TYPE_GYRO, 100));
+            static_cast<void>(platf::raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(id.clientRelativeIndex, LI_MOTION_TYPE_ACCEL, 100)));
+            static_cast<void>(platf::raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(id.clientRelativeIndex, LI_MOTION_TYPE_GYRO, 100)));
             gamepad->joypad = std::make_unique<joypads_t>(std::move(*ds4));
             raw->gamepads[id.globalIndex] = std::move(gamepad);
             return 0;
@@ -208,23 +200,18 @@ namespace platf::gamepad {
               });
             }
             (*ds5).set_on_led([feedback_queue, idx = id.clientRelativeIndex, gamepad](int r, int g, int b) {
-              // Don't resend duplicate LED data
-              if (gamepad->last_rgb_led.type == platf::gamepad_feedback_e::set_rgb_led && gamepad->last_rgb_led.data.rgb_led.r == r && gamepad->last_rgb_led.data.rgb_led.g == g && gamepad->last_rgb_led.data.rgb_led.b == b) {
-                return;
-              }
-
-              auto msg = gamepad_feedback_msg_t::make_rgb_led(idx, r, g, b);
-              feedback_queue->raise(msg);
-              gamepad->last_rgb_led = msg;
+              // Coalesced admission; the duplicate cache follows acceptance.
+              static_cast<void>(platf::raise_gamepad_feedback_deduped(*feedback_queue, gamepad_feedback_msg_t::make_rgb_led(idx, r, g, b), gamepad->last_rgb_led));
             });
 
             (*ds5).set_on_trigger_effect([feedback_queue, idx = id.clientRelativeIndex](const inputtino::PS5Joypad::TriggerEffect &trigger_effect) {
-              feedback_queue->raise(gamepad_feedback_msg_t::make_adaptive_triggers(idx, trigger_effect.event_flags, trigger_effect.type_left, trigger_effect.type_right, trigger_effect.left, trigger_effect.right));
+              // A protected state key per trigger-effect flag: coalesced, never dropped for a full mailbox.
+              static_cast<void>(platf::raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_adaptive_triggers(idx, trigger_effect.event_flags, trigger_effect.type_left, trigger_effect.type_right, trigger_effect.left, trigger_effect.right)));
             });
 
-            // Activate the motion sensors
-            feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(id.clientRelativeIndex, LI_MOTION_TYPE_ACCEL, 100));
-            feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(id.clientRelativeIndex, LI_MOTION_TYPE_GYRO, 100));
+            // Activate the motion sensors (coalesced: one pending request per type)
+            static_cast<void>(platf::raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(id.clientRelativeIndex, LI_MOTION_TYPE_ACCEL, 100)));
+            static_cast<void>(platf::raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(id.clientRelativeIndex, LI_MOTION_TYPE_GYRO, 100)));
 
             gamepad->joypad = std::make_unique<joypads_t>(std::move(*ds5));
             raw->gamepads[id.globalIndex] = std::move(gamepad);

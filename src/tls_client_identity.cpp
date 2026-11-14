@@ -82,7 +82,8 @@ namespace nvhttp::tls_identity {
     const request_t &request,
     SSL *ssl,
     crypto::cert_chain_t &chain,
-    std::span<const client_record_view_t> clients
+    std::span<const client_record_view_t> clients,
+    pending_peer_factory_t pending_peer
   ) {
     crypto::x509_t certificate {
 #if OPENSSL_VERSION_MAJOR >= 3
@@ -91,14 +92,15 @@ namespace nvhttp::tls_identity {
       ssl ? SSL_get_peer_certificate(ssl) : nullptr
 #endif
     };
-    return authenticate_certificate(request, certificate, chain, clients);
+    return authenticate_certificate(request, certificate, chain, clients, std::move(pending_peer));
   }
 
   authentication_result_t store_t::authenticate_certificate(
     const request_t &request,
     crypto::x509_t &certificate,
     crypto::cert_chain_t &chain,
-    std::span<const client_record_view_t> clients
+    std::span<const client_record_view_t> clients,
+    pending_peer_factory_t pending_peer
   ) {
     reset(request);
     if (!request || !certificate) {
@@ -123,7 +125,7 @@ namespace nvhttp::tls_identity {
     }
     const auto &client = clients[resolution.index];
     identity_t identity {std::string(client.uuid), std::string(client.name), client.allow_sleep};
-    auto authority = std::make_shared<authority_t>(identity, client.certificate, *presented);
+    auto authority = std::make_shared<authority_t>(identity, client.certificate, *presented, std::move(pending_peer));
     {
       std::lock_guard lock(mutex);
       std::erase_if(authorities, [](const auto &entry) {
@@ -162,6 +164,13 @@ namespace nvhttp::tls_identity {
       }
     }
     return identity_t {authority->identity.uuid, std::string(client->name), client->allow_sleep};
+  }
+
+  pending_peer_factory_t store_t::pending_peer(const request_t &request) {
+    if (!request) return {};
+    auto authority = std::static_pointer_cast<authority_t>(request->get_connection_context());
+    if (!authority || !authority->authorized.load(std::memory_order_acquire)) return {};
+    return authority->pending_peer;
   }
 
   void store_t::reset(const request_t &request) {

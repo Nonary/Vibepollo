@@ -60,9 +60,12 @@
     #define SECURITY_WIN32
   #endif
 
+  #include "src/platform/windows/display_clone_group_repair.h"
   #include "src/platform/windows/display_restore_task.h"
   #include "src/platform/windows/display_restore_policy.h"
   #include "tools/display_helper_paths.h"
+  #include "tools/display_helper_ipc.h"
+  #include "tools/display_helper_shell_refresh_worker.h"
   #include "src/platform/windows/legacy_restore_event_policy.h"
   #include "src/platform/windows/recovery_status.h"
 
@@ -134,10 +137,12 @@ namespace {
   // and other shell-controlled UI elements pick up DPI/metrics changes that
   // can occur after monitor topology/primary swaps. Avoids wrong-sized icons
   // without restarting Explorer.
-  inline void refresh_shell_after_display_change() {
+  inline void refresh_shell_after_display_change(std::stop_token stop = {}) {
     // 1) Ask the shell to refresh associations/images and flush notifications.
     //    SHCNF_FLUSHNOWAIT avoids blocking if the shell is busy.
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
+
+    if (stop.stop_requested()) return;
 
     // 2) Force a reload of system icons. This does not change user settings
     //    but prompts Explorer to re-query default icons and sizes.
@@ -154,8 +159,11 @@ namespace {
     //    refresh icon metrics and shell state.
     static const wchar_t kShellState[] = L"ShellState";
     static const wchar_t kIconMetrics[] = L"IconMetrics";
+    if (stop.stop_requested()) return;
     broadcast(WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(kShellState));
+    if (stop.stop_requested()) return;
     broadcast(WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(kIconMetrics));
+    if (stop.stop_requested()) return;
 
     // 4) Broadcast a display change with current depth and resolution to nudge
     //    windows that cache DPI-dependent icon resources.
@@ -431,6 +439,15 @@ namespace {
       }
     }
 
+    void detach_from_oversized_clone_group(const std::string &device_id) {
+      auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(true);
+      if (!borrowed_output_mutation || !ensure_initialized()) {
+        return;
+      }
+      display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+      display_helper::clone_group::detach_before_apply(*m_dd, *m_wapi, device_id);
+    }
+
     bool apply(
       const display_device::SingleDisplayConfiguration &cfg,
       const std::optional<display_device::ActiveTopology> &base_topology
@@ -444,6 +461,8 @@ namespace {
       // For user-requested APPLY operations, avoid triggering display stack recovery.
       // Recovery is reserved for REVERT/restore paths where "best effort" repair is desired.
       display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+      // Reapplies run here without the APPLY handler, and Windows may have regrouped the display since.
+      display_helper::clone_group::detach_before_apply(*m_dd, *m_wapi, cfg.m_device_id);
       try {
         if (base_topology && m_dd->isTopologyValid(*base_topology)) {
           (void) m_dd->setTopology(*base_topology);
@@ -2654,7 +2673,8 @@ namespace {
     std::jthread delayed_reapply_thread;  // Best-effort re-apply timer
     std::mutex delayed_reapply_mutex;
     std::jthread hdr_blank_thread;  // Async HDR workaround thread (one-shot)
-    std::jthread post_apply_thread;  // Async post-apply tasks (shell refresh, re-apply, HDR blank)
+    std::jthread post_apply_thread;  // Async post-apply tasks
+    display_helper::shell_refresh_worker shell_refresh {refresh_shell_after_display_change};
     std::filesystem::path golden_path;  // file to store golden snapshot
     std::filesystem::path golden_status_path;  // restore health marker for golden snapshot
     std::filesystem::path session_current_path;  // file to store current session baseline snapshot (first apply)
@@ -2750,6 +2770,12 @@ namespace {
     std::atomic<uint64_t> command_worker_epoch {0};
     std::mutex async_join_mutex;  // Guards async joiners used to avoid blocking the command loop
     std::vector<std::jthread> async_join_threads;
+
+    ~ServiceState() {
+      // The delayed producer can request a shell refresh after apply returns.
+      // Join it while shell_refresh and the rest of this state are still alive.
+      cancel_delayed_reapply();
+    }
 
     static long long steady_now_ms() {
       return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -3738,6 +3764,7 @@ namespace {
         return false;
       }
       (void) controller.apply_snapshot(golden, require_layout_match ? &golden_layouts : nullptr);
+      shell_refresh.request();
       display_device::DisplaySettingsSnapshot cur;
       const bool got_stable = read_stable_snapshot(cur, 2000ms, 150ms, st);
       if (should_cancel()) {
@@ -3774,6 +3801,7 @@ namespace {
         return true;
       }
       (void) controller.apply_snapshot(golden, require_layout_match ? &golden_layouts : nullptr);
+      shell_refresh.request();
       display_device::DisplaySettingsSnapshot cur2;
       const bool got_stable2 = read_stable_snapshot(cur2, 2000ms, 150ms, st);
       if (should_cancel()) {
@@ -3909,6 +3937,7 @@ namespace {
         return false;
       }
       (void) controller.apply_snapshot(base, require_layout_match ? &base_layouts : nullptr);
+      shell_refresh.request();
       display_device::DisplaySettingsSnapshot cur;
       const bool got_stable = read_stable_snapshot(cur, 2000ms, 150ms, st);
       if (should_cancel()) {
@@ -3940,6 +3969,7 @@ namespace {
           return true;
         }
         (void) controller.apply_snapshot(base, require_layout_match ? &base_layouts : nullptr);
+        shell_refresh.request();
         display_device::DisplaySettingsSnapshot cur2;
         const bool got_stable2 = read_stable_snapshot(cur2, 2000ms, 150ms, st);
         if (should_cancel()) {
@@ -4420,10 +4450,6 @@ namespace {
       auto run_restore_cleanup = [&](const char *context) {
         bool allow_cleanup = !cancelled();
         if (allow_cleanup) {
-          refresh_shell_after_display_change();
-          allow_cleanup = !cancelled();
-        }
-        if (allow_cleanup) {
           delete_restore_scheduled_task();
         } else {
           BOOST_LOG(debug) << "Restore cleanup skipped"
@@ -4488,6 +4514,9 @@ namespace {
       }
 
       if (initial_success) {
+        // A confirmed restore needs a refresh even if a newer request cancels
+        // cleanup. It must follow any older in-flight shell notification.
+        self->shell_refresh.request();
         if (cancelled()) {
           self->event_pump.stop();
           self->event_pump_running.store(false, std::memory_order_release);
@@ -4638,6 +4667,7 @@ namespace {
         }
 
         (void) self->finish_restore_stage_reconciliation(guard_generation, !success);
+        if (success) self->shell_refresh.request();
         if (cancelled()) {
           break;
         }
@@ -4754,7 +4784,7 @@ namespace {
         const auto cfg = effective_last_cfg();
         if (cfg && controller.apply(*cfg)) {
           retry_apply_on_topology.store(false, std::memory_order_release);
-          refresh_shell_after_display_change();
+          shell_refresh.request();
         }
         return;
       }
@@ -4887,11 +4917,11 @@ namespace {
       return cfg;
     }
 
-    void best_effort_apply_last_cfg() {
+    void best_effort_apply_last_cfg(bool refresh_shell = true) {
       try {
         if (const auto cfg = effective_last_cfg()) {
           (void) controller.apply(*cfg);
-          refresh_shell_after_display_change();
+          if (refresh_shell) shell_refresh.request();
         }
       } catch (...) {}
     }
@@ -4920,6 +4950,8 @@ namespace {
 
     void cancel_post_apply_tasks() {
       stop_and_join(post_apply_thread, "post-apply");
+      // A queued cosmetic refresh samples the then-current topology. Keep it:
+      // it may be needed to correct an older in-flight notification.
     }
 
     bool run_initial_apply_adjuncts(
@@ -4963,7 +4995,6 @@ namespace {
             return false;
           }
           retry_apply_on_topology.store(false, std::memory_order_release);
-          refresh_shell_after_display_change();
           if (cancelled()) {
             return false;
           }
@@ -5165,21 +5196,7 @@ namespace {
   }
 
   std::filesystem::path compute_snapshot_dir() {
-    // When running as SYSTEM, prefer a shared ProgramData location for snapshots.
-    if (platf::dxgi::is_running_as_system()) {
-      std::wstring programDataW;
-      programDataW.resize(MAX_PATH);
-      if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, SHGFP_TYPE_CURRENT, programDataW.data()))) {
-        programDataW.resize(wcslen(programDataW.c_str()));
-        auto path = std::filesystem::path(programDataW) / L"Sunshine";
-        std::error_code ec;
-        std::filesystem::create_directories(path, ec);
-        return path;
-      }
-    }
-
-    // Default to per-user roaming AppData (or fallback locations inside compute_log_dir).
-    return compute_log_dir();
+    return display_helper_paths::compute_snapshot_dir();
   }
 
   struct SnapshotPaths {
@@ -5220,35 +5237,7 @@ namespace {
   }
 
   std::vector<std::filesystem::path> snapshot_search_roots() {
-    std::vector<std::filesystem::path> roots;
-    const auto user_root = compute_log_dir();
-    if (!user_root.empty()) {
-      roots.push_back(user_root);
-    }
-    {
-      std::wstring programDataW;
-      programDataW.resize(MAX_PATH);
-      if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, SHGFP_TYPE_CURRENT, programDataW.data()))) {
-        programDataW.resize(wcslen(programDataW.c_str()));
-        roots.push_back(std::filesystem::path(programDataW) / L"Sunshine");
-      }
-    }
-    for (const auto &root : executable_config_search_roots()) {
-      if (!root.empty()) {
-        roots.push_back(root);
-      }
-    }
-    // De-duplicate while preserving order.
-    std::vector<std::filesystem::path> uniq;
-    for (const auto &root : roots) {
-      if (root.empty()) {
-        continue;
-      }
-      if (std::find(uniq.begin(), uniq.end(), root) == uniq.end()) {
-        uniq.push_back(root);
-      }
-    }
-    return uniq;
+    return display_helper_paths::snapshot_search_roots();
   }
 
   bool create_restore_scheduled_task() {
@@ -5781,7 +5770,7 @@ namespace {
     return false;
   }
 
-  bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg) {
+  bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg, bool &refresh_shell) {
     // Cancel any ongoing restore activity since a new APPLY supersedes it
     state.stop_restore_polling();
     state.supersede_recovery_status();
@@ -5922,6 +5911,10 @@ namespace {
       std::memory_order_release
     );
     state.last_cfg = cfg;
+    // Run this first: the baseline capture below refuses an oversized Duplicate group,
+    // and so does the soft test when the host supplies no topology. It never moves
+    // the user's own displays.
+    state.controller.detach_from_oversized_clone_group(cfg.m_device_id);
     // The session baseline is normally captured earlier via SnapshotCurrent, before any
     // display enumeration that might activate external dummy plugs. That request is
     // fire-and-forget and can be lost (helper hard-restart races, helper not yet running),
@@ -5967,7 +5960,8 @@ namespace {
         return false;
       }
 
-      // Capture admission includes the blank, geometry and refresh adjuncts.
+      refresh_shell = true;
+      // Capture admission includes the blank, geometry and refresh-rate adjuncts.
       // A late reapply must not turn a manually selected SDR source back to HDR.
       if (!state.run_initial_apply_adjuncts(
             false, std::nullopt, wa_hdr_toggle, requested_virtual_layout,
@@ -5984,7 +5978,7 @@ namespace {
           break;
         }
         if (attempt < kMaxSyncVerifyAttempts && std::chrono::steady_clock::now() < apply_deadline) {
-          state.best_effort_apply_last_cfg();
+          state.best_effort_apply_last_cfg(false);
         }
       }
       if (!verified_sync) {
@@ -6204,7 +6198,8 @@ namespace {
   ) {
     if (type == MsgType::Apply) {
       std::string error_msg;
-      bool success = handle_apply(state, payload, error_msg);
+      bool refresh_shell = false;
+      bool success = handle_apply(state, payload, error_msg, refresh_shell);
       std::vector<uint8_t> result_payload;
       result_payload.push_back(success ? 1u : 0u);
       if (!error_msg.empty()) {
@@ -6212,6 +6207,7 @@ namespace {
         result_payload.insert(result_payload.end(), begin, begin + error_msg.size());
       }
       send_framed_content(async_pipe, MsgType::ApplyResult, result_payload);
+      if (refresh_shell) state.shell_refresh.request();
     } else if (type == MsgType::Revert) {
       handle_revert(state, running, payload);
     } else if (type == MsgType::Stop) {
@@ -6351,9 +6347,21 @@ int run_legacy_helper(int argc, char *argv[]) {
   const auto logdir = compute_log_dir();
   const auto snapshot_dir = compute_snapshot_dir();
   const auto logfile = (logdir / L"sunshine_display_helper.log");
+  auto _log_guard = logging::init(2 /*info*/, logfile);
+  if (snapshot_dir.empty()) {
+    BOOST_LOG(error) << "Display helper: refusing SYSTEM startup because the shared snapshot directory is not already private.";
+    return 2;
+  }
+  std::optional<display_helper_ipc::endpoint_t> ipc_endpoint;
+  if (!restore_mode) {
+    ipc_endpoint = display_helper_ipc::endpoint_from_command_line(argc, argv);
+    if (!ipc_endpoint) {
+      BOOST_LOG(error) << "Display helper: missing or invalid private IPC endpoint.";
+      return 2;
+    }
+  }
   const auto active_snapshots = make_snapshot_paths(snapshot_dir);
   const auto search_roots = snapshot_search_roots();
-  auto _log_guard = logging::init(2 /*info*/, logfile);
 
   if (restore_mode) {
     BOOST_LOG(info) << "Display helper started in restore mode (--restore flag)";
@@ -6437,7 +6445,6 @@ int run_legacy_helper(int argc, char *argv[]) {
     return 0;
   }
 
-  platf::dxgi::FramedPipeFactory pipe_factory(std::make_unique<platf::dxgi::AnonymousPipeFactory>());
   dd_log_bridge().install();
   ServiceState state;
   // Suppression of startup restore is deprecated; REVERTs are always allowed.
@@ -6503,15 +6510,21 @@ int run_legacy_helper(int argc, char *argv[]) {
 
   // Outer service loop: keep accepting new client sessions while running
   while (running.load(std::memory_order_acquire)) {
-    auto ctrl_pipe = pipe_factory.create_server("sunshine_display_helper");
+    platf::dxgi::NamedPipeFactory factory;
+    factory.set_client_identification_only();
+    factory.set_client_data_access_only();
+    factory.set_expected_server_process_id(ipc_endpoint->parent_pid);
+    auto raw_pipe = factory.create_client(ipc_endpoint->pipe_name);
+    if (!raw_pipe) {
+      (void) state.poll_disconnect_settlement();
+      if (state.reconnect_exit_grace_expired()) break;
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+      continue;
+    }
+    auto ctrl_pipe = raw_pipe ? std::make_unique<platf::dxgi::FramedPipe>(std::move(raw_pipe)) : nullptr;
     if (!ctrl_pipe) {
-      platf::dxgi::FramedPipeFactory fallback_factory(std::make_unique<platf::dxgi::NamedPipeFactory>());
-      ctrl_pipe = fallback_factory.create_server("sunshine_display_helper");
-      if (!ctrl_pipe) {
-        BOOST_LOG(error) << "Failed to create control pipe; retrying in 500ms";
-        std::this_thread::sleep_for(500ms);
-        continue;
-      }
+      BOOST_LOG(error) << "Display helper: authenticated IPC client could not be created.";
+      return 2;
     }
 
     platf::dxgi::AsyncNamedPipe async_pipe(std::move(ctrl_pipe));

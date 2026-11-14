@@ -10,6 +10,7 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace platf::steam::artwork {
@@ -27,7 +28,9 @@ namespace platf::steam::artwork {
   struct source_fingerprint_t {
     std::string path;
     std::uintmax_t size = 0;
-    std::intmax_t mtime = 0;
+    // Keep the full native count, including libc++'s signed 128-bit range.
+    // Decimal text also preserves compatibility with existing version-1 sidecars.
+    std::string mtime = "0";
 
     bool operator==(const source_fingerprint_t &) const = default;
   };
@@ -41,10 +44,22 @@ namespace platf::steam::artwork {
   };
 
   // The official Steam CDN is intentionally the only production source for a
-  // missing/half-resolution portrait.  A byte-returning seam keeps network
+  // missing/half-resolution portrait. A result seam keeps network
   // behavior deterministic in component tests and leaves room for another
   // provider to be added later without exposing arbitrary URLs to callers.
-  using remote_fetcher_t = std::function<std::optional<std::vector<std::uint8_t>>(const std::string &url)>;
+  enum class remote_fetch_status { success, not_found, failed };
+  struct remote_fetch_result_t {
+    remote_fetch_status status = remote_fetch_status::failed;
+    std::vector<std::uint8_t> bytes;
+
+    remote_fetch_result_t() = default;
+    remote_fetch_result_t(remote_fetch_status s, std::vector<std::uint8_t> data = {}) : status(s), bytes(std::move(data)) {}
+    // Preserve the existing byte-only test seam: no value means failure, not 404.
+    remote_fetch_result_t(std::optional<std::vector<std::uint8_t>> data) :
+        status(data && !data->empty() ? remote_fetch_status::success : remote_fetch_status::failed),
+        bytes(data ? std::move(*data) : std::vector<std::uint8_t> {}) {}
+  };
+  using remote_fetcher_t = std::function<remote_fetch_result_t(const std::string &url)>;
 
   std::string remote_portrait_url(std::uint32_t app_id);
   std::filesystem::path remote_cache_path(const std::filesystem::path &appdata, std::uint32_t app_id);

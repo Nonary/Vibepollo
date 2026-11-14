@@ -44,7 +44,12 @@
 - (id)initWithDisplay:(CGDirectDisplayID)displayID frameRate:(int)frameRate {
   self = [super init];
 
+  // No mode means no such display, as on a Mac without a screen of its own.
   CGDisplayModeRef mode = CGDisplayCopyDisplayMode(displayID);
+  if (mode == NULL) {
+    [self release];
+    return nil;
+  }
 
   self.displayID = displayID;
   self.pixelFormat = kCVPixelFormatType_32BGRA;
@@ -74,10 +79,15 @@
 }
 
 - (void)dealloc {
+  // Stop the frames before releasing the tables they're looked up in. A capture that timed out
+  // can still have an output attached.
+  [self.session stopRunning];
+  for (AVCaptureVideoDataOutput *output in self.videoOutputs.objectEnumerator) {
+    [output setSampleBufferDelegate:nil queue:nil];
+  }
   [self.videoOutputs release];
   [self.captureCallbacks release];
   [self.captureSignals release];
-  [self.session stopRunning];
   [super dealloc];
 }
 

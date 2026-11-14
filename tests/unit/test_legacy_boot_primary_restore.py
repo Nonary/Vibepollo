@@ -216,6 +216,11 @@ struct DisplayController {
 ''' + controller_methods + r'''
 };
 struct ServiceState {
+  // Record the cosmetic OS notification without running a Windows worker.
+  struct ShellRefresh {
+    int requests = 0;
+    void request() { ++requests; }
+  } shell_refresh;
   DisplayController controller;
   fs::path session_current_path, session_previous_path, golden_path;
   std::atomic<bool> always_restore_from_golden {false}, prefer_golden_if_current_missing {true};
@@ -274,6 +279,7 @@ void preserves_boot_history(const fs::path &root, bool previous) {
   const auto before = f.state.controller.live;
   assert(f.run());
   assert(f.state.controller.applied.empty());
+  assert(f.state.shell_refresh.requests == 0);
   assert(f.state.controller.live == before);
   assert(contents(f.state.session_current_path) == "current-marker");
   assert(contents(f.state.session_previous_path) == "previous-marker");
@@ -289,6 +295,7 @@ void drift_or_cancel(const fs::path &root, bool cancel) {
   };
   assert(!f.run());
   assert(f.state.controller.applied.empty());
+  assert(f.state.shell_refresh.requests == 0);
   assert(contents(f.state.session_current_path) == "current-marker");
   assert(contents(f.state.session_previous_path) == "previous-marker");
 }
@@ -301,6 +308,7 @@ void invalid_saved_topology(const fs::path &root) {
   f.save(f.state.session_previous_path, snapshot({"MISSING"}), "previous-marker");
   assert(!f.run());
   assert(f.state.controller.applied.empty());
+  assert(f.state.shell_refresh.requests == 0);
   assert(contents(f.state.session_current_path) == "current-marker");
   assert(contents(f.state.session_previous_path) == "previous-marker");
 }
@@ -344,6 +352,7 @@ void late_preservation_transition(const fs::path &root, const std::string &kind)
   };
   assert(!f.run());
   assert(f.state.controller.applied.empty());
+  assert(f.state.shell_refresh.requests == 0);
   assert(contents(f.state.session_current_path) == "current-marker");
   assert(contents(f.state.session_previous_path) == "previous-marker");
 }
@@ -389,6 +398,7 @@ void exact_restore_control(const fs::path &root, const std::string &kind) {
   f.save(f.state.session_previous_path, snapshot({"MISSING"}), "previous-marker");
   assert(f.run());
   assert(!f.state.controller.applied.empty());
+  if (kind != "golden") assert(f.state.shell_refresh.requests > 0);
   assert(f.state.controller.live == (kind == "golden" ? snapshot({"B"}) : baseline));
   assert(!fs::exists(f.state.session_current_path));
   if (kind == "golden") assert(!fs::exists(f.state.session_previous_path));

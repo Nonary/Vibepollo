@@ -9,6 +9,7 @@ export interface DisplayPlacement {
   gap_px: number;
   primary: boolean;
   preserve?: boolean;
+  automatic_fallback?: boolean;
 }
 
 // Selecting a client must never create a rule. Explicit preserve also takes
@@ -23,5 +24,12 @@ export function setDisplayArrangement(
   if (!client) return;
   if (edge === 'automatic') { delete placements[client]; return; }
   placements[client] = { ...(placements[client] ?? fallback), preserve: edge === 'preserve' };
+  if (placements[client].automatic_fallback || (!placements[client].anchor_id && edge !== 'preserve')) {
+    // A detached placement has no usable anchor; choose a current one when
+    // returning to a directional rule, while retaining its primary preference.
+    placements[client].anchor_kind = fallback.anchor_kind;
+    placements[client].anchor_id = fallback.anchor_id;
+    delete placements[client].automatic_fallback;
+  }
   if (edge !== 'preserve') placements[client].edge = edge;
 }

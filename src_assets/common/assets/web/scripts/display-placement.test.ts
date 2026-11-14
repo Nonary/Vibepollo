@@ -29,3 +29,15 @@ test('automatic arrangement clears only the selected client override', () => {
   assert.equal(placements.tablet, undefined);
   assert.deepEqual(placements.peer, below);
 });
+
+test('choosing a direction for a detached anchor retains primary and chooses a valid anchor', () => {
+  const placements: Record<string, DisplayPlacement> = { tablet: { ...below, anchor_id: '', primary: true, preserve: true, automatic_fallback: true } };
+  setDisplayArrangement(placements, 'tablet', 'left', below);
+  assert.deepEqual(placements.tablet, { ...below, edge: 'left', primary: true, preserve: false });
+});
+
+test('choosing a direction after preserved anchor removal chooses a valid anchor', () => {
+  const placements: Record<string, DisplayPlacement> = { tablet: { ...below, anchor_id: '', preserve: true } };
+  setDisplayArrangement(placements, 'tablet', 'left', below);
+  assert.deepEqual(placements.tablet, { ...below, edge: 'left', preserve: false });
+});

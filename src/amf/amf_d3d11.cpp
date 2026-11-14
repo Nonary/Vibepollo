@@ -358,6 +358,31 @@ namespace amf {
       }
       return true;
     };
+    // A refused or rounded slice count keeps the driver's own count; see
+    // config_policy::request_client_slices.
+    auto request_client_slices = [&](const wchar_t *property, const char *label) {
+      AMF_RESULT set_result = AMF_OK;
+      AMF_RESULT get_result = AMF_OK;
+      const auto request = config_policy::request_client_slices(
+        client_config.slicesPerFrame,
+        [&](long long count) {
+          set_result = encoder->SetProperty(property, static_cast<amf_int64>(count));
+          return set_result == AMF_OK;
+        },
+        [&](long long &count) {
+          amf_int64 applied = 0;
+          get_result = encoder->GetProperty(property, &applied);
+          count = applied;
+          return get_result == AMF_OK;
+        }
+      );
+      if (request.requested && !request.applied) {
+        BOOST_LOG(warning) << "AMF: the driver did not apply the client's " << label
+                           << " (requested=" << client_config.slicesPerFrame
+                           << ", driver=" << request.driver_count << ", set=" << set_result
+                           << ", get=" << get_result << "); continuing with the driver's slice count";
+      }
+    };
 
     auto configure_reference_frames = [&](const wchar_t *property) {
       const auto requested_limit = lifecycle::effective_reference_frame_limit(
@@ -566,8 +591,7 @@ namespace amf {
             "H.264 intra-refresh macroblocks")) return false;
 
       // Slices per frame
-      if (client_config.slicesPerFrame > 1 &&
-          !set_verified_int64(AMF_VIDEO_ENCODER_SLICES_PER_FRAME, client_config.slicesPerFrame, "H.264 slices per frame")) return false;
+      request_client_slices(AMF_VIDEO_ENCODER_SLICES_PER_FRAME, "H.264 slices per frame");
 
       // Statistics feedback is a per-submission surface property. It is applied to
       // sampled input surfaces in encode_frame(), never to the encoder component.
@@ -668,8 +692,7 @@ namespace amf {
             "HEVC intra-refresh CTBs")) return false;
 
       // Slices per frame
-      if (client_config.slicesPerFrame > 1 &&
-          !set_verified_int64(AMF_VIDEO_ENCODER_HEVC_SLICES_PER_FRAME, client_config.slicesPerFrame, "HEVC slices per frame")) return false;
+      request_client_slices(AMF_VIDEO_ENCODER_HEVC_SLICES_PER_FRAME, "HEVC slices per frame");
 
       // Statistics feedback is applied per input surface in encode_frame().
     }

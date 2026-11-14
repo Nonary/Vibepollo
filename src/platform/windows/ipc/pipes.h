@@ -507,12 +507,40 @@ namespace platf::dxgi {
      */
     std::unique_ptr<INamedPipe> create_server(const std::string &pipe_name) override;
 
+    // Create the native server handle without wrapping it. This is used when a
+    // privileged parent preclaims a private endpoint and passes the handle to
+    // one explicitly selected child process.
+    winrt::file_handle create_server_handle(const std::string &pipe_name, bool inheritable = false);
+
     // Optional: inject a custom security descriptor builder used by create_server.
     // If not set, defaults to existing behavior (SYSTEM-only SD, otherwise default security).
     void set_security_descriptor_builder(SecurityDescriptorBuilder builder);
 
     // Permit peer identity checks without granting the server impersonation rights.
     void set_client_identification_only();
+    void set_client_data_access_only();
+
+    // Log expected connect failures (server absent or busy) at debug level.
+    // For callers that retry with their own rate-limited reporting.
+    void set_quiet_connect_failures();
+
+    // Win32 error from the most recent failed create_client, or 0.
+    DWORD last_connect_error() const {
+      return _last_connect_error;
+    }
+    // Require client connections to terminate at the named-pipe server process
+    // launched by the caller. A non-pipe handle or a different server PID is
+    // rejected before it can participate in IPC.
+    void set_expected_server_process_id(DWORD process_id);
+
+    // Refuse to create a server when another process already owns the name.
+    // This is intentionally opt-in because some callers use multiple instances.
+    void set_first_pipe_instance_only();
+
+    // Do not grant the interactive user access to a privileged parent-owned
+    // endpoint. An explicitly inherited server handle remains usable by the
+    // selected child without making the pipe namespace public to that user.
+    void set_system_only_server();
 
   private:
     /**
@@ -568,9 +596,24 @@ namespace platf::dxgi {
       std::chrono::steady_clock::time_point operation_deadline
     ) const;
 
+    bool _client_data_access_only = false;
     DWORD _client_security_flags = 0;
+    bool _quiet_connect_failures = false;
+    mutable DWORD _last_connect_error = 0;
+    DWORD _expected_server_process_id = 0;
+    bool _first_pipe_instance_only = false;
+    bool _system_only_server = false;
     SecurityDescriptorBuilder _secdesc_builder;  // optional custom SD builder (Playnite can override)
   };
+
+  // Validate and duplicate a preclaimed named-pipe server handle. The caller
+  // retains the master handle so the pipe name never becomes unowned between
+  // reconnects; each returned wrapper owns only its duplicate.
+  std::unique_ptr<INamedPipe> accept_server_pipe_client(HANDLE server, DWORD expected_pid,
+    const std::function<bool()> &cancelled, std::chrono::steady_clock::time_point deadline);
+  bool authorize_server_pipe_client(HANDLE server, HANDLE child_process);
+  bool validate_server_pipe_handle(HANDLE handle);
+  std::unique_ptr<INamedPipe> duplicate_server_pipe(HANDLE master_handle);
 
   class AnonymousPipeFactory: public IAsyncPipeFactory {
   public:
@@ -618,6 +661,13 @@ namespace platf::dxgi {
     // Forward a custom SD builder into the underlying NamedPipeFactory
     void set_security_descriptor_builder(NamedPipeFactory::SecurityDescriptorBuilder builder);
     void set_client_identification_only();
+    void set_quiet_connect_failures();
+
+    DWORD last_connect_error() const {
+      return _pipe_factory.last_connect_error();
+    }
+    void set_expected_server_process_id(DWORD process_id);
+    void set_first_pipe_instance_only();
 
   private:
     std::unique_ptr<INamedPipe> handshake_server(std::unique_ptr<INamedPipe> pipe);

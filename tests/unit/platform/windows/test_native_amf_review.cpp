@@ -95,6 +95,58 @@ namespace {
            av1_tiles_request(-1, 8) == 8;
   }
 
+  bool client_slices_are_requested_only_above_one() {
+    using amf::config_policy::request_client_slices;
+    int calls = 0;
+    auto set = [&](long long) {
+      ++calls;
+      return true;
+    };
+    auto get = [&](long long &count) {
+      ++calls;
+      count = 1;
+      return true;
+    };
+    const auto none = request_client_slices(0, set, get);
+    const auto one = request_client_slices(1, set, get);
+    return calls == 0 && !none.requested && !one.requested;
+  }
+
+  bool refused_client_slices_keep_the_driver_count() {
+    using amf::config_policy::request_client_slices;
+    // Moonlight for Nintendo Switch asks for four slices; this driver refuses them.
+    const auto refused = request_client_slices(4, [](long long) { return false; }, [](long long &count) {
+      count = 1;
+      return true;
+    });
+    // The driver accepts the call but rounds the count.
+    const auto rounded = request_client_slices(4, [](long long) { return true; }, [](long long &count) {
+      count = 2;
+      return true;
+    });
+    // A failed readback is not an applied count.
+    const auto unread = request_client_slices(4, [](long long) { return true; }, [](long long &count) {
+      count = 4;
+      return false;
+    });
+    return refused.requested && !refused.applied && refused.driver_count == 1 &&
+           rounded.requested && !rounded.applied && rounded.driver_count == 2 &&
+           unread.requested && !unread.applied && unread.driver_count == 0;
+  }
+
+  bool accepted_client_slices_are_applied() {
+    using amf::config_policy::request_client_slices;
+    long long sent = 0;
+    const auto request = request_client_slices(4, [&](long long count) {
+      sent = count;
+      return true;
+    }, [&](long long &count) {
+      count = sent;
+      return true;
+    });
+    return sent == 4 && request.requested && request.applied && request.driver_count == 4;
+  }
+
   enum class fake_amf_result_e {
     ok,
     input_full,
@@ -866,6 +918,9 @@ int main() {
     {"av1_tiles_auto_preserves_client_and_preset_behavior", av1_tiles_auto_preserves_client_and_preset_behavior},
     {"av1_tiles_override_includes_explicit_single_tile", av1_tiles_override_includes_explicit_single_tile},
     {"av1_tiles_rejects_invalid_host_overrides", av1_tiles_rejects_invalid_host_overrides},
+    {"client_slices_are_requested_only_above_one", client_slices_are_requested_only_above_one},
+    {"refused_client_slices_keep_the_driver_count", refused_client_slices_keep_the_driver_count},
+    {"accepted_client_slices_are_applied", accepted_client_slices_are_applied},
     {"synchronous_release_during_submit_is_reentrant_safe", synchronous_release_during_submit_is_reentrant_safe},
     {"backpressure_retries_the_same_submission_until_accepted", backpressure_retries_the_same_submission_until_accepted},
     {"exhausted_backpressure_reinitializes_without_owned_surfaces", exhausted_backpressure_reinitializes_without_owned_surfaces},
@@ -932,6 +987,18 @@ TEST(SunshineNativeAmfReview, Av1TilesOverrideIncludesExplicitSingleTile) {
 
 TEST(SunshineNativeAmfReview, Av1TilesRejectsInvalidHostOverrides) {
   EXPECT_TRUE(av1_tiles_rejects_invalid_host_overrides());
+}
+
+TEST(SunshineNativeAmfReview, ClientSlicesAreRequestedOnlyAboveOne) {
+  EXPECT_TRUE(client_slices_are_requested_only_above_one());
+}
+
+TEST(SunshineNativeAmfReview, RefusedClientSlicesKeepTheDriverCount) {
+  EXPECT_TRUE(refused_client_slices_keep_the_driver_count());
+}
+
+TEST(SunshineNativeAmfReview, AcceptedClientSlicesAreApplied) {
+  EXPECT_TRUE(accepted_client_slices_are_applied());
 }
 
 TEST(SunshineNativeAmfReview, InitializationFallbackRespectsSuccessAndExplicitChoices) {

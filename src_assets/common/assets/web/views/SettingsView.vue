@@ -301,15 +301,6 @@ const dirtyKeys = computed(() => {
   );
 });
 
-// Old editors allowed zero even though the host ignores it. Preserve that
-// unchanged saved value without letting a hidden control block unrelated saves.
-const legacyFecZero = computed(
-  () =>
-    Number(original.value.fec_percentage) === 0 &&
-    Number(values.fec_percentage) === 0 &&
-    !dirtyKeys.value.includes('fec_percentage'),
-);
-
 const isDirty = computed(() => dirtyKeys.value.length > 0);
 const saveAllowed = computed(
   () =>
@@ -656,7 +647,6 @@ function dependencyHint(field: SettingsField): string {
 }
 
 function fieldWarningIsVisible(field: SettingsField): boolean {
-  if (field.key === 'fec_percentage' && legacyFecZero.value) return true;
   if (!field.warningKey) return false;
   if (field.key === 'capture')
     return linuxVirtualCaptureWarning(hostPlatform.value, values.capture);
@@ -1230,9 +1220,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                       :id="`setting-${field.key}-warning`"
                       class="settings-row__warning"
                       >{{
-                        field.key === 'fec_percentage' && legacyFecZero
-                          ? t('ui.settings.legacy_fec_zero')
-                          : t(field.warningKey ?? '')
+                        t(field.warningKey ?? '')
                       }}</span
                     >
                     <span v-if="dependencyHint(field)" :id="`setting-${field.key}-dependency`">{{
@@ -1361,7 +1349,7 @@ onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
                     :id="`setting-${field.key}`"
                     :class="['vs-input', { monospace: field.monospace }]"
                     :type="field.kind === 'number' ? 'number' : 'text'"
-                    :min="field.key === 'fec_percentage' && legacyFecZero ? undefined : field.min"
+                    :min="field.min"
                     :max="field.max"
                     :step="field.step"
                     :value="

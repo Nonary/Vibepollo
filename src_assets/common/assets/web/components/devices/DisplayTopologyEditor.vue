@@ -41,6 +41,7 @@ const previewNodes = computed<Node[]>(() => {
   const place = (id: string) => {
     if (placed.has(id)) return;
     const node = byId.get(id); const placement = draft.value[id];
+    if (node && placement?.automatic_fallback) { node.primary = placement.primary; placed.add(id); return; }
     if (!node || !placement || placement.preserve || visiting.has(id)) { if (node) placed.add(id); return; }
     visiting.add(id);
     if (placement.anchor_kind === 'client') place(placement.anchor_id);
@@ -74,14 +75,15 @@ function defaultPlacement(client: string): Placement {
 }
 function choose(client: string) { selected.value = client; }
 const selectedArrangement = computed<Edge | 'preserve' | 'automatic'>({
-  get: () => !selectedPlacement.value ? 'automatic' : selectedPlacement.value.preserve ? 'preserve' : selectedPlacement.value.edge,
+  get: () => !selectedPlacement.value || selectedPlacement.value.automatic_fallback ? 'automatic' : selectedPlacement.value.preserve ? 'preserve' : selectedPlacement.value.edge,
   set: (edge) => setDisplayArrangement(draft.value, selected.value, edge, defaultPlacement(selected.value)),
 });
 function validation(): string {
   const all = Object.entries(draft.value);
-  if (all.filter(([, placement]) => placement.primary && !placement.preserve).length > 1) return 'Only one client display may be primary.';
+  if (all.filter(([, placement]) => placement.primary && (!placement.preserve || placement.automatic_fallback)).length > 1) return 'Only one client display may be primary.';
   for (const [client, placement] of all) {
     if (placement.preserve) continue;
+    if (placement.automatic_fallback) continue;
     if (!placement.anchor_id || placement.anchor_id === client) return 'Choose a different known anchor for every placement.';
     if (!Number.isInteger(placement.gap_px) || placement.gap_px < 0 || placement.gap_px > 100000) return 'Gap must be a nonnegative whole number.';
     const seen = new Set<string>(); let current = client;
@@ -169,7 +171,10 @@ onMounted(load);
     </div>
     <label v-if="selected" class="topology-client-picker">Arrangement<select v-model="selectedArrangement"><option value="automatic">Use application layout / automatic</option><option value="preserve">Preserve / manual (Windows layout)</option><option value="left">Left of</option><option value="right">Right of</option><option value="above">Above</option><option value="below">Below</option></select></label>
     <p v-if="selected && (selectedArrangement === 'preserve' || selectedArrangement === 'automatic')">Application streams keep their Windows positions unless their layout requests isolation. Explicit Preserve / manual also overrides isolation. Remote Monitor uses automatic placement when no direction is saved.</p>
-    <div v-if="selectedPlacement && !selectedPlacement.preserve" class="topology-controls">
+    <div v-if="selectedPlacement?.automatic_fallback" class="topology-controls">
+      <label class="topology-primary"><input v-model="selectedPlacement.primary" type="checkbox" /> Use as primary while active</label>
+    </div>
+    <div v-else-if="selectedPlacement && !selectedPlacement.preserve" class="topology-controls">
       <label>Display<select v-model="selected"><option v-for="client in focusClients" :key="client.uuid" :value="client.uuid">{{ client.name || client.uuid }}</option></select></label>
       <label>Anchor<select v-model="selectedPlacement.anchor_id" @change="selectedPlacement.anchor_kind = (anchors.find((anchor) => anchor.id === selectedPlacement?.anchor_id)?.kind ?? 'physical')"><option v-for="anchor in anchors" :key="anchor.id" :value="anchor.id">{{ anchor.kind === 'physical' ? 'Physical: ' : 'Client: ' }}{{ anchor.label || anchor.id }}</option></select></label>
       <label>Align<select v-model="selectedPlacement.alignment"><option value="start">Start</option><option value="center">Center</option><option value="end">End</option></select></label>

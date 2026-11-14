@@ -8,8 +8,8 @@
 	branch = master
 [submodule "third-party/build-deps"]
 	path = third-party/build-deps
-	url = https://github.com/LizardByte/build-deps.git
-	branch = master
+	url = https://github.com/Nonary/build-deps.git
+	branch = maintainer/native-dolby
 [submodule "third-party/doxyconfig"]
 	path = third-party/doxyconfig
 	url = https://github.com/LizardByte/doxyconfig.git

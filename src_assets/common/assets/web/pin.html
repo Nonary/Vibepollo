@@ -333,6 +333,11 @@
                   >{{client.name != "" ? client.name : $t('pin.unpair_single_unknown')}}</span
                 >
               </div>
+              <label class="me-2">
+                <input type="checkbox" :checked="client.enabled" :disabled="client.toggling || clients.some(c => c.editing)"
+                  @change="toggleEnabled(client, $event)" />
+                {{ $t('_common.enabled') }}
+              </label>
               <div
                 v-if="client.connected"
                 class="me-2 btn btn-warning"
@@ -692,6 +697,7 @@
           arr.splice(idx, 1);
         },
         editClient(client) {
+          if (this.clients.some(c => c.toggling)) return;
           if (currentEditingClient) {
             this.cancelEdit(currentEditingClient);
           }
@@ -854,11 +860,30 @@
             this.refreshClients();
           });
         },
+        async toggleEnabled(client, event) {
+          event.target.checked = client.enabled;
+          client.toggling = true;
+          try {
+            const response = await fetch('./api/clients/update', {
+              credentials: 'include', method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ uuid: client.uuid, enabled: !client.enabled }),
+            });
+            const result = await response.json();
+            if (!response.ok || !result.status) throw new Error('client-update-rejected');
+            // The authoritative list is read back below on either outcome.
+          } catch {
+            window.alert(this.$t('_common.error'));
+          } finally {
+            await this.refreshClients();
+            client.toggling = false;
+          }
+        },
         refreshClients() {
           if (currentEditingClient) {
             this.cancelEdit(currentEditingClient);
           }
-          fetch('./api/clients/list', { credentials: 'include' })
+          return fetch('./api/clients/list', { credentials: 'include' })
             .then((response) => response.json())
             .then((response) => {
               if (response.status && response.named_certs && response.named_certs.length) {
@@ -869,6 +894,7 @@
                     uuid,
                     display_mode,
                     perm,
+                    enabled,
                     connected,
                     do: _do,
                     undo,
@@ -882,6 +908,8 @@
                       uuid,
                       display_mode,
                       perm: permInt,
+                      enabled: enabled !== false && enabled !== "false" && enabled !== 0 && enabled !== "0",
+                      toggling: false,
                       connected,
                       editing: false,
                       do: _do,

@@ -21,6 +21,7 @@
 #include "src/platform/windows/misc.h"
 #include "src/platform/windows/playnite_ipc.h"
 #include "src/platform/windows/playnite_protocol.h"
+#include "src/platform/windows/playnite_plugin_migration.h"
 #include "src/platform/windows/playnite_sync.h"
 #include "src/process.h"
 #include "src/utility.h"
@@ -1209,7 +1210,7 @@ namespace platf::playnite {
 
   // The official per-user installer registers Playnite in the interactive user's HKCU,
   // but keeps extensions in RoamingAppData rather than alongside LocalAppData's executable.
-  static bool has_per_user_playnite_install(HANDLE user_token) {
+  static bool has_per_user_playnite_install(HANDLE user_token, const std::filesystem::path &selected = {}) {
     bool installed = false;
     auto read_install = [&]() {
       HKEY user_root = nullptr;
@@ -1233,12 +1234,13 @@ namespace platf::playnite {
       DWORD byte_count = 0;
       installed = RegQueryValueExW(install_key, L"InstallLocation", nullptr, &value_type, nullptr, &byte_count) == ERROR_SUCCESS &&
                   (value_type == REG_SZ || value_type == REG_EXPAND_SZ) && byte_count > sizeof(wchar_t);
-      if (installed && !config::playnite.install_dir.empty()) {
+      const auto expected = selected.empty() ? std::filesystem::path(platf::from_utf8(config::playnite.install_dir)) : selected;
+      if (installed && !expected.empty()) {
         std::vector<wchar_t> location(byte_count / sizeof(wchar_t) + 1, L'\0');
         installed = RegQueryValueExW(install_key, L"InstallLocation", nullptr, &value_type, reinterpret_cast<BYTE *>(location.data()), &byte_count) == ERROR_SUCCESS;
         if (installed) {
           std::error_code ec;
-          installed = std::filesystem::equivalent(std::filesystem::path(location.data()), std::filesystem::path(platf::from_utf8(config::playnite.install_dir)), ec);
+          installed = std::filesystem::equivalent(std::filesystem::path(location.data()), expected, ec);
         }
       }
     };
@@ -1282,6 +1284,27 @@ namespace platf::playnite {
     destOut = std::filesystem::path(roaming) / L"Playnite" / L"Extensions" / L"SunshinePlaynite";
     BOOST_LOG(debug) << "Playnite: interactive-user HKCU install uses RoamingAppData extensions target " << destOut.string();
     return true;
+  }
+
+  // Only a registry-confirmed installed Playnite has a known pair of roots.
+  // Do not enumerate profiles or infer that another portable installation is ours.
+  static std::optional<std::filesystem::path> alternate_connector_dir(const std::filesystem::path &destination) {
+    std::wstring exe;
+    if (!query_assoc_for_playnite(exe)) return std::nullopt;
+    HANDLE token = nullptr;
+    if (platf::dxgi::is_running_as_system()) {
+      token = acquire_preferred_user_token_for_playnite();
+      if (!token) return std::nullopt;
+    }
+    auto close_token = util::fail_guard([&]() { if (token) CloseHandle(token); });
+    const auto install = std::filesystem::path(exe).parent_path();
+    if (!has_per_user_playnite_install(token, install)) return std::nullopt;
+    PWSTR roaming = nullptr;
+    if (FAILED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, token, &roaming)) || !roaming) return std::nullopt;
+    auto free_roaming = util::fail_guard([&]() { CoTaskMemFree(roaming); });
+    const auto profile_extension = std::filesystem::path(roaming) / L"Playnite" / L"Extensions" / L"SunshinePlaynite";
+    const auto install_extension = install / L"Extensions" / L"SunshinePlaynite";
+    return migration::alternate_root(destination, profile_extension, install_extension);
   }
 
   // Resolve the Playnite Extensions/SunshinePlaynite directory via the "playnite" URL association.
@@ -2006,6 +2029,33 @@ namespace platf::playnite {
         return false;
       }
 
+      // Capture the same running/interactive user's roots before stopping
+      // Playnite; token selection may change once its process has exited.
+      const auto alternate = alternate_connector_dir(destDir);
+      std::filesystem::path installed_target;
+      if (!alternate && resolve_extensions_dir_via_per_user_install(installed_target) &&
+          migration::unresolved_installed_target(destDir, installed_target, false)) {
+        error_out = "Could not resolve the installed Playnite connector's alternate root.";
+        return false;
+      }
+      const bool pending_migration = migration::migration_pending(destDir);
+      if (!alternate && pending_migration) {
+        error_out = "Could not resolve the alternate Playnite connector for the pending migration.";
+        return false;
+      }
+      bool alternate_exists = false;
+      if (alternate) {
+        ec.clear();
+        alternate_exists = std::filesystem::exists(*alternate, ec);
+        if (ec) {
+          error_out = "Could not inspect the alternate Playnite connector: " + ec.message();
+          return false;
+        }
+      }
+      const bool manage_migration = alternate && migration::needs_migration(alternate_exists, pending_migration);
+      // Record the obligation before installing the new version. A failed or
+      // interrupted retirement must remain visible to the normal update path.
+      if (manage_migration && !migration::begin_migration(destDir, error_out)) return false;
       std::wstring playniteExe;
       if (restart && !resolve_playnite_launch_exe(playniteExe)) {
         error_out = "Could not resolve the Playnite executable before installation.";
@@ -2099,8 +2149,12 @@ namespace platf::playnite {
         std::filesystem::remove(destDir / L"SunshinePlaynite.psm1", ec);
         deployed = !ec;
       }
+      if (deployed && manage_migration) {
+        deployed = migration::disable_duplicate(destDir, *alternate, error_out);
+        if (deployed) deployed = migration::complete_migration(destDir, error_out);
+      }
       if (!deployed) {
-        error_out = "Failed to deploy and verify plugin files in " + destDir.string();
+        if (error_out.empty()) error_out = "Failed to deploy and verify plugin files in " + destDir.string();
       } else {
         BOOST_LOG(info) << "Playnite installer: deployed plugin to " << destDir.string();
       }

@@ -185,6 +185,10 @@ namespace display_helper_integration {
   // stream APPLY/REVERT and deliberately never creates or restores snapshots.
   bool apply_remote_composed_topology(const DisplayTopologyDefinition &topology);
 
+  // Apply and read back HDR on one already-active Remote Monitor target.
+  // A false return means the requested state was not verified.
+  bool apply_remote_monitor_hdr_state(const std::string &device_id, bool enabled, bool allow_mutation);
+
 #ifdef _WIN32
   enum class ApplyVerificationStatus {
     Verified,

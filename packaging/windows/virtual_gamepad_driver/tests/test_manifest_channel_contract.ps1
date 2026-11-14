@@ -255,4 +255,5 @@ if (Test-Path -LiteralPath (Join-Path $repositoryRoot 'src_assets/windows/driver
     throw 'The manifest contract test is under the volatile installed payload root.'
 }
 
+& (Join-Path $PSScriptRoot 'test_local_release_lock.ps1')
 Write-Host 'VHF manifest channel contract checks passed.'

@@ -468,6 +468,7 @@ namespace confighttp {
    * @return AuthResult representing authentication decision.
    */
   AuthResult check_auth(const std::string &remote_address, const std::string &auth_header, const std::string &path, const std::string &method);
+  AuthResult check_remote_access(const std::string &remote_address);
   /**
    * @brief Extract session token from Cookie headers.
    * @param headers Case-insensitive header multimap.

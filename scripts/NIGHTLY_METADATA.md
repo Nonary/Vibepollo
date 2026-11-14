@@ -4,7 +4,7 @@
 
 Ordinary application update checks use the identity embedded in the release API body and fetch no assets. See [the staged compatibility and public asset contract](../docs/api-only-update-contract.md). Historical assets are retained for installed clients.
 
-The baseline is the most recently **published**, non-draft nightly prerelease returned by the paginated GitHub releases API. Failed builds, retained drafts, stable releases and other prerelease tag families do not advance it. Existing pre-metadata published daily tags can provide a migration baseline by resolving their exact Git commit; new metadata is checked against the immutable tag target. No baseline is saved in the workflow workspace for future runs.
+The notes metadata baseline is the most recently **published**, non-draft nightly prerelease returned by the paginated GitHub releases API. Failed builds and retained drafts do not advance it. Existing pre-metadata published date-style daily tags can provide a migration baseline by resolving their exact Git commit; a plain numeric tag is accepted as a nightly only when its embedded metadata qualifies its immutable channel, tag, version, and source SHA. No baseline is saved in the workflow workspace for future runs. The release allocator separately counts commits not reachable from *any* previously published release source, so a stable and nightly published from independent branches are not double-counted after they are merged.
 
 Schema version 1 fields:
 
@@ -15,7 +15,7 @@ Schema version 1 fields:
 | `tag`, `version` | Immutable tag and complete embedded application version |
 | `source_commit` | Exact lowercase 40-character Git SHA |
 | `windows_product_version` | Moonlight only: exact `6.2.B`; omitted for hosts. Prior metadata may omit it for migration, but a present value must match `B`. |
-| `nightly_sequence` | Integer host UTC date `YYYYMMDD` for new SHA-tagged nightlies; historical daily revisions retain their encoded sequence; Moonlight uses build `B` |
+| `nightly_sequence` | Omitted for new plain-numeric Vibepollo nightlies; host legacy date identities retain their encoded sequence; Moonlight uses build `B` |
 | `previous_successful_tag`, `previous_source_commit` | Preceding published nightly identity; null for first nightly |
 | `changelog_range` | Exact `previous_source_commit..source_commit`; null for first nightly |
 | `compare_url` | Exact-SHA GitHub compare URL; null for first nightly |
@@ -23,8 +23,31 @@ Schema version 1 fields:
 | `no_source_changes` | A previous baseline exists and its source SHA equals this source SHA |
 | `commits_total`, `commits_listed` | Number of newly reachable commits in the exact range; all messages are listed |
 
-New host releases use `{base}-nightly.dYYYYMMDD.{sha12}` as tag, title and application version. The suffix is the first 12 hex characters of the exact built source commit. Previously published host `daily-YYYY-MM-DD` and `{base}-daily.dYYYYMMDD+{sha12}` identities remain accepted. Moonlight uses `v6.1.0-daily.B` and `6.1.0-daily.B` (Windows product version `6.2.B`). Metadata carries the full source SHA independently of application version display. Clients enable prereleases by default with a persistent stable-only opt-out, and must require a non-draft prerelease with its expected packages and this metadata before treating it as available.
+New Vibepollo nightlies use the allocated plain numeric version as tag, title, and application version. The immutable annotated tag records the release channel and source branch; metadata records `schema_version: 1`, `channel: nightly`, exact `tag`, exact numeric `version`, and the full lowercase source SHA. Numeric tags omit `nightly_sequence` because the shared numeric version is the ordering identity. The allocator starts from the highest published version of any channel and only advances for conventional `feat` and `fix` commits not reachable from any prior published release source; it skips unchanged/no-eligible sources, never lets git ancestry lower or block the version, skips numbers already claimed by other tags, enforces installer bounds, and never reuses a version for another channel or source. Historical host `daily-YYYY-MM-DD`, `{base}-daily.dYYYYMMDD+{sha12}`, and `{base}-nightly.dYYYYMMDD.{sha12}` identities remain accepted. Moonlight uses `v6.1.0-daily.B` and `6.1.0-daily.B` (Windows product version `6.2.B`). Metadata carries the full source SHA independently of application version display. Clients enable prereleases by default with a persistent stable-only opt-out, and must require a non-draft prerelease with its expected packages and this metadata before treating it as available.
 
 First nightly notes explicitly claim no baseline or delta. Same-source nightlies explicitly say no source changes and rebuild. Divergent/rewound history warns that `git log previous..source` lists newly reachable commits, without claiming forward ancestry; an empty rewind delta is distinct from identical sources.
 
 Run focused offline checks with `python -m unittest discover -s scripts/tests -p test_nightly_notes.py -v`. No credential, signing, OS trust, release creation or network access is needed by these tests.
+
+## Same-day transition and Windows versions
+
+`r.N` appears before the random SHA so both revised clients and the shipped
+date-only updater can order the bridge above every same-day hexadecimal SHA.
+Numeric revisions order numerically, and the real UTC date orders days. No
+release is deleted, retagged or given a fabricated date. New clients validate
+the API identity, exact source suffix and sequence; malformed nightly shapes
+cannot fall back to an ordinary prerelease. Already-installed date-only clients
+recognize this bridge through their existing ordinary SemVer route, which
+requires a complete platform package and prerelease opt-in but cannot enforce
+the new metadata format. That old acceptance limit is tested against a frozen,
+byte-identical copy of the shipped updater. Metadata/checksum assets remain
+published for older clients; no installed code is changed remotely.
+
+Host MSI ProductVersion retains its existing `patch * 100 + 90` nightly rank
+below same-base stable `+99`. MSI does not order same-rank rebuilds or compare
+the fourth ProductVersion field. The existing equal-version transactional
+replacement, rollback marker and chronological UUIDv7 bootstrapper presentation
+remain intact; no new MSI ordinal is invented. Executable FILEVERSION uses the
+existing shared stable-tag anchor and UTC two-minute slots, with clock-rollback
+and overflow failures retained. Two builds within the same slot may have equal
+FILEVERSION. Actual package verification must report these values honestly.

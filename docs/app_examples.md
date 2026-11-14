@@ -351,13 +351,17 @@ third-party tool, you can use *QRes* as an example.
 > Because Flatpak packages run in a sandboxed environment and do not normally have access to the
 > host, the Flatpak of Sunshine requires commands to be prefixed with `flatpak-spawn --host`.
 
-#### Windows
-**Elevating Commands (Windows)**
+#### Windows and Linux
+**Elevating Commands**
 
 If you've installed Sunshine as a service (default), you can specify if a command should be elevated with
 administrative privileges. Simply enable the elevated option in the WEB UI, or add it to the JSON configuration.
-This is an option for both prep-cmd and regular commands and will launch the process with the current user without a
-UAC prompt.
+This is an option for both prep-cmd and regular commands.
+
+- **Windows:** launches the process with the current user's administrator token, without a UAC prompt.
+- **Linux (machine service):** runs the command as root, like `sudo`. Commands without the option run as the
+  streaming desktop user. Elevated commands do not get the desktop's display or audio; `SUDO_USER` names the
+  streaming user.
 
 **Example**
 ```json

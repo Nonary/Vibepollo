@@ -48,7 +48,7 @@ hot_entry = between(config, "  void apply_config_now(const display_transition::b
 hot_install = between(config, "      auto install_effective_configuration = [&] {", "        if (sunshine.session_history_enabled")
 default_stream = between(config, "    const stream_t default_stream =", "    const input_t default_input =")
 reset = function(config, "    void reset_runtime_config_to_defaults() {")
-apply_entry = between(config, "  void apply_config(std::unordered_map<std::string, std::string> &&vars) {", "#ifndef __ANDROID__")
+apply_entry = between(config, "  void apply_config(std::unordered_map<std::string, std::string> &&vars) {", "    nv::normalize_split_encode_alias(vars);")
 helpers = between(config, "  void string_f(", "  void string_restricted_f(")
 parse = between(config, '    generic_f(vars, "control_peer_timeout",', '    int_between_f(vars, "lan_encryption_mode",')
 iterate = between(stream, "  void control_server_t::iterate(", "  namespace fec {")

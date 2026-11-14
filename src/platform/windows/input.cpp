@@ -9,6 +9,7 @@
 #include <Windows.h>
 
 // standard includes
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -26,10 +27,12 @@
 #include "src/globals.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/steam_controller_protocol.h"
 #include "vhf_gamepad.h"
 #include "dualsense_usbip_gamepad.h"
 #include "dualsense_usbip_gamepad_policy.h"
 #include "vhf_gamepad_policy.h"
+#include "vhf_keyboard_mouse_policy.h"
 
 #ifdef __MINGW32__
 // DECLARE_HANDLE(HSYNTHETICPOINTERDEVICE);
@@ -306,9 +309,9 @@ namespace platf {
         ds4_update_motion(gamepad, LI_MOTION_TYPE_ACCEL, 0.0f, EARTH_G, 0.0f);
         ds4_update_motion(gamepad, LI_MOTION_TYPE_GYRO, 0.0f, 0.0f, 0.0f);
 
-        // Request motion events from the client at 100 Hz
-        feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100));
-        feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100));
+        // Request motion events from the client at 100 Hz (coalesced: one pending request per type)
+        static_cast<void>(raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100)));
+        static_cast<void>(raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100)));
         gamepad.last_motion_request_ts = std::chrono::steady_clock::now();
 
         // We support pointer index 0 and 1
@@ -397,19 +400,17 @@ namespace platf {
           uint16_t normalizedLargeMotor = largeMotor << 8;
           uint16_t normalizedSmallMotor = smallMotor << 8;
 
-          // Don't resend duplicate rumble data
-          if (normalizedSmallMotor != gamepad.last_rumble.data.rumble.highfreq ||
-              normalizedLargeMotor != gamepad.last_rumble.data.rumble.lowfreq) {
-            // We have to use the client-relative index when communicating back to the client
-            gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rumble(
-              gamepad.client_relative_index,
-              normalizedLargeMotor,
-              normalizedSmallMotor
-            );
-            msg.from_vigem = true;
-            gamepad.feedback_queue->raise(msg);
-            gamepad.last_rumble = msg;
-          }
+          // We have to use the client-relative index when communicating back to the client.
+          // Coalesced admission, deduplicated against the last rumble this backend delivered; the
+          // cache follows acceptance, so a message the mailbox refused is retried by the next
+          // callback instead of being suppressed as already delivered.
+          gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rumble(
+            gamepad.client_relative_index,
+            normalizedLargeMotor,
+            normalizedSmallMotor
+          );
+          msg.from_vigem = true;
+          static_cast<void>(raise_gamepad_feedback_deduped(*gamepad.feedback_queue, msg, gamepad.last_rumble));
           return;
         }
       }
@@ -427,15 +428,11 @@ namespace platf {
         auto &gamepad = gamepads[x];
 
         if (gamepad.gp.get() == target) {
-          // Don't resend duplicate RGB data
-          if (r != gamepad.last_rgb_led.data.rgb_led.r ||
-              g != gamepad.last_rgb_led.data.rgb_led.g ||
-              b != gamepad.last_rgb_led.data.rgb_led.b) {
-            // We have to use the client-relative index when communicating back to the client
-            gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rgb_led(gamepad.client_relative_index, r, g, b);
-            gamepad.feedback_queue->raise(msg);
-            gamepad.last_rgb_led = msg;
-          }
+          // We have to use the client-relative index when communicating back to the client.
+          // Coalesced admission, deduplicated against the last LED state this backend delivered;
+          // the cache follows acceptance (see raise_gamepad_feedback_deduped).
+          gamepad_feedback_msg_t msg = gamepad_feedback_msg_t::make_rgb_led(gamepad.client_relative_index, r, g, b);
+          static_cast<void>(raise_gamepad_feedback_deduped(*gamepad.feedback_queue, msg, gamepad.last_rgb_led));
           return;
         }
       }
@@ -518,6 +515,11 @@ namespace platf {
     vigem_t *vigem;
     vhf_gamepad_t *vhf;
     usbip_gamepad_t *usbip;
+    bool vhf_keyboard_mouse {false};
+    std::uint8_t vhf_held_buttons {0};
+    // Pin a key's physical usage (or its Win32 fallback) from press to release,
+    // even if the active keyboard layout changes while it is held.
+    vhf_keyboard_mouse::keyboard_routes vhf_key_routes {};
 
     // Slots are allocated one at a time, so both backends can own gamepads simultaneously.
     std::array<gamepad_backend_e, MAX_GAMEPADS> gamepad_backend {};
@@ -537,7 +539,8 @@ namespace platf {
            config::input.gamepad == "vhf_xbox_one"sv ||
            config::input.gamepad == "vhf_ds4"sv ||
            config::input.gamepad == "vhf_ds5"sv ||
-           config::input.gamepad == "vhf_switch"sv;
+           config::input.gamepad == "vhf_switch"sv ||
+           config::input.gamepad == "vhf_steam"sv;
   }
 
   /**
@@ -577,6 +580,10 @@ namespace platf {
     // ViGEmBus should be reported.
     raw.vhf = new vhf_gamepad_t {};
     const bool vhf_available = raw.vhf->probe();
+    if (config::input.keyboard_mouse_backend == "auto"sv ||
+        config::input.keyboard_mouse_backend == "vhf"sv) {
+      raw.vhf_keyboard_mouse = raw.vhf->open_keyboard_mouse();
+    }
 
     raw.usbip = new usbip_gamepad_t {};
     const bool usbip_available = raw.usbip->probe();
@@ -617,6 +624,15 @@ namespace platf {
     BOOST_LOG(error) << "Couldn't send input"sv;
   }
 
+  // Do not replay the event that failed. A later event may use SendInput once
+  // the driver has confirmed synchronous removal of the VHF child.
+  static bool use_vhf_keyboard_mouse(input_raw_t *raw) {
+    if (raw->vhf_keyboard_mouse && raw->vhf->keyboard_mouse_fallback_safe()) {
+      raw->vhf_keyboard_mouse = false;
+    }
+    return raw->vhf_keyboard_mouse;
+  }
+
   /**
    * @brief Calls InjectSyntheticPointerInput() and switches input desktops if required.
    * @details Must only be called if InjectSyntheticPointerInput() is available.
@@ -655,10 +671,23 @@ namespace platf {
     mi.dx = scaled_x;
     mi.dy = scaled_y;
 
+    auto *raw = (input_raw_t *) input.get();
+    if (use_vhf_keyboard_mouse(raw)) {
+      if (raw->vhf->keyboard_mouse_absolute(
+            static_cast<std::uint16_t>(std::clamp<long>(scaled_x, 0, 65535)),
+            static_cast<std::uint16_t>(std::clamp<long>(scaled_y, 0, 65535)))) return;
+      (void) raw->vhf->keyboard_mouse_fallback([&] { send_input(i); });
+      return;
+    }
     send_input(i);
   }
 
   void move_mouse(input_t &input, int deltaX, int deltaY) {
+    auto *raw = (input_raw_t *) input.get();
+    if (use_vhf_keyboard_mouse(raw)) {
+      raw->vhf->keyboard_mouse_relative(deltaX, deltaY, 0, 0);
+      return;
+    }
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -686,6 +715,18 @@ namespace platf {
   }
 
   void button_mouse(input_t &input, int button, bool release) {
+    auto *raw = (input_raw_t *) input.get();
+    const auto hid_button = vhf_keyboard_mouse::mouse_button(button);
+    const auto mask = hid_button ? static_cast<std::uint8_t>(1u << (hid_button - 1)) : 0;
+    if (use_vhf_keyboard_mouse(raw) && hid_button != 0) {
+      if (release) raw->vhf_held_buttons &= ~mask;
+      else raw->vhf_held_buttons |= mask;
+      raw->vhf->keyboard_mouse_button(hid_button, !release);
+      return;
+    }
+    // The virtual child has already been removed. Do not inject an unmatched
+    // release (or repeat) for a button that belonged to that child.
+    if (vhf_keyboard_mouse::consume_removed_button(raw->vhf_held_buttons, mask, release)) return;
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -709,6 +750,11 @@ namespace platf {
   }
 
   void scroll(input_t &input, int distance) {
+    auto *raw = (input_raw_t *) input.get();
+    if (use_vhf_keyboard_mouse(raw)) {
+      raw->vhf->keyboard_mouse_relative(0, 0, distance, 0);
+      return;
+    }
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -721,6 +767,11 @@ namespace platf {
   }
 
   void hscroll(input_t &input, int distance) {
+    auto *raw = (input_raw_t *) input.get();
+    if (use_vhf_keyboard_mouse(raw)) {
+      raw->vhf->keyboard_mouse_relative(0, 0, 0, distance);
+      return;
+    }
     INPUT i {};
 
     i.type = INPUT_MOUSE;
@@ -732,7 +783,59 @@ namespace platf {
     send_input(i);
   }
 
+  bool mouse_requires_scroll_ticks(input_t &input) {
+    return use_vhf_keyboard_mouse((input_raw_t *) input.get());
+  }
+
+  bool keyboard_uses_native_repeat(input_t &input, std::uint16_t key) {
+    auto *raw = (input_raw_t *) input.get();
+    use_vhf_keyboard_mouse(raw);
+    const auto route = raw->vhf_key_routes.keys[key];
+    // A key from a removed VHF child (or one suppressed during teardown) is
+    // still logically held by the client. Do not emit software repeats or
+    // temporary modifiers until its matching release arrives.
+    return route != 0 && route != vhf_keyboard_mouse::win32_fallback;
+  }
+
   void keyboard_update(input_t &input, uint16_t modcode, bool release, uint8_t flags) {
+    auto *raw = (input_raw_t *) input.get();
+    const bool vhf_active = use_vhf_keyboard_mouse(raw);
+    const bool first_press = !release && raw->vhf_key_routes.keys[modcode] == 0;
+    if (vhf_active) {
+      const auto route = raw->vhf_key_routes.keys[modcode];
+      if (route == vhf_keyboard_mouse::suppressed_fallback) {
+        if (release) raw->vhf_key_routes.keys[modcode] = 0;
+        return;
+      }
+      std::uint16_t usage = 0;
+      if (!release && route == 0) {
+        const auto consumer = vhf_keyboard_mouse::consumer_usage(modcode);
+        if (consumer && raw->vhf->keyboard_mouse_consumer_supported()) {
+          usage = vhf_keyboard_mouse::consumer_route | consumer;
+        } else {
+          usage = (flags & SS_KBE_FLAG_NON_NORMALIZED) ?
+                    vhf_keyboard_mouse::scan_usage(static_cast<std::uint16_t>(MapVirtualKeyW(modcode, MAPVK_VK_TO_VSC_EX))) :
+                    vhf_keyboard_mouse::key_usage(modcode);
+        }
+      }
+      const auto transition = raw->vhf_key_routes.update(modcode, release, usage);
+      if (transition.route != 0 && transition.route != vhf_keyboard_mouse::win32_fallback) {
+        if (transition.emit) {
+          if (transition.route & vhf_keyboard_mouse::consumer_route) {
+            raw->vhf->keyboard_mouse_consumer(transition.route & 0xff, !release);
+          } else {
+            raw->vhf->keyboard_mouse_key(transition.route, !release);
+          }
+        }
+        return;
+      }
+    }
+    else {
+      // Held VHF keys have been released by child removal. Suppress their
+      // remaining repeats and key-up packets rather than replaying them via
+      // SendInput. A key originally routed to SendInput still needs its up.
+      if (vhf_keyboard_mouse::consume_removed_key(raw->vhf_key_routes, modcode, release)) return;
+    }
     INPUT i {};
     i.type = INPUT_KEYBOARD;
     auto &ki = i.ki;
@@ -784,7 +887,15 @@ namespace platf {
       ki.dwFlags |= KEYEVENTF_KEYUP;
     }
 
-    send_input(i);
+    // An already-injected fallback key must still be released during teardown.
+    // Pin a suppressed first press until its matching release arrives.
+    if (vhf_active && !release) {
+      if (!raw->vhf->keyboard_mouse_fallback([&] { send_input(i); }) && first_press) {
+        raw->vhf_key_routes.keys[modcode] = vhf_keyboard_mouse::suppressed_fallback;
+      }
+    } else {
+      send_input(i);
+    }
   }
 
   struct client_input_raw_t;
@@ -1332,6 +1443,9 @@ namespace platf {
   }
 
   void unicode(input_t &input, char *utf8, int size) {
+    auto *raw = (input_raw_t *) input.get();
+    const bool vhf_active = use_vhf_keyboard_mouse(raw);
+
     // We can do no worse than one UTF-16 character per byte of UTF-8
     std::vector<WCHAR> wide(size);
 
@@ -1340,22 +1454,29 @@ namespace platf {
       return;
     }
 
-    // Send all key down events
-    for (int i = 0; i < chars; i++) {
-      INPUT input {};
-      input.type = INPUT_KEYBOARD;
-      input.ki.wScan = wide[i];
-      input.ki.dwFlags = KEYEVENTF_UNICODE;
-      send_input(input);
-    }
+    auto send_unicode = [&] {
+      // Send all key down events
+      for (int i = 0; i < chars; i++) {
+        INPUT input {};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wScan = wide[i];
+        input.ki.dwFlags = KEYEVENTF_UNICODE;
+        send_input(input);
+      }
 
-    // Send all key up events
-    for (int i = 0; i < chars; i++) {
-      INPUT input {};
-      input.type = INPUT_KEYBOARD;
-      input.ki.wScan = wide[i];
-      input.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
-      send_input(input);
+      // Send all key up events
+      for (int i = 0; i < chars; i++) {
+        INPUT input {};
+        input.type = INPUT_KEYBOARD;
+        input.ki.wScan = wide[i];
+        input.ki.dwFlags = KEYEVENTF_UNICODE | KEYEVENTF_KEYUP;
+        send_input(input);
+      }
+    };
+    if (vhf_active) {
+      (void) raw->vhf->keyboard_mouse_fallback(send_unicode);
+    } else {
+      send_unicode();
     }
   }
 
@@ -1387,20 +1508,49 @@ namespace platf {
     const bool automatic_vhf_fallback =
       config::input.gamepad == "auto"sv &&
       vhf_gamepad::select_automatic_backend(vigem_available, vhf_available) == vhf_gamepad::backend_e::vhf;
+    // Only the VHF driver can present a Steam Controller; under `auto` with ViGEmBus installed
+    // the client would otherwise silently become an Xbox 360 pad and lose both pads, grips,
+    // motion, battery and haptics. ViGEmBus remains the fallback if the allocation fails.
+    const bool steam_client_prefers_vhf =
+      config::input.gamepad == "auto"sv && vhf_available &&
+      vhf_gamepad::is_steam_controller_client(metadata.type, metadata.capabilities);
 
-    if (vhf_gamepad_selected() || automatic_vhf_fallback) {
+    if (vhf_gamepad_selected() || automatic_vhf_fallback || steam_client_prefers_vhf) {
       const auto desired = vhf_desired_profile(metadata);
+
+      if (config::input.gamepad == "vhf_steam"sv && desired != vhf_profile_e::steam_controller) {
+        BOOST_LOG(info) << "Gamepad " << id.globalIndex << " is not a Steam Controller (2026) client controller (type "sv
+                        << static_cast<int>(metadata.type) << ", capabilities "sv << metadata.capabilities
+                        << "); vhf_steam is kept for Steam Controllers and this one gets the automatic choice"sv;
+      }
 
       if (vhf_available) {
         BOOST_LOG(info) << "Gamepad " << id.globalIndex << " will use the Vibepollo virtual gamepad driver"sv
-                        << (automatic_vhf_fallback ? " (automatic fallback)"sv : ""sv);
+                        << (automatic_vhf_fallback ? " (automatic fallback)"sv :
+                            steam_client_prefers_vhf ? " (Steam Controller client)"sv : ""sv);
 
-        if (raw->vhf->alloc(id, feedback_queue, desired) == 0) {
+        if (raw->vhf->alloc(id, feedback_queue, desired, metadata.capabilities) == 0) {
           raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
           return 0;
         }
       }
 
+      // Only a vhf_* config value is an explicit choice. A profile inferred from the
+      // client's controller type (Steam Controller, Switch, PlayStation) under plain
+      // `vhf` is a preference: when the installed driver does not offer it, retry with
+      // the driver's automatic profile rather than leaving the client with no controller.
+      const bool explicit_profile = config::input.gamepad != "vhf"sv && config::input.gamepad != "auto"sv;
+      if (vhf_available && desired != vhf_profile_e::automatic && !explicit_profile) {
+        BOOST_LOG(warning) << "Gamepad " << id.globalIndex
+                           << " could not get the profile its controller type suggests; retrying with the driver's automatic profile"sv;
+        if (raw->vhf->alloc(id, feedback_queue, vhf_profile_e::automatic, metadata.capabilities) == 0) {
+          raw->gamepad_backend[id.globalIndex] = gamepad_backend_e::vhf;
+          return 0;
+        }
+      }
+
+      // With no ViGEm backend, exhaust the driver's automatic profile before
+      // failing. The client-derived profile above is only a preference under auto.
       if (automatic_vhf_fallback) {
         BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not be created on the Vibepollo virtual gamepad driver"sv;
         return -1;
@@ -1408,8 +1558,9 @@ namespace platf {
 
       // An explicit profile must not be replaced by an automatic/client-selected profile or by
       // ViGEmBus. Otherwise a failed Switch Pro allocation makes the client override appear to
-      // win even though the user selected a specific VHF profile.
-      if (desired != vhf_profile_e::automatic) {
+      // win even though the user selected a specific VHF profile. A Steam Controller client
+      // under `auto` chose nothing explicitly, so it may still fall back to ViGEmBus.
+      if (explicit_profile && desired != vhf_profile_e::automatic && !steam_client_prefers_vhf) {
         BOOST_LOG(error) << "Gamepad " << id.globalIndex << " could not create the requested Vibepollo controller profile; refusing to substitute another profile"sv;
         return -1;
       }
@@ -1746,8 +1897,8 @@ namespace platf {
             BOOST_LOG(debug) << "DS4 gyro stale for "sv
                              << std::chrono::duration_cast<std::chrono::milliseconds>(gyro_stale).count()
                              << "ms; re-requesting motion events from client"sv;
-            gamepad.feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100));
-            gamepad.feedback_queue->raise(gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100));
+            static_cast<void>(raise_gamepad_feedback(*gamepad.feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_ACCEL, 100)));
+            static_cast<void>(raise_gamepad_feedback(*gamepad.feedback_queue, gamepad_feedback_msg_t::make_motion_event_state(gamepad.client_relative_index, LI_MOTION_TYPE_GYRO, 100)));
             gamepad.last_motion_request_ts = now;
           }
         }
@@ -1987,6 +2138,21 @@ namespace platf {
   }
 
   /**
+   * @brief Hands the real Steam Controller's firmware attributes to the virtual controller.
+   * @details Only the VHF driver presents a Steam Controller; ViGEmBus and the DualSense USB/IP
+   *          backend have no device that answers Steam's attribute reads, so they get nothing.
+   * @param input The global input context.
+   * @param attributes The attributes.
+   */
+  void gamepad_attributes(input_t &input, const steam_controller_attributes_t &attributes) {
+    auto raw = (input_raw_t *) input.get();
+
+    if (vhf_owns_gamepad(raw, attributes.id.globalIndex)) {
+      raw->vhf->attributes(attributes.id.globalIndex, attributes);
+    }
+  }
+
+  /**
    * @brief Sends a gamepad battery event to the OS.
    * @param input The global input context.
    * @param battery The battery event.
@@ -2091,6 +2257,7 @@ namespace platf {
         supported_gamepad_t {"vhf_ds5", false, ""},
         supported_gamepad_t {"usbip_ds5", false, ""},
         supported_gamepad_t {"vhf_switch", false, ""},
+        supported_gamepad_t {"vhf_steam", false, ""},
       };
 
       return gps;
@@ -2117,7 +2284,8 @@ namespace platf {
       supported_gamepad_t {"vhf_ds4", vhf_enabled, vhf_reason},
       supported_gamepad_t {"vhf_ds5", vhf_enabled, vhf_reason},
       supported_gamepad_t {"usbip_ds5", usbip_enabled, usbip_reason},
-      supported_gamepad_t {"vhf_switch", vhf_enabled, vhf_reason}
+      supported_gamepad_t {"vhf_switch", vhf_enabled, vhf_reason},
+      supported_gamepad_t {"vhf_steam", vhf_enabled, vhf_reason}
     };
 
     // A gamepad type that is unavailable only because its backend is not installed is not
@@ -2145,6 +2313,12 @@ namespace platf {
   platform_caps::caps_t get_capabilities() {
     platform_caps::caps_t caps = 0;
 
+    // Controller touch depends on which controller the client will get (see
+    // vhf_gamepad::supports_controller_touch): plain `vhf` selects a pad-bearing profile
+    // from the client's controller type (Steam Controller, PlayStation) whatever
+    // motion_as_ds4/touchpad_as_ds4 say, so only x360 and the explicit Xbox and Switch
+    // selections rule a touchpad out. Withholding the flag silences both Steam Controller
+    // trackpads: the client never sends a touch packet without it.
     const bool composite_dualsense = config::input.gamepad == "usbip_ds5"sv || dualsense_usbip_gamepad::enabled();
     if (vhf_gamepad::supports_controller_touch(config::input.gamepad, composite_dualsense)) {
       caps |= platform_caps::controller_touch;

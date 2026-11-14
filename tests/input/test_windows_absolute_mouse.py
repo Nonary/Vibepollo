@@ -26,6 +26,8 @@ PRELUDE = r'''
 #include <algorithm>
 #include <cassert>
 #include <chrono>
+#include <cstdint>
+#include <cstdlib>
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -56,7 +58,16 @@ constexpr int MOUSEEVENTF_MOVE = 0x0001, MOUSEEVENTF_ABSOLUTE = 0x8000,
 struct INPUT { int type; struct { long dx, dy; int dwFlags; } mi; } last_input;
 void send_input(const INPUT &i) { last_input = i; }
 namespace platf {
-  using input_t = int;
+  // Keep this coordinate regression on the SendInput backend. VHF routing is
+  // exercised separately, but its unselected production branch must compile.
+  struct vhf_stub {
+    bool keyboard_mouse_absolute(std::uint16_t, std::uint16_t) { std::abort(); }
+    void keyboard_mouse_relative(int, int, int, int) { std::abort(); }
+    template<class Fn> bool keyboard_mouse_fallback(Fn &&) { std::abort(); }
+  };
+  struct input_raw_t { vhf_stub *vhf = nullptr; };
+  using input_t = std::shared_ptr<input_raw_t>;
+  bool use_vhf_keyboard_mouse(input_raw_t *) { return false; }
   struct touch_port_t { int offset_x, offset_y, width, height; };
   constexpr touch_port_t target_touch_port {0, 0, 65535, 65535};
 }
@@ -96,7 +107,7 @@ int main() {
      1280, 720, 0, 0, 1920, 0},
   };
   int failures = 0;
-  int platform_input = 0;
+  auto platform_input = std::make_shared<platf::input_raw_t>();
   for (const auto &test : cases) {
     auto input = std::make_shared<input_t>();
     const float scalar = std::min(float(test.client_w) / test.monitor_w,

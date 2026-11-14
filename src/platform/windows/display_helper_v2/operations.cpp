@@ -71,43 +71,6 @@ namespace display_helper::v2 {
       return std::nullopt;
     }
 
-    // Recovery writes only fields present in the saved snapshot. Unknown HDR,
-    // empty primary, and legacy snapshots without origins are therefore
-    // unrequested fields, while topology and display modes remain exact. An
-    // empty mode map cannot prove a restorable display mode and fails closed.
-    bool recovery_snapshot_matches(const Snapshot &current, const Snapshot &requested) {
-      if (requested.m_modes.empty() ||
-          codec::canonical_topology(current.m_topology) != codec::canonical_topology(requested.m_topology) ||
-          !topology::equal_display_modes(current.m_modes, requested.m_modes)) {
-        return false;
-      }
-
-      if (!requested.m_primary_device.empty() && current.m_primary_device != requested.m_primary_device) {
-        return false;
-      }
-
-      for (const auto &[id, requested_state] : requested.m_hdr_states) {
-        if (!requested_state) {
-          continue;
-        }
-        const auto current_state = current.m_hdr_states.find(id);
-        if (current_state == current.m_hdr_states.end() || !current_state->second ||
-            current_state->second != requested_state) {
-          return false;
-        }
-      }
-
-      for (const auto &[id, requested_origin] : requested.m_origins) {
-        const auto current_origin = current.m_origins.find(id);
-        if (current_origin == current.m_origins.end() ||
-            current_origin->second.m_x != requested_origin.m_x ||
-            current_origin->second.m_y != requested_origin.m_y) {
-          return false;
-        }
-      }
-      return true;
-    }
-
   }  // namespace
 
   TopologyTransition::TopologyTransition(IDisplaySettings &display, IClock &clock)
@@ -864,7 +827,7 @@ namespace display_helper::v2 {
     if (token.is_cancelled()) {
       return false;
     }
-    bool state_ok = got_stable && recovery_snapshot_matches(cur, loaded.snapshot);
+    bool state_ok = got_stable && codec::recovery_snapshot_matches(cur, loaded.snapshot);
     if (state_ok) {
       state_ok = quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
     }
@@ -879,7 +842,7 @@ namespace display_helper::v2 {
         std::chrono::milliseconds(150),
         token);
       state_ok = got_after_quiet && !token.is_cancelled() &&
-                 recovery_snapshot_matches(after_quiet, loaded.snapshot);
+                 codec::recovery_snapshot_matches(after_quiet, loaded.snapshot);
       if (state_ok) {
         cur = std::move(after_quiet);
       }
@@ -957,7 +920,7 @@ namespace display_helper::v2 {
       if (token.is_cancelled()) {
         return false;
       }
-      bool state_ok = got_stable && recovery_snapshot_matches(cur, base);
+      bool state_ok = got_stable && codec::recovery_snapshot_matches(cur, base);
       if (state_ok) {
         state_ok = quiet_period(std::chrono::milliseconds(750), std::chrono::milliseconds(150), token);
       }
@@ -969,7 +932,7 @@ namespace display_helper::v2 {
           std::chrono::milliseconds(150),
           token);
         state_ok = got_after_quiet && !token.is_cancelled() &&
-                   recovery_snapshot_matches(after_quiet, base);
+                   codec::recovery_snapshot_matches(after_quiet, base);
         if (state_ok) {
           cur = std::move(after_quiet);
         }

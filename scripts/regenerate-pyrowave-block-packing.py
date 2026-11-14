@@ -51,12 +51,15 @@ def main():
         # without Int8 capability, which is illegal with storage8 alone. These
         # passes inline and remove local temporaries while retaining the valid
         # 32-bit-zero-to-8-bit-storage conversion and existing feature contract.
+        # Some glslang builds without integrated SPIRV-Tools leave debug metadata
+        # even with -g0. Strip it explicitly before assigning final IDs so those
+        # builds produce the same embedded program as optimizer-enabled glslang.
         subprocess.run(["spirv-opt", "--target-env=vulkan1.1",
                         "--inline-entry-points-exhaustive", "--eliminate-dead-functions",
                         "--eliminate-local-single-block", "--eliminate-local-single-store",
                         "--eliminate-dead-code-aggressive", "--scalar-replacement=0",
                         "--ssa-rewrite", "--combine-access-chains",
-                        "--eliminate-dead-code-aggressive", "--compact-ids",
+                        "--eliminate-dead-code-aggressive", "--strip-debug", "--compact-ids",
                         str(unoptimized), "-o", str(binary)], check=True)
         subprocess.run(["spirv-val", "--target-env", "vulkan1.1", str(binary)], check=True)
         data = binary.read_bytes()

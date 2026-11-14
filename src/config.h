@@ -163,6 +163,7 @@ namespace config {
 
     virtual_display_mode_e virtual_display_mode;
     virtual_display_layout_e virtual_display_layout;
+    bool virtual_display_keep_while_paused;  ///< macOS: keep the virtual display, so the other displays stay off, while a game is paused.
 
     int virtual_display_max_clients;  ///< Shared normal-game/Remote Monitor client identity limit (1..8).
 
@@ -274,6 +275,8 @@ namespace config {
     bool keep_default;
     bool auto_capture;
     bool sink_capture_only;  ///< Capture the selected Windows audio sink without changing default outputs.
+    std::string format {"opus"};  ///< Encoded stream format: Opus, AC-3, or E-AC-3.
+    bool high_quality_audio {false};  ///< Higher bitrate for negotiated Dolby streams; ignored for Opus.
   };
 
   constexpr int ENCRYPTION_MODE_NEVER = 0;  // Never use video encryption, even if the client supports it
@@ -285,9 +288,11 @@ namespace config {
 
     std::string file_apps;
 
-    int fec_percentage;
+    int fec_percentage;  ///< Standard FEC percentage (0-255); 0 disables FEC.
     int video_max_batch_size_kb;
     bool pacing_batch_demand_limit;  ///< Experimental per-call demand-based video batch sizing (default off).
+    bool pacing_group_demand_limit;  ///< Experimental per-frame demand pacing and batch bound (default off).
+    bool host_adaptive_pacing;  ///< Experimental loss-responsive packet spacing for ordinary video, never changing encoder bitrate or FPS (default off).
     int pyrowave_critical_fec_percentage;  ///< Parity on the PyroWave shards holding the coarsest wavelet level (at least 2 shards); 0 = none.
 
     // Video encryption settings for LAN and WAN streams
@@ -343,6 +348,7 @@ namespace config {
 
     bool keyboard;
     bool mouse;
+    std::string keyboard_mouse_backend;
     bool controller;
 
     bool always_send_scancodes;
@@ -527,6 +533,7 @@ namespace config {
     int hardware_metrics_interval {1000};  ///< Minimum client sample interval, in milliseconds
     bool realtime_stats_enabled {true};  ///< Sample live host stats (CPU/GPU/RAM/VRAM) for the web UI
     int realtime_stats_poll_interval_ms {2000};  ///< Host stats sampler interval in milliseconds
+    bool lid_close_ends_streams {true};  ///< macOS: end streams when a MacBook's lid closes, even if the Mac stays awake.
   };
 
   extern video_t video;

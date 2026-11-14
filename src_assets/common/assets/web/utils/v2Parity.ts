@@ -39,9 +39,16 @@ function arrayValue(value: unknown): unknown[] {
   }
 }
 
+// Windows runs elevated commands with administrator rights; the Linux machine
+// service runs them as root. Other hosts have no elevation path.
+export function platformSupportsCommandElevation(platform: unknown): boolean {
+  const name = String(platform ?? '').toLocaleLowerCase();
+  return name.includes('windows') || name.includes('linux');
+}
+
 export function normalizeCommandRows(value: unknown, platform: string): CommandRow[] {
   const entries = arrayValue(value);
-  const windows = platform.toLocaleLowerCase().includes('windows');
+  const elevation = platformSupportsCommandElevation(platform);
   return entries.map((entry) => {
     const source =
       entry && typeof entry === 'object' && !Array.isArray(entry)
@@ -52,7 +59,7 @@ export function normalizeCommandRows(value: unknown, platform: string): CommandR
       do: typeof source.do === 'string' ? source.do : String(source.do ?? ''),
       undo: typeof source.undo === 'string' ? source.undo : String(source.undo ?? ''),
     };
-    if (windows) row.elevated = source.elevated === true;
+    if (elevation) row.elevated = source.elevated === true;
     else delete row.elevated;
     return row;
   });
@@ -84,8 +91,7 @@ export function serializeCommandRows(value: unknown, platform: string): CommandR
       do: row.do,
       undo: row.undo,
     };
-    if (platform.toLocaleLowerCase().includes('windows'))
-      serialized.elevated = row.elevated === true;
+    if (platformSupportsCommandElevation(platform)) serialized.elevated = row.elevated === true;
     else delete serialized.elevated;
     return serialized;
   });

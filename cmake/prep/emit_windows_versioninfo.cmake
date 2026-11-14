@@ -12,8 +12,10 @@
 # that encoded version.  Every build uses current UTC time so later rebuilds of
 # the same release replace older files.  A build-dir cache detects clock
 # rollback without advancing repeated generator passes beyond wall-clock time.
-# Daily builds use the reachable stable tag for their matching major/minor/patch
-# as the shared anchor across source commits and dates; a missing tag is an error.
+# Nightly builds use a resolver-supplied stable tag and commit, verified against
+# Git ancestry, as their shared clock anchor. This supports a nightly after the
+# numeric version advances while preventing a numeric nightly tag from being
+# mistaken for a stable release.
 #
 # For oversized/date-style patch values, the legacy split fallback is preserved:
 #   major.minor.(patch / 100).(patch % 100)
@@ -93,7 +95,7 @@ function(_wv_git_epoch_for_ref ref output_var)
     set(_ref_time "")
     if(GIT_EXECUTABLE AND NOT "${ref}" STREQUAL "")
         execute_process(
-            COMMAND ${GIT_EXECUTABLE} for-each-ref "refs/tags/${ref}" --format=%(creatordate:unix)
+            COMMAND ${GIT_EXECUTABLE} for-each-ref "refs/tags/${ref}" "--format=%(creatordate:unix)"
             WORKING_DIRECTORY "${SOURCE_DIR}"
             OUTPUT_VARIABLE _creator_raw
             RESULT_VARIABLE _creator_error
@@ -189,6 +191,52 @@ function(_wv_daily_release_anchor lines major minor patch out_var)
             set(_anchor "${_time}")
         endif()
     endforeach()
+    set(${out_var} "${_anchor}" PARENT_SCOPE)
+endfunction()
+
+# Numeric nightly builds are tied to their immutable numeric reservation tag.
+# Requiring an annotated tag that peels exactly to HEAD gives each numeric
+# version a fresh revision clock while making retries deterministic.
+function(_wv_verified_numeric_reservation_anchor version out_var)
+    if(NOT "${version}" MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+$")
+        set(${out_var} "" PARENT_SCOPE)
+        return()
+    endif()
+
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} cat-file -t "refs/tags/${version}"
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        OUTPUT_VARIABLE _object_type
+        RESULT_VARIABLE _object_error
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(_object_error OR NOT "${_object_type}" STREQUAL "tag")
+        set(${out_var} "" PARENT_SCOPE)
+        return()
+    endif()
+
+    execute_process(
+        # No "^{commit}": MSYS2 git launched from native cmake.exe brace-expands
+        # unquoted arguments, turning it into "^commit" and failing every build.
+        COMMAND ${GIT_EXECUTABLE} rev-list -n 1 "refs/tags/${version}"
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        OUTPUT_VARIABLE _tag_commit
+        RESULT_VARIABLE _tag_error
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+        WORKING_DIRECTORY "${SOURCE_DIR}"
+        OUTPUT_VARIABLE _head_commit
+        RESULT_VARIABLE _head_error
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(_tag_error OR _head_error OR NOT "${_tag_commit}" STREQUAL "${_head_commit}")
+        set(${out_var} "" PARENT_SCOPE)
+        return()
+    endif()
+
+    _wv_git_epoch_for_ref("${version}" _anchor)
     set(${out_var} "${_anchor}" PARENT_SCOPE)
 endfunction()
 
@@ -307,6 +355,8 @@ else()
     endif()
 
     if("${PROJECT_VERSION_FULL}" MATCHES "-(daily|nightly)\\.")
+        # Preserve the legacy suffix path for callers that do not provide the
+        # resolver's authenticated channel and anchor metadata.
         _wv_daily_release_anchor("${_merged_tag_lines}" "${_major}" "${_minor}" "${_patch}" _anchor_time)
         if(NOT "${_anchor_time}" MATCHES "^[0-9]+$" AND _patch GREATER 0)
             math(EXPR _previous_patch "${_patch} - 1")
@@ -314,8 +364,17 @@ else()
         endif()
         if(NOT "${_anchor_time}" MATCHES "^[0-9]+$")
             message(FATAL_ERROR
-                "emit_windows_versioninfo: daily ${PROJECT_VERSION_FULL} requires a reachable "
-                "${_major}.${_minor}.${_patch} stable tag; refusing a HEAD-relative revision that can downgrade installed files.")
+                "emit_windows_versioninfo: legacy nightly ${PROJECT_VERSION_FULL} requires a reachable matching or previous-patch stable tag; refusing a HEAD-relative revision that can downgrade installed files.")
+        endif()
+    elseif(PROJECT_BUILD_CHANNEL STREQUAL "nightly")
+        # The resolver already placed this version above every published
+        # release, so the reservation tag alone is the revision clock. Whether
+        # the source has merged the latest stable does not affect ordering.
+        _wv_verified_numeric_reservation_anchor("${PROJECT_VERSION_FULL}" _anchor_time)
+        if(NOT "${_anchor_time}" MATCHES "^[0-9]+$")
+            message(FATAL_ERROR
+                "emit_windows_versioninfo: numeric nightly ${PROJECT_VERSION_FULL} requires its annotated reservation tag to peel exactly to HEAD; "
+                "refusing an unstable revision anchor.")
         endif()
     endif()
 

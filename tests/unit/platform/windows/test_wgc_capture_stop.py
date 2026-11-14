@@ -80,6 +80,7 @@ code=r'''
 #include <span>
 #include <sstream>
 #include <thread>
+#include "src/jthread.h"
 #include <utility>
 #include "src/thread_safe.h"
 #include "src/sync.h"

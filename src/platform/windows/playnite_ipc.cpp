@@ -14,7 +14,9 @@
 #endif
 #include "src/utility.h"
 
+#include <algorithm>
 #include <chrono>
+#include <random>
 #include <span>
 #include <string>
 #include <thread>
@@ -35,7 +37,14 @@ namespace platf {
 namespace platf::playnite {
   namespace {
     inline constexpr char kControlPipeName[] = "Sunshine.PlayniteExtension";
-  }
+    // Reconnect backoff: start at 250 ms, double per failure, cap at 10 s.
+    inline constexpr std::chrono::milliseconds kRetryInitialDelay {250};
+    inline constexpr std::chrono::milliseconds kRetryMaxDelay {10000};
+    // A connection must stay up this long before the backoff resets, so a
+    // plugin that accepts and immediately drops us cannot cause a tight loop.
+    inline constexpr std::chrono::seconds kStableConnection {5};
+    inline constexpr std::chrono::seconds kFailureSummaryInterval {60};
+  }  // namespace
 
   IpcClient::IpcClient():
       control_name_(kControlPipeName) {}
@@ -86,18 +95,21 @@ namespace platf::playnite {
         }
         // IPC client is only started when there's a session or API activity,
         // so use a reasonable retry interval (not aggressive polling)
-        std::this_thread::sleep_for(2s);
+        sleep_while_running(2s);
         continue;
       }
 
       if (no_playnite_logged_) {
         BOOST_LOG(debug) << "Playnite IPC: Playnite detected; attempting client connection";
         no_playnite_logged_ = false;
+        retry_delay_ = 0ms;
       }
 
-      auto data_pipe = connect_to_plugin();
+      unsigned long connect_error = 0;
+      auto data_pipe = connect_to_plugin(connect_error);
       if (!data_pipe) {
-        std::this_thread::sleep_for(500ms);
+        note_connect_failure("could not connect to the Playnite plugin pipe", connect_error);
+        wait_before_retry();
         continue;
       }
 
@@ -122,11 +134,13 @@ namespace platf::playnite {
         }
       }
       if (!pipe_started) {
-        BOOST_LOG(error) << "Playnite IPC: failed to start async pipe";
-        std::this_thread::sleep_for(500ms);
+        note_connect_failure("failed to start async pipe", 0);
+        wait_before_retry();
         continue;
       }
 
+      note_connect_success();
+      const auto connected_at = std::chrono::steady_clock::now();
       active_.store(true);
       if (connected_handler_) {
         try {
@@ -151,8 +165,67 @@ namespace platf::playnite {
       if (!running_.load()) {
         break;
       }
-      std::this_thread::sleep_for(300ms);
+      if (std::chrono::steady_clock::now() - connected_at >= kStableConnection) {
+        retry_delay_ = 0ms;
+      }
+      wait_before_retry();
     }
+  }
+
+  void IpcClient::sleep_while_running(std::chrono::milliseconds duration) {
+    const auto deadline = std::chrono::steady_clock::now() + duration;
+    while (running_.load()) {
+      const auto now = std::chrono::steady_clock::now();
+      if (now >= deadline) {
+        break;
+      }
+      std::this_thread::sleep_for(std::min<std::chrono::steady_clock::duration>(deadline - now, 100ms));
+    }
+  }
+
+  void IpcClient::wait_before_retry() {
+    if (retry_delay_ < kRetryInitialDelay) {
+      retry_delay_ = kRetryInitialDelay;
+    }
+    // Jitter over the upper half of the delay keeps clients from retrying in lockstep.
+    thread_local std::minstd_rand rng {std::random_device {}()};
+    const auto ms = retry_delay_.count();
+    std::uniform_int_distribution<long long> jitter(ms / 2, ms);
+    const auto delay = std::chrono::milliseconds(jitter(rng));
+    retry_delay_ = std::min(retry_delay_ * 2, kRetryMaxDelay);
+    sleep_while_running(delay);
+  }
+
+  void IpcClient::note_connect_failure(const char *what, unsigned long error) {
+    ++failed_attempts_;
+    ++failures_since_summary_;
+    const auto now = std::chrono::steady_clock::now();
+    if (!failing_) {
+      failing_ = true;
+      failures_since_summary_ = 0;
+      last_failure_summary_ = now;
+      BOOST_LOG(warning) << "Playnite IPC: " << what << " (error " << error
+                         << "); retrying with backoff up to "
+                         << std::chrono::duration_cast<std::chrono::seconds>(kRetryMaxDelay).count() << " s";
+      return;
+    }
+    if (now - last_failure_summary_ >= kFailureSummaryInterval) {
+      BOOST_LOG(warning) << "Playnite IPC: still failing to connect, " << failures_since_summary_
+                         << " attempts in last "
+                         << std::chrono::duration_cast<std::chrono::seconds>(now - last_failure_summary_).count()
+                         << " s (last: " << what << ", error " << error << ")";
+      failures_since_summary_ = 0;
+      last_failure_summary_ = now;
+    }
+  }
+
+  void IpcClient::note_connect_success() {
+    if (failing_) {
+      BOOST_LOG(info) << "Playnite IPC: connected after " << failed_attempts_ << " failed attempt(s)";
+    }
+    failing_ = false;
+    failed_attempts_ = 0;
+    failures_since_summary_ = 0;
   }
 
   void IpcClient::accumulate_and_dispatch_lines(std::span<const uint8_t> bytes) {
@@ -183,16 +256,20 @@ namespace platf::playnite {
     }
   }
 
-  std::unique_ptr<platf::dxgi::INamedPipe> IpcClient::connect_to_plugin() {
+  std::unique_ptr<platf::dxgi::INamedPipe> IpcClient::connect_to_plugin(unsigned long &error_out) {
     platf::dxgi::AnonymousPipeFactory factory;
+    // run() reports repeated connect failures with its own rate limit.
+    factory.set_quiet_connect_failures();
     // Playnite may identify the SYSTEM service without SeImpersonatePrivilege.
     // Apply to both control and data connections, never to unrelated helper IPC.
     factory.set_client_identification_only();
     const char *ctl = control_name_.empty() ? kControlPipeName : control_name_.c_str();
-    BOOST_LOG(debug) << "Playnite IPC: connecting to control pipe '" << ctl << "'";
+    if (!failing_) {
+      BOOST_LOG(debug) << "Playnite IPC: connecting to control pipe '" << ctl << "'";
+    }
     auto pipe = factory.create_client(ctl);
     if (!pipe) {
-      BOOST_LOG(debug) << "Playnite IPC: control connection attempt failed";
+      error_out = factory.last_connect_error();
       return nullptr;
     }
     BOOST_LOG(debug) << "Playnite IPC: data pipe acquired";

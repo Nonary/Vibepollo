@@ -186,20 +186,10 @@ namespace playnite_launcher::focus {
     return ok != FALSE;
   }
 
-  bool confirm_foreground_pid(DWORD pid) {
-    if (!pid) {
-      return false;
-    }
-    HWND fg = GetForegroundWindow();
-    if (!fg) {
-      return false;
-    }
-    if (!IsWindowVisible(fg) || IsIconic(fg) || GetWindow(fg, GW_OWNER) != nullptr) {
-      return false;
-    }
-    DWORD fpid = 0;
-    GetWindowThreadProcessId(fg, &fpid);
-    if (fpid != pid) {
+  // Validate before any restore/topmost/foreground effect. A window can be
+  // visible to EnumWindows while minimized, cloaked, or outside all monitors.
+  static bool is_eligible_game_window(HWND hwnd) {
+    if (!hwnd || !IsWindowVisible(hwnd) || IsIconic(hwnd) || GetWindow(hwnd, GW_OWNER) != nullptr) {
       return false;
     }
     auto is_cloaked = [&](HWND hwnd) -> bool {
@@ -216,11 +206,11 @@ namespace playnite_launcher::focus {
       }
       return false;
     };
-    if (is_cloaked(fg)) {
+    if (is_cloaked(hwnd)) {
       return false;
     }
     RECT rect {};
-    if (!GetWindowRect(fg, &rect)) {
+    if (!GetWindowRect(hwnd, &rect)) {
       return false;
     }
     if (rect.right <= rect.left || rect.bottom <= rect.top) {
@@ -230,6 +220,25 @@ namespace playnite_launcher::focus {
       return false;
     }
     return true;
+  }
+
+  bool confirm_foreground_pid(DWORD pid) {
+    HWND foreground = GetForegroundWindow();
+    DWORD foreground_pid = 0;
+    if (!pid || !is_eligible_game_window(foreground)) {
+      return false;
+    }
+    GetWindowThreadProcessId(foreground, &foreground_pid);
+    return foreground_pid == pid;
+  }
+
+  HWND find_foreground_game_window(const std::vector<HWND> &windows) {
+    HWND foreground = GetForegroundWindow();
+    if (std::find(windows.begin(), windows.end(), foreground) != windows.end() &&
+        is_eligible_game_window(foreground)) {
+      return foreground;
+    }
+    return nullptr;
   }
 
   bool focus_process_by_name_extended(const wchar_t *exe_name_w, int max_successes, int timeout_secs, bool exit_on_first, std::function<bool()> cancel, DWORD *confirmed_pid_out) {
@@ -425,7 +434,7 @@ namespace playnite_launcher::focus {
     DWORD pid = 0;
     GetWindowThreadProcessId(window, &pid);
     const auto stopped = [&] { return cancel && cancel(); };
-    if (stopped() || !is_candidate_window(window, pid)) {
+    if (stopped() || !is_candidate_window(window, pid) || !is_eligible_game_window(window)) {
       return false;
     }
     if (GetForegroundWindow() != window) {

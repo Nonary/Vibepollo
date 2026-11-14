@@ -109,6 +109,7 @@ test('gamepad options follow the host platform', () => {
       'vhf_ds5',
       'usbip_ds5',
       'vhf_switch',
+      'vhf_steam',
     ],
   );
   assert.deepEqual(
@@ -193,11 +194,15 @@ test('Linux keeps common virtual-display policy and hides Windows display intern
     'dd_virtual_display_scale',
     'dd_config_revert_delay',
     'dd_config_revert_on_disconnect',
-    'dd_paused_virtual_display_timeout_secs',
   ]) {
     const field = fields.find((candidate) => candidate.key === key);
     assert.deepEqual(field?.platform, ['windows', 'linux'], `${key} must support Linux cleanup`);
   }
+  // macOS keeps a paused session's virtual display for this long too.
+  assert.deepEqual(
+    fields.find((candidate) => candidate.key === 'dd_paused_virtual_display_timeout_secs')?.platform,
+    ['windows', 'linux', 'macos'],
+  );
 });
 
 test('Linux exposes Remote Monitor behavior controls', () => {
@@ -363,14 +368,16 @@ test('Settings explains unavailable host metadata and virtual-display readiness'
   assert.equal(typeof messages.ui.settings.virtual_display_unavailable.description, 'string');
 });
 
-test('global command rows preserve order, verbatim text, and Windows elevation', () => {
+test('global command rows preserve order, verbatim text, and elevation', () => {
   const source = [
     { do: '  set-mode "A"  ', undo: 'restore A', elevated: true, custom: 'keep' },
     { do: 'second', undo: '', elevated: false },
   ];
   const rows = normalizeCommandRows(source, 'windows');
   assert.deepEqual(serializeCommandRows(rows, 'windows'), source);
-  assert.deepEqual(serializeCommandRows(source, 'linux'), [
+  // The Linux machine service runs elevated commands as root.
+  assert.deepEqual(serializeCommandRows(source, 'linux'), source);
+  assert.deepEqual(serializeCommandRows(source, 'macos'), [
     { do: '  set-mode "A"  ', undo: 'restore A', custom: 'keep' },
     { do: 'second', undo: '' },
   ]);

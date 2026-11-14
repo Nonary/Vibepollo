@@ -7,6 +7,9 @@
 #include <string>
 #include <Windows.h>
 #include <WtsApi32.h>
+#include <AclAPI.h>
+#include <sddl.h>
+#include <shlobj.h>
 
 #include "src/platform/windows/service_constants.h"
 
@@ -121,18 +124,200 @@ HANDLE DuplicateTokenForSession(DWORD console_session_id) {
   return new_token;
 }
 
-HANDLE OpenLogFileHandle() {
-  WCHAR log_file_name[MAX_PATH];
+bool SecureServiceDirectory(const std::wstring &path) {
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        L"O:SYG:SYD:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)",
+        SDDL_REVISION_1,
+        &descriptor,
+        nullptr)) {
+    return false;
+  }
+  SECURITY_ATTRIBUTES attributes {sizeof(attributes), descriptor, FALSE};
+  const BOOL created = CreateDirectoryW(path.c_str(), &attributes);
+  const DWORD create_error = created ? ERROR_SUCCESS : GetLastError();
+  if (!created && create_error != ERROR_ALREADY_EXISTS) {
+    LocalFree(descriptor);
+    return false;
+  }
+  LocalFree(descriptor);
+  descriptor = nullptr;
 
-  // Create sunshine.log in the Temp folder (usually %SYSTEMROOT%\Temp)
-  GetTempPathW(_countof(log_file_name), log_file_name);
-  wcscat_s(log_file_name, L"sunshine.log");
+  HANDLE directory = CreateFileW(
+    path.c_str(),
+    READ_CONTROL,
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+    nullptr,
+    OPEN_EXISTING,
+    FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+    nullptr
+  );
+  if (directory == INVALID_HANDLE_VALUE) {
+    return false;
+  }
+  FILE_ATTRIBUTE_TAG_INFO tag_info {};
+  if (!GetFileInformationByHandleEx(directory, FileAttributeTagInfo, &tag_info, sizeof(tag_info)) ||
+      (tag_info.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+    CloseHandle(directory);
+    return false;
+  }
+
+  PSID owner = nullptr;
+  PACL dacl = nullptr;
+  const DWORD security_status = GetSecurityInfo(
+    directory,
+    SE_FILE_OBJECT,
+    OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+    &owner,
+    nullptr,
+    &dacl,
+    nullptr,
+    &descriptor
+  );
+  CloseHandle(directory);
+  if (security_status != ERROR_SUCCESS || !owner || !dacl || !descriptor) {
+    if (descriptor) LocalFree(descriptor);
+    return false;
+  }
+
+  BYTE system_sid_storage[SECURITY_MAX_SID_SIZE] {};
+  BYTE administrators_sid_storage[SECURITY_MAX_SID_SIZE] {};
+  DWORD system_sid_size = sizeof(system_sid_storage);
+  DWORD administrators_sid_size = sizeof(administrators_sid_storage);
+  bool trusted = CreateWellKnownSid(WinLocalSystemSid, nullptr, system_sid_storage, &system_sid_size) &&
+                 CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, administrators_sid_storage, &administrators_sid_size) &&
+                 (EqualSid(owner, system_sid_storage) || EqualSid(owner, administrators_sid_storage));
+  SECURITY_DESCRIPTOR_CONTROL control = 0;
+  DWORD revision = 0;
+  trusted = trusted && GetSecurityDescriptorControl(descriptor, &control, &revision) &&
+            (control & SE_DACL_PROTECTED) != 0 && IsValidAcl(dacl);
+
+  ACL_SIZE_INFORMATION info {};
+  trusted = trusted && GetAclInformation(dacl, &info, sizeof(info), AclSizeInformation);
+  bool system_full = false;
+  bool administrators_full = false;
+  for (DWORD index = 0; trusted && index < info.AceCount; ++index) {
+    void *raw_ace = nullptr;
+    trusted = GetAce(dacl, index, &raw_ace) && raw_ace;
+    if (!trusted) break;
+    const auto *header = static_cast<const ACE_HEADER *>(raw_ace);
+    trusted = header->AceType == ACCESS_ALLOWED_ACE_TYPE &&
+              (header->AceFlags & (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE)) ==
+                (OBJECT_INHERIT_ACE | CONTAINER_INHERIT_ACE);
+    if (!trusted) break;
+    const auto *ace = static_cast<const ACCESS_ALLOWED_ACE *>(raw_ace);
+    PSID sid = const_cast<DWORD *>(&ace->SidStart);
+    trusted = (ace->Mask & FILE_ALL_ACCESS) == FILE_ALL_ACCESS;
+    if (trusted && EqualSid(sid, system_sid_storage)) {
+      system_full = true;
+    } else if (trusted && EqualSid(sid, administrators_sid_storage)) {
+      administrators_full = true;
+    } else {
+      trusted = false;
+    }
+  }
+  const bool already_private = trusted && system_full && administrators_full;
+  LocalFree(descriptor);
+  if (already_private) {
+    return true;
+  }
+  if (created) {
+    return false;
+  }
+
+  // Never take ownership of or rewrite an untrusted directory's DACL. Handles
+  // opened before such a rewrite retain their granted rename/mutation access.
+  // Quarantine the old object and create a distinct protected canonical tree.
+  bool quarantined = false;
+  const auto nonce = std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
+  for (unsigned int attempt = 0; attempt < 32 && !quarantined; ++attempt) {
+    const auto quarantine = path + L".untrusted-" + nonce + L"-" + std::to_wstring(attempt);
+    quarantined = MoveFileExW(path.c_str(), quarantine.c_str(), MOVEFILE_WRITE_THROUGH) != FALSE;
+    if (!quarantined && GetLastError() != ERROR_ALREADY_EXISTS && GetLastError() != ERROR_FILE_EXISTS) {
+      break;
+    }
+  }
+  if (!quarantined) {
+    return false;
+  }
+  return SecureServiceDirectory(path);
+}
+
+HANDLE OpenLogFileHandle() {
+  auto open_null = []() {
+    SECURITY_ATTRIBUTES attributes {sizeof(attributes), nullptr, TRUE};
+    return CreateFileW(
+      L"\\\\.\\NUL",
+      GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      &attributes,
+      OPEN_EXISTING,
+      FILE_ATTRIBUTE_NORMAL,
+      nullptr
+    );
+  };
+
+  std::wstring program_data(MAX_PATH, L'\0');
+  if (FAILED(SHGetFolderPathW(nullptr, CSIDL_COMMON_APPDATA, nullptr, SHGFP_TYPE_CURRENT, program_data.data()))) {
+    return open_null();
+  }
+  program_data.resize(wcslen(program_data.c_str()));
+  const std::wstring service_root = program_data + L"\\Vibepollo";
+  const std::wstring log_directory = service_root + L"\\Logs";
+  if (!SecureServiceDirectory(service_root) || !SecureServiceDirectory(log_directory)) {
+    // Never traverse an untrusted or reparse-backed directory merely to retain
+    // file logging. The service can safely run with its output discarded.
+    return open_null();
+  }
+
+  const std::wstring log_file_name = log_directory + L"\\sunshine-service.log";
+  PSECURITY_DESCRIPTOR descriptor = nullptr;
+  if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        L"O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)",
+        SDDL_REVISION_1,
+        &descriptor,
+        nullptr)) {
+    return open_null();
+  }
 
   // The file handle must be inheritable for our child process to use it
-  SECURITY_ATTRIBUTES security_attributes = {sizeof(security_attributes), nullptr, TRUE};
+  SECURITY_ATTRIBUTES security_attributes = {sizeof(security_attributes), descriptor, TRUE};
 
-  // Overwrite the old sunshine.log
-  return CreateFileW(log_file_name, GENERIC_WRITE, FILE_SHARE_READ, &security_attributes, CREATE_ALWAYS, 0, nullptr);
+  auto create_protected_log = [&](const std::wstring &path) {
+    return CreateFileW(
+      path.c_str(),
+      GENERIC_WRITE,
+      FILE_SHARE_READ,
+      &security_attributes,
+      CREATE_NEW,
+      FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
+      nullptr
+    );
+  };
+
+  // Do not open an existing object. A directory/junction at the leaf is left
+  // untouched, and a regular file held without delete sharing cannot prevent
+  // startup: both cases fall through to a fresh name in the secured directory.
+  const DWORD leaf_attributes = GetFileAttributesW(log_file_name.c_str());
+  if (leaf_attributes != INVALID_FILE_ATTRIBUTES &&
+      (leaf_attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)) == 0) {
+    (void) DeleteFileW(log_file_name.c_str());
+  }
+
+  HANDLE handle = create_protected_log(log_file_name);
+  if (handle == INVALID_HANDLE_VALUE) {
+    const DWORD process_id = GetCurrentProcessId();
+    const ULONGLONG nonce = GetTickCount64();
+    for (unsigned int attempt = 0; attempt < 32 && handle == INVALID_HANDLE_VALUE; ++attempt) {
+      const auto unique_name = log_directory + L"\\sunshine-service-" +
+                               std::to_wstring(process_id) + L"-" +
+                               std::to_wstring(nonce) + L"-" +
+                               std::to_wstring(attempt) + L".log";
+      handle = create_protected_log(unique_name);
+    }
+  }
+  LocalFree(descriptor);
+  return handle != INVALID_HANDLE_VALUE ? handle : open_null();
 }
 
 bool RunTerminationHelper(HANDLE console_token, DWORD pid) {
@@ -227,20 +412,16 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
   }
 
   auto log_file_handle = OpenLogFileHandle();
-  if (log_file_handle == INVALID_HANDLE_VALUE) {
-    // Tell SCM we failed to start
-    ReportServiceStopped(GetLastError());
-    return;
-  }
+  const bool have_log_handle = log_file_handle != INVALID_HANDLE_VALUE;
 
   // We can use a single STARTUPINFOEXW for all the processes that we launch
   STARTUPINFOEXW startup_info = {};
   startup_info.StartupInfo.cb = sizeof(startup_info);
   startup_info.StartupInfo.lpDesktop = (LPWSTR) L"winsta0\\default";
-  startup_info.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+  startup_info.StartupInfo.dwFlags = have_log_handle ? STARTF_USESTDHANDLES : 0;
   startup_info.StartupInfo.hStdInput = nullptr;
-  startup_info.StartupInfo.hStdOutput = log_file_handle;
-  startup_info.StartupInfo.hStdError = log_file_handle;
+  startup_info.StartupInfo.hStdOutput = have_log_handle ? log_file_handle : nullptr;
+  startup_info.StartupInfo.hStdError = have_log_handle ? log_file_handle : nullptr;
 
   // Allocate an attribute list with space for 2 entries
   startup_info.lpAttributeList = AllocateProcThreadAttributeList(2);
@@ -250,8 +431,11 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
     return;
   }
 
-  // Only allow Sunshine.exe to inherit the log file handle, not all inheritable handles
-  UpdateProcThreadAttribute(startup_info.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &log_file_handle, sizeof(log_file_handle), nullptr, nullptr);
+  // Only allow Sunshine.exe to inherit the log file handle, not all inheritable handles.
+  // If even the NUL fallback failed, launch without redirected standard handles.
+  if (have_log_handle) {
+    UpdateProcThreadAttribute(startup_info.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &log_file_handle, sizeof(log_file_handle), nullptr, nullptr);
+  }
 
   // Tell SCM we're running (and stoppable now)
   service_status.dwControlsAccepted = SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PRESHUTDOWN | SERVICE_ACCEPT_SESSIONCHANGE;
@@ -287,7 +471,7 @@ VOID WINAPI ServiceMain(DWORD dwArgc, LPTSTR *lpszArgv) {
     UpdateProcThreadAttribute(startup_info.lpAttributeList, 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, &job_handle, sizeof(job_handle), nullptr, nullptr);
 
     PROCESS_INFORMATION process_info;
-    if (!CreateProcessAsUserW(console_token, L"Sunshine.exe", nullptr, nullptr, nullptr, TRUE, CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, (LPSTARTUPINFOW) &startup_info, &process_info)) {
+    if (!CreateProcessAsUserW(console_token, L"Sunshine.exe", nullptr, nullptr, nullptr, have_log_handle, CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT, nullptr, nullptr, (LPSTARTUPINFOW) &startup_info, &process_info)) {
       CloseHandle(console_token);
       CloseHandle(job_handle);
       continue;

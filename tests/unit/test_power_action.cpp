@@ -4,6 +4,7 @@
 #include <boost/property_tree/xml_parser.hpp>
 #include <future>
 #include <gtest/gtest.h>
+#include <src/jthread.h>
 #include <src/power_action_http.h>
 #include <src/tls_client_identity.h>
 #include <sstream>
@@ -196,7 +197,7 @@ namespace {
     const auto req = request();
     std::promise<void> acquired, release;
     auto done = release.get_future();
-    std::jthread other([&] {
+    util::jthread other([&] {
       std::lock_guard lock(lifecycle);
       acquired.set_value();
       done.wait();

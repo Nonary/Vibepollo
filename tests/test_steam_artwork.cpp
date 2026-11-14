@@ -61,7 +61,7 @@ namespace {
 
   // A small dependency-free valid 600x900 RGB PNG. Stored DEFLATE blocks keep
   // this fixture deterministic while exercising the real conversion path.
-  std::vector<std::uint8_t> full_portrait_png() {
+  std::vector<std::uint8_t> full_portrait_png(std::uint8_t blue = 0x7f) {
     constexpr std::uint32_t width = 600;
     constexpr std::uint32_t height = 900;
     std::vector<std::uint8_t> png {0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'};
@@ -78,7 +78,7 @@ namespace {
       for (std::uint32_t x = 0; x < width; ++x) {
         raw.push_back(static_cast<std::uint8_t>(x));
         raw.push_back(static_cast<std::uint8_t>(y));
-        raw.push_back(0x7f);
+        raw.push_back(blue);
       }
     }
     std::vector<std::uint8_t> compressed {0x78, 0x01};
@@ -271,16 +271,88 @@ TEST(SteamArtwork, FetchesContentHashPortraitWhenFixedCdnPathIsMissing) {
     auto fixture = full_portrait_png();
     std::vector<std::string> requested;
     std::vector<platf::steam::game_t> games {game};
-    platf::steam::artwork::prepare(games, root / "appdata", [&](const std::string &url) -> std::optional<std::vector<std::uint8_t>> {
+    using namespace platf::steam::artwork;
+    prepare(games, root / "appdata", [&](const std::string &url) -> remote_fetch_result_t {
       requested.push_back(url);
-      if (url == hashed) return fixture;
-      return std::nullopt;
+      if (url == hashed) return {remote_fetch_status::success, fixture};
+      return {remote_fetch_status::not_found};
     });
     ASSERT_EQ(requested.size(), 2U);
     EXPECT_EQ(requested[1], hashed);
     EXPECT_EQ(png_size(games[0].artwork_client_path), std::make_pair(600U, 900U));
     fs::remove_all(root, ec);
   }
+}
+
+TEST(SteamArtwork, ChangedContentHashRefreshesRemotePortraitAndScopesFailure) {
+  using namespace platf::steam::artwork;
+  const auto root = test_root();
+  std::error_code ec;
+  const std::string hash_a(40, 'a'), hash_b(40, 'b'), hash_c(40, 'c');
+  const auto local = [&](const std::string &hash) {
+    const auto path = root / "librarycache/42" / hash / "library_capsule.png";
+    fs::create_directories(path.parent_path(), ec);
+    std::ofstream(path, std::ios::binary).write(reinterpret_cast<const char *>(one_pixel_png), sizeof(one_pixel_png));
+    return path;
+  };
+  std::vector<platf::steam::game_t> games(1);
+  games[0].app_id = 42;
+  games[0].artwork_path = local(hash_a);
+  // A prior build may have put a different hash in the old app-ID-only cache.
+  const auto legacy_cache = remote_cache_path(root / "appdata", 42);
+  fs::create_directories(legacy_cache.parent_path(), ec);
+  const auto legacy = full_portrait_png(0x02);
+  std::ofstream(legacy_cache, std::ios::binary).write(reinterpret_cast<const char *>(legacy.data()), legacy.size());
+  std::vector<std::string> requests;
+  const auto fetch = [&](const std::string &url) -> remote_fetch_result_t {
+    requests.push_back(url);
+    if (url == remote_portrait_url(42)) return {remote_fetch_status::not_found};
+    if (url.find(hash_c) != std::string::npos) return {};
+    return {remote_fetch_status::success, full_portrait_png(url.find(hash_a) != std::string::npos ? 0x21 : 0xa4)};
+  };
+  const auto read = [](const fs::path &path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::vector<char> {std::istreambuf_iterator<char>(input), {}};
+  };
+  prepare(games, root / "appdata", fetch);
+  ASSERT_EQ(requests.size(), 2U);
+  ASSERT_FALSE(games[0].artwork_client_path.empty());
+  const auto first = read(games[0].artwork_client_path);
+  prepare(games, root / "appdata", fetch);
+  EXPECT_EQ(requests.size(), 2U);  // Same hash reuses the validated download.
+  games[0].artwork_path = local(hash_b);
+  prepare(games, root / "appdata", fetch);
+  ASSERT_EQ(requests.size(), 4U);
+  EXPECT_NE(requests.back().find(hash_b), std::string::npos);
+  EXPECT_NE(read(games[0].artwork_client_path), first);
+  // A failed newer hash must not suppress a later, different hash.
+  games[0].artwork_path = local(hash_c);
+  prepare(games, root / "appdata", fetch);
+  ASSERT_EQ(requests.size(), 6U);
+  games[0].artwork_path = local(std::string(40, 'd'));
+  prepare(games, root / "appdata", fetch);
+  EXPECT_EQ(requests.size(), 8U);
+  fs::remove_all(root, ec);
+}
+
+TEST(SteamArtwork, TransportFailureDoesNotRetryHashedPortrait) {
+  using namespace platf::steam::artwork;
+  const auto root = test_root();
+  std::error_code ec;
+  const auto source = root / std::string(40, 'a') / "library_capsule.png";
+  fs::create_directories(source.parent_path(), ec);
+  std::ofstream(source, std::ios::binary).write(reinterpret_cast<const char *>(one_pixel_png), sizeof(one_pixel_png));
+  std::vector<platf::steam::game_t> games(1);
+  games[0].app_id = 42;
+  games[0].artwork_path = source;
+  unsigned calls = 0;
+  prepare(games, root / "appdata", [&](const std::string &) -> remote_fetch_result_t {
+    ++calls;
+    return {};  // e.g. timeout or TLS failure, not HTTP 404.
+  });
+  EXPECT_EQ(calls, 1U);
+  EXPECT_EQ(png_size(games[0].artwork_client_path), std::make_pair(1U, 1U));
+  fs::remove_all(root, ec);
 }
 
 TEST(SteamArtwork, RejectsInvalidRemoteFixture) {

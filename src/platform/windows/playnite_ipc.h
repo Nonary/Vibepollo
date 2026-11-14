@@ -8,6 +8,7 @@
 #include "src/platform/windows/ipc/pipes.h"
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -72,8 +73,14 @@ namespace platf::playnite {
   private:
     void run();
     void accumulate_and_dispatch_lines(std::span<const uint8_t> bytes);
-    std::unique_ptr<platf::dxgi::INamedPipe> connect_to_plugin();
+    std::unique_ptr<platf::dxgi::INamedPipe> connect_to_plugin(unsigned long &error_out);
     void serve_connected_loop();
+    // Sleep for the current backoff delay (with jitter), then grow it. Returns early on stop().
+    void wait_before_retry();
+    void sleep_while_running(std::chrono::milliseconds duration);
+    // Log the first failure of a run, then at most one summary per interval.
+    void note_connect_failure(const char *what, unsigned long error);
+    void note_connect_success();
     // Check if any Playnite process is running (Desktop or Fullscreen)
     bool is_playnite_running();
 
@@ -89,5 +96,10 @@ namespace platf::playnite {
     std::string recv_buffer_;
     std::string control_name_;
     bool no_playnite_logged_ = false;  ///< Ensures we only log missing Playnite once until it appears.
+    std::chrono::milliseconds retry_delay_ {0};  ///< Current reconnect backoff; 0 means the initial delay.
+    bool failing_ = false;  ///< A connect failure was logged and no connect has succeeded since.
+    unsigned failed_attempts_ = 0;  ///< Failed attempts since the last success.
+    unsigned failures_since_summary_ = 0;
+    std::chrono::steady_clock::time_point last_failure_summary_ {};
   };
 }  // namespace platf::playnite
