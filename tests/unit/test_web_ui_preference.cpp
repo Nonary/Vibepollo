@@ -161,8 +161,18 @@ TEST(WebUiPreference, NativeFileSavePreservesCrLfBytes) {
   web_ui_preference::store_t store {
     path,
     web_ui_preference::read_conf_file,
+    // Native binary I/O isolates the Windows CRLF read regression without
+    // linking the host file-handler implementation into this component test.
+    // Atomic replacement and Windows WriteFile behavior are covered by the
+    // independent FileHandlerPolicy / FileHandlerWindowsWrite tests.
     [](const std::filesystem::path &target, const std::string_view data) {
-      return file_handler::write_file(target.string().c_str(), data) == 0;
+      std::ofstream output(target, std::ios::binary | std::ios::trunc);
+      if (!output.is_open()) {
+        return false;
+      }
+      output.write(data.data(), static_cast<std::streamsize>(data.size()));
+      output.close();
+      return output.good();
     },
   };
   EXPECT_EQ(store.read(), "legacy");
