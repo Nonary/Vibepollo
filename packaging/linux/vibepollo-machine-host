@@ -440,7 +440,9 @@ load_session() {
   IFS=: read -r account_name _ account_uid account_gid _ account_home _ <<<"$entry"
   [[ "$account_name" == "$session_user" && "$account_uid" == "$session_uid" &&
      "$account_gid" == "$session_gid" && "$account_home" == "$session_home" ]] || fail 'session account does not match the trusted record'
-  [[ "$session_backend" == kwin && -z "$session_compositor" ||
+  [[ "$session_backend" == kwin && ( -z "$session_compositor" ||
+       "$session_role" == greeter && "$session_user" == sddm &&
+       "$session_compositor" =~ ^sddm-[1-9][0-9]*-[1-9][0-9]*$ ) ||
      "$session_backend" == hyprland-kms && "$session_role" == desktop &&
      "$session_compositor" =~ ^[0-9a-f]{32}-[1-9][0-9]*-[1-9][0-9]*$ && "$session_compositor" != 00000000000000000000000000000000-* ]] ||
     fail 'invalid backend record'

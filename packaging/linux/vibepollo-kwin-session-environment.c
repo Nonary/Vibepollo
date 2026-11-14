@@ -11,8 +11,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 #define MAXIMUM_CGROUP_BYTES 4096
@@ -277,15 +279,16 @@ static bool read_status_uid(int process_directory, uid_t *uid_out) {
   return false;
 }
 
-static bool process_executable_is_kwin(int process_directory) {
+// 0 = KWin, 1 = unavailable observation, 5 = observed unsupported executable.
+static int observe_kwin_executable(int process_directory) {
   char executable[PATH_MAX] = {0};
   const ssize_t executable_length = readlinkat(process_directory, "exe", executable, sizeof(executable) - 1);
   if (executable_length > 0 && (size_t) executable_length < sizeof(executable) - 1) {
     executable[executable_length] = 0;
-    return !strcmp(executable, "/usr/bin/kwin_wayland");
+    return !strcmp(executable, "/usr/bin/kwin_wayland") ? 0 : 5;
   }
   if (executable_length >= 0 || (errno != EACCES && errno != EPERM)) {
-    return false;
+    return 1;
   }
   // The distro KWin carries cap_sys_nice, so it runs non-dumpable and its
   // /proc/PID/exe link is readable by root only. The caller has already
@@ -294,13 +297,17 @@ static bool process_executable_is_kwin(int process_directory) {
   char name[64] = {0};
   size_t length = 0;
   if (!read_file_at_bounded(process_directory, "comm", name, sizeof(name) - 1, &length) || !length) {
-    return false;
+    return 1;
   }
   name[length] = 0;
   if (name[length - 1] == '\n') {
     name[length - 1] = 0;
   }
-  return !strcmp(name, "kwin_wayland");
+  return !strcmp(name, "kwin_wayland") ? 0 : 5;
+}
+
+static bool process_executable_is_kwin(int process_directory) {
+  return observe_kwin_executable(process_directory) == 0;
 }
 
 static bool process_is_session_kwin(int process_directory, uid_t uid, const char *expected_cgroup) {
@@ -536,12 +543,175 @@ static bool execution_identity_is_safe(uid_t uid, uid_t effective_uid, gid_t gid
   return uid && effective_uid == uid && effective_gid == gid;
 }
 
-int main(void) {
+// SDDM owns its compositor directly in the logind session scope, rather than
+// Plasma Login Manager's user units. Observe its listening socket without
+// importing or changing either user's systemd environment.
+static bool sddm_session_cgroup(uid_t uid, const char *session, char *result, size_t capacity) {
+  if (!uid || !session || !*session || strlen(session) > 64) return false;
+  for (const unsigned char *cursor = (const unsigned char *) session; *cursor; ++cursor) {
+    if (!isalnum(*cursor) && *cursor != '_' && *cursor != '-' && *cursor != '.') return false;
+  }
+  const int length = snprintf(result, capacity, "/user.slice/user-%lu.slice/session-%s.scope",
+                              (unsigned long) uid, session);
+  return length > 0 && (size_t) length < capacity;
+}
+
+// SDDM observation results: 0 admits a peer, 1 retries, 3 revokes a stale or
+// foreign identity, 5 identifies a compositor outside the supported subset.
+static int process_start_time(int directory, unsigned long long *start) {
+  char contents[4096] = {0};
+  size_t length = 0;
+  if (!read_file_at_bounded(directory, "stat", contents, sizeof(contents) - 1, &length)) return 1;
+  contents[length] = 0;
+  char *fields = strrchr(contents, ')');
+  if (!fields || fields[1] != ' ') return 1;
+  char *save = NULL;
+  unsigned int field = 3;
+  for (char *value = strtok_r(fields + 2, " ", &save); value;
+       value = strtok_r(NULL, " ", &save), ++field) {
+    if (field == 3 && (!strcmp(value, "Z") || !strcmp(value, "X") || !strcmp(value, "x"))) return 3;
+    if (field != 22) continue;
+    if (!*value) return 1;
+    for (const unsigned char *cursor = (const unsigned char *) value; *cursor; ++cursor) {
+      if (!isdigit(*cursor)) return 1;
+    }
+    errno = 0;
+    *start = strtoull(value, NULL, 10);
+    return !errno && *start ? 0 : 1;
+  }
+  return 1;
+}
+
+static int sddm_process_identity(pid_t pid, uid_t uid, const char *cgroup,
+                                char *identity, size_t capacity) {
+  char path[64] = {0};
+  snprintf(path, sizeof(path), "/proc/%ld", (long) pid);
+  const int process = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (process < 0) return errno == ENOENT || errno == ESRCH ? 3 : 1;
+  char observed_cgroup[MAXIMUM_CGROUP_BYTES] = {0};
+  uid_t observed_uid = 0;
+  unsigned long long start = 0;
+  int status = 1;
+  if (read_unified_cgroup_at(process, observed_cgroup, sizeof(observed_cgroup)) &&
+      read_status_uid(process, &observed_uid)) {
+    if (observed_uid != uid || strcmp(observed_cgroup, cgroup)) {
+      status = 3;
+    } else if (!(status = process_start_time(process, &start)) &&
+               !(status = observe_kwin_executable(process))) {
+      const int length = snprintf(identity, capacity, "sddm-%ld-%llu", (long) pid, start);
+      status = length > 0 && (size_t) length < capacity ? 0 : 1;
+    }
+  }
+  close(process);
+  return status;
+}
+
+static int sddm_check_identity(uid_t uid, const char *session, const char *identity) {
+  char cgroup[256] = {0};
+  if (!identity || strncmp(identity, "sddm-", 5) ||
+      !sddm_session_cgroup(uid, session, cgroup, sizeof(cgroup))) return 3;
+  const char *pid_text = identity + 5;
+  const char *separator = strchr(pid_text, '-');
+  if (!separator || *pid_text < '1' || *pid_text > '9' ||
+      separator[1] < '1' || separator[1] > '9') return 3;
+  for (const char *cursor = pid_text; *cursor; ++cursor) {
+    if (cursor != separator && !isdigit((unsigned char) *cursor)) return 3;
+  }
+  errno = 0;
+  const unsigned long pid = strtoul(pid_text, NULL, 10);
+  if (errno || pid <= 1 || pid > INT_MAX) return 3;
+  char observed[64] = {0};
+  const int status = sddm_process_identity((pid_t) pid, uid, cgroup, observed, sizeof(observed));
+  if (status == 1) return 1;
+  return status == 0 && !strcmp(identity, observed) ? 0 : 3;
+}
+
+static int sddm_socket_identity(const char *path, uid_t uid, const char *cgroup,
+                                char *identity, size_t capacity) {
+  struct sockaddr_un address = {.sun_family = AF_UNIX};
+  if (!path || strlen(path) >= sizeof(address.sun_path)) return 1;
+  memcpy(address.sun_path, path, strlen(path) + 1);
+  const int connection = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC | SOCK_NONBLOCK, 0);
+  if (connection < 0) return 1;
+  struct ucred peer = {0};
+  socklen_t peer_length = sizeof(peer);
+  int status = 1;
+  if (!connect(connection, (const struct sockaddr *) &address, sizeof(address)) &&
+      !getsockopt(connection, SOL_SOCKET, SO_PEERCRED, &peer, &peer_length) &&
+      peer_length == sizeof(peer)) {
+    status = peer.uid == uid && peer.pid > 1 ?
+      sddm_process_identity(peer.pid, uid, cgroup, identity, capacity) : 3;
+  }
+  close(connection);
+  return status;
+}
+
+static int sddm_session_environment_at_runtime(const char *runtime, uid_t uid, const char *session,
+                                              struct display_environment *environment,
+                                              char *identity, size_t capacity) {
+  char expected_cgroup[256] = {0};
+  if (!sddm_session_cgroup(uid, session, expected_cgroup, sizeof(expected_cgroup))) return 3;
+  const int descriptor = open(runtime, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+  if (descriptor < 0) return 1;
+  struct stat attributes = {0};
+  if (fstat(descriptor, &attributes) || attributes.st_uid != uid || !runtime_mode_is_safe(attributes.st_mode)) {
+    close(descriptor);
+    return 3;
+  }
+  DIR *entries = fdopendir(descriptor);
+  if (!entries) { close(descriptor); return 1; }
+  bool found = false;
+  int result = 1;
+  unsigned int count = 0;
+  struct dirent *entry;
+  memset(environment, 0, sizeof(*environment));
+  for (;;) {
+    errno = 0;
+    entry = readdir(entries);
+    if (!entry) { if (errno) result = 1; break; }
+    if (++count > 1024) { result = 3; break; }
+    if (!valid_wayland_display(entry->d_name)) continue;
+    if (fstatat(descriptor, entry->d_name, &attributes, AT_SYMLINK_NOFOLLOW) ||
+        !S_ISSOCK(attributes.st_mode) || attributes.st_uid != uid) continue;
+    char path[PATH_MAX] = {0}, observed_identity[64] = {0};
+    const int length = snprintf(path, sizeof(path), "%s/%s", runtime, entry->d_name);
+    if (length <= 0 || (size_t) length >= sizeof(path)) { result = 3; break; }
+    const int status = sddm_socket_identity(path, uid, expected_cgroup, observed_identity, sizeof(observed_identity));
+    if (status == 1) continue;
+    // This UID may also own another seat/session's socket. It cannot admit a
+    // binding for that peer, but must not hide the selected session's KWin.
+    if (status == 3) continue;
+    if (status != 0) { result = status; break; }
+    if (found || !copy_value(environment->wayland_display, sizeof(environment->wayland_display),
+                             entry->d_name, strlen(entry->d_name)) || strlen(observed_identity) >= capacity) {
+      result = 3;
+      break;
+    }
+    memcpy(identity, observed_identity, strlen(observed_identity) + 1);
+    found = true;
+    result = 0;
+  }
+  closedir(entries);
+  return result;
+}
+
+static int sddm_session_environment(const char *runtime, uid_t uid, const char *session,
+                                   struct display_environment *environment,
+                                   char *identity, size_t capacity) {
+  if (!canonical_runtime_is_safe(runtime, uid)) return 1;
+  return sddm_session_environment_at_runtime(runtime, uid, session, environment, identity, capacity);
+}
+
+int main(int argc, char **argv) {
+  const bool sddm_discover = argc == 3 && !strcmp(argv[1], "--sddm-session");
+  const bool sddm_check = argc == 4 && !strcmp(argv[1], "--sddm-check");
+  if (argc != 1 && !sddm_discover && !sddm_check) return 2;
   const uid_t uid = getuid();
   if (!execution_identity_is_safe(uid, geteuid(), getgid(), getegid())) {
     fputs("vibepollo-kwin-session-environment: refusing privileged execution\n", stderr);
     return 1;
   }
+  if (sddm_check) return sddm_check_identity(uid, argv[2], argv[3]);
 
   char default_runtime[64] = {0};
   const char *runtime = getenv("XDG_RUNTIME_DIR");
@@ -557,6 +727,13 @@ int main(void) {
   }
 
   struct display_environment environment = {0};
+  if (sddm_discover) {
+    char identity[64] = {0};
+    const int status = sddm_session_environment(runtime, uid, argv[2], &environment, identity, sizeof(identity));
+    if (status) return status;
+    printf("%s %s\n", environment.wayland_display, identity);
+    return 0;
+  }
   bool ready = false;
   for (unsigned int attempt = 0; attempt < DISCOVERY_ATTEMPTS; ++attempt) {
     int kwin_directory = -1;

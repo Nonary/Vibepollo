@@ -16,7 +16,6 @@ readonly controller_service=vibepollo-session-controller.service
 readonly broker_socket_service=vibepollo-session-exec.socket
 readonly broker_socket_path=$runtime_root/session-broker.sock
 readonly service_user=vibepollo
-readonly greeter_user=plasmalogin
 readonly seat_name=seat0
 readonly reconcile_delay=1
 readonly command_timeout=5
@@ -74,14 +73,21 @@ classify_session_role() {
   rejected_session=''
   valid_uid "$observed_user" && valid_user "$observed_name" || return 1
   [[ "$observed_seat" == "$seat_name" && "$observed_remote" == no &&
-     "$observed_type" == wayland && "$observed_active" == yes &&
+     "$observed_active" == yes &&
      "$observed_state" == active ]] || return 1
+  if [[ "$observed_name:$observed_class:$observed_service" == sddm:greeter:sddm-greeter &&
+        "$observed_type" == x11 ]]; then
+    rejected_session='SDDM uses an X11 greeter; pre-login streaming requires [General] DisplayServer=wayland and [Wayland] CompositorCommand=kwin_wayland (launch KWin directly, without a wrapper); see docs/linux/sddm.md'
+    return 5
+  fi
+  [[ "$observed_type" == wayland ]] || return 1
 
   if [[ "$observed_name" == "$desktop_user" && "$observed_user" == "$desktop_uid" &&
         "$observed_class" == user ]] && desktop_service_supported "$observed_service"; then
     candidate_role=desktop
-  elif [[ "$observed_name" == "$greeter_user" && "$observed_class" == greeter &&
-          "$observed_service" == plasmalogin-greeter ]]; then
+  elif [[ "$observed_class" == greeter &&
+          ( "$observed_name:$observed_service" == plasmalogin:plasmalogin-greeter ||
+            "$observed_name:$observed_service" == sddm:sddm-greeter ) ]]; then
     candidate_role=greeter
   else
     rejected_session="user=$observed_name class=$observed_class service=$observed_service"
@@ -245,6 +251,10 @@ observe_active_session() {
     fi
     ((status == 0)) || return "$status"
     hyprland_bind_xdisplay
+  elif sddm_greeter; then
+    # Identify the actual socket peer before comparing generations. A new
+    # KWin process can reuse a Wayland socket within the same SDDM session.
+    observe_sddm_environment || return $?
   fi
 }
 
@@ -427,7 +437,59 @@ hyprland_invocation() {
   /usr/bin/printf '%s\n' "$invocation"
 }
 
+sddm_greeter() { [[ "$candidate_role" == greeter && "$candidate_user" == sddm ]]; }
+
+observe_sddm_environment() {
+  local status
+  if read_sddm_environment; then return 0; else status=$?; fi
+  case "$status" in
+    3) return 3 ;;
+    5)
+      rejected_session='SDDM Wayland greeter compositor is unsupported; pre-login streaming requires [Wayland] CompositorCommand=kwin_wayland (launch KWin directly, without Weston or a wrapper); see docs/linux/sddm.md'
+      return 5 ;;
+  esac
+  # A timeout or temporarily unavailable socket cannot admit a new binding.
+  # Preserve an old one only for this exact logind identity, and independently
+  # check its saved PID/start time so a stopped/replaced KWin is still revoked.
+  local -A bound=()
+  if read_session_record bound; then
+    local field
+    for field in session user uid gid home runtime groups role backend; do
+      local candidate_field=candidate_$field
+      [[ "${bound[$field]:-}" == "${!candidate_field}" ]] || return 3
+    done
+    if session_command_bounded "$command_timeout" "$candidate_uid" "$candidate_gid" \
+      /usr/bin/env -i "XDG_RUNTIME_DIR=$candidate_runtime" \
+      /usr/libexec/vibeshine/vibepollo-kwin-session-environment \
+        --sddm-check "$candidate_session" "${bound[compositor]:-}" >/dev/null; then
+      status=0
+    else
+      status=$?
+    fi
+    ((status != 3 && status != 5)) || return 3
+  fi
+  return 1
+}
+
+read_sddm_environment() {
+  local observation display compositor extra status
+  observation=$(session_command_bounded "$command_timeout" "$candidate_uid" "$candidate_gid" \
+    /usr/bin/env -i "XDG_RUNTIME_DIR=$candidate_runtime" \
+      /usr/libexec/vibeshine/vibepollo-kwin-session-environment --sddm-session "$candidate_session") || {
+        status=$?
+        case "$status" in 3|5) return "$status" ;; *) return 1 ;; esac
+      }
+  IFS=' ' read -r display compositor extra <<<"$observation"
+  [[ "$observation" != *$'\n'* && -z "$extra" && "$compositor" =~ ^sddm-[1-9][0-9]*-[1-9][0-9]*$ ]] || return 1
+  valid_wayland_display "$display" || return 1
+  candidate_display=$display
+  candidate_compositor=$compositor
+  candidate_xdisplay=''
+  candidate_xauthority=''
+}
+
 read_user_environment() {
+  if sddm_greeter; then read_sddm_environment; return $?; fi
   local environment line key value wayland='' socket_attributes
   candidate_display=''
   candidate_xdisplay=''
@@ -508,7 +570,11 @@ session_is_ready() {
     /usr/bin/test -S "$candidate_runtime/bus" || return 1
   /usr/bin/setpriv --reuid "$candidate_uid" --regid "$candidate_gid" --init-groups --no-new-privs -- \
     /usr/bin/test ! -L "$candidate_runtime/bus" || return 1
-  if [[ "$candidate_role" == greeter ]]; then
+  if sddm_greeter; then
+    # SDDM owns KWin in its logind session scope. Socket-peer validation
+    # replaces Plasma Login Manager's units and manager environment here.
+    :
+  elif [[ "$candidate_role" == greeter ]]; then
     user_unit_running plasma-login-wayland.target || return 1
     user_unit_running plasma-login-kwin_wayland.service || return 1
     user_unit_running plasma-login.service || return 1
@@ -640,7 +706,9 @@ read_session_record() {
     record[compositor]=''
   fi
   ((${#record[@]} == 14)) || return 1
-  [[ "${record[backend]}" == kwin && -z "${record[compositor]}" ||
+  [[ "${record[backend]}" == kwin && ( -z "${record[compositor]}" ||
+       "${record[role]}" == greeter && "${record[user]}" == sddm &&
+       "${record[compositor]}" =~ ^sddm-[1-9][0-9]*-[1-9][0-9]*$ ) ||
      "${record[backend]}" == hyprland-kms && "${record[role]}" == desktop &&
      "${record[compositor]}" =~ ^[0-9a-f]{32}-[1-9][0-9]*-[1-9][0-9]*$ &&
      "${record[compositor]}" != 00000000000000000000000000000000-* ]] || return 1
@@ -1147,7 +1215,9 @@ reconcile_once() {
       return 0
     fi
     if ((observed_status == 3)); then
-      announce compositor-changed 'Hyprland compositor stopped or its trusted identity changed; revoked the old host generation'
+      announce compositor-changed 'session compositor stopped or its trusted identity changed; revoked the old host generation'
+    elif ((observed_status == 5)); then
+      announce unsupported-greeter "$rejected_session"
     elif ((observed_status == 2)); then
       announce unsupported-session "active graphical session is not the configured desktop or greeter ($rejected_session; expected desktop user $desktop_user using $desktop_backend on a Wayland session started by Plasma Login Manager or SDDM); host is off"
     else

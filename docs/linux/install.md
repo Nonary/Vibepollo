@@ -17,7 +17,7 @@ or Steam/Xwayland application launching.
 | Desktop | KDE Plasma 6 on **Wayland**, started by **SDDM** or **Plasma Login Manager**. GNOME, other compositors, X11 sessions, and remote logins are not streamed. |
 | Kernel | Linux **6.16 or newer**, plus the headers for the kernel you boot (for example `linux-cachyos-headers`). The virtual-display driver is built with DKMS during installation. |
 | GPU | A GPU with a hardware **H.264** encoder. Testing has focused on NVIDIA and modern AMD GPUs; older cards may not work properly. NVIDIA uses NVENC through `nvidia-utils`; AMD needs `libva-mesa-driver`; Intel needs `intel-media-driver`. HEVC and AV1 are used when available. |
-| Pre-login streaming | NVIDIA only. AMD and Intel machines stream after you log in. |
+| Pre-login streaming | NVIDIA only, with Plasma Login Manager or [SDDM running KWin on Wayland](sddm.md). The SDDM greeter has its own display-server configuration. AMD and Intel machines stream after you log in. |
 | Accounts | One interactive desktop account. Machines with several accounts choose the streaming owner once (see [Choosing the streaming user](#choosing-the-streaming-user)). |
 | Secure Boot | Supported. The package signs its kernel module; on kernels that enforce module signatures you approve a one-time MOK enrollment at the next reboot. Do not disable Secure Boot. |
 

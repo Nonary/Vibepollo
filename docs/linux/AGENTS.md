@@ -28,7 +28,10 @@ capabilities on the public executable or its client helper.
 observes logind and accepts only the active, local, seat0 KDE Wayland desktop
 or greeter session by default. The explicit `hyprland-kms` desktop policy is
 limited to the UWSM-managed native Wayland/physical KMS subset documented in
-[hyprland.md](hyprland.md); greeters retain KWin. It never activates a session,
+[hyprland.md](hyprland.md); greeters retain KWin. Supported greeters are Plasma
+Login Manager and [SDDM running KWin directly on Wayland](sddm.md). SDDM's X11,
+Weston and wrapper-owned greeter sockets are outside this subset; diagnostics
+must identify the required SDDM settings without changing them. It never activates a session,
 mutates PAM, writes a user's environment, or keeps a stream alive across a login transition. A transition
 stops the machine host and its generation-bound applications before binding a
 fresh session. Disconnect and reconnect is intentional.
@@ -64,7 +67,13 @@ the runtime sockets and authority file, and publishes `WAYLAND_DISPLAY`,
 command before the desktop KWin unit is considered started. Publication failure
 is logged but kept nonfatal to the compositor; session readiness must therefore
 reject missing display credentials. The Wayland-only greeter unit does not use
-this Xwayland helper. The session controller remains a passive observer and
+this Xwayland helper. For SDDM, the same unprivileged helper observes the
+Wayland socket's peer UID, exact logind session cgroup, KWin executable and
+PID/start time; it neither requires Plasma Login Manager units nor imports a
+manager environment. A transient lookup cannot admit a new host. An existing
+binding may retry only for the same logind identity, checking its saved KWin
+PID/start time independently; confirmed process loss or replacement revokes it.
+The session controller remains a passive observer and
 must not mutate the user's environment.
 
 Provider discovery uses `/usr/libexec/vibeshine/vibepollo-provider-scan`. It
@@ -185,6 +194,9 @@ encoder discovery; HEVC and AV1 are reported when the GPU supports them but are
 not required for readiness. Unit activity, TCP listeners, or a reachable Web
 UI alone are not proof that remote display works. Test both the greeter and the
 desktop after a reboot, expecting the greeter stream to disconnect at login.
+For SDDM, also verify password input, pairing before login, logout, compositor
+restart and suspend/resume with autologin disabled. Static readiness probes
+and component tests do not establish working capture or input on real hardware.
 
 ## Diagnostics
 

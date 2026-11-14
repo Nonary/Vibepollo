@@ -70,6 +70,23 @@ check_rejected 2 'user=chasep class=user service=gdm-password' \
 
 # The greeter is admitted only for its own exact user, class, and service.
 check_role greeter 982 plasmalogin seat0 no wayland greeter yes active plasmalogin-greeter
+check_role greeter 982 sddm seat0 no wayland greeter yes active sddm-greeter
+check_rejected 2 'user=sddm class=greeter service=plasmalogin-greeter' \
+  982 sddm seat0 no wayland greeter yes active plasmalogin-greeter
+check_rejected 2 'user=sddm class=user service=sddm-greeter' \
+  982 sddm seat0 no wayland user yes active sddm-greeter
+for index in 2 3 6 7; do
+  rejected=(982 sddm seat0 no wayland greeter yes active sddm-greeter)
+  case "$index" in
+    2) rejected[$index]=seat1 ;;
+    3) rejected[$index]=yes ;;
+    6) rejected[$index]=no ;;
+    7) rejected[$index]=closing ;;
+  esac
+  check_rejected 1 '' "${rejected[@]}"
+done
+check_rejected 5 'SDDM uses an X11 greeter; pre-login streaming requires [General] DisplayServer=wayland and [Wayland] CompositorCommand=kwin_wayland (launch KWin directly, without a wrapper); see docs/linux/sddm.md' \
+  982 sddm seat0 no x11 greeter yes active sddm-greeter
 check_rejected 2 'user=other class=greeter service=plasmalogin-greeter' \
   982 other seat0 no wayland greeter yes active plasmalogin-greeter
 check_rejected 2 'user=plasmalogin class=user service=plasmalogin-greeter' \
@@ -111,6 +128,8 @@ check_rejected 1 '' 1000 'BadName' seat0 no wayland user yes active plasmalogin
   fixture_properties=$'User=1000\nName=chasep\nSeat=seat0\nRemote=no\nType=wayland\nClass=user\nActive=yes\nState=active\nService=sddm'
   expect_parsed_role_before_passwd_lookup desktop
   fixture_properties=$'User=982\nName=plasmalogin\nSeat=seat0\nRemote=no\nType=wayland\nClass=greeter\nActive=yes\nState=active\nService=plasmalogin-greeter'
+  expect_parsed_role_before_passwd_lookup greeter
+  fixture_properties=$'User=982\nName=sddm\nSeat=seat0\nRemote=no\nType=wayland\nClass=greeter\nActive=yes\nState=active\nService=sddm-greeter'
   expect_parsed_role_before_passwd_lookup greeter
 
   fixture_properties=$'User=1000\nName=chasep\nSeat=seat0\nRemote=no\nType=wayland\nClass=user\nActive=yes\nActive=no\nState=active\nService=sddm'

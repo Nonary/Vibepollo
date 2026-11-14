@@ -1589,8 +1589,26 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
         COMMAND test_linux_kwin_session_environment)
     set_tests_properties(test_component_linux_kwin_session_environment PROPERTIES LABELS "component")
 
+    add_executable(test_linux_sddm_environment
+        "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_sddm_environment.c")
+    target_compile_options(test_linux_sddm_environment PRIVATE -UNDEBUG)
+    add_test(NAME test_component_linux_sddm_environment COMMAND test_linux_sddm_environment)
+    set_tests_properties(test_component_linux_sddm_environment PROPERTIES LABELS "component" TIMEOUT 30)
+    if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+        add_test(NAME test_component_linux_sddm_records
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_sddm_records.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+        set_tests_properties(test_component_linux_sddm_records PROPERTIES LABELS "component")
+    endif()
+
     find_program(SUNSHINE_TEST_BASH_EXECUTABLE bash)
     if(SUNSHINE_TEST_BASH_EXECUTABLE)
+        add_test(NAME test_component_linux_sddm_session
+            COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_sddm_session.sh"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+        set_tests_properties(test_component_linux_sddm_session PROPERTIES LABELS "component")
         add_test(NAME test_component_linux_hyprland_session
             COMMAND "${SUNSHINE_TEST_BASH_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_hyprland_session.sh"
