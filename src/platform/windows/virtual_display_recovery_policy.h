@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <optional>
+#include <set>
 #include <string>
 #include <utility>
 
@@ -174,5 +175,122 @@ namespace VDISPLAY::policy {
 
   private:
     unsigned int attempts_ {0};
+  };
+
+  /**
+   * Keeps an exclusive stream layout when Windows swaps layouts by itself.
+   *
+   * Windows stores one layout for each set of connected displays and loads
+   * the stored one whenever that set changes, even when the display that came
+   * or went is switched off in the current layout. A sleeping monitor that
+   * drops its link for a second can therefore switch another monitor on in
+   * the middle of an exclusive stream, and off again when the link returns.
+   *
+   * The hold asks for the extra displays to be removed and the result saved
+   * while the changed set is still connected. Windows then stores the stream
+   * layout for that set too, and stops swapping.
+   *
+   * It only acts when the connected set differs from the one last seen with a
+   * correct layout. A display the user switches on by hand leaves that set
+   * unchanged, so it is left alone, and stays left alone through later
+   * hotplugs until the layout is stream-only again.
+   */
+  class exclusive_layout_hold_t {
+  public:
+    using time_point = std::chrono::steady_clock::time_point;
+
+    /// Windows reports a changed connected set before it finishes loading the
+    /// layout stored for it. A correct layout counts as the reference only
+    /// after it has outlasted that gap.
+    static constexpr auto settle_time = std::chrono::seconds(3);
+    static constexpr auto min_repair_interval = std::chrono::milliseconds(500);
+    /// A repair that lands after the set has changed back is saved for the
+    /// wrong set, so several tries may be needed. Each distinct set needs one.
+    /// The count starts again once a stream-only layout has settled.
+    static constexpr unsigned int max_repairs = 8;
+
+    enum class action_e {
+      none,
+      repair,
+    };
+
+    /**
+     * Take one reading of the desktop.
+     * @param connected Every connected display, switched on or not.
+     * @param target_active The stream display is switched on.
+     * @param other_active Some display other than the stream display is switched on.
+     */
+    action_e observe(
+      const std::set<std::string> &connected,
+      const bool target_active,
+      const bool other_active,
+      const time_point now
+    ) {
+      if (!target_active) {
+        // Reactivation and recreation own a stream display that is off.
+        candidate_.reset();
+        return action_e::none;
+      }
+      if (!other_active) {
+        manual_ = false;
+        if (!candidate_ || *candidate_ != connected) {
+          candidate_ = connected;
+          candidate_since_ = now;
+        }
+        if (now - candidate_since_ >= settle_time) {
+          reference_ = candidate_;
+          repairs_ = 0;
+        }
+        return action_e::none;
+      }
+
+      candidate_.reset();
+      if (!reference_) {
+        return action_e::none;
+      }
+      if (connected == *reference_) {
+        // Windows only swaps layouts when the set changes, so this display
+        // was switched on by the user or another tool.
+        manual_ = true;
+        return action_e::none;
+      }
+      if (manual_ || repairs_ >= max_repairs) {
+        return action_e::none;
+      }
+      if (last_repair_ && now - *last_repair_ < min_repair_interval) {
+        return action_e::none;
+      }
+      return action_e::repair;
+    }
+
+    /// Count a repair that was attempted, whether or not it held.
+    void note_repair(const time_point now) noexcept {
+      ++repairs_;
+      last_repair_ = now;
+    }
+
+    /// Forget what was learned. Used while the stream display is not meant to
+    /// be alone, so the hold starts from a freshly settled layout afterwards.
+    void suspend() noexcept {
+      reference_.reset();
+      candidate_.reset();
+      manual_ = false;
+    }
+
+    unsigned int repairs() const noexcept {
+      return repairs_;
+    }
+
+    bool exhausted() const noexcept {
+      return repairs_ >= max_repairs;
+    }
+
+  private:
+    std::optional<std::set<std::string>> reference_;
+    std::optional<std::set<std::string>> candidate_;
+    time_point candidate_since_ {};
+    std::optional<time_point> last_repair_;
+    unsigned int repairs_ {0};
+    bool manual_ {false};
   };
 }  // namespace VDISPLAY::policy

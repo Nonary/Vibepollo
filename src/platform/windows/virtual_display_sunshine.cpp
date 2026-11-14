@@ -10,6 +10,8 @@
 #include <virtual_display/driver/display_identity.h>
 #include <virtual_display/driver/windows_control_client.h>
 #include <display_device/windows/win_api_layer.h>
+#include <display_device/windows/win_api_recovery.h>
+#include <display_device/windows/win_api_utils.h>
 #if defined(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE) && SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE
   #include <virtual_display/driver/frame_transport_protocol.h>
 #endif
@@ -72,6 +74,7 @@
 #include <setupapi.h>
 #include <sstream>
 #include <stop_token>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -4501,9 +4504,41 @@ namespace VDISPLAY_SUNSHINE {
       deferred_scale_workers().request_stop_all();
     }
 
+    // The desktop as one device enumeration saw it. Ids are lower case.
+    struct LayoutObservation {
+      std::set<std::string> connected;
+      std::set<std::string> active;
+      std::set<std::string> virtual_displays;
+    };
+
+    std::optional<LayoutObservation> observe_layout(const display_device::EnumeratedDeviceList &devices) {
+      LayoutObservation observation;
+      for (const auto &device : devices) {
+        if (device.m_device_id.empty()) {
+          // An unidentified display could be the stream display itself.
+          return std::nullopt;
+        }
+        auto id = device.m_device_id;
+        std::transform(id.begin(), id.end(), id.begin(), [](const unsigned char ch) {
+          return static_cast<char>(std::tolower(ch));
+        });
+        if (!device.m_display_name.empty()) {
+          observation.active.insert(id);
+        }
+        if (is_virtual_display_device(device)) {
+          observation.virtual_displays.insert(id);
+        }
+        observation.connected.insert(std::move(id));
+      }
+      return observation;
+    }
+
     struct RecoveryMonitorState {
       VirtualDisplayRecoveryParams params;
       uuid_util::uuid_t guid_uuid;
+      // From the enumeration behind the latest presence check; empty when
+      // that check could not identify every display.
+      std::optional<LayoutObservation> layout_observation;
       bool confirmed_active_at_schedule = false;
       std::optional<std::wstring> current_display_name;
       std::optional<std::string> normalized_display_name;
@@ -4729,7 +4764,11 @@ namespace VDISPLAY_SUNSHINE {
     }
 
     MonitorTargetPresence monitor_target_presence(RecoveryMonitorState &state) {
+      state.layout_observation.reset();
       auto devices = platf::display_helper::Coordinator::instance().enumerate_devices(display_device::DeviceEnumerationDetail::Minimal);
+      if (devices && !devices->empty()) {
+        state.layout_observation = observe_layout(*devices);
+      }
       if (!devices) {
         // Enumeration threw, so the target's presence cannot be determined yet.
         return MonitorTargetPresence::unknown;
@@ -5058,9 +5097,222 @@ namespace VDISPLAY_SUNSHINE {
       return true;
     }
 
+    enum class LayoutHoldResult {
+      not_needed,  ///< Only the stream display is on by now.
+      held,  ///< The other displays were switched off and the layout saved.
+      failed,  ///< The layout could not be read, was refused, or did not stick.
+    };
+
+    /**
+     * Switch off every display except the stream display, and save that as the
+     * layout Windows stores for the displays connected at this moment.
+     */
+    LayoutHoldResult apply_exclusive_layout_hold(const std::string &device_id, const std::set<std::string> &monitors) {
+      // A failed query must not turn into seconds of retries: the caller holds
+      // the locks an APPLY or a REVERT is waiting for.
+      display_device::DisplayRecoveryBehaviorGuard recovery_guard(display_device::DisplayRecoveryBehavior::Skip);
+      display_device::WinApiLayer win_api;
+      const auto query = win_api.queryDisplayConfig(display_device::QueryType::Active);
+      if (!query) {
+        BOOST_LOG(debug) << "Exclusive layout hold: the active layout could not be read.";
+        return LayoutHoldResult::failed;
+      }
+
+      auto paths = query->m_paths;
+      auto modes = query->m_modes;
+      std::optional<std::size_t> target;
+      std::size_t others = 0;
+      for (std::size_t i = 0; i < paths.size(); ++i) {
+        if ((paths[i].flags & DISPLAYCONFIG_PATH_ACTIVE) == 0) {
+          continue;
+        }
+        auto id = win_api.getDeviceId(paths[i]);
+        if (!id.empty() && equals_ci(id, device_id)) {
+          if (target) {
+            BOOST_LOG(debug) << "Exclusive layout hold: the stream display is active on more than one path.";
+            return LayoutHoldResult::failed;
+          }
+          target = i;
+          continue;
+        }
+        std::transform(id.begin(), id.end(), id.begin(), [](const unsigned char ch) {
+          return static_cast<char>(std::tolower(ch));
+        });
+        if (!monitors.contains(id)) {
+          // Not one of the monitors the reading saw: it may be another
+          // stream's display that appeared since. Change nothing.
+          BOOST_LOG(debug) << "Exclusive layout hold: an active display is not a known monitor; leaving the layout alone.";
+          return LayoutHoldResult::failed;
+        }
+        // Keep the path in the request and mark it inactive. Some drivers
+        // leave a path on when it is merely left out.
+        paths[i].flags &= ~static_cast<UINT32>(DISPLAYCONFIG_PATH_ACTIVE);
+        ++others;
+      }
+      if (!target) {
+        BOOST_LOG(debug) << "Exclusive layout hold: the stream display is no longer active.";
+        return LayoutHoldResult::failed;
+      }
+      if (others == 0) {
+        return LayoutHoldResult::not_needed;
+      }
+
+      // The only display left has to sit at the desktop origin.
+      const auto source_index = display_device::win_utils::getSourceIndex(paths[*target], modes);
+      if (!source_index || *source_index >= modes.size() ||
+          modes[*source_index].infoType != DISPLAYCONFIG_MODE_INFO_TYPE_SOURCE) {
+        BOOST_LOG(debug) << "Exclusive layout hold: the stream display has no source mode.";
+        return LayoutHoldResult::failed;
+      }
+      modes[*source_index].sourceMode.position = {0, 0};
+
+      const auto set_config = [&](const UINT32 flags) {
+        return SetDisplayConfig(
+          static_cast<UINT32>(paths.size()),
+          paths.data(),
+          static_cast<UINT32>(modes.size()),
+          modes.data(),
+          flags
+        );
+      };
+      // Saving is the point: it replaces the layout Windows stores for this
+      // set of connected displays, so the next identical hotplug changes nothing.
+      const auto set_stream_only_layout = [&]() -> LONG {
+        // The layout was queried virtual-mode aware where Windows supports it.
+        UINT32 flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG | SDC_VIRTUAL_MODE_AWARE;
+        auto result = set_config(flags | SDC_VALIDATE);
+        if (result == ERROR_NOT_SUPPORTED || result == ERROR_INVALID_PARAMETER) {
+          flags = SDC_USE_SUPPLIED_DISPLAY_CONFIG;
+          result = set_config(flags | SDC_VALIDATE);
+        }
+        if (result != ERROR_SUCCESS) {
+          return result;
+        }
+        return set_config(flags | SDC_APPLY | SDC_SAVE_TO_DATABASE);
+      };
+
+      auto result = set_stream_only_layout();
+      if (result != ERROR_SUCCESS) {
+        // The service account is sometimes refused where the signed-in user is not.
+        if (HANDLE user_token = platf::retrieve_users_token(false)) {
+          (void) platf::impersonate_current_user(user_token, [&] {
+            result = set_stream_only_layout();
+          });
+          CloseHandle(user_token);
+        }
+      }
+      if (result != ERROR_SUCCESS) {
+        BOOST_LOG(debug) << "Exclusive layout hold: Windows refused the stream-only layout (error=" << result << ").";
+        return LayoutHoldResult::failed;
+      }
+
+      const auto verified = win_api.queryDisplayConfig(display_device::QueryType::Active);
+      if (!verified) {
+        return LayoutHoldResult::failed;
+      }
+      bool target_active = false;
+      for (const auto &path : verified->m_paths) {
+        if ((path.flags & DISPLAYCONFIG_PATH_ACTIVE) == 0) {
+          continue;
+        }
+        const auto id = win_api.getDeviceId(path);
+        if (id.empty() || !equals_ci(id, device_id)) {
+          return LayoutHoldResult::failed;
+        }
+        target_active = true;
+      }
+      return target_active ? LayoutHoldResult::held : LayoutHoldResult::failed;
+    }
+
+    /**
+     * Keep an exclusive stream layout after Windows loads a different one for
+     * a changed set of connected displays. See exclusive_layout_hold_t.
+     */
+    void hold_exclusive_layout(
+      RecoveryMonitorState &state,
+      VDISPLAY::policy::exclusive_layout_hold_t &hold,
+      const std::chrono::steady_clock::time_point now,
+      std::stop_token stop_token
+    ) {
+      if (!state.layout_observation) {
+        return;
+      }
+      // Only a display this session leases from the driver is ours to protect.
+      const auto lease = driver_lease_tracker().get(state.guid_uuid);
+      if (!lease || !lease->device_id || lease->device_id->empty()) {
+        return;
+      }
+      auto target = *lease->device_id;
+      std::transform(target.begin(), target.end(), target.begin(), [](const unsigned char ch) {
+        return static_cast<char>(std::tolower(ch));
+      });
+
+      const auto &observation = *state.layout_observation;
+      std::set<std::string> monitors;
+      for (const auto &id : observation.connected) {
+        if (observation.virtual_displays.contains(id)) {
+          if (id != target) {
+            // Another stream or a Remote Monitor shares the desktop, so this
+            // display is not meant to be alone and its layout has another owner.
+            hold.suspend();
+            return;
+          }
+          continue;
+        }
+        monitors.insert(id);
+      }
+
+      const bool target_active = observation.active.contains(target);
+      const bool other_active = std::any_of(observation.active.begin(), observation.active.end(), [&](const auto &id) {
+        return id != target;
+      });
+      using hold_t = VDISPLAY::policy::exclusive_layout_hold_t;
+      if (hold.observe(observation.connected, target_active, other_active, now) != hold_t::action_e::repair) {
+        return;
+      }
+
+      std::unique_lock<std::recursive_mutex> operation_lock(g_virtual_display_operation_mutex, std::defer_lock);
+      const auto validate_owner = [&] {
+        // Never wait for this lock while holding the helper admission lock.
+        if (!operation_lock.try_lock()) {
+          return false;
+        }
+        const auto current = driver_lease_tracker().get(state.guid_uuid);
+        return current && current->lease_id == lease->lease_id && current->display_id == lease->display_id &&
+               current->device_id && equals_ci(*current->device_id, *lease->device_id) &&
+               !monitor_should_abort(state, stop_token);
+      };
+
+      auto result = LayoutHoldResult::not_needed;
+      const bool admitted = display_helper_integration::run_owned_layout_repair(
+        validate_owner,
+        [&] { result = apply_exclusive_layout_hold(*lease->device_id, monitors); },
+        [&] { return monitor_should_abort(state, stop_token); }
+      );
+      if (!admitted || result == LayoutHoldResult::not_needed) {
+        // An APPLY, a REVERT or a restore owns the desktop, or Windows has
+        // already gone back to the stream layout. The next reading decides again.
+        return;
+      }
+
+      // Timed from here so the spacing covers the time the repair itself took.
+      hold.note_repair(std::chrono::steady_clock::now());
+      if (result == LayoutHoldResult::held) {
+        BOOST_LOG(info) << "Exclusive layout hold: the connected displays changed and Windows switched another display on for "
+                        << state.describe_target() << "; restored the stream-only layout and saved it for this set of displays.";
+      } else {
+        BOOST_LOG(warning) << "Exclusive layout hold: could not restore the stream-only layout for " << state.describe_target() << '.';
+      }
+      if (hold.exhausted()) {
+        BOOST_LOG(warning) << "Exclusive layout hold: pausing after " << hold.repairs() << " attempts for "
+                           << state.describe_target() << " until the stream-only layout settles; another display may keep rejoining this stream.";
+      }
+    }
+
     void run_virtual_display_recovery_monitor(RecoveryMonitorState state, std::stop_token stop_token) {
       unsigned int attempts = 0;
       VDISPLAY::policy::inactive_reactivation_budget_t reactivation_budget;
+      VDISPLAY::policy::exclusive_layout_hold_t layout_hold;
       unsigned int backoff_cycles = 0;
       constexpr unsigned int MAX_RECOVERY_BACKOFF_CYCLES = 5;
       bool observed_active = state.confirmed_active_at_schedule;
@@ -5167,6 +5419,10 @@ namespace VDISPLAY_SUNSHINE {
           } else if (now - *active_since >= RECOVERY_STABLE_REQUIREMENT) {
             attempts = 0;
             reactivation_budget.reset();
+          }
+          // A recovery that just finished is still settling with the helper.
+          if (state.params.exclusive_layout && now >= recovery_cooldown_until) {
+            hold_exclusive_layout(state, layout_hold, now, stop_token);
           }
           if (wait_for_monitor_stop(stop_token, RECOVERY_CHECK_INTERVAL)) {
             return;

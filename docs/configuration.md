@@ -1565,7 +1565,7 @@ An explicit request fails with a client-visible error when the producer cannot c
     <tr>
         <td rowspan="5">Choices</td>
         <td>exclusive</td>
-        <td>Deactivate every other monitor so only the virtual display remains visible.</td>
+        <td>Deactivate every other monitor so only the virtual display remains visible. On Windows with the Vibeshine Display Driver, if a monitor connects or disconnects during the stream and Windows switches another monitor back on, Vibeshine switches it off again.</td>
     </tr>
     <tr>
         <td>extended</td>

@@ -189,6 +189,9 @@ namespace VDISPLAY {
     std::optional<std::string> device_id;
     std::optional<std::wstring> monitor_device_path;
     bool confirmed_active_at_schedule = false;
+    // The session switched every other display off. The monitor then keeps
+    // that layout when Windows loads a different one after a hotplug.
+    bool exclusive_layout = false;
     unsigned int max_attempts = 3;
     // A successful callback may publish state (such as a runtime output
     // override) before the monitor makes its final cancellation decision.
