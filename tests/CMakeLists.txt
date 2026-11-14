@@ -2069,6 +2069,9 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
             "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${SUNSHINE_TEST_GXX}")
     add_test(NAME regression_cancel_after_app_exit
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_cancel_after_app_exit.py")
+    add_test(NAME regression_capture_launch_recovery
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_capture_launch_recovery.py"
+            --compiler "${SUNSHINE_TEST_GXX}")
     add_test(NAME regression_encoder_probe_lookup_behavior
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_encoder_probe_lookup_behavior.py"
             --compiler "${SUNSHINE_TEST_GXX}")

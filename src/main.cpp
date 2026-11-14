@@ -959,7 +959,7 @@ int main(int argc, char *argv[]) {
 
       VDISPLAY::ensure_display_result encoder_probe_display_result {};
       if (config::video.virtual_display_mode != config::video_t::virtual_display_mode_e::disabled) {
-        encoder_probe_display_result = VDISPLAY::ensure_display(required_adapter_luid);
+        encoder_probe_display_result = VDISPLAY::ensure_display(required_adapter_luid, true);
       }
       auto cleanup_encoder_probe_display = util::fail_guard([&encoder_probe_display_result]() {
         VDISPLAY::cleanup_ensure_display(encoder_probe_display_result);

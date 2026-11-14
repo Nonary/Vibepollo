@@ -1459,7 +1459,7 @@ namespace proc {
     // Web UI launches do not resolve the app through make_launch_session().
     // Carry app display policy into the session here so every launch path makes
     // the same physical-versus-virtual decision before creating a display.
-    if (_app.output_name_override) {
+    if (_app.output_name_override && !launch_session->capture_display_recovery) {
       launch_session->output_name_override = _app.output_name_override;
     }
     if (!launch_session->virtual_display_mode_override && _app.virtual_display_mode_override) {

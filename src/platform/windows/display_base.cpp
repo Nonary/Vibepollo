@@ -35,15 +35,16 @@ typedef enum _D3DKMT_GPU_PREFERENCE_QUERY_STATE : DWORD {
   D3DKMT_GPU_PREFERENCE_STATE_USER_SPECIFIED_GPU  ///< A specific GPU is preferred.
 } D3DKMT_GPU_PREFERENCE_QUERY_STATE;
 
+#include "capture_initialization.h"
 #include "display.h"
 #include "display_output_monitor.h"
-#include "src/platform/windows/ipc/display_settings_client.h"
 #include "game_activity.h"
 #include "misc.h"
 #include "src/config.h"
 #include "src/display_device.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
+#include "src/platform/windows/ipc/display_settings_client.h"
 #if defined(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE) && SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE
 #include "src/platform/windows/display_frame_push.h"
 #endif
@@ -686,6 +687,7 @@ namespace platf::dxgi {
    * @param enumeration_only Specifies whether this test is occurring for display enumeration.
    */
   bool test_dxgi_duplication(adapter_t &adapter, output_t &output, bool enumeration_only) {
+    capture_initialization_display_unavailable = false;
     D3D_FEATURE_LEVEL featureLevels[] {
       D3D_FEATURE_LEVEL_11_1,
       D3D_FEATURE_LEVEL_11_0,
@@ -877,6 +879,8 @@ namespace platf::dxgi {
       !selected_adapter_luid && !adapter_name.empty();
     bool configured_adapter_present = false;
     bool configured_adapter_has_output = false;
+    bool matched_attached_output = false;
+    bool enumeration_failed = false;
     adapter_t::pointer adapter_p;
     for (int tries = 0; tries < 2; ++tries) {
       for (int x = 0;; ++x) {
@@ -886,6 +890,7 @@ namespace platf::dxgi {
           break;
         }
         if (FAILED(enumerate_adapter_status) || !adapter_p) {
+          enumeration_failed = true;
           BOOST_LOG(error) << "Failed to enumerate DXGI adapter " << x
                            << " [0x" << util::hex(enumerate_adapter_status).to_string_view() << ']';
           break;
@@ -894,6 +899,7 @@ namespace platf::dxgi {
 
         DXGI_ADAPTER_DESC1 adapter_desc {};
         if (FAILED(adapter_tmp->GetDesc1(&adapter_desc))) {
+          enumeration_failed = true;
           continue;
         }
 
@@ -914,6 +920,7 @@ namespace platf::dxgi {
             break;
           }
           if (FAILED(enumerate_output_status) || !output_p) {
+            enumeration_failed = true;
             BOOST_LOG(error) << "Failed to enumerate DXGI output " << y
                              << " [0x" << util::hex(enumerate_output_status).to_string_view() << ']';
             break;
@@ -922,6 +929,7 @@ namespace platf::dxgi {
 
           DXGI_OUTPUT_DESC desc {};
           if (FAILED(output_tmp->GetDesc(&desc))) {
+            enumeration_failed = true;
             continue;
           }
 
@@ -933,6 +941,9 @@ namespace platf::dxgi {
             continue;
           }
 
+          if (desc.AttachedToDesktop) {
+            matched_attached_output = true;
+          }
           if (desc.AttachedToDesktop && (skip_dd_test || test_dxgi_duplication(adapter_tmp, output_tmp, false))) {
             output = std::move(output_tmp);
             captured_output_desc = desc;
@@ -1008,6 +1019,12 @@ namespace platf::dxgi {
             << "Configured adapter_name '" << config::video.adapter_name
             << "' has no display attached to the desktop. Capture will not switch GPUs.";
         }
+      }
+      // Missing configured hardware is an adapter error, not a headless desktop.
+      if (enumeration_failed) {
+        capture_initialization_display_unavailable = false;
+      } else if (!matched_attached_output && configured_adapter_present) {
+        capture_initialization_display_unavailable = true;
       }
       BOOST_LOG(error) << "Failed to locate an output device"sv;
       return -1;
@@ -1624,6 +1641,7 @@ namespace platf {
     const video::config_t &config,
     const std::optional<adapter_id_t> &required_adapter
   ) {
+    dxgi::capture_initialization_display_unavailable = false;
     std::optional<LUID> required_adapter_luid;
     if (required_adapter) {
       required_adapter_luid = LUID {
@@ -1673,24 +1691,28 @@ namespace platf {
 
     if (hwdevice_type == mem_type_e::dxgi) {
       if (prefer_wgc_backend) {
+        dxgi::capture_initialization_display_unavailable = false;
         auto disp = dxgi::display_wgc_ipc_vram_t::create(config, display_name, required_adapter_luid);
         if (disp || wgc_requested || frame_push_wgc_fallback) {
           return disp;
         }
       }
 
+      dxgi::capture_initialization_display_unavailable = false;
       auto disp = std::make_shared<dxgi::display_ddup_vram_t>();
       if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
     } else if (hwdevice_type == mem_type_e::system) {
       if (prefer_wgc_backend) {
+        dxgi::capture_initialization_display_unavailable = false;
         auto disp = dxgi::display_wgc_ipc_ram_t::create(config, display_name, required_adapter_luid);
         if (disp || wgc_requested || frame_push_wgc_fallback) {
           return disp;
         }
       }
 
+      dxgi::capture_initialization_display_unavailable = false;
       auto disp = std::make_shared<dxgi::display_ddup_ram_t>();
       if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;

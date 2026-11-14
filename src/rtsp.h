@@ -150,6 +150,7 @@ namespace rtsp_stream {
     // True only after the NVHTTP display-preparation path has resolved the
     // effective virtual/physical output request for this launch.
     bool virtual_display_request_resolved = false;
+    bool capture_display_recovery = false;  ///< Preserve forced recovery over an app output pin.
     std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
     std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
     std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;

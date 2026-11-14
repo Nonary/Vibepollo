@@ -506,6 +506,19 @@ namespace video {
     void *channel_data
   );
 
+#ifdef _WIN32
+  enum class capture_probe_result_e {
+    ready,
+    display_unavailable,
+    capture_failed,
+    encoder_unavailable,
+  };
+
+  // Opens the real capture backend without encoding. Only a display-specific
+  // initialization failure authorizes session-owned display recovery.
+  capture_probe_result_e probe_capture(const config_t &config);
+#endif
+
   bool validate_encoder(
     encoder_t &encoder,
     bool expect_failure,

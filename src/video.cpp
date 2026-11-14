@@ -68,6 +68,7 @@ extern "C" {
 #endif
 
 #ifdef _WIN32
+  #include "src/platform/windows/capture_initialization.h"
   #include "src/platform/windows/display.h"
   #include "src/platform/windows/display_helper_integration.h"
   #include "src/platform/windows/display_vram.h"
@@ -80,6 +81,7 @@ extern "C" {
   #include <AMF/core/Debug.h>
   #include <AMF/core/Factory.h>
   #include <AMF/core/Trace.h>
+  #include <display_device/windows/win_api_recovery.h>
 
   // These using-declarations must sit between the AMF headers above and
   // hwcontext_amf.h below, and must stay outside the extern "C" block. hwcontext_amf.h
@@ -475,8 +477,28 @@ namespace video {
 
     probe_target_t resolve_probe_target(const bool materialize_capture_output = true) {
 #ifdef _WIN32
+      std::optional<LUID> pending_virtual_display_adapter_hint;
+      bool pending_virtual_display_adapter_hint_ready_for_verification = false;
+      {
+        auto &state = encoder_probe_cache_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        pending_virtual_display_adapter_hint =
+          state.pending_virtual_display_adapter_hint;
+        pending_virtual_display_adapter_hint_ready_for_verification =
+          state.pending_virtual_display_adapter_hint_ready_for_verification;
+      }
+      const bool adapter_is_configured =
+        !config::video.adapter_name.empty() ||
+        !config::video.adapter_pnp_id.empty();
+      // Encoder validation uses synthetic surfaces too: resolving its adapter
+      // must remain observational. Real capture owns display recovery.
+      display_device::DisplayRecoveryBehaviorGuard skip_recovery(display_device::DisplayRecoveryBehavior::Skip);
+      const bool needs_output_identity = materialize_capture_output ||
+                                         (!pending_virtual_display_adapter_hint && !adapter_is_configured);
       const auto active_output = config::get_active_output_name();
-      const auto mapped_output = display_device::map_output_name(active_output);
+      const auto mapped_output = needs_output_identity ?
+                                   display_device::map_output_name(active_output) :
+                                   std::string {};
       const bool mapped_output_is_active =
         !mapped_output.empty() && display_device::output_is_active(mapped_output);
       const auto current_wgc_identity = [&]() -> std::optional<platf::dxgi::wgc_adapter_identity_t> {
@@ -496,16 +518,6 @@ namespace video {
         return output_adapter && platf::adapter_luid_equal(*output_adapter.luid, adapter_luid);
       };
 
-      std::optional<LUID> pending_virtual_display_adapter_hint;
-      bool pending_virtual_display_adapter_hint_ready_for_verification = false;
-      {
-        auto &state = encoder_probe_cache_state();
-        std::lock_guard<std::mutex> lock(state.mutex);
-        pending_virtual_display_adapter_hint =
-          state.pending_virtual_display_adapter_hint;
-        pending_virtual_display_adapter_hint_ready_for_verification =
-          state.pending_virtual_display_adapter_hint_ready_for_verification;
-      }
       if (pending_virtual_display_adapter_hint) {
         const auto pending_adapter = adapter_id_from_luid(*pending_virtual_display_adapter_hint);
         // A cache lookup needs only the expected adapter identity. Materializing
@@ -592,9 +604,6 @@ namespace video {
         };
       }
 
-      const bool adapter_is_configured =
-        !config::video.adapter_name.empty() ||
-        !config::video.adapter_pnp_id.empty();
       if (adapter_is_configured) {
         const auto configured_adapter = platf::resolve_adapter(
           config::video.adapter_name,
@@ -7143,6 +7152,46 @@ namespace video {
 
     return -1;
   }
+
+#ifdef _WIN32
+  capture_probe_result_e probe_capture(const config_t &config) {
+    std::lock_guard<std::mutex> lock(encoder_probe_mutex);
+    if (!chosen_encoder) {
+      return capture_probe_result_e::encoder_unavailable;
+    }
+    display_device::DisplayRecoveryBehaviorGuard skip_recovery(display_device::DisplayRecoveryBehavior::Skip);
+    const auto type = chosen_encoder->platform_formats->dev_type;
+    std::vector<std::string> outputs;
+    int selected = -1;
+    if (config.capture_source == capture_source_e::exact_output) {
+      if (!config.capture_output || config.capture_output->empty()) {
+        return capture_probe_result_e::display_unavailable;
+      }
+      // Enumeration filters Desktop Duplication failures such as access denied.
+      // Open the exact recovery target even if that filter cannot see it; the
+      // native open reports whether this is a display or secure-desktop error.
+      outputs.push_back(display_device::map_output_name(*config.capture_output));
+      if (outputs.back().empty()) {
+        return capture_probe_result_e::display_unavailable;
+      }
+      selected = 0;
+    } else {
+      refresh_displays(type, outputs, selected);
+    }
+    if (outputs.empty() || selected < 0 || selected >= static_cast<int>(outputs.size())) {
+      return capture_probe_result_e::display_unavailable;
+    }
+    // Match normal capture selection and adapter policy. Never publish a probe
+    // as a live capture instance or retain its backend across RTSP admission.
+    auto display = platf::display(type, outputs[selected], config);
+    if (display) {
+      return capture_probe_result_e::ready;
+    }
+    return platf::dxgi::capture_initialization_display_unavailable ?
+             capture_probe_result_e::display_unavailable :
+             capture_probe_result_e::capture_failed;
+  }
+#endif
 
   bool validate_encoder(
     encoder_t &encoder,

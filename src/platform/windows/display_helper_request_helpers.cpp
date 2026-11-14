@@ -109,6 +109,7 @@ namespace display_helper_integration::helpers {
       snapshot.client_display_refresh_millihz = session.client_display_refresh_millihz;
       snapshot.client_virtual_display_override = session.client_virtual_display_override;
       snapshot.virtual_display = session.virtual_display;
+      snapshot.capture_display_recovery = session.capture_display_recovery;
       snapshot.resolution_override = session.resolution_override;
       snapshot.virtual_display_failed = session.virtual_display_failed;
       snapshot.virtual_display_mode_override = session.virtual_display_mode_override;

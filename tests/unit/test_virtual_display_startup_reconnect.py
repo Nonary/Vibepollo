@@ -95,7 +95,11 @@ def admission(preflight=False):
         f'std::function<bool()> production_startup_cancelled_{i}(Time display_startup_deadline) {{\n' +
         body.replace('std::chrono::steady_clock::now()', 'clock_now()') +
         '\nreturn display_startup_cancelled;\n}' for i, body in enumerate(startup_predicates))
-    tv_block = function(nvhttp, 'if (!request_virtual_display && !preserve_requested_output && VDISPLAY::should_auto_enable_virtual_display())')
+    # This admission replay starts AFTER capture has confirmed display failure.
+    # Ordinary topology observations cannot authorize a VDD anymore; the
+    # production failure boundary is executed in test_capture_launch_recovery.py.
+    assert 'should_auto_enable_virtual_display()' not in nvhttp
+    tv_block = ''
     functions = '\n'.join(function(integration, signature) for signature in [
         'bool restore_expected_with_live_helper(', 'bool disarm_helper_restore_if_running(',
         'static void invalidate_apply_verification(',
@@ -312,12 +316,8 @@ void production_mutation(Time display_startup_deadline, std::function<bool()> di
   auto apply_virtual_display_request = [&](bool requested) { if (requested) ++mutations; };
 ''' + mutation_gate + '\n' + mutation_call + r'''
 }
-bool first_launch_tv_off(Time deadline, bool include_identity_log_fields) {
-  bool request_virtual_display = false, preserve_requested_output = false;
-  [[maybe_unused]] bool has_app_output_override = false, pinned_virtual_display_mode_disabled = false;
-  [[maybe_unused]] std::optional<std::string> app_output_override, pending_output_override;
-  struct TVSession { std::optional<std::string> output_name_override, virtual_display_mode_override; };
-  [[maybe_unused]] TVSession session, *launch_session = &session;
+bool first_launch_tv_off(Time deadline) {
+  bool request_virtual_display = true; // Confirmed display-related capture failure.
 ''' + tv_block + r'''
   return request_virtual_display && admit(deadline, [=] { return fake_now >= deadline; });
 }
@@ -332,9 +332,9 @@ void reset() {
 }
 int main() {
 ''' + (ordered_tests if preflight else '') + r'''
-  for (bool include_identity_log_fields : {true, false}) {
+  {
     reset();
-    require(first_launch_tv_off(fake_now + 2s, include_identity_log_fields), "TV-off first launch did not recover its stale pipe");
+    require(first_launch_tv_off(fake_now + 2s), "TV-off first launch did not recover its stale pipe");
     require(fast_calls == 2 && reset_calls == 1 && ping_calls == 1 && !g_restore_expected && killed == 0,
             "successful reconnect did not dispatch exactly one retry and clear restore guard");
   }

@@ -1442,6 +1442,12 @@ An explicit request fails with a client-visible error when the producer cannot c
         <td>Description</td>
         <td colspan="2">
             Select which display Sunshine should prepare before streaming. When set to one of the virtual options, Sunshine will manage a virtual display instead of relying on your physical monitor.
+            On Windows, a video session that fails actual capture initialization because its display is unavailable
+            retries with a dedicated exclusive virtual display, including when this setting is <code>disabled</code>.
+            This recovery overrides an unavailable physical-output selection for that session. Missing or unknown
+            topology alone does not create a display. Temporary encoder-probe displays are limited to startup;
+            later discovery and capability requests do not create them. Encoder, access, and IPC failures do not
+            authorize automatic display creation.
         </td>
     </tr>
     <tr>
