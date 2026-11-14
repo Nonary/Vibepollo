@@ -378,12 +378,14 @@ transport capacity also bounds the budget. Budgets are rounded
 down to codec words; a budget too small for the codec headers skips that attempt.
 Length-prefixed compatibility framing retains its existing overhead accounting.
 
-When no new capture arrives, the host re-encodes the last image. By default the
-wait is one negotiated frame interval, so a static screen can recover promptly
-from a lost frame. An explicit `minimum_fps_target` can reduce the repeat cadence
-and is capped at the negotiated frame rate. Capture mutex waits are also bounded
-by the negotiated frame interval. Packetizer storage follows the codec's reported
-bitstream buffer size plus its sequence header.
+When no new capture arrives, the host re-encodes the last image. The default
+`minimum_fps_target` is 20 FPS, capped at the negotiated frame rate. At stream
+rates of 20 FPS or higher, this gives a 50 ms capture wait. Explicitly setting
+`minimum_fps_target = 0` uses one negotiated frame interval instead; positive
+values set the target, capped at the negotiated frame rate. These are capture
+wait budgets, not guarantees of exact frame arrival timing. Capture mutex waits
+are also bounded by the negotiated frame interval. Packetizer storage follows
+the codec's reported bitstream buffer size plus its sequence header.
 
 Guidance: the client's default bitrate follows Themaister's objective regression
 (`eval-results/objective-bitrate-evaluation.md` in the PyroWave repository) at 35 dB

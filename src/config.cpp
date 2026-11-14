@@ -978,7 +978,7 @@ namespace config {
     },  // display_device
 
     0,  // max_bitrate
-    20,  // minimum_fps_target (0 = framerate)
+    20,  // minimum_fps_target (FPS; 0 uses the capture/encoder path fallback)
     true,  // wgc_pacing_smoothing
     "1920x1080x60",  // fallback_mode
     false,  // ignore_encoder_probe_failure

@@ -75,7 +75,7 @@ const NUMBER_FIELD_OVERRIDES: Record<string, Partial<ConfigFieldDefinition>> = {
   ping_timeout: { min: 0, step: 100, placeholder: '10000' },
   control_peer_timeout: { min: 0, max: 86399999, step: 1, placeholder: '0' },
   max_bitrate: { min: 0, placeholder: '0' },
-  minimum_fps_target: { min: 0, max: 1000, placeholder: '0' },
+  minimum_fps_target: { min: 0, max: 1000, placeholder: '20' },
   rtx_hdr_contrast: { min: -100, max: 100, step: 1, placeholder: '0' },
   rtx_hdr_saturation: { min: -100, max: 100, step: 1, placeholder: '0' },
   rtx_hdr_sdr_brightness: { min: 0, max: 100, step: 1, placeholder: '0' },

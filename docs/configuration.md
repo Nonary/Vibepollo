@@ -2448,23 +2448,23 @@ These settings are host-wide and are not application runtime overrides.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Sunshine tries to save bandwidth when content on screen is static or a low framerate. Because many clients expect a constant stream of video frames, a certain amount of duplicate frames are sent when this happens. This setting controls the lowest effective framerate a stream can reach.
+            Sunshine tries to save bandwidth when content on screen is static or a low framerate. Because many clients expect a constant stream of video frames, a certain amount of duplicate frames are sent when this happens. This setting controls idle-frame timing, not a guaranteed delivered framerate. Leaving it unset uses 20 FPS. The configuration API returns saved keys only; an absent key does not mean zero.
         </td>
     </tr>
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            0
+            20
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="3">Choices</td>
+        <td rowspan="2">Choices</td>
         <td>0</td>
-        <td>Use half the stream's FPS as the minimum target.</td>
+        <td>Use the capture/encoder path fallback. Asynchronous encoders, including PyroWave, use one negotiated frame interval as the capture wait budget. macOS ScreenCaptureKit instead uses one fifth of the stream's FPS, with a minimum of 10 FPS, for its keepalive timing.</td>
     </tr>
     <tr>
-        <td>1-1000</td>
-        <td>Specify your own value. The real minimum may differ from this value.</td>
+        <td>Greater than 0, up to 1000</td>
+        <td>Specify the idle-frame timing target in FPS (positive values up to 1000, including fractions). PyroWave caps this target at the negotiated frame rate; its default of 20 gives a 50 ms capture wait at stream rates of 20 FPS or higher. Actual frame delivery depends on capture and encoding, so the effective minimum may differ.</td>
     </tr>
 </table>
 
