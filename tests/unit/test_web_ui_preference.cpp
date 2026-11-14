@@ -1,7 +1,11 @@
 #include <gtest/gtest.h>
 
 #include <atomic>
+#include <chrono>
 #include <filesystem>
+#include <fstream>
+#include <iterator>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
@@ -14,16 +18,20 @@ namespace {
     std::string main_config = "# Keep this comment\nport = 47989 # restart pending\n";
     int host_config_reload_calls = 0;
     bool refuse_writes = false;
+    bool refuse_reads = false;
+    int preference_write_calls = 0;
   };
 
   web_ui_preference::store_t store_for(fake_files_t &files) {
     return {
       "web-ui-preference.conf",
       [&files](const std::filesystem::path &path) {
-        if (path.filename() == "web-ui-preference.conf") return files.preference_conf;
-        return std::string {};
+        if (files.refuse_reads) return std::optional<std::string> {};
+        if (path.filename() == "web-ui-preference.conf") return std::optional<std::string> {files.preference_conf};
+        return std::optional<std::string> {std::string {}};
       },
       [&files](const std::filesystem::path &path, const std::string_view text) {
+        ++files.preference_write_calls;
         if (path.filename() != "web-ui-preference.conf" || files.refuse_writes) return false;
         files.preference_conf = std::string(text);
         return true;
@@ -126,4 +134,45 @@ TEST(WebUiPreference, FailedPersistenceDoesNotClaimSuccess) {
   EXPECT_FALSE(store.write("legacy"));
   EXPECT_EQ(files.preference_conf, "# Keep this text\nwebui = v2\n");
   EXPECT_EQ(store.read(), "v2");
+}
+
+TEST(WebUiPreference, UnreadableExistingFileIsNeverReplaced) {
+  fake_files_t files;
+  files.preference_conf = "# Keep user comment\nother = keep\nwebui = v2\n";
+  const auto original = files.preference_conf;
+  files.refuse_reads = true;
+  auto store = store_for(files);
+  EXPECT_FALSE(store.write("legacy"));
+  EXPECT_EQ(files.preference_write_calls, 0);
+  EXPECT_EQ(files.preference_conf, original);
+}
+
+TEST(WebUiPreference, NativeFileSavePreservesCrLfBytes) {
+  const auto path = std::filesystem::temp_directory_path() /
+    ("vibepollo-ui-preference-crlf-" +
+     std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".conf");
+  const std::string original = "# User note\r\nother = keep\r\nwebui = legacy  # important\r\n";
+  {
+    std::ofstream output(path, std::ios::binary | std::ios::trunc);
+    ASSERT_TRUE(output.is_open());
+    output.write(original.data(), static_cast<std::streamsize>(original.size()));
+    ASSERT_TRUE(output.good());
+  }
+  web_ui_preference::store_t store {
+    path,
+    web_ui_preference::read_conf_file,
+    [](const std::filesystem::path &target, const std::string_view data) {
+      return file_handler::write_file(target.string().c_str(), data) == 0;
+    },
+  };
+  EXPECT_EQ(store.read(), "legacy");
+  EXPECT_TRUE(store.write("v2"));
+  {
+    std::ifstream input(path, std::ios::binary);
+    ASSERT_TRUE(input.is_open());
+    const std::string bytes {(std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>()};
+    EXPECT_EQ(bytes, "# User note\r\nother = keep\r\nwebui = v2  # important\r\n");
+  }
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
 }
