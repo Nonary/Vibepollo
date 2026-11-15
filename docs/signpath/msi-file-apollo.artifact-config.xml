@@ -122,6 +122,8 @@
       Catalog-bound. Signing changes the hash its catalog attests to:
         Apollo/drivers/sunshine/SunshineVirtualDisplayDriver.dll
         Apollo/drivers/vhf-gamepad/driver/VibeshineVhfGamepad.dll
+        Apollo/drivers/vhf-gamepad/mouse_mapper/VibeshineVhfMouseMapper.sys
+        Apollo/drivers/vhf-gamepad/mouse_mapper/VibeshineVhfMouseMapper.cat (already Microsoft-signed)
         Apollo/drivers/usbip-win2/usbip2_ude.sys    (+ usbip2_ude.inf)
         Apollo/drivers/usbip-win2/usbip2_filter.sys (+ usbip2_filter.inf)
 

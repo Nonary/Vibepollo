@@ -28,7 +28,7 @@ endfunction()
 
 # The virtual-gamepad package is independently versioned and released from
 # Nonary/libvirtualgamepad. The application consumes its immutable archive; it
-# must never build the UMDF driver while assembling a consumer MSI.
+# must never build either driver while assembling a consumer MSI.
 #
 # The producer archive is intentionally unsigned. Production signing remains
 # downstream: the same consumer-MSI signing request that deep-signs the MSI
@@ -101,3 +101,18 @@ option(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER
 option(SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE
        "Allow an explicitly supplied local self-signed VHF gamepad package for development packaging."
        OFF)
+
+# Legacy immutable pins intentionally remain gamepad-only. A candidate advertised
+# as fixing ordered mouse delivery requires this default-on gate and the actual
+# published mapper release/pins, or an explicit local test package.
+option(SUNSHINE_REQUIRE_VHF_MOUSE_MAPPER_PACKAGE
+       "Require an explicit mapper feature and complete, kernel-signed mapper payload in the bundled candidate."
+       ON)
+set(SUNSHINE_VHF_MOUSE_MAPPER_FILES
+    mouse_mapper/VibeshineVhfMouseMapper.inf
+    mouse_mapper/VibeshineVhfMouseMapper.sys
+    mouse_mapper/VibeshineVhfMouseMapper.cat)
+# This KMDF catalog is signed by Microsoft before producer release. Consumer
+# SignPath MSI deep signing remains limited to the UMDF CAT and setup EXE;
+# changing the mapper SYS or CAT afterwards invalidates the manifest hash.
+set(SUNSHINE_VHF_MOUSE_MAPPER_SIGNING_MODE "producer_microsoft_kernel_policy")

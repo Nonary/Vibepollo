@@ -33,12 +33,39 @@ try {
     $finish = $workflow.IndexOf('          $actual = @(', $start)
     if ($start -lt 0 -or $finish -le $start) { throw 'Workflow MSI expectation block is missing.' }
     $env:DAILY_UNSIGNED = 'true'
+    $packageDir = $root
     Invoke-Expression ($workflow.Substring($start, $finish - $start))
     $consumerLayout = @($paths + 'cleanup.ps1' + 'install.ps1' + 'manifest.json' + 'release-lock.json' | Sort-Object)
     if (($expected -join ',') -cne ($consumerLayout -join ',')) { throw 'Daily MSI exact-layout gate does not match the public-certificate package.' }
+    $mapperPaths = @('mouse_mapper/VibeshineVhfMouseMapper.cat', 'mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys')
+    foreach ($relative in $mapperPaths) {
+        $path = Join-Path $root $relative
+        New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+        [IO.File]::WriteAllText($path, "unchanged Microsoft mapper fixture:$relative")
+    }
+    $paths += $mapperPaths
+    $actual.signing.channel = 'msi-request-signing'
+    $actual | Add-Member features ([PSCustomObject]@{ mouse_mapper = 1 })
+    $actual | Add-Member mouse_mapper ([PSCustomObject]@{ transport_version = 1; kernel_signing = 'windows-kernel-policy' })
+    $actual | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath
+    $mapperBefore = (Get-FileHash (Join-Path $root $mapperPaths[0])).Hash
+    Update-DailyGamepadManifest -Root $root -Thumbprint ('A' * 40) -ProducerLock $producer
+    $withMapper = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
+    if ($withMapper.mouse_mapper.kernel_signing -cne 'windows-kernel-policy' -or
+        (@($withMapper.files.path | Sort-Object) -join ',') -cne (($paths | Sort-Object) -join ',') -or
+        $mapperBefore -cne (Get-FileHash (Join-Path $root $mapperPaths[0])).Hash) { throw 'Daily metadata lost or changed the production mapper payload.' }
+    Invoke-Expression ($workflow.Substring($start, $finish - $start))
+    $consumerLayout = @($paths + 'cleanup.ps1' + 'install.ps1' + 'manifest.json' + 'release-lock.json' | Sort-Object)
+    if (($expected -join ',') -cne ($consumerLayout -join ',')) { throw 'Mapper daily MSI layout does not match the manifest feature.' }
+    $withMapper.signing.channel = 'msi-request-signing'
+    $withMapper.mouse_mapper.kernel_signing = 'requires-microsoft-signing'
+    $withMapper | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath
+    $blocked = $false
+    try { Update-DailyGamepadManifest -Root $root -Thumbprint ('A' * 40) -ProducerLock $producer } catch { $blocked = $true }
+    if (-not $blocked) { throw 'Daily signing promoted an unsigned kernel mapper.' }
     Write-Host 'Daily signing metadata contract passed (mock payloads; no signing or trust mutation executed).'
 } finally {
     foreach ($relative in @($paths) + 'manifest.json') { Remove-Item -LiteralPath (Join-Path $root $relative) -Force -ErrorAction SilentlyContinue }
-    foreach ($relative in @('driver', 'tools')) { Remove-Item -LiteralPath (Join-Path $root $relative) -Force -ErrorAction SilentlyContinue }
+    foreach ($relative in @('driver', 'tools', 'mouse_mapper')) { Remove-Item -LiteralPath (Join-Path $root $relative) -Force -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
 }

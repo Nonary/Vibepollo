@@ -270,6 +270,7 @@ jobs:
 
           $packageRoot = Join-Path $env:RUNNER_TEMP 'vhf-gamepad-producer-release'
           .\scripts\download_libvirtualgamepad_release.ps1 `
+            -RequireMouseMapper `
             -Repository $env:VHF_REPOSITORY `
             -Tag $env:VHF_TAG `
             -ExpectedArchiveSha256 $env:VHF_ARCHIVE_SHA256 `
@@ -462,6 +463,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $packageRoot = Join-Path $env:RUNNER_TEMP 'vhf-gamepad-producer-release'
           .\scripts\download_libvirtualgamepad_release.ps1 `
+            -RequireMouseMapper `
             -ValidateOnly `
             -Repository $env:VHF_REPOSITORY `
             -Tag $env:VHF_TAG `
@@ -732,6 +734,7 @@ jobs:
           fi
           vhf_gamepad_package_arg=(
             -DSUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER=ON
+            -DSUNSHINE_REQUIRE_VHF_MOUSE_MAPPER_PACKAGE=ON
             -DSUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR="$(cygpath -u "${VHF_PACKAGE_ROOT}")"
             -DSUNSHINE_VHF_GAMEPAD_RELEASE_TAG="${VHF_TAG}"
             -DSUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256="${VHF_ARCHIVE_SHA256}"
@@ -1038,6 +1041,7 @@ jobs:
           }
           $packageDir = Join-Path $extractRoot 'Apollo\drivers\vhf-gamepad'
           .\packaging\windows\virtual_gamepad_driver\refresh_driver_package.ps1 `
+            -RequireMouseMapper `
             -AllowLocalTestPackage:($env:DAILY_UNSIGNED -eq 'true') `
             -ValidateOnly `
             -PrebuiltPackageDir $env:VHF_PACKAGE_ROOT `
@@ -1057,6 +1061,10 @@ jobs:
             'release-lock.json',
             'tools/VibeshineVhfGamepadDeviceSetup.exe'
           )
+          $vhfMetadata = Get-Content -LiteralPath (Join-Path $packageDir 'manifest.json') -Raw | ConvertFrom-Json
+          if ($null -ne $vhfMetadata.PSObject.Properties['features'] -and $vhfMetadata.features.mouse_mapper -eq 1) {
+            $expected = @($expected + @('mouse_mapper/VibeshineVhfMouseMapper.cat', 'mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys') | Sort-Object)
+          }
           if ($env:DAILY_UNSIGNED -eq 'true') { $expected = @(($expected + 'driver/VibeshineVhfGamepad.cer') | Sort-Object) }
           $actual = @(Get-ChildItem -LiteralPath $packageDir -Recurse -File | ForEach-Object {
             $_.FullName.Substring($packageDir.Length).TrimStart('\', '/').Replace('\', '/')
@@ -1815,6 +1823,11 @@ jobs:
               'release-lock.json',
               'tools\VibeshineVhfGamepadDeviceSetup.exe'
             )
+            $vhfManifest = Get-Content -LiteralPath $vhfManifestPath -Raw | ConvertFrom-Json
+            $vhfHasMapper = $null -ne $vhfManifest.PSObject.Properties['features'] -and $vhfManifest.features.mouse_mapper -eq 1
+            if ($vhfHasMapper) {
+              $vhfRequired += @('mouse_mapper\VibeshineVhfMouseMapper.inf', 'mouse_mapper\VibeshineVhfMouseMapper.sys', 'mouse_mapper\VibeshineVhfMouseMapper.cat')
+            }
             foreach ($relative in $vhfRequired) {
               $path = Join-Path $vhfPackageDir $relative
               if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-Item -LiteralPath $path).Length -le 0) {
@@ -1843,6 +1856,15 @@ jobs:
                     $vhfManifest.platform -cne 'x64' -or
                     $vhfManifest.signing.channel -cne 'msi-request-signing') {
                   throw 'manifest metadata does not match the pinned producer release'
+                }
+                if ($vhfHasMapper) {
+                  $vhfManifestPayload = @($vhfManifestPayload + @('mouse_mapper/VibeshineVhfMouseMapper.cat', 'mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys') | Sort-Object)
+                  if ($vhfManifest.mouse_mapper.transport_version -ne 1 -or $vhfManifest.mouse_mapper.kernel_signing -cne 'windows-kernel-policy') { throw 'Mapper is missing the supported transport version or Microsoft kernel signing.' }
+                  $mapperSignTool = Resolve-SignTool
+                  foreach ($mapperMember in @('mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys')) {
+                    & $mapperSignTool verify '/v' '/kp' '/c' (Join-Path $vhfPackageDir 'mouse_mapper/VibeshineVhfMouseMapper.cat') (Join-Path $vhfPackageDir $mapperMember)
+                    if ($LASTEXITCODE -ne 0) { throw "Signed MSI mapper kernel policy/catalog membership failed: $mapperMember" }
+                  }
                 }
                 $manifestPaths = @($vhfManifest.files | ForEach-Object { [string] $_.path } | Sort-Object)
                 if (($manifestPaths -join "`n") -cne ($vhfManifestPayload -join "`n")) {

@@ -92,7 +92,7 @@ function Remove-OwnedDriverStorePackages {
 
     $rebootRequired = $false
     $packages = @(Get-WindowsDriver -Online -All | Where-Object {
-        $_.OriginalFileName -eq 'VibeshineVhfGamepad.inf' -and -not [string]::IsNullOrWhiteSpace($_.PublishedName)
+        [IO.Path]::GetFileName([string] $_.OriginalFileName) -in @('VibeshineVhfGamepad.inf', 'VibeshineVhfMouseMapper.inf') -and -not [string]::IsNullOrWhiteSpace($_.PublishedName)
     })
     foreach ($package in $packages) {
         Write-DriverMessage "Removing owned Driver Store package $($package.PublishedName)."

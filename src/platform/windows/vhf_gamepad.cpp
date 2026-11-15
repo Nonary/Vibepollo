@@ -370,43 +370,7 @@ namespace platf {
     bool keyboard_mouse_recovery_needs_probe {false};
     std::chrono::steady_clock::time_point keyboard_mouse_retry_at {};
     std::uint32_t absolute_generation {0};
-    bool absolute_uses_primary {false};
     bool keyboard_mouse_consumer {false};
-    vhf_keyboard_mouse::mouse_delivery_t mouse_delivery;
-
-    // Windows services relative and absolute mouse TLCs independently. A
-    // completed submission is queue admission, not desktop delivery. Observe
-    // the preceding button/position before crossing those queues so an
-    // absolute drag cannot move before its press or release before its move.
-    bool settle_keyboard_mouse_locked(bool include_absolute) {
-      if (!keyboard_mouse_owned || keyboard_mouse_faulted || recovery.pending()) return false;
-      const auto deadline = std::chrono::steady_clock::now() + 100ms;
-      constexpr std::array buttons {VK_LBUTTON, VK_RBUTTON, VK_MBUTTON, VK_XBUTTON1, VK_XBUTTON2};
-      do {
-        bool ready = true;
-        for (std::size_t i = 0; i < buttons.size(); ++i) {
-          const auto mask = static_cast<std::uint8_t>(1u << i);
-          if ((mouse_delivery.pending_buttons & mask) &&
-              (((GetAsyncKeyState(buttons[i]) & 0x8000) != 0) != ((mouse_delivery.pressed_buttons & mask) != 0))) ready = false;
-        }
-        if (include_absolute && mouse_delivery.absolute_pending) {
-          POINT position {};
-          if (!GetCursorPos(&position) || std::abs(position.x - mouse_delivery.absolute_x) > 1 ||
-              std::abs(position.y - mouse_delivery.absolute_y) > 1) ready = false;
-        }
-        if (ready) {
-          mouse_delivery.pending_buttons = 0;
-          if (include_absolute) mouse_delivery.absolute_pending = false;
-          return true;
-        }
-        std::this_thread::sleep_for(1ms);
-      } while (std::chrono::steady_clock::now() < deadline);
-      // Never replay a transition whose delivery is uncertain. The existing
-      // recovery worker removes the child before later SendInput fallback.
-      keyboard_mouse_faulted = true;
-      recovery.request();
-      return false;
-    }
 
     std::mutex wake_mutex;
     std::condition_variable wake;
@@ -950,8 +914,14 @@ namespace platf {
     DWORD status = already_connected ? ERROR_SUCCESS : impl->client.connect();
     lvg::km::query_response km_info {};
     if (status == ERROR_SUCCESS) status = impl->client.query_keyboard_mouse(&km_info);
+    // Both mouse coordinate modes and buttons must reach one ordered mouse
+    // class queue. Older producers expose independent HID mouse collections;
+    // admitting them here would reintroduce cross-device drag reordering.
+    constexpr auto required = lvg::km::keyboard | lvg::km::ordered_mouse | lvg::km::virtual_desktop_absolute;
     if (status == ERROR_SUCCESS &&
-        (km_info.capabilities & lvg::km::k_relative_capabilities) != lvg::km::k_relative_capabilities) {
+        ((km_info.capabilities & required) != required || km_info.absolute_target_generation == 0 ||
+         (km_info.capabilities & lvg::km::primary_absolute_mouse) != 0)) {
+      BOOST_LOG(info) << "VHF keyboard/mouse requires an ordered mouse driver with full virtual-desktop coordinates"sv;
       status = ERROR_NOT_SUPPORTED;
     }
     const bool open_attempted = status == ERROR_SUCCESS;
@@ -972,13 +942,8 @@ namespace platf {
       return false;
     }
     impl->keyboard_mouse_owned = true;
-    impl->mouse_delivery = {};
     impl->keyboard_mouse_teardown_confirmed = false;
-    impl->absolute_uses_primary = (km_info.capabilities & lvg::km::primary_absolute_mouse) != 0;
-    // A nonzero generation alone does not identify the producer's coordinate
-    // domain. The v1 extension we know how to translate is primary-display.
-    impl->absolute_generation = ((km_info.capabilities & lvg::km::bound_absolute_mouse) != 0 &&
-                                 impl->absolute_uses_primary) ? km_info.absolute_target_generation : 0;
+    impl->absolute_generation = km_info.absolute_target_generation;
     impl->keyboard_mouse_consumer = (km_info.capabilities & lvg::km::consumer) != 0;
     BOOST_LOG(info) << "VHF keyboard/mouse input enabled"sv;
     return true;
@@ -1081,21 +1046,14 @@ namespace platf {
 
   void vhf_gamepad_t::keyboard_mouse_button(std::uint8_t button, bool pressed) {
     std::unique_lock lock {impl->lifetime};
-    if (!impl->settle_keyboard_mouse_locked(true)) return;
     auto request = lvg::km::request<lvg::km::button_request>();
     request.button = button;
     request.pressed = pressed ? 1 : 0;
-    if (impl->submit_keyboard_mouse_locked(request) && button >= 1 && button <= 5) {
-      const auto mask = static_cast<std::uint8_t>(1u << (button - 1));
-      impl->mouse_delivery.pending_buttons |= mask;
-      if (pressed) impl->mouse_delivery.pressed_buttons |= mask;
-      else impl->mouse_delivery.pressed_buttons &= ~mask;
-    }
+    std::ignore = impl->submit_keyboard_mouse_locked(request);
   }
 
   void vhf_gamepad_t::keyboard_mouse_relative(int x, int y, int wheel, int pan) {
     std::unique_lock lock {impl->lifetime};
-    if (!impl->settle_keyboard_mouse_locked(true)) return;
     static_assert(WHEEL_DELTA == 120);
     std::ignore = vhf_keyboard_mouse::send_relative(x, y, wheel / WHEEL_DELTA, pan / WHEEL_DELTA, [&](const auto &part) {
       auto request = lvg::km::request<lvg::km::relative_request>();
@@ -1107,33 +1065,16 @@ namespace platf {
     });
   }
 
-  bool vhf_gamepad_t::keyboard_mouse_absolute(std::uint16_t x, std::uint16_t y) {
+  void vhf_gamepad_t::keyboard_mouse_absolute(std::uint16_t x, std::uint16_t y) {
     std::unique_lock lock {impl->lifetime};
-    // A failed or removed VHF device may still own a pressed mouse button.
-    // Suppress even off-primary movement until recovery confirms removal;
-    // returning false here would incorrectly send it through SendInput.
-    if (impl->keyboard_mouse_faulted || impl->recovery.pending()) return true;
-    if (!impl->settle_keyboard_mouse_locked(false)) return true;
-    if (impl->absolute_generation == 0) return false;
-    if (impl->absolute_uses_primary) {
-      const auto primary = vhf_keyboard_mouse::map_primary_absolute(x, y,
-        GetSystemMetrics(SM_XVIRTUALSCREEN), GetSystemMetrics(SM_YVIRTUALSCREEN),
-        GetSystemMetrics(SM_CXVIRTUALSCREEN), GetSystemMetrics(SM_CYVIRTUALSCREEN),
-        GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
-      if (!primary.inside_primary) return false;
-      x = primary.x;
-      y = primary.y;
-    }
+    // Startup requires a single ordered mouse queue with virtual-desktop
+    // coordinates. Send all positions through it, including secondary displays.
+    // An uncertain submission is consumed here, never replayed with SendInput.
     auto request = lvg::km::request<lvg::km::absolute_request>();
     request.x = x;
     request.y = y;
     request.target_generation = impl->absolute_generation;
-    if (impl->submit_keyboard_mouse_locked(request)) {
-      impl->mouse_delivery.absolute_pending = true;
-      impl->mouse_delivery.absolute_x = static_cast<long>((std::uint64_t(x) * GetSystemMetrics(SM_CXSCREEN)) / 65536);
-      impl->mouse_delivery.absolute_y = static_cast<long>((std::uint64_t(y) * GetSystemMetrics(SM_CYSCREEN)) / 65536);
-    }
-    return true;
+    std::ignore = impl->submit_keyboard_mouse_locked(request);
   }
 
   int vhf_gamepad_t::alloc(

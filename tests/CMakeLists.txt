@@ -1991,6 +1991,18 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_windows_color_profile.py")
     add_test(NAME regression_delayed_mouse_release
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_delayed_mouse_release.py")
+    add_test(NAME regression_input_batching
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_input_batching.py"
+            --compiler "${SUNSHINE_TEST_GXX}")
+    set_tests_properties(regression_input_batching PROPERTIES LABELS "component" TIMEOUT 120)
+    add_test(NAME regression_back_home_worker
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_back_home_worker.py")
+    add_test(NAME regression_vhf_keyboard_mouse_policy
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_vhf_keyboard_mouse_policy.py")
+    add_test(NAME regression_vhf_keyboard_mouse_integration
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_vhf_keyboard_mouse_integration.py")
+    set_tests_properties(regression_back_home_worker regression_vhf_keyboard_mouse_policy
+        regression_vhf_keyboard_mouse_integration PROPERTIES LABELS "component" TIMEOUT 120)
     add_test(NAME regression_windows_absolute_mouse
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_windows_absolute_mouse.py")
     add_test(NAME regression_windows_mouse_keys

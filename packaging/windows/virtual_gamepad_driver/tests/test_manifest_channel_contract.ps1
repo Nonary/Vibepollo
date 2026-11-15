@@ -24,6 +24,8 @@ $contractFunctions = @(
     'Assert-ExactList',
     'Get-ManifestEntry',
     'Assert-ManifestHash',
+    'Test-MouseMapperFeature',
+    'Get-MouseMapperPayload',
     'Assert-ManifestPayloadContract'
 )
 
@@ -139,7 +141,10 @@ try {
     $testFiles = @($manifestPayload) + @(
         $localTestCertificate,
         'driver/AlternateVhfGamepad.cer',
-        'driver/UnexpectedVhfGamepad.cer'
+        'driver/UnexpectedVhfGamepad.cer',
+        'mouse_mapper/VibeshineVhfMouseMapper.inf',
+        'mouse_mapper/VibeshineVhfMouseMapper.sys',
+        'mouse_mapper/VibeshineVhfMouseMapper.cat'
     )
     foreach ($relativePath in $testFiles) {
         $path = Join-Path $testRoot ($relativePath -replace '/', '\')
@@ -152,6 +157,22 @@ try {
         [PSCustomObject]@{ Path = $installScript; Owner = 'Assert-DriverPackage'; Name = 'installed validation' }
     )) {
         Import-ManifestContract -ScriptPath $target.Path -OwnerFunction $target.Owner
+
+        $mapperPaths = @($manifestPayload) + @(Get-MouseMapperPayload)
+        $mapperManifest = New-TestManifest -Channel $msiRequestChannel -Paths $mapperPaths -Root $testRoot
+        $mapperManifest | Add-Member features ([PSCustomObject]@{ mouse_mapper = 1 })
+        $mapperManifest | Add-Member mouse_mapper ([PSCustomObject]@{ transport_version = 1; kernel_signing = 'windows-kernel-policy' })
+        Assert-Accepted -Manifest $mapperManifest -Root $testRoot -Name "$($target.Name): complete mapper payload"
+        $mapperManifest.files = @($mapperManifest.files | Where-Object path -ne 'mouse_mapper/VibeshineVhfMouseMapper.sys')
+        Assert-Rejected -Manifest $mapperManifest -Root $testRoot -Name "$($target.Name): missing mapper SYS" -ExpectedMessage 'manifest file list does not match'
+        $mapperManifest = New-TestManifest -Channel $msiRequestChannel -Paths $mapperPaths -Root $testRoot -HashOverrides @{ 'mouse_mapper/VibeshineVhfMouseMapper.cat' = ('0' * 64) }
+        $mapperManifest | Add-Member features ([PSCustomObject]@{ mouse_mapper = 1 })
+        $mapperManifest | Add-Member mouse_mapper ([PSCustomObject]@{ transport_version = 1; kernel_signing = 'windows-kernel-policy' })
+        Assert-Rejected -Manifest $mapperManifest -Root $testRoot -Name "$($target.Name): mapper catalog hash changes are never covered by MSI signing exceptions" -ExpectedMessage 'manifest hash mismatch'
+        $mapperManifest.mouse_mapper.transport_version = 2
+        Assert-Rejected -Manifest $mapperManifest -Root $testRoot -Name "$($target.Name): unknown mapper transport" -ExpectedMessage 'Unsupported mouse mapper'
+        $undeclaredMapper = New-TestManifest -Channel $msiRequestChannel -Paths $mapperPaths -Root $testRoot
+        Assert-Rejected -Manifest $undeclaredMapper -Root $testRoot -Name "$($target.Name): undeclared mapper feature" -ExpectedMessage 'manifest file list does not match'
 
         $localPaths = @($manifestPayload) + $localTestCertificate
         Assert-Accepted `
@@ -257,3 +278,5 @@ if (Test-Path -LiteralPath (Join-Path $repositoryRoot 'src_assets/windows/driver
 
 & (Join-Path $PSScriptRoot 'test_local_release_lock.ps1')
 Write-Host 'VHF manifest channel contract checks passed.'
+
+& (Join-Path $PSScriptRoot 'test_mouse_mapper_candidate_gate.ps1')

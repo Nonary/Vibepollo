@@ -7,6 +7,7 @@ param(
     [string] $PackageDir,
 
     [switch] $ValidateOnly,
+    [switch] $RequireMouseMapper,
     [switch] $AllowLocalTestPackage,
     [string] $ReleaseTag,
     [string] $ExpectedReleaseAssetSha256,
@@ -244,6 +245,20 @@ function Assert-ManifestHash {
     }
 }
 
+# A mapper package is identified explicitly, so old pinned gamepad-only archives
+# retain their existing contract. New producer payloads must carry all three files.
+function Test-MouseMapperFeature {
+    param([Parameter(Mandatory = $true)] $Manifest)
+    if ($null -eq $Manifest.PSObject.Properties['features'] -or
+        $null -eq $Manifest.features.PSObject.Properties['mouse_mapper']) { return $false }
+    if ($Manifest.features.mouse_mapper -ne 1 -or $null -eq $Manifest.mouse_mapper -or
+        $Manifest.mouse_mapper.transport_version -ne 1) { throw 'Unsupported mouse mapper package feature/version.' }
+    return $true
+}
+function Get-MouseMapperPayload {
+    return @('mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys', 'mouse_mapper/VibeshineVhfMouseMapper.cat')
+}
+
 function Assert-ManifestPayloadContract {
     param(
         [Parameter(Mandatory = $true)] $Manifest,
@@ -251,6 +266,7 @@ function Assert-ManifestPayloadContract {
     )
 
     $expectedPayload = @($manifestPayload)
+    if (Test-MouseMapperFeature -Manifest $Manifest) { $expectedPayload += @(Get-MouseMapperPayload) }
     if ([string] $Manifest.signing.channel -eq 'self-signed-local-test') {
         $expectedPayload += $localTestCertificate
     }
@@ -287,6 +303,7 @@ function Assert-Package {
         throw "[VibeshineVhfGamepad] Manifest is incomplete or uses an unsupported schema: $manifestPath"
     }
     Assert-ManifestPayloadContract -Manifest $manifest -Root $Root
+    if ($RequireMouseMapper -and -not (Test-MouseMapperFeature -Manifest $manifest)) { throw 'Ordered mouse candidate requires a producer package declaring features.mouse_mapper=1; refresh the actual published artifact pins first.' }
     if (-not $AllowLocalTest -and
         ($manifest.source_revision.ToLowerInvariant() -ne $ExpectedSourceRevision.ToLowerInvariant() -or
          $manifest.driver_ver -ne $ExpectedDriverVer -or
@@ -309,6 +326,25 @@ function Assert-Package {
     $catalogPath = Join-Path $Root 'driver/VibeshineVhfGamepad.cat'
     $dllPath = Join-Path $Root 'driver/VibeshineVhfGamepad.dll'
     $toolPath = Join-Path $Root 'tools/VibeshineVhfGamepadDeviceSetup.exe'
+
+    if (Test-MouseMapperFeature -Manifest $manifest) {
+        $mapperCatalog = Join-Path $Root 'mouse_mapper/VibeshineVhfMouseMapper.cat'
+        $localMapper = $AllowLocalTest -and $manifest.mouse_mapper.kernel_signing -ceq 'self-signed-local-test'
+        $mapperPolicy = if ($localMapper) { '/pa' } else { '/kp' }
+        if (-not $localMapper -and $manifest.mouse_mapper.kernel_signing -cne 'windows-kernel-policy') {
+            throw 'The production KMDF mapper requires Microsoft kernel signing; consumer MSI signing is insufficient.'
+        }
+        $mapperSignTool = Resolve-SignTool -ExplicitPath $SignToolPath
+        foreach ($relativePath in @('mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys')) {
+            & $mapperSignTool verify '/v' $mapperPolicy '/c' $mapperCatalog (Join-Path $Root $relativePath) | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "Mapper kernel policy/catalog membership verification failed for '$relativePath'." }
+        }
+        if ($localMapper) {
+            $mapperSigner = (Get-AuthenticodeSignature -LiteralPath $mapperCatalog).SignerCertificate
+            $localSigner = [Security.Cryptography.X509Certificates.X509Certificate2]::new($certificatePath)
+            if ($null -eq $mapperSigner -or $mapperSigner.Thumbprint -ine $localSigner.Thumbprint) { throw 'Mapper local signer differs from the package certificate.' }
+        }
+    }
 
     if ($manifest.signing.channel -eq $msiRequestChannel) {
         if ($AllowLocalTest) {
@@ -335,6 +371,8 @@ function Assert-Package {
             'driver/VibeshineVhfGamepad.dll',
             'driver/VibeshineVhfGamepad.inf'
         )
+        if (Test-MouseMapperFeature -Manifest $manifest) { $membershipFiles += @(Get-MouseMapperPayload) }
+        $membershipFiles = @($membershipFiles | Sort-Object)
         Assert-ExactList -Actual @($manifest.signing.catalog_membership.files.PSObject.Properties.Name | Sort-Object) -Expected $membershipFiles -Name 'catalog membership evidence files'
         foreach ($relativePath in $membershipFiles) {
             $path = Join-Path $Root ($relativePath -replace '/', '\')
@@ -428,13 +466,9 @@ function Assert-ConsumerReleaseLock {
         $lock.signing_channel -cne $msiRequestChannel) {
         throw '[VibeshineVhfGamepad] Consumer release lock does not match the pinned producer release.'
     }
-    Assert-ExactList -Actual @($lock.layout) -Expected @(
-        'driver/VibeshineVhfGamepad.cat',
-        'driver/VibeshineVhfGamepad.dll',
-        'driver/VibeshineVhfGamepad.inf',
-        'manifest.json',
-        'tools/VibeshineVhfGamepadDeviceSetup.exe'
-    ) -Name 'consumer release layout'
+    $expectedLayout = @($manifestPayload) + 'manifest.json'
+    if (Test-MouseMapperFeature -Manifest $Manifest) { $expectedLayout += @(Get-MouseMapperPayload) }
+    Assert-ExactList -Actual @($lock.layout | Sort-Object) -Expected @($expectedLayout | Sort-Object) -Name 'consumer release layout'
     Assert-ExactList -Actual @($lock.signed_downstream) -Expected @(
         'driver/VibeshineVhfGamepad.cat',
         'tools/VibeshineVhfGamepadDeviceSetup.exe'
@@ -598,7 +632,9 @@ try {
     foreach ($installerScript in $installerScripts) {
         Copy-Item -LiteralPath $installerScript -Destination (Join-Path $stageDir (Split-Path -Leaf $installerScript)) -Force
     }
-    foreach ($relativePath in $packageFiles) {
+    $stagedFiles = @($packageFiles)
+    if (Test-MouseMapperFeature -Manifest $prebuiltManifest) { $stagedFiles += @(Get-MouseMapperPayload) }
+    foreach ($relativePath in $stagedFiles) {
         $source = Join-Path $PrebuiltPackageDir ($relativePath -replace '/', '\\')
         $destination = Join-Path $stageDir ($relativePath -replace '/', '\\')
         New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null

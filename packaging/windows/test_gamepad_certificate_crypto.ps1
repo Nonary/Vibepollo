@@ -19,10 +19,17 @@ $wrongContentRejected=$false
 try{$null=Get-PublicLocalGamepadCertificate -CertificatePath (Join-Path $FixtureRoot 'SudoVDA.cat')}catch{$wrongContentRejected=$true}
 if(!$wrongContentRejected){throw 'Public certificate reader must reject PKCS#7/catalog content before X509 construction'}
 $catalog=Join-Path $FixtureRoot 'SudoVDA.cat'; $inf=Join-Path $FixtureRoot 'SudoVDA.inf'; $dll=Join-Path $FixtureRoot 'SudoVDA.dll'
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+ Write-Output 'Native validation helper compiled; public-certificate checks passed. Windows Authenticode/kernel-policy checks skipped on this platform.'
+ return
+}
 $signature=Get-AuthenticodeSignature -LiteralPath $catalog
 if ($null -eq $signature.SignerCertificate) { throw 'Existing fixture must be signed; no keys will be generated.' }
 $thumbprint=$signature.SignerCertificate.Thumbprint
 [VhfLocalTrustValidation]::VerifyCatalog($catalog,$thumbprint,@($inf,$dll))
+$kernelRejected=$false
+try { [VhfLocalTrustValidation]::VerifyKernelCatalog($catalog,@($inf,$dll)) } catch { $kernelRejected=$true }
+if (!$kernelRejected) { throw 'Windows kernel policy must not accept the ordinary self-signed UMDF catalog fixture.' }
 $tool=Join-Path $FixtureRoot 'nefconc.exe'
 $toolThumbprint=(Get-AuthenticodeSignature -LiteralPath $tool).SignerCertificate.Thumbprint
 [VhfLocalTrustValidation]::VerifyTool($tool,$toolThumbprint)

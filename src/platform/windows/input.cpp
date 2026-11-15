@@ -673,10 +673,9 @@ namespace platf {
 
     auto *raw = (input_raw_t *) input.get();
     if (use_vhf_keyboard_mouse(raw)) {
-      if (raw->vhf->keyboard_mouse_absolute(
-            static_cast<std::uint16_t>(std::clamp<long>(scaled_x, 0, 65535)),
-            static_cast<std::uint16_t>(std::clamp<long>(scaled_y, 0, 65535)))) return;
-      (void) raw->vhf->keyboard_mouse_fallback([&] { send_input(i); });
+      raw->vhf->keyboard_mouse_absolute(
+        static_cast<std::uint16_t>(std::clamp<long>(scaled_x, 0, 65535)),
+        static_cast<std::uint16_t>(std::clamp<long>(scaled_y, 0, 65535)));
       return;
     }
     send_input(i);

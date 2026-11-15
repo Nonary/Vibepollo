@@ -502,9 +502,11 @@ int main(int argc, char **argv) {
     } else if (test == "guide_back_timer_overlap") {
       connect(a, 0, 1, platf::BACK); key(a, 124); task_pool.fire();
       guide(a, true); assert(!(state(a).buttonFlags & platf::BACK));
-      key(a, 124, true); guide(a, false); expect({});
+      key(a, 124, true); guide(a, true); task_pool.fire(); guide(a, false); expect({});
     } else if (test == "guide_back_timer_unchanged") {
       connect(a, 0, 1, platf::BACK); auto first = platf::gamepad_events.size(); task_pool.fire();
+      assert(platf::gamepad_events.size() == first + 2);
+      task_pool.fire();
       assert(platf::gamepad_events.size() == first + 3);
       assert(platf::gamepad_events[first].second.buttonFlags == 0);
       assert(platf::gamepad_events[first + 1].second.buttonFlags == platf::HOME);

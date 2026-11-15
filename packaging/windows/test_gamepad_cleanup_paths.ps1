@@ -1,5 +1,9 @@
 param([string]$RepositoryRoot=(Resolve-Path (Join-Path $PSScriptRoot '../..')).Path)
 $ErrorActionPreference='Stop'
+# This fixture mocks all inventories and tool existence; supply a neutral root
+# when running its path-resolution checks on a non-Windows build host.
+$originalSystemRoot = $env:SystemRoot
+if ([string]::IsNullOrWhiteSpace($env:SystemRoot)) { $env:SystemRoot = [IO.Path]::GetTempPath() }
 $tokens=$null;$errors=$null
 $path=Join-Path $RepositoryRoot 'src_assets/windows/drivers/vhf-gamepad/cleanup.ps1'
 $ast=[Management.Automation.Language.Parser]::ParseFile($path,[ref]$tokens,[ref]$errors)
@@ -23,6 +27,7 @@ foreach($architecture in @('Sysnative','System32','SysWOW64','missing')){
   if($architecture -ne 'missing' -and $script:probed[-1] -ne $script:available){throw 'Native system tool path not used'}
  }
 }
+$env:SystemRoot = $originalSystemRoot
 Write-Host 'Eight cleanup path/empty-inventory cases passed; no PnPUtil or driver operation executed.'
 
 [xml]$wix=Get-Content (Join-Path $RepositoryRoot 'packaging/windows/wix/custom_actions.wxs') -Raw

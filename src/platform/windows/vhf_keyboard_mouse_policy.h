@@ -6,44 +6,11 @@
 #include <cstdint>
 
 namespace platf::vhf_keyboard_mouse {
-  struct mouse_delivery_t {
-    std::uint8_t pending_buttons {}, pressed_buttons {};
-    bool absolute_pending {};
-    long absolute_x {}, absolute_y {};
-  };
   inline constexpr std::uint16_t win32_fallback = 0xffff;
   // This key was first pressed while VHF removal was uncertain and was never
   // sent to either backend. Consume its matching release as well.
   inline constexpr std::uint16_t suppressed_fallback = 0xfffe;
   inline constexpr std::uint16_t consumer_route = 0x100;
-
-  struct absolute_point {
-    bool inside_primary;
-    std::uint16_t x;
-    std::uint16_t y;
-  };
-
-  // Translate virtual-desktop normalized coordinates to the primary-monitor
-  // coordinate domain. Windows' HID mouse mapper uses that domain for the
-  // producer's absolute collection. Do not clamp an off-primary target onto
-  // the primary display: the caller may use its existing fallback instead.
-  constexpr absolute_point map_primary_absolute(std::uint16_t x, std::uint16_t y,
-      int virtual_x, int virtual_y, int virtual_width, int virtual_height,
-      int primary_width, int primary_height) noexcept {
-    if (virtual_width <= 0 || virtual_height <= 0 || primary_width <= 1 || primary_height <= 1) {
-      return {false, 0, 0};
-    }
-    const auto px = static_cast<std::int64_t>(virtual_x) +
-      (static_cast<std::int64_t>(x) * (virtual_width - 1) + 32767) / 65535;
-    const auto py = static_cast<std::int64_t>(virtual_y) +
-      (static_cast<std::int64_t>(y) * (virtual_height - 1) + 32767) / 65535;
-    if (px < 0 || py < 0 || px >= primary_width || py >= primary_height) {
-      return {false, 0, 0};
-    }
-    return {true,
-      static_cast<std::uint16_t>((px * 65535 + (primary_width - 1) / 2) / (primary_width - 1)),
-      static_cast<std::uint16_t>((py * 65535 + (primary_height - 1) / 2) / (primary_height - 1))};
-  }
 
   // usage is evaluated at press; subsequent repeats/releases use that same
   // route, even if the key's layout or client flags change while it is held.

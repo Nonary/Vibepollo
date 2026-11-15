@@ -166,8 +166,14 @@ namespace input {
 
     platf::gamepad_state_t gamepad_state;
     bool guide_key_down = false;
+    bool synthetic_home_down = false;
 
     thread_pool_util::ThreadPool::task_id_t back_timeout_id;
+    thread_pool_util::ThreadPool::task_id_t home_release_id {};
+    // Cancellation cannot recall a callback already dequeued by the worker.
+    // Invalidate it when a timer is replaced or its controller is retired.
+    std::uint64_t back_timeout_generation {};
+    std::uint64_t home_release_generation {};
 
     int id;
     bool alloc_failed {};
@@ -193,13 +199,19 @@ namespace input {
   // Controller packets and timer releases must not release a held bound key.
   void send_gamepad_state(const gamepad_t &gamepad) {
     auto state = gamepad.gamepad_state;
-    if (gamepad.guide_key_down) {
+    if (gamepad.guide_key_down || gamepad.synthetic_home_down) {
       state.buttonFlags |= platf::HOME;
     }
     platf::gamepad_update(platf_input, gamepad.id, state);
   }
 
   void reset_gamepad(gamepad_t &gamepad) {
+    ++gamepad.back_timeout_generation;
+    ++gamepad.home_release_generation;
+    if (gamepad.home_release_id) {
+      task_pool.cancel(gamepad.home_release_id);
+      gamepad.home_release_id = nullptr;
+    }
     if (gamepad.back_timeout_id) {
       task_pool.cancel(gamepad.back_timeout_id);
       gamepad.back_timeout_id = nullptr;
@@ -214,6 +226,7 @@ namespace input {
     gamepad.pending_steam_attributes.reset();
     gamepad.gamepad_state = {};
     gamepad.guide_key_down = false;
+    gamepad.synthetic_home_down = false;
     gamepad.back_button_state = button_state_e::NONE;
   }
 
@@ -1726,33 +1739,37 @@ namespace input {
       if (platf::BACK & bf_new) {
         // Don't emulate home button if timeout < 0
         if (config::input.back_button_timeout >= 0ms) {
-          auto f = [input, controller = packet->controllerNumber]() {
+          const auto generation = ++gamepad.back_timeout_generation;
+          auto f = [input, controller = packet->controllerNumber, generation]() {
             auto &gamepad = input->gamepads[controller];
-
-            auto &state = gamepad.gamepad_state;
-
-            // Force the back button up
-            gamepad.back_button_state = button_state_e::UP;
-            state.buttonFlags &= ~platf::BACK;
-            send_gamepad_state(gamepad);
-
-            // Press Home button
-            state.buttonFlags |= platf::HOME;
-            send_gamepad_state(gamepad);
-
-            // Sleep for a short time to allow the input to be detected
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
-
-            // Release Home button
-            state.buttonFlags &= ~platf::HOME;
-            send_gamepad_state(gamepad);
-
+            if (gamepad.id < 0 || generation != gamepad.back_timeout_generation) return;
             gamepad.back_timeout_id = nullptr;
+
+            // Force Back up without changing the client's native Home state.
+            gamepad.back_button_state = button_state_e::UP;
+            gamepad.gamepad_state.buttonFlags &= ~platf::BACK;
+            send_gamepad_state(gamepad);
+
+            gamepad.synthetic_home_down = true;
+            send_gamepad_state(gamepad);
+            if (gamepad.home_release_id) task_pool.cancel(gamepad.home_release_id);
+            const auto release_generation = ++gamepad.home_release_generation;
+            auto release = [input, controller, release_generation]() {
+              auto &gamepad = input->gamepads[controller];
+              if (gamepad.id < 0 || release_generation != gamepad.home_release_generation) return;
+              gamepad.home_release_id = nullptr;
+              gamepad.synthetic_home_down = false;
+              send_gamepad_state(gamepad);
+            };
+            // The shared input worker must continue servicing mouse, keyboard,
+            // controller packets and disconnects throughout the Home pulse.
+            gamepad.home_release_id = task_pool.pushDelayed(std::move(release), 100ms).task_id;
           };
 
           gamepad.back_timeout_id = task_pool.pushDelayed(std::move(f), config::input.back_button_timeout).task_id;
         }
       } else if (gamepad.back_timeout_id) {
+        ++gamepad.back_timeout_generation;
         task_pool.cancel(gamepad.back_timeout_id);
         gamepad.back_timeout_id = nullptr;
       }
@@ -1779,10 +1796,10 @@ namespace input {
     short deltaY;
 
     // Batching is safe as long as the result doesn't overflow a 16-bit integer
-    if (!__builtin_add_overflow(util::endian::big(dest->deltaX), util::endian::big(src->deltaX), &deltaX)) {
+    if (__builtin_add_overflow(util::endian::big(dest->deltaX), util::endian::big(src->deltaX), &deltaX)) {
       return batch_result_e::terminate_batch;
     }
-    if (!__builtin_add_overflow(util::endian::big(dest->deltaY), util::endian::big(src->deltaY), &deltaY)) {
+    if (__builtin_add_overflow(util::endian::big(dest->deltaY), util::endian::big(src->deltaY), &deltaY)) {
       return batch_result_e::terminate_batch;
     }
 
@@ -1819,7 +1836,7 @@ namespace input {
     short scrollAmt;
 
     // Batching is safe as long as the result doesn't overflow a 16-bit integer
-    if (!__builtin_add_overflow(util::endian::big(dest->scrollAmt1), util::endian::big(src->scrollAmt1), &scrollAmt)) {
+    if (__builtin_add_overflow(util::endian::big(dest->scrollAmt1), util::endian::big(src->scrollAmt1), &scrollAmt)) {
       return batch_result_e::terminate_batch;
     }
 
@@ -1839,7 +1856,7 @@ namespace input {
     short scrollAmt;
 
     // Batching is safe as long as the result doesn't overflow a 16-bit integer
-    if (!__builtin_add_overflow(util::endian::big(dest->scrollAmount), util::endian::big(src->scrollAmount), &scrollAmt)) {
+    if (__builtin_add_overflow(util::endian::big(dest->scrollAmount), util::endian::big(src->scrollAmount), &scrollAmt)) {
       return batch_result_e::terminate_batch;
     }
 

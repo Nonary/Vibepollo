@@ -8,6 +8,7 @@ param(
     [Parameter(Mandatory = $true)][string] $ExpectedDriverVer,
     [Parameter(Mandatory = $true)][uint16] $ExpectedProtocolVersion,
     [switch] $ValidateOnly,
+    [switch] $RequireMouseMapper,
     [string] $GitHubToken
 )
 
@@ -41,6 +42,32 @@ $expectedMembershipFiles = @(
     'driver/VibeshineVhfGamepad.dll',
     'driver/VibeshineVhfGamepad.inf'
 )
+
+# Keep immutable legacy releases usable; new layouts require explicit metadata.
+$legacyLayout = @($expectedLayout)
+$legacyManifestFiles = @($expectedManifestFiles)
+$legacyMembershipFiles = @($expectedMembershipFiles)
+function Set-ReleasePayloadContract {
+    param([Parameter(Mandatory = $true)] $Metadata)
+    $script:expectedLayout = @($legacyLayout)
+    $script:expectedManifestFiles = @($legacyManifestFiles)
+    $script:expectedMembershipFiles = @($legacyMembershipFiles)
+    if ($null -ne $Metadata.PSObject.Properties['features'] -and
+        $null -ne $Metadata.features.PSObject.Properties['mouse_mapper']) {
+        if ($Metadata.features.mouse_mapper -ne 1 -or
+            $Metadata.mouse_mapper.transport_version -ne 1 -or
+            $Metadata.mouse_mapper.kernel_signing -cne 'windows-kernel-policy') {
+            throw 'Unsupported or unsigned production mouse mapper metadata.'
+        }
+        $mapper = @('mouse_mapper/VibeshineVhfMouseMapper.cat', 'mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys')
+        $script:expectedLayout = @($legacyLayout + $mapper | Sort-Object)
+        $script:expectedManifestFiles = @($legacyManifestFiles + $mapper | Sort-Object)
+        $script:expectedMembershipFiles = @($legacyMembershipFiles + $mapper | Sort-Object)
+    }
+    if ($RequireMouseMapper -and $script:expectedLayout -notcontains 'mouse_mapper/VibeshineVhfMouseMapper.sys') {
+        throw 'This bundled host requires the ordered mouse mapper. The pinned legacy producer release is not eligible; publish and verify the new producer artifact, then refresh the real release pins.'
+    }
+}
 
 function Write-Step {
     param([Parameter(Mandatory = $true)][string] $Message)
@@ -117,6 +144,12 @@ function Assert-JsonReleaseContract {
         [string] $Metadata.signing.channel -cne 'msi-request-signing') {
         throw "$Name metadata does not match the pinned producer release."
     }
+    Set-ReleasePayloadContract -Metadata $Metadata
+    if ($expectedLayout -contains 'mouse_mapper/VibeshineVhfMouseMapper.sys') {
+        if ($Metadata.preparation.run_id -notmatch '^[1-9][0-9]*$' -or
+            $Metadata.preparation.unsigned_archive_sha256 -notmatch '^[0-9a-f]{64}$' -or
+            $Metadata.preparation.source_revision -cne $ExpectedSourceRevision) { throw "$Name lacks exact unsigned preparation provenance." }
+    }
     Assert-ExactList -Actual @($Metadata.layout) -Expected $expectedLayout -Name "$Name layout"
     Assert-ExactList -Actual @($Metadata.signing.signed_downstream) -Expected $expectedSignedDownstream -Name "$Name signed_downstream"
     Assert-ExactList -Actual @($Metadata.signing.unsigned_payloads) -Expected $expectedUnsignedPayloads -Name "$Name unsigned_payloads"
@@ -151,7 +184,8 @@ function Assert-ProducerReleaseDirectory {
     $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
     Assert-JsonReleaseContract -Metadata $producerLock -Name 'Producer release lock'
     Assert-JsonReleaseContract -Metadata $evidence -Name 'Producer evidence'
-    if ([string] $producerLock.manifest.sha256 -cne [string] $evidence.manifest.sha256) {
+    if (([string] $producerLock.manifest.sha256 -cne [string] $evidence.manifest.sha256) -or
+        ((@($producerLock.layout) -join ',') -cne (@($evidence.layout) -join ','))) {
         throw 'Producer lock and evidence disagree about the manifest hash.'
     }
     foreach ($property in @(
@@ -213,6 +247,8 @@ function Assert-ProducerReleaseDirectory {
         [string] $manifest.signing.channel -cne 'msi-request-signing') {
         throw 'Producer manifest does not match the pinned source, version, platform, and signing channel.'
     }
+    Set-ReleasePayloadContract -Metadata $manifest
+    Assert-ExactList -Actual @($producerLock.layout) -Expected $expectedLayout -Name 'Manifest/sidecar feature layout'
     Assert-ExactList -Actual @($manifest.files | ForEach-Object { [string] $_.path } | Sort-Object) -Expected $expectedManifestFiles -Name 'Manifest file list'
     Assert-ExactList -Actual @($manifest.signing.signed_downstream) -Expected $expectedSignedDownstream -Name 'Manifest signed_downstream'
     Assert-ExactList -Actual @($manifest.signing.unsigned_payloads) -Expected $expectedUnsignedPayloads -Name 'Manifest unsigned_payloads'
@@ -242,6 +278,14 @@ function Assert-ProducerReleaseDirectory {
             if ($lockMembershipHash -cne $actualHash -or $evidenceMembershipHash -cne $actualHash) {
                 throw "Producer sidecars disagree with the manifest membership hash: $relative"
             }
+        }
+    }
+    if ($expectedLayout -contains 'mouse_mapper/VibeshineVhfMouseMapper.sys') {
+        if ($evidence.verification.exact_prepared_artifact_reused_without_rebuild -ne $true -or $evidence.verification.mapper_kernel_policy_verified -ne $true) { throw 'Producer did not verify the mapper kernel policy.' }
+        $signTool = Get-Command signtool.exe -ErrorAction Stop
+        foreach ($relative in @('mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys')) {
+            & $signTool.Source verify '/v' '/kp' '/c' (Join-Path $Root 'mouse_mapper/VibeshineVhfMouseMapper.cat') (Join-Path $Root $relative) | Out-Host
+            if ($LASTEXITCODE -ne 0) { throw "Mapper kernel signing/catalog binding failed: $relative" }
         }
     }
     foreach ($relative in $expectedUnsignedPayloads) {
@@ -351,7 +395,8 @@ $extractDir = Join-Path $temporaryRoot 'extract'
 $stageDir = "$OutDir.partial-$([System.Guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $downloadDir, $extractDir, $stageDir -Force | Out-Null
 try {
-    foreach ($asset in $assets) {
+    # Inspect immutable metadata before transferring/extracting the driver ZIP.
+    foreach ($asset in @($assets | Sort-Object { if ($_.name -ceq $archiveName) { 1 } else { 0 } })) {
         $destination = Join-Path $downloadDir ([string] $asset.name)
         Write-Step "Downloading $($asset.name)"
         Invoke-WebRequest -Uri ([string] $asset.url) -Headers (New-GitHubHeaders -Token $GitHubToken -Accept 'application/octet-stream') -OutFile $destination
@@ -361,6 +406,10 @@ try {
         if ("sha256:$(Get-Sha256 -Path $destination)" -cne [string] $asset.digest) {
             throw "Downloaded asset digest mismatch: $($asset.name)"
         }
+        if ($asset.name -ceq $producerLockName) {
+            $earlyMetadata = Get-Content -LiteralPath $destination -Raw | ConvertFrom-Json
+            Assert-JsonReleaseContract -Metadata $earlyMetadata -Name 'Producer release lock before archive download'
+        }
     }
 
     $producerStageDir = Join-Path $stageDir 'producer-release'
@@ -369,6 +418,8 @@ try {
         Copy-Item -LiteralPath (Join-Path $downloadDir $name) -Destination (Join-Path $producerStageDir $name) -Force
     }
     Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $downloadMetadata = Get-Content -LiteralPath (Join-Path $downloadDir $producerLockName) -Raw | ConvertFrom-Json
+    Set-ReleasePayloadContract -Metadata $downloadMetadata
     $downloadedArchive = Join-Path $downloadDir $archiveName
     $zip = [System.IO.Compression.ZipFile]::OpenRead($downloadedArchive)
     try {

@@ -281,3 +281,16 @@ is passed explicitly. Origin verification is impossible from a developer machine
 (the origin metadata must come from GitHub), so signing is a CI-only concern.
 `scripts/signpath_sign.ps1` remains available for manual/test signing but is
 **non-origin** and not a supported release path.
+
+## Ordered mouse KMDF mapper
+
+The optional `drivers/vhf-gamepad/mouse_mapper/` INF/SYS/CAT payload is signed
+through Microsoft attestation or HLK **before** the producer release. Keep every
+byte unchanged in the MSI signing request. It is not one of the UMDF catalog
+signing exceptions above: ordinary SignPath Authenticode signing does not
+establish kernel-mode signing eligibility. Ingest and signed-MSI checks require
+Windows kernel policy (`signtool verify /kp /c`) and exact catalog membership;
+mapper manifest hashes remain mandatory after deep signing. A daily package may
+locally sign the UMDF catalog/setup EXE while retaining the Microsoft-signed
+mapper. It cannot manufacture a production mapper signature. See the producer
+[packaging contract](../../third-party/libvirtualgamepad/docs/MOUSE_MAPPER_PACKAGING.md).
