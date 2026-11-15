@@ -148,7 +148,40 @@ try {
             Assert-That ($install.IndexOf('Test-SafeDriverInstall') -lt $install.IndexOf('Assert-DriverPackage')) 'VHF guard must precede trust/package assertion'
             Assert-That ($install.Contains("-HardwareId 'ROOT\VIBESHINEVIRTUALGAMEPAD'")) 'VHF guard hardware identity must match INF'
             Assert-That ($text.Contains('[int]$DailyUnsignedPolicy = 0')) 'Stable VHF publisher handling must remain the default'
-            Assert-That ($install.Contains('if ($DailyUnsignedPolicy -eq 0 -and $null -ne $package.ProductionPublisherCertificate)')) 'Daily VHF must not import a production publisher'
+            # Exercise the actual trust guard, rather than requiring its old
+            # spelling: mapper-aware installs also guard on $installParent.
+            $publisherCalls = @($ast.FindAll({param($n)
+                $n -is [Management.Automation.Language.CommandAst] -and
+                $n.GetCommandName() -eq 'Ensure-ProductionPublisherTrusted'
+            }, $true))
+            Assert-That ($publisherCalls.Count -eq 1) 'VHF production publisher trust must have one guarded call site'
+            $publisherGuard = $publisherCalls[0].Parent
+            while ($null -ne $publisherGuard -and $publisherGuard -isnot [Management.Automation.Language.IfStatementAst]) {
+                $publisherGuard = $publisherGuard.Parent
+            }
+            Assert-That ($null -ne $publisherGuard) 'VHF production publisher trust must remain conditional'
+            & {
+                param([string]$GuardText)
+                $expectedCertificate = [pscustomobject]@{ Thumbprint = 'verified-production-publisher' }
+                $expectedSignPathFoundationSignerSubject = 'expected-production-subject'
+                function Ensure-ProductionPublisherTrusted {
+                    param($PublisherCertificate, $ExpectedSubject)
+                    Assert-That ($PublisherCertificate -eq $expectedCertificate) 'Publisher trust must use the validated package certificate'
+                    Assert-That ($ExpectedSubject -ceq $expectedSignPathFoundationSignerSubject) 'Publisher trust must retain the expected signer identity'
+                    $script:publisherTrustCalls++
+                }
+                foreach ($installParent in @($false, $true)) {
+                    foreach ($DailyUnsignedPolicy in @(0, 1)) {
+                        foreach ($hasCertificate in @($false, $true)) {
+                            $package = [pscustomobject]@{ ProductionPublisherCertificate = $(if ($hasCertificate) { $expectedCertificate } else { $null }) }
+                            $script:publisherTrustCalls = 0
+                            . ([scriptblock]::Create($GuardText))
+                            $expectedCalls = if ($installParent -and $DailyUnsignedPolicy -eq 0 -and $hasCertificate) { 1 } else { 0 }
+                            Assert-That ($script:publisherTrustCalls -eq $expectedCalls) "VHF publisher trust policy failed: installParent=$installParent daily=$DailyUnsignedPolicy certificate=$hasCertificate"
+                        }
+                    }
+                }
+            } $publisherGuard.Extent.Text
         } else {
             $body=$ast.EndBlock.Extent.Text
             $guard=$body.LastIndexOf('Test-SafeDriverInstall -InfPath')
