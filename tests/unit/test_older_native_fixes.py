@@ -61,16 +61,19 @@ struct log_t {template<class T> log_t &operator<<(const T &) {return *this;}} lo
 linux=(root/'src/platform/linux/misc.cpp').read_text()
 start=linux.index('  void set_thread_name(')
 body=linux[start:linux.index('\n  void enable_mouse_keys()',start)]
+# Keep the OS seams distinct from declarations pulled in by the host C++ library.
+body=body.replace('pthread_self()', 'fixture_pthread_self()').replace('pthread_setname_np(', 'fixture_pthread_setname_np(')
 programs['thread_name']=common+r'''
 #define pthread_self fixture_pthread_self
 #define pthread_setname_np fixture_pthread_setname_np
 std::string captured;
-int pthread_self(){return 1;}
-void pthread_setname_np(int,const char *name) {captured=name;}
+int fixture_pthread_self(){return 1;}
+void fixture_pthread_setname_np(int,const char *name) {captured=name;}
 @BODY@
 int main(){
  set_thread_name("short");assert(captured=="short");
- set_thread_name("fifteen-letters");assert(captured=="fifteen-letters");
+ set_thread_name("123456789012345");assert(captured=="123456789012345");
+ set_thread_name("1234567890123456");assert(captured=="123456789012345");
  set_thread_name("video::capture_sync");assert(captured=="video::capture_");
  set_thread_name("");assert(captured.empty());
 }
