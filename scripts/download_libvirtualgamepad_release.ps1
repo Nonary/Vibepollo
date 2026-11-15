@@ -43,26 +43,63 @@ $expectedMembershipFiles = @(
     'driver/VibeshineVhfGamepad.inf'
 )
 
+function Get-ValidatedMouseMapperMetadata {
+    param([Parameter(Mandatory = $true)]$Metadata, [string]$Context = 'Mouse mapper')
+    $property = $Metadata.PSObject.Properties['mouse_mapper']
+    if ($null -eq $property -or $null -eq $property.Value) { throw "$Context lacks mouse mapper metadata." }
+    $mapper = $property.Value
+    foreach ($name in @('transport_version', 'vendor_id', 'product_id', 'kernel_signing')) {
+        if ($null -eq $mapper.PSObject.Properties[$name]) { throw "$Context lacks mouse mapper field '$name'." }
+    }
+    $numbers = @{}
+    foreach ($name in @('transport_version', 'vendor_id', 'product_id')) {
+        [uint32]$number = 0
+        if (-not [uint32]::TryParse([string]$mapper.PSObject.Properties[$name].Value, [Globalization.NumberStyles]::None, [Globalization.CultureInfo]::InvariantCulture, [ref]$number) -or $number -gt 65535) {
+            throw "$Context mouse mapper '$name' must be an integer in 0..65535."
+        }
+        $numbers[$name] = $number
+    }
+    if ($numbers.transport_version -ne 1 -or [string]$mapper.kernel_signing -cne 'unsigned-producer') { throw "$Context has unsupported mouse mapper transport/signing metadata." }
+    return "1/$($numbers.vendor_id)/$($numbers.product_id)/unsigned-producer"
+}
+function Assert-MouseMapperMetadataMatch {
+    param([Parameter(Mandatory = $true)]$Expected, [Parameter(Mandatory = $true)]$Actual, [string]$Context = 'Release records')
+    if ((Get-ValidatedMouseMapperMetadata -Metadata $Expected -Context $Context) -cne (Get-ValidatedMouseMapperMetadata -Metadata $Actual -Context $Context)) {
+        throw "$Context mouse mapper metadata mismatch (transport, VID, PID or signing)."
+    }
+}
+function Assert-MouseMapperInfIdentity {
+    param([Parameter(Mandatory = $true)]$Metadata, [Parameter(Mandatory = $true)][string]$InfContents, [string]$Context = 'Mapper INF')
+    $null = Get-ValidatedMouseMapperMetadata -Metadata $Metadata -Context $Context
+    $ids = [regex]::Matches($InfContents, 'HID\\VID_([0-9A-Fa-f]{4})&PID_([0-9A-Fa-f]{4})&REV_0100&Col02')
+    if ($ids.Count -ne 1 -or [Convert]::ToUInt16($ids[0].Groups[1].Value, 16) -ne [uint16]$Metadata.mouse_mapper.vendor_id -or
+        [Convert]::ToUInt16($ids[0].Groups[2].Value, 16) -ne [uint16]$Metadata.mouse_mapper.product_id) { throw "$Context mouse mapper INF identity does not match its metadata." }
+}
+
 # Keep immutable legacy releases usable; new layouts require explicit metadata.
 $legacyLayout = @($expectedLayout)
 $legacyManifestFiles = @($expectedManifestFiles)
 $legacyMembershipFiles = @($expectedMembershipFiles)
+$legacyUnsignedPayloads = @($expectedUnsignedPayloads)
 function Set-ReleasePayloadContract {
     param([Parameter(Mandatory = $true)] $Metadata)
     $script:expectedLayout = @($legacyLayout)
     $script:expectedManifestFiles = @($legacyManifestFiles)
     $script:expectedMembershipFiles = @($legacyMembershipFiles)
+    $script:expectedUnsignedPayloads = @($legacyUnsignedPayloads)
     if ($null -ne $Metadata.PSObject.Properties['features'] -and
         $null -ne $Metadata.features.PSObject.Properties['mouse_mapper']) {
         if ($Metadata.features.mouse_mapper -ne 1 -or
             $Metadata.mouse_mapper.transport_version -ne 1 -or
-            $Metadata.mouse_mapper.kernel_signing -cne 'windows-kernel-policy') {
-            throw 'Unsupported or unsigned production mouse mapper metadata.'
+            $Metadata.mouse_mapper.kernel_signing -cne 'unsigned-producer') {
+            throw 'Unsupported unsigned producer mouse mapper metadata.'
         }
+        $null = Get-ValidatedMouseMapperMetadata -Metadata $Metadata -Context 'Producer metadata'
         $mapper = @('mouse_mapper/VibeshineVhfMouseMapper.cat', 'mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys')
         $script:expectedLayout = @($legacyLayout + $mapper | Sort-Object)
         $script:expectedManifestFiles = @($legacyManifestFiles + $mapper | Sort-Object)
         $script:expectedMembershipFiles = @($legacyMembershipFiles + $mapper | Sort-Object)
+        $script:expectedUnsignedPayloads = @($legacyUnsignedPayloads + @('mouse_mapper/VibeshineVhfMouseMapper.cat', 'mouse_mapper/VibeshineVhfMouseMapper.sys') | Sort-Object)
     }
     if ($RequireMouseMapper -and $script:expectedLayout -notcontains 'mouse_mapper/VibeshineVhfMouseMapper.sys') {
         throw 'This bundled host requires the ordered mouse mapper. The pinned legacy producer release is not eligible; publish and verify the new producer artifact, then refresh the real release pins.'
@@ -145,11 +182,6 @@ function Assert-JsonReleaseContract {
         throw "$Name metadata does not match the pinned producer release."
     }
     Set-ReleasePayloadContract -Metadata $Metadata
-    if ($expectedLayout -contains 'mouse_mapper/VibeshineVhfMouseMapper.sys') {
-        if ($Metadata.preparation.run_id -notmatch '^[1-9][0-9]*$' -or
-            $Metadata.preparation.unsigned_archive_sha256 -notmatch '^[0-9a-f]{64}$' -or
-            $Metadata.preparation.source_revision -cne $ExpectedSourceRevision) { throw "$Name lacks exact unsigned preparation provenance." }
-    }
     Assert-ExactList -Actual @($Metadata.layout) -Expected $expectedLayout -Name "$Name layout"
     Assert-ExactList -Actual @($Metadata.signing.signed_downstream) -Expected $expectedSignedDownstream -Name "$Name signed_downstream"
     Assert-ExactList -Actual @($Metadata.signing.unsigned_payloads) -Expected $expectedUnsignedPayloads -Name "$Name unsigned_payloads"
@@ -184,6 +216,9 @@ function Assert-ProducerReleaseDirectory {
     $evidence = Get-Content -LiteralPath $evidencePath -Raw | ConvertFrom-Json
     Assert-JsonReleaseContract -Metadata $producerLock -Name 'Producer release lock'
     Assert-JsonReleaseContract -Metadata $evidence -Name 'Producer evidence'
+    if ($expectedLayout -contains 'mouse_mapper/VibeshineVhfMouseMapper.sys') {
+        Assert-MouseMapperMetadataMatch -Expected $producerLock -Actual $evidence -Context 'Producer lock/evidence'
+    }
     if (([string] $producerLock.manifest.sha256 -cne [string] $evidence.manifest.sha256) -or
         ((@($producerLock.layout) -join ',') -cne (@($evidence.layout) -join ','))) {
         throw 'Producer lock and evidence disagree about the manifest hash.'
@@ -248,6 +283,10 @@ function Assert-ProducerReleaseDirectory {
         throw 'Producer manifest does not match the pinned source, version, platform, and signing channel.'
     }
     Set-ReleasePayloadContract -Metadata $manifest
+    if ($expectedLayout -contains 'mouse_mapper/VibeshineVhfMouseMapper.sys') {
+        Assert-MouseMapperMetadataMatch -Expected $producerLock -Actual $manifest -Context 'Producer lock/staged manifest'
+        Assert-MouseMapperInfIdentity -Metadata $manifest -InfContents (Get-Content -LiteralPath (Join-Path $Root 'mouse_mapper/VibeshineVhfMouseMapper.inf') -Raw) -Context 'Staged mapper INF'
+    }
     Assert-ExactList -Actual @($producerLock.layout) -Expected $expectedLayout -Name 'Manifest/sidecar feature layout'
     Assert-ExactList -Actual @($manifest.files | ForEach-Object { [string] $_.path } | Sort-Object) -Expected $expectedManifestFiles -Name 'Manifest file list'
     Assert-ExactList -Actual @($manifest.signing.signed_downstream) -Expected $expectedSignedDownstream -Name 'Manifest signed_downstream'
@@ -278,14 +317,6 @@ function Assert-ProducerReleaseDirectory {
             if ($lockMembershipHash -cne $actualHash -or $evidenceMembershipHash -cne $actualHash) {
                 throw "Producer sidecars disagree with the manifest membership hash: $relative"
             }
-        }
-    }
-    if ($expectedLayout -contains 'mouse_mapper/VibeshineVhfMouseMapper.sys') {
-        if ($evidence.verification.exact_prepared_artifact_reused_without_rebuild -ne $true -or $evidence.verification.mapper_kernel_policy_verified -ne $true) { throw 'Producer did not verify the mapper kernel policy.' }
-        $signTool = Get-Command signtool.exe -ErrorAction Stop
-        foreach ($relative in @('mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys')) {
-            & $signTool.Source verify '/v' '/kp' '/c' (Join-Path $Root 'mouse_mapper/VibeshineVhfMouseMapper.cat') (Join-Path $Root $relative) | Out-Host
-            if ($LASTEXITCODE -ne 0) { throw "Mapper kernel signing/catalog binding failed: $relative" }
         }
     }
     foreach ($relative in $expectedUnsignedPayloads) {

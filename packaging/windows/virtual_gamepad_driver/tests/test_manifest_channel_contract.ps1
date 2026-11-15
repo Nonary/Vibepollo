@@ -161,13 +161,13 @@ try {
         $mapperPaths = @($manifestPayload) + @(Get-MouseMapperPayload)
         $mapperManifest = New-TestManifest -Channel $msiRequestChannel -Paths $mapperPaths -Root $testRoot
         $mapperManifest | Add-Member features ([PSCustomObject]@{ mouse_mapper = 1 })
-        $mapperManifest | Add-Member mouse_mapper ([PSCustomObject]@{ transport_version = 1; kernel_signing = 'windows-kernel-policy' })
+        $mapperManifest | Add-Member mouse_mapper ([PSCustomObject]@{ transport_version = 1; kernel_signing = 'unsigned-producer' })
         Assert-Accepted -Manifest $mapperManifest -Root $testRoot -Name "$($target.Name): complete mapper payload"
         $mapperManifest.files = @($mapperManifest.files | Where-Object path -ne 'mouse_mapper/VibeshineVhfMouseMapper.sys')
         Assert-Rejected -Manifest $mapperManifest -Root $testRoot -Name "$($target.Name): missing mapper SYS" -ExpectedMessage 'manifest file list does not match'
         $mapperManifest = New-TestManifest -Channel $msiRequestChannel -Paths $mapperPaths -Root $testRoot -HashOverrides @{ 'mouse_mapper/VibeshineVhfMouseMapper.cat' = ('0' * 64) }
         $mapperManifest | Add-Member features ([PSCustomObject]@{ mouse_mapper = 1 })
-        $mapperManifest | Add-Member mouse_mapper ([PSCustomObject]@{ transport_version = 1; kernel_signing = 'windows-kernel-policy' })
+        $mapperManifest | Add-Member mouse_mapper ([PSCustomObject]@{ transport_version = 1; kernel_signing = 'unsigned-producer' })
         Assert-Rejected -Manifest $mapperManifest -Root $testRoot -Name "$($target.Name): mapper catalog hash changes are never covered by MSI signing exceptions" -ExpectedMessage 'manifest hash mismatch'
         $mapperManifest.mouse_mapper.transport_version = 2
         Assert-Rejected -Manifest $mapperManifest -Root $testRoot -Name "$($target.Name): unknown mapper transport" -ExpectedMessage 'Unsupported mouse mapper'

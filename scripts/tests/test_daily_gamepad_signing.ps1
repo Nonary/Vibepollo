@@ -41,28 +41,28 @@ try {
     foreach ($relative in $mapperPaths) {
         $path = Join-Path $root $relative
         New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
-        [IO.File]::WriteAllText($path, "unchanged Microsoft mapper fixture:$relative")
+        [IO.File]::WriteAllText($path, "unchanged unsigned producer mapper fixture:$relative")
     }
     $paths += $mapperPaths
     $actual.signing.channel = 'msi-request-signing'
     $actual | Add-Member features ([PSCustomObject]@{ mouse_mapper = 1 })
-    $actual | Add-Member mouse_mapper ([PSCustomObject]@{ transport_version = 1; kernel_signing = 'windows-kernel-policy' })
+    $actual | Add-Member mouse_mapper ([PSCustomObject]@{ transport_version = 1; kernel_signing = 'unsigned-producer' })
     $actual | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath
     $mapperBefore = (Get-FileHash (Join-Path $root $mapperPaths[0])).Hash
     Update-DailyGamepadManifest -Root $root -Thumbprint ('A' * 40) -ProducerLock $producer
     $withMapper = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    if ($withMapper.mouse_mapper.kernel_signing -cne 'windows-kernel-policy' -or
+    if ($withMapper.mouse_mapper.kernel_signing -cne 'unsigned-producer' -or
         (@($withMapper.files.path | Sort-Object) -join ',') -cne (($paths | Sort-Object) -join ',') -or
-        $mapperBefore -cne (Get-FileHash (Join-Path $root $mapperPaths[0])).Hash) { throw 'Daily metadata lost or changed the production mapper payload.' }
+        $mapperBefore -cne (Get-FileHash (Join-Path $root $mapperPaths[0])).Hash) { throw 'Daily metadata lost or changed the unsigned producer mapper payload.' }
     Invoke-Expression ($workflow.Substring($start, $finish - $start))
     $consumerLayout = @($paths + 'cleanup.ps1' + 'install.ps1' + 'manifest.json' + 'release-lock.json' | Sort-Object)
     if (($expected -join ',') -cne ($consumerLayout -join ',')) { throw 'Mapper daily MSI layout does not match the manifest feature.' }
     $withMapper.signing.channel = 'msi-request-signing'
-    $withMapper.mouse_mapper.kernel_signing = 'requires-microsoft-signing'
+    $withMapper.mouse_mapper.kernel_signing = 'unknown-signing-state'
     $withMapper | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath
     $blocked = $false
     try { Update-DailyGamepadManifest -Root $root -Thumbprint ('A' * 40) -ProducerLock $producer } catch { $blocked = $true }
-    if (-not $blocked) { throw 'Daily signing promoted an unsigned kernel mapper.' }
+    if (-not $blocked) { throw 'Daily signing accepted unknown kernel mapper metadata.' }
     Write-Host 'Daily signing metadata contract passed (mock payloads; no signing or trust mutation executed).'
 } finally {
     foreach ($relative in @($paths) + 'manifest.json') { Remove-Item -LiteralPath (Join-Path $root $relative) -Force -ErrorAction SilentlyContinue }

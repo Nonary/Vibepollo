@@ -1859,11 +1859,13 @@ jobs:
                 }
                 if ($vhfHasMapper) {
                   $vhfManifestPayload = @($vhfManifestPayload + @('mouse_mapper/VibeshineVhfMouseMapper.cat', 'mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys') | Sort-Object)
-                  if ($vhfManifest.mouse_mapper.transport_version -ne 1 -or $vhfManifest.mouse_mapper.kernel_signing -cne 'windows-kernel-policy') { throw 'Mapper is missing the supported transport version or Microsoft kernel signing.' }
+                  if ($vhfManifest.mouse_mapper.transport_version -ne 1 -or $vhfManifest.mouse_mapper.kernel_signing -notin @('unsigned-producer', 'windows-kernel-policy')) { throw 'Unsupported mapper transport/signing metadata.' }
+                  # Upstream unsigned publication does not establish kernel
+                  # trust. The final production MSI still must qualify /kp.
                   $mapperSignTool = Resolve-SignTool
                   foreach ($mapperMember in @('mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys')) {
                     & $mapperSignTool verify '/v' '/kp' '/c' (Join-Path $vhfPackageDir 'mouse_mapper/VibeshineVhfMouseMapper.cat') (Join-Path $vhfPackageDir $mapperMember)
-                    if ($LASTEXITCODE -ne 0) { throw "Signed MSI mapper kernel policy/catalog membership failed: $mapperMember" }
+                    if ($LASTEXITCODE -ne 0) { throw "Final MSI mapper kernel policy/catalog membership failed: $mapperMember; an unsigned producer release is not kernel installation approval." }
                   }
                 }
                 $manifestPaths = @($vhfManifest.files | ForEach-Object { [string] $_.path } | Sort-Object)
@@ -1879,6 +1881,7 @@ jobs:
                   'driver/VibeshineVhfGamepad.dll',
                   'tools/VibeshineVhfGamepadDeviceSetup.exe'
                 )
+                if ($vhfHasMapper) { $vhfUnsignedProducer = @($vhfUnsignedProducer + @('mouse_mapper/VibeshineVhfMouseMapper.cat', 'mouse_mapper/VibeshineVhfMouseMapper.sys') | Sort-Object) }
                 if ((@($vhfManifest.signing.signed_downstream) -join "`n") -cne ($vhfDownstreamSigned -join "`n") -or
                     (@($vhfManifest.signing.unsigned_payloads) -join "`n") -cne ($vhfUnsignedProducer -join "`n") -or
                     $vhfManifest.signing.catalog_membership.basis -cne 'fresh-inf2cat' -or

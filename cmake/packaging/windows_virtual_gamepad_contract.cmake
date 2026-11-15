@@ -57,15 +57,15 @@ set(SUNSHINE_VHF_GAMEPAD_REQUIRED_FILES
     release-lock.json)
 set(SUNSHINE_VHF_GAMEPAD_DRIVER_DESTINATION "drivers/vhf-gamepad")
 set(SUNSHINE_VHF_GAMEPAD_REPOSITORY "Nonary/libvirtualgamepad")
-set(SUNSHINE_VHF_GAMEPAD_RELEASE_TAG "v0.1.0-beta.10" CACHE STRING
+set(SUNSHINE_VHF_GAMEPAD_RELEASE_TAG "v0.1.0-beta.11" CACHE STRING
     "Pinned immutable libvirtualgamepad release tag.")
 set(SUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256
-    "650cf8281d95d1fb9388f8117cadeab195727e3dcb4105607df45080b15d312c" CACHE STRING
+    "a23716e933753b9eef8e87675c388cc326ff61c0ef943e1c1d99ba6e7e28992c" CACHE STRING
     "SHA-256 of the pinned libvirtualgamepad Windows x64 release archive.")
 set(SUNSHINE_VHF_GAMEPAD_SOURCE_REVISION
-    "5a3e4d222dd0b87556d4c564eb58b450ab579fb0" CACHE STRING
+    "93dc007a608b341aa998378221f8958f045ee7f2" CACHE STRING
     "Commit targeted by the pinned lightweight libvirtualgamepad release tag.")
-set(SUNSHINE_VHF_GAMEPAD_DRIVER_VER "10/29/2026,0.1.0.92" CACHE STRING
+set(SUNSHINE_VHF_GAMEPAD_DRIVER_VER "11/14/2026,0.1.0.96" CACHE STRING
     "DriverVer recorded by the pinned libvirtualgamepad release.")
 set(SUNSHINE_VHF_GAMEPAD_PROTOCOL_VERSION 2 CACHE STRING
     "Protocol version recorded by the pinned libvirtualgamepad release.")
@@ -106,13 +106,13 @@ option(SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE
 # as fixing ordered mouse delivery requires this default-on gate and the actual
 # published mapper release/pins, or an explicit local test package.
 option(SUNSHINE_REQUIRE_VHF_MOUSE_MAPPER_PACKAGE
-       "Require an explicit mapper feature and complete, kernel-signed mapper payload in the bundled candidate."
+       "Require an explicit mapper feature and complete unsigned mapper payload in the bundled candidate."
        ON)
 set(SUNSHINE_VHF_MOUSE_MAPPER_FILES
     mouse_mapper/VibeshineVhfMouseMapper.inf
     mouse_mapper/VibeshineVhfMouseMapper.sys
     mouse_mapper/VibeshineVhfMouseMapper.cat)
-# This KMDF catalog is signed by Microsoft before producer release. Consumer
-# SignPath MSI deep signing remains limited to the UMDF CAT and setup EXE;
-# changing the mapper SYS or CAT afterwards invalidates the manifest hash.
-set(SUNSHINE_VHF_MOUSE_MAPPER_SIGNING_MODE "producer_microsoft_kernel_policy")
+# The producer mapper INF/SYS/CAT remain unsigned and byte-pinned. Consumer
+# MSI signing remains limited to the UMDF CAT and setup EXE. The final installer
+# still requires Windows kernel trust; unsigned publication does not grant it.
+set(SUNSHINE_VHF_MOUSE_MAPPER_SIGNING_MODE "unsigned_producer")

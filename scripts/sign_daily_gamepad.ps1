@@ -20,7 +20,7 @@ function Update-DailyGamepadManifest {
     }
     $paths = @('driver/VibeshineVhfGamepad.cat', 'driver/VibeshineVhfGamepad.cer', 'driver/VibeshineVhfGamepad.dll', 'driver/VibeshineVhfGamepad.inf', 'tools/VibeshineVhfGamepadDeviceSetup.exe')
     if ($null -ne $manifest.PSObject.Properties['features'] -and $manifest.features.mouse_mapper -eq 1) {
-        if ($manifest.mouse_mapper.kernel_signing -cne 'windows-kernel-policy') { throw 'Daily signing cannot establish Microsoft kernel signing for a mapper.' }
+        if ($manifest.mouse_mapper.kernel_signing -notin @('unsigned-producer', 'windows-kernel-policy')) { throw 'Unsupported producer mapper signing metadata.' }
         $paths += @('mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys', 'mouse_mapper/VibeshineVhfMouseMapper.cat')
     }
     $manifest.files = @($paths | ForEach-Object { [ordered]@{path=$_; sha256=(Get-FileHash -LiteralPath (Join-Path $Root $_) -Algorithm SHA256).Hash.ToLowerInvariant()} })
@@ -39,7 +39,7 @@ $producerLock = Get-Content -LiteralPath (Join-Path $source 'consumer-release-lo
 if ($manifest.signing.channel -cne 'msi-request-signing' -or $producerLock.signing_channel -cne 'msi-request-signing') { throw 'Only the prevalidated pinned producer signing-request package can enter daily signing.' }
 $expected = @('driver/VibeshineVhfGamepad.cat', 'driver/VibeshineVhfGamepad.dll', 'driver/VibeshineVhfGamepad.inf', 'tools/VibeshineVhfGamepadDeviceSetup.exe')
 if ($null -ne $manifest.PSObject.Properties['features'] -and $manifest.features.mouse_mapper -eq 1) {
-    if ($manifest.mouse_mapper.kernel_signing -cne 'windows-kernel-policy') { throw 'Daily signing requires the producer mapper to be Microsoft-signed already.' }
+    if ($manifest.mouse_mapper.kernel_signing -notin @('unsigned-producer', 'windows-kernel-policy')) { throw 'Unsupported producer mapper signing metadata.' }
     $expected = @($expected + @('mouse_mapper/VibeshineVhfMouseMapper.cat', 'mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys') | Sort-Object)
 }
 if ((@($manifest.files.path | Sort-Object) -join ',') -cne ($expected -join ',')) { throw 'Producer payload list is not exact.' }
@@ -52,10 +52,16 @@ if (-not $SignToolPath) {
     $SignToolPath = Get-ChildItem -LiteralPath $kit -Directory | Sort-Object Name -Descending | ForEach-Object { Join-Path $_.FullName 'x64/signtool.exe' } | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
 }
 if (-not $SignToolPath) { throw 'Windows SDK x64 SignTool is required.' }
-if ($expected -contains 'mouse_mapper/VibeshineVhfMouseMapper.sys') {
+if ($expected -contains 'mouse_mapper/VibeshineVhfMouseMapper.sys' -and $manifest.mouse_mapper.kernel_signing -ceq 'windows-kernel-policy') {
     foreach ($relative in @('mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys')) {
         & $SignToolPath verify '/v' '/kp' '/c' (Join-Path $source 'mouse_mapper/VibeshineVhfMouseMapper.cat') (Join-Path $source $relative)
         if ($LASTEXITCODE -ne 0) { throw "Producer mapper kernel policy/membership failed: $relative" }
+    }
+}
+if ($expected -contains 'mouse_mapper/VibeshineVhfMouseMapper.sys' -and $manifest.mouse_mapper.kernel_signing -ceq 'unsigned-producer') {
+    foreach ($relative in @('mouse_mapper/VibeshineVhfMouseMapper.cat', 'mouse_mapper/VibeshineVhfMouseMapper.sys')) {
+        $signature = Get-AuthenticodeSignature -LiteralPath (Join-Path $source $relative)
+        if ($signature.Status -ne 'NotSigned' -or $null -ne $signature.SignerCertificate) { throw "Unsigned producer mapper was rewritten/signed: $relative" }
     }
 }
 if ($ExpectedSignerThumbprint -cnotmatch '^[0-9A-F]{40}$') { throw 'Expected signer identity must be explicitly pinned.' }

@@ -284,13 +284,17 @@ is passed explicitly. Origin verification is impossible from a developer machine
 
 ## Ordered mouse KMDF mapper
 
-The optional `drivers/vhf-gamepad/mouse_mapper/` INF/SYS/CAT payload is signed
-through Microsoft attestation or HLK **before** the producer release. Keep every
-byte unchanged in the MSI signing request. It is not one of the UMDF catalog
-signing exceptions above: ordinary SignPath Authenticode signing does not
-establish kernel-mode signing eligibility. Ingest and signed-MSI checks require
-Windows kernel policy (`signtool verify /kp /c`) and exact catalog membership;
-mapper manifest hashes remain mandatory after deep signing. A daily package may
-locally sign the UMDF catalog/setup EXE while retaining the Microsoft-signed
-mapper. It cannot manufacture a production mapper signature. See the producer
+The optional `drivers/vhf-gamepad/mouse_mapper/` INF/SYS/CAT payload is published
+unsigned by its producer, with `kernel_signing=unsigned-producer`. Ingest verifies
+its original `NotSigned` status, fresh catalog evidence and exact hashes. Keep
+all mapper bytes unchanged in the consumer MSI request; only the existing UMDF
+CAT and setup EXE are signing exceptions. Mapper CAT/SYS are explicitly listed
+as unsigned payloads, not downstream signing targets.
+
+Publishing or packaging those bytes does not grant kernel trust. Final
+production MSI qualification and installation retain `/kp`/Windows kernel
+policy and exact catalog membership checks; an unsigned mapper cannot pass
+those checks merely because the MSI container or UMDF catalog was signed.
+Separate kernel signing for future native deployment is outside the current
+unsigned producer release. See the producer
 [packaging contract](../../third-party/libvirtualgamepad/docs/MOUSE_MAPPER_PACKAGING.md).

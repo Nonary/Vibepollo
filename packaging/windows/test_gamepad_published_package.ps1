@@ -30,6 +30,25 @@ try {
  $lock=Get-Content $lockPath -Raw | ConvertFrom-Json
  $lock.installer_script_sha256.'install.ps1'=Get-Sha256 (Join-Path $scratch 'install.ps1')
  $lock | ConvertTo-Json -Depth 12 | Set-Content $lockPath -Encoding UTF8
+ $fixtureManifest=Get-Content (Join-Path $scratch 'manifest.json') -Raw | ConvertFrom-Json
+ if($null -ne $fixtureManifest.PSObject.Properties['features'] -and $fixtureManifest.features.mouse_mapper -eq 1 -and $fixtureManifest.mouse_mapper.kernel_signing -ceq 'unsigned-producer') {
+  # Publication/packaging can carry unsigned mapper bytes; native installation
+  # must refuse them. Independently validate the existing UMDF signatures and
+  # every payload hash before asserting that final kernel-trust rejection.
+  Assert-ManifestPayloadContract -Manifest $fixtureManifest -Root $scratch
+  $catalogPath=Join-Path $scratch 'driver/VibeshineVhfGamepad.cat'
+  $toolPath=Join-Path $scratch 'tools/VibeshineVhfGamepadDeviceSetup.exe'
+  $catSig=Get-AuthenticodeSignature -LiteralPath $catalogPath
+  $toolSig=Get-AuthenticodeSignature -LiteralPath $toolPath
+  Assert-ReleaseLock -Root $scratch -Manifest $fixtureManifest -CatalogSignature $catSig -ToolSignature $toolSig
+  $localCertificate=Assert-LocalTestCertificateIdentity -CertificatePath (Join-Path $scratch 'driver/VibeshineVhfGamepad.cer') -CatalogSignature $catSig -ToolSignature $toolSig
+  Assert-LocalGamepadCryptographicPackage -Certificate $localCertificate -CatalogPath $catalogPath -ToolPath $toolPath -InfPath (Join-Path $scratch 'driver/VibeshineVhfGamepad.inf') -DriverDllPath (Join-Path $scratch 'driver/VibeshineVhfGamepad.dll')
+  $failure=''
+  try{$null=Assert-DriverPackage -Root $scratch -AllowUntrustedLocalPackage}catch{$failure=$_.Exception.Message}
+  if($failure -notmatch 'unsigned producer artifact.*not eligible for kernel installation'){throw "Unsigned mapper did not fail at final kernel trust: $failure"}
+  Write-Output 'Daily package hashes and UMDF signatures validated; unsigned mapper correctly refused final kernel installation. No trust or driver mutation executed.'
+  return
+ }
  $validated=Assert-DriverPackage -Root $scratch -AllowUntrustedLocalPackage
  if($null -eq $validated.LocalCertificate){throw 'Local package must be independently verified'}
  function Expect-Rejected([scriptblock]$Action,[string]$Case) {
