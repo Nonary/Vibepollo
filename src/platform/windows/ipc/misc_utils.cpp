@@ -253,7 +253,10 @@ namespace platf::dxgi {
     wchar_t name[256];
     DWORD needed = 0;
     if (GetUserObjectInformationW(hDesk, UOI_NAME, name, sizeof(name), &needed)) {
-      if (_wcsicmp(name, L"Winlogon") == 0 || _wcsicmp(name, L"SAD") == 0) {
+      // Any input desktop other than the interactive "Default" desktop (Winlogon,
+      // SAD, the screen-saver desktop, ...) is invisible to the WGC helper, which
+      // is attached to Default. Treat all of them as requiring the DXGI fallback.
+      if (_wcsicmp(name, L"Default") != 0) {
         isSecure = true;
       }
     }
