@@ -1397,6 +1397,7 @@ sunshine_register_component(NAME test_component_video_colorspace TEST_SOURCE uni
     LINK_LIBRARIES nlohmann_json::nlohmann_json Boost::log Boost::asio Boost::crc Boost::format Boost::process ZLIB::ZLIB ${FFMPEG_LIBRARIES}
                    ${SUNSHINE_TEST_FFMPEG_PLATFORM_LIBRARIES} ${SUNSHINE_TEST_SOCKET_LIBRARIES})
 sunshine_register_component(NAME test_component_wgc_monitor_selection TEST_SOURCE unit/test_wgc_monitor_selection.cpp)
+sunshine_register_component(NAME test_component_wgc_screensaver_recovery TEST_SOURCE unit/test_wgc_screensaver_recovery.cpp)
 sunshine_register_component(NAME test_component_input_geometry_transport TEST_SOURCE unit/test_input_geometry_transport.cpp
     LINK_LIBRARIES nlohmann_json::nlohmann_json)
 sunshine_register_component(NAME test_component_screen_saver_state TEST_SOURCE unit/test_screen_saver_state.cpp
@@ -1983,6 +1984,12 @@ if(SUNSHINE_TEST_ENABLE_COMPONENT AND Python3_Interpreter_FOUND AND CMAKE_CXX_CO
 endif()
 find_program(SUNSHINE_TEST_GXX NAMES g++)
 if(Python3_Interpreter_FOUND AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_test(NAME regression_wgc_screensaver_capture
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_wgc_screensaver_capture.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+    add_test(NAME regression_wgc_screensaver_query
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/windows/test_wgc_screensaver_query.py"
+            "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
     add_test(NAME regression_cuda_release_policy
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_cuda_release_policy.py")
 endif()

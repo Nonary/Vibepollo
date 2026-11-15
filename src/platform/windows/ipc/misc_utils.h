@@ -6,6 +6,7 @@
 
 // standard includes
 #include <cstdint>
+#include <optional>
 #include <string>
 
 // local includes
@@ -202,6 +203,12 @@ namespace platf::dxgi {
    * @return `true` if the secure desktop is active, else `false`.
    */
   bool is_secure_desktop_active();
+
+  /**
+   * @brief Query the running saver only from the active console session's WinSta0.
+   * @return Running/inactive, or unknown on wrong context or a failed API call.
+   */
+  std::optional<bool> query_screen_saver_running();
 
   /**
    * @brief Check if the current process token belongs to Local System.
