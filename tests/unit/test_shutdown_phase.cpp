@@ -9,6 +9,7 @@ TEST(ShutdownPhase, EveryPublishedPhaseHasAStableDiagnosticName) {
 
   const std::array phases {
     std::pair {phase_e::early_exit_cleanup, "early-exit-cleanup"},
+    std::pair {phase_e::pyrowave_host_shutdown, "pyrowave-host-shutdown"},
     std::pair {phase_e::waiting_for_shutdown_event, "waiting-for-shutdown-event"},
     std::pair {phase_e::linux_private_display_preserve, "linux-private-display-preserve"},
     std::pair {phase_e::termination_signal_monitor_stop, "termination-signal-monitor-stop"},

@@ -668,7 +668,7 @@ export const settingsCategories: SettingsCategory[] = [
               descriptionKey:
                 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.description',
               warningKey: 'ui.settings.fields.dd_paused_virtual_display_timeout_secs.warning',
-              platform: ['windows', 'linux'],
+              platform: ['windows', 'linux', 'macos'],
               visibleWhen: { key: 'dd_config_revert_on_disconnect', equals: false },
             },
           ),

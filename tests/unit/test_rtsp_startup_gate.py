@@ -1,5 +1,6 @@
 """Replay the production RTSP startup result and lock-release boundary."""
 import argparse
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -83,6 +84,7 @@ int main(){run(-1,false);run(stream::session::START_PACING_REJECTED,false);run(0
 '''.replace('@PACING@',pacing).replace('@GATE@',gate)
 with tempfile.TemporaryDirectory(prefix='rtsp-startup-gate-') as directory:
     cpp=Path(directory)/'gate.cpp'; cpp.write_text(program); binary=cpp.with_suffix('')
-    subprocess.run([args.compiler,'-std=c++23','-Wall','-Wextra','-Werror','-Wno-misleading-indentation','-fsanitize=address,undefined',str(cpp),'-o',str(binary)],check=True)
+    sanitizer_flags = ['-fsanitize=address,undefined'] if os.name != 'nt' else []
+    subprocess.run([args.compiler,'-std=c++23','-Wall','-Wextra','-Werror','-Wno-misleading-indentation',*sanitizer_flags,str(cpp),'-o',str(binary)],check=True)
     subprocess.run([str(binary)],check=True)
 print('PASS: production early startup errors, late exception, publication and destructor lock release')

@@ -301,7 +301,9 @@ int main() {
    server.startup_pool.run();
    if(failure==99)check(server._launch_sessions.size()==1 && monitor_lost==0,"unknown partial startup retains monitor identity");
    else check(server._launch_sessions.empty() && monitor_lost==1 && hold.expired(),"known pre-control failure retires exact pending monitor and holds");
-   server.io_context.run();terminal();
+   server.io_context.run();
+   check(response_status==(failure==stream::session::START_PACING_REJECTED?400:500),"posted startup response preserves pacing rejection status");
+   terminal();
  }
  // A prior HDR game may have left the shared pending flag while a monitor
  // remained. Retiring the final monitor must clear it, preserving peers.

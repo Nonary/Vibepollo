@@ -62,6 +62,8 @@ linux=(root/'src/platform/linux/misc.cpp').read_text()
 start=linux.index('  void set_thread_name(')
 body=linux[start:linux.index('\n  void enable_mouse_keys()',start)]
 programs['thread_name']=common+r'''
+#define pthread_self fixture_pthread_self
+#define pthread_setname_np fixture_pthread_setname_np
 std::string captured;
 int pthread_self(){return 1;}
 void pthread_setname_np(int,const char *name) {captured=name;}

@@ -1993,7 +1993,8 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_delayed_mouse_release.py")
     add_test(NAME regression_input_batching
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_input_batching.py"
-            --compiler "${SUNSHINE_TEST_GXX}")
+            --compiler "${SUNSHINE_TEST_GXX}"
+            --json-include "$<TARGET_PROPERTY:nlohmann_json::nlohmann_json,INTERFACE_INCLUDE_DIRECTORIES>")
     set_tests_properties(regression_input_batching PROPERTIES LABELS "component" TIMEOUT 120)
     add_test(NAME regression_back_home_worker
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/input/test_back_home_worker.py")

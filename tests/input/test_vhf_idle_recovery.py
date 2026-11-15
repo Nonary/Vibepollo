@@ -168,15 +168,19 @@ int main(){
     keyboard_update(in,0x41,true,0);assert(injected.size()==1);
     assert(lvg::boundary.closes==1 && lvg::boundary.creates==1);
   }
-  // Unacknowledged mouse delivery requests recovery while still owning the
+  // An uncertain ordered mouse submission requests recovery while owning the
   // child. Allocation must synchronously abort that child before reconnecting.
   {
     lvg::boundary={};injected.clear();
-    auto in=input();button_mouse(in,1,false);delayed_button_reads=10000;
-    assert(in->vhf->keyboard_mouse_absolute(50000,32000));delayed_button_reads=0;
-    assert(in->vhf->impl->recovery.pending() && lvg::boundary.aborts==0);
+    auto in=input();button_mouse(in,1,false);
+    lvg::boundary.accept_uncertain=true;
+    lvg::boundary.abort_status=ERROR_ACCESS_DENIED;
+    lvg::boundary.statuses={ERROR_DEVICE_REMOVED};
+    in->vhf->keyboard_mouse_absolute(50000,32000);
+    assert(in->vhf->impl->recovery.pending() && in->vhf->impl->keyboard_mouse_owned && lvg::boundary.aborts==1);
+    lvg::boundary.abort_status=ERROR_SUCCESS;
     assert(allocate(*in->vhf)==0);
-    assert(lvg::boundary.aborts==1 && lvg::boundary.closes==1 && injected.empty());
+    assert(lvg::boundary.aborts==2 && lvg::boundary.closes==1 && injected.empty());
   }
   // Active owners remain deferred and their shared connection is preserved.
   // No worker is running in this boundary fixture, making the guard deterministic.
@@ -251,7 +255,7 @@ prefix = prefix.replace('++boundary.closes;is_connected=false;', '++boundary.clo
 prefix = prefix.replace('struct recovery_t { bool waiting=false; bool pending() const {return waiting;} void request(){waiting=true;} void reset(){waiting=false;} };', 'using recovery_t=vhf_gamepad::connection_recovery_t;' + TYPES)
 prefix = prefix.replace('bool probe(){return true;}', 'int alloc(const gamepad_id_t &, feedback_queue_t &, vhf_profile_e, std::uint16_t); void free(int); bool probe(){return true;}')
 prefix = prefix.replace('void observe_status(DWORD s){if(s==ERROR_DEVICE_REMOVED)recovery.request();}', block(source, 'void observe_status(') + FIELDS + (block(source, 'void retire_idle_connection_locked(') if 'void retire_idle_connection_locked(' in source else ''))
-prefix = prefix.replace('MOUSE_SETTLE_METHOD', block(source, 'bool settle_keyboard_mouse_locked(')).replace('SUBMIT_METHOD', block(source, 'template<class Request>\n    bool submit_keyboard_mouse_locked('))
+prefix = prefix.replace('SUBMIT_METHOD', block(source, 'template<class Request>\n    bool submit_keyboard_mouse_locked('))
 prefix = prefix.replace('vhf_gamepad_t::~vhf_gamepad_t()=default;', '')
 methods = '\n'.join(block(source, marker) for marker in (
     'vhf_gamepad_t::~vhf_gamepad_t()', 'void vhf_gamepad_t::impl_t::feedback_loop()',
@@ -260,7 +264,7 @@ methods = '\n'.join(block(source, marker) for marker in (
     'bool vhf_gamepad_t::keyboard_mouse_fallback(', 'void vhf_gamepad_t::keyboard_mouse_key(',
     'bool vhf_gamepad_t::keyboard_mouse_consumer_supported() const', 'void vhf_gamepad_t::keyboard_mouse_consumer(',
     'void vhf_gamepad_t::keyboard_mouse_button(', 'void vhf_gamepad_t::keyboard_mouse_relative(',
-    'bool vhf_gamepad_t::keyboard_mouse_absolute('))
+    'void vhf_gamepad_t::keyboard_mouse_absolute('))
 inputs = '\n'.join(block(routing.input_source, marker) for marker in (
     'input_t input()', 'static bool use_vhf_keyboard_mouse(', 'void move_mouse(', 'void button_mouse(', 'void keyboard_update('))
 with tempfile.TemporaryDirectory(prefix='vhf-idle-recovery-') as directory:

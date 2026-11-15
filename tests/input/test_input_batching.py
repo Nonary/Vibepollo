@@ -56,11 +56,13 @@ struct worker_t {
 namespace input {
   using bytes_t = std::vector<std::uint8_t>;
   std::vector<bytes_t> dispatched;
+  @QUEUED_PACKET@
   struct input_t {
-    std::list<bytes_t> input_queue;
+    std::list<queued_input_packet_t> input_queue;
     std::mutex input_queue_lock;
     std::atomic_bool input_queue_task_scheduled {true};
-    struct gamepad_t { int id = -1; };
+    std::atomic_uint64_t guide_permission_state {1};
+    struct gamepad_t { int id = -1; bool guide_key_down = false; };
     std::vector<gamepad_t> gamepads {16};
     struct bindings_t {
       template<class Predicate> void bind(const bytes_t &, Predicate) {
@@ -68,12 +70,13 @@ namespace input {
       }
     } speaker_bindings;
   };
+  void send_gamepad_state(const input_t::gamepad_t &) {}
   void refresh_input_geometry(const std::shared_ptr<input_t> &) {}
   void print(void *) {}
   // Only the OS/platform edge is replaced. Capture the exact packet passed by
   // the production switch, including its size, magic, and network byte order.
   template<class Packet>
-  void passthrough(std::shared_ptr<input_t> &, Packet *packet) {
+  void passthrough(std::shared_ptr<input_t> &, Packet *packet, bool = true) {
     const auto begin = reinterpret_cast<const std::uint8_t *>(packet);
     dispatched.emplace_back(begin, begin + sizeof(Packet));
   }
@@ -172,7 +175,7 @@ void arithmetic_tests() {
 void expect_queue(std::initializer_list<bytes_t> queued, std::initializer_list<bytes_t> expected,
                   const std::string &name) {
   auto context = std::make_shared<input_t>();
-  context->input_queue.assign(queued);
+  for (const auto &data : queued) context->input_queue.push_back({data, 1, true});
   dispatched.clear();
   task_pool.push(passthrough_next_message, context);
   task_pool.drain();
@@ -226,6 +229,7 @@ def main():
     parser.add_argument('--source-file', type=Path, default=ROOT / 'src/input.cpp')
     parser.add_argument('--moonlight-root', type=Path, default=ROOT / 'third-party')
     parser.add_argument('--compiler', default='g++')
+    parser.add_argument('--json-include', default='', help='Semicolon-separated CMake JSON dependency include paths')
     parser.add_argument('--sanitize', action='store_true')
     args = parser.parse_args()
     source = args.source_file.read_text(encoding='utf-8')
@@ -244,14 +248,16 @@ def main():
         '  void passthrough_next_message(std::shared_ptr<input_t> input)',
     )
     bodies = [function(source, signature) for signature in signatures]
+    prelude = PRELUDE.replace('@QUEUED_PACKET@', function(source, '  struct queued_input_packet_t {') + ';')
     bodies[0] += ';'
     with tempfile.TemporaryDirectory(prefix='input-batching-') as temporary:
         build = Path(temporary)
         cpp, executable = build / 'test.cpp', build / 'test'
-        cpp.write_text(PRELUDE + '\n'.join(bodies) + TESTS, encoding='utf-8')
+        cpp.write_text(prelude + '\n'.join(bodies) + TESTS, encoding='utf-8')
         flags = ['-fsanitize=address,undefined', '-fno-omit-frame-pointer'] if args.sanitize else []
+        includes = [flag for directory in args.json_include.split(';') if directory for flag in ('-I', directory)]
         subprocess.run([args.compiler, '-std=c++23', '-O0', '-g', '-Wall', '-Wextra', '-Werror',
-                        *flags, '-I', str(ROOT), '-I', str(args.moonlight_root),
+                        *flags, *includes, '-I', str(ROOT), '-I', str(args.moonlight_root),
                         str(cpp), '-o', str(executable)], check=True)
         subprocess.run([str(executable)], check=True, timeout=30)
 
