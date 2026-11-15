@@ -68,8 +68,18 @@ static void handshakeProbe(const char* address) {
   receiver.send_to(buffer(wrong), target);
   receiver.send_to(buffer(token.data(), token.size() - 1), target);
   if (local.is_v4()) {
-    ip::udp::socket stranger(io, {ip::make_address("127.0.0.2"), 0});
-    stranger.send_to(buffer(token), target);
+    ip::udp::socket stranger(io);
+    boost::system::error_code bind_error;
+    stranger.open(ip::udp::v4(), bind_error);
+    if (!bind_error) {
+      stranger.bind({ip::make_address("127.0.0.2"), 0}, bind_error);
+    }
+    if (!bind_error) {
+      stranger.send_to(buffer(token), target);
+    } else {
+      // macOS only configures 127.0.0.1 on lo0 by default.
+      ASSERT_TRUE(bind_error == boost::system::errc::address_not_available) << bind_error.message();
+    }
   }
   const auto warmup_until = steady_clock::now() + milliseconds(250);
   unsigned warmups = 0;

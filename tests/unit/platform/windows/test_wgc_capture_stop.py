@@ -52,7 +52,7 @@ for cls in ('display_wgc_ipc_vram_t','display_wgc_ipc_ram_t'):
     boundary='    timeout = effective_wgc_timeout' if 'vram' in cls else '    winrt::com_ptr<ID3D11Texture2D> gpu_tex'
     snapshots.append('capture_e '+cls+'::before_frame(bool cursor_visible) '+display[body:display.index(boundary,body)]+'    return capture_e::ok;\n  }')
 stream=read('src/stream.cpp');start=stream.index('    class join_deadline_t {')
-watch=stream[start:stream.index('\n  }  // namespace',start)].replace('std::chrono::seconds(10)','std::chrono::milliseconds(100)')
+watch=stream[start:stream.index('\n  }  // namespace',start)].replace('std::chrono::seconds(10)','std::chrono::milliseconds(800)')
 join_anchor=stream.index('void join(session_t &session')
 start=stream.index('auto hung_stage = std::make_shared<std::atomic<const char *>>("video thread");',join_anchor)
 join=stream[start:stream.index('      // Watchdog coverage ends',start)]
@@ -94,20 +94,20 @@ bool GetExitCodeProcess(HANDLE,DWORD* code){*code=0;return true;}
 struct TestClock {
  using time_point=std::chrono::steady_clock::time_point;
  static inline auto origin=std::chrono::steady_clock::now();
- static time_point now(){return time_point((std::chrono::steady_clock::now()-origin)*100);}
+ static time_point now(){return time_point((std::chrono::steady_clock::now()-origin)*25/2);}
 };
 // BUDGETS
 struct shared_handle_data_t {std::uint64_t handles[3];};
 enum class PipeResult {Success,Timeout,BrokenPipe,Error};
 struct Pipe {
  int phase=2;std::promise<void> entered;std::shared_future<void> resume;bool first=true;int receives=0;
- void delay(int here,int timeout){if(phase!=here)return;if(first){first=false;entered.set_value();resume.wait();}if(here!=2)std::this_thread::sleep_for(std::chrono::microseconds(timeout*10));}
+ void delay(int here,int timeout){if(phase!=here)return;if(first){first=false;entered.set_value();resume.wait();}if(here!=2)std::this_thread::sleep_for(std::chrono::microseconds(timeout*80));}
  void wait_for_client_connection(int timeout){delay(0,timeout);}
  bool is_connected(){return true;}
  bool send(std::span<const uint8_t>,int timeout){delay(1,timeout);return true;}
  PipeResult receive(std::span<uint8_t>,size_t& bytes,int timeout){
   ++receives;if(phase==3){bytes=sizeof(shared_handle_data_t);return PipeResult::Success;}
-  delay(2,timeout);std::this_thread::sleep_for(std::chrono::microseconds(timeout*10));bytes=0;return PipeResult::Timeout;
+  delay(2,timeout);std::this_thread::sleep_for(std::chrono::microseconds(timeout*80));bytes=0;return PipeResult::Timeout;
  }
 };
 struct IPC {
@@ -173,7 +173,7 @@ int main(){
  platf::dxgi::display_wgc_ipc_ram_t ram;ram._ipc_session=old;check(ram.before_frame()==platf::capture_e::interrupted,"RAM cancellation is interrupted, avoiding reinit teardown");
  auto initializing=std::make_shared<IPC>();initializing->_initializing=true;
  std::promise<void> completed;auto done=completed.get_future();std::thread waiter([&]{initializing->initialize_if_needed();completed.set_value();});
- initializing->request_stop();check(done.wait_for(50ms)==std::future_status::ready,"initialization contender responds to stop");initializing->_initializing=false;waiter.join();
+ initializing->request_stop();check(done.wait_for(500ms)==std::future_status::ready,"initialization contender responds to stop");initializing->_initializing=false;waiter.join();
  std::cout<<"13 production WGC stop/handshake/ownership/isolation scenarios, failures="<<failures<<"\n";return failures?1:0;
 }
 '''

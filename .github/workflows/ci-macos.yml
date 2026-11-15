@@ -11,6 +11,11 @@ on:
         required: false
         default: ''
         type: string
+      build_tests:
+        description: Build and execute unit tests
+        required: false
+        default: true
+        type: boolean
   workflow_call:
     inputs:
       publish_release:
@@ -26,6 +31,10 @@ on:
         required: false
         type: string
         default: ''
+      build_tests:
+        required: false
+        type: boolean
+        default: true
     secrets:
       # email address
       APPLE_ID:
@@ -156,6 +165,7 @@ jobs:
             -B build \
             -S . \
             -DBUILD_WERROR=ON \
+            -DBUILD_TESTS=${{ inputs.build_tests && 'ON' || 'OFF' }} \
             -DCMAKE_BUILD_TYPE=Release \
             -DICU_ROOT="$(brew --prefix icu4c@78 2>/dev/null)" \
             -DOPENSSL_ROOT_DIR="${RUNNER_TEMP}/openssl" \
@@ -171,6 +181,11 @@ jobs:
           echo "::add-matcher::.github/matchers/gcc.json"
           cmake --build build -j "$(sysctl -n hw.ncpu)"
           echo "::remove-matcher owner=gcc::"
+
+      - name: Test
+        if: inputs.build_tests
+        run: |
+          ctest --test-dir build --output-on-failure --no-tests=error
 
       - name: Package DMG
         env:

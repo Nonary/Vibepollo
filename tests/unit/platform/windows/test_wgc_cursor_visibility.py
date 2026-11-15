@@ -95,6 +95,7 @@ def generate(root):
 #include <string_view>
 #include <thread>
 #include <vector>
+#include "src/jthread.h"
 using DWORD = std::uint32_t;
 struct LUID {uint32_t LowPart; int32_t HighPart;};
 struct Log {template<class T> Log& operator<<(const T&){return *this;}};
@@ -233,7 +234,7 @@ int main(){
  activity_state->success=false;check(!activity_session->set_activity_admission_fps(480)&&activity_session->_force_reinit,"failed activity update forces reinit and reports failure");
  auto reconcile_session=std::make_shared<ipc_session_t>();auto reconcile_state=std::make_shared<NativeState>();reconcile_session->_pipe=channel(reconcile_state);reconcile_session->_activity_admission_fps=240;
  std::atomic<bool> reconcile_send_entered=false;reconcile_state->before_send=[&]{if(reconcile_state->sends==1){reconcile_send_entered=true;while(reconcile_session->_activity_admission_fps!=360)std::this_thread::yield();}};
- std::jthread transition([&]{while(!reconcile_send_entered)std::this_thread::yield();check(reconcile_session->set_activity_admission_fps(360),"concurrent startup transition sends after reconciliation");});
+ util::jthread transition([&]{while(!reconcile_send_entered)std::this_thread::yield();check(reconcile_session->set_activity_admission_fps(360),"concurrent startup transition sends after reconciliation");});
  reconcile_session->initialize_if_needed();transition.join();check(reconcile_session->_activity_admission_fps==360&&reconcile_state->sends==2,"startup reconciliation cannot overwrite newer desired activity rate");
  activity_admission_data_t final_activity{};memcpy(&final_activity,reconcile_state->wire.data()+reconcile_state->wire.size()-sizeof(final_activity),sizeof(final_activity));check(final_activity.admission_fps==360,"newer activity rate is the final helper update");
  display_wgc_ipc_vram_t cancelled_v{stopped};display_wgc_ipc_ram_t cancelled_r{stopped};std::shared_ptr<platf::img_t> empty;check(cancelled_v.snapshot(0,empty,std::chrono::milliseconds(0),false)==capture_e::interrupted&&cancelled_r.snapshot(0,empty,std::chrono::milliseconds(0),false)==capture_e::interrupted,"cancelled snapshots preserve interrupted status");
@@ -277,7 +278,7 @@ def main():
         source = Path(temp) / "test.cpp"
         exe = Path(temp) / "test"
         source.write_text(code)
-        subprocess.run([args.compiler, "-std=c++23", "-O0", "-fshort-wchar", "-pthread", "-Wall", "-Wextra", str(source), "-o", str(exe)], check=True)
+        subprocess.run([args.compiler, "-std=c++23", "-O0", "-fshort-wchar", "-pthread", "-Wall", "-Wextra", "-I", str(args.repository), str(source), "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True, timeout=8)
 
 

@@ -25,10 +25,12 @@ def change_dependency(path, output_dir):
                         for entry in ("index.html", "v2/index.html", ".build-stamp"))
     path.write_text(path.read_text() + "// changed\n")
     # A fixed delay can stay within the same two-second filesystem timestamp
-    # bucket. Observe a strictly newer dependency instead, without setting a
-    # future mtime that could make the subsequent no-op builds rerun npm.
+    # bucket or whole-second GNU Make 3.81 mtime on macOS. Observe a strictly
+    # newer dependency instead, without setting a future mtime that could make
+    # the subsequent no-op builds rerun npm.
     deadline = time.monotonic() + 10
-    while path.stat().st_mtime_ns <= newest_output:
+    while (path.stat().st_mtime_ns <= newest_output
+           or path.stat().st_mtime_ns // 1_000_000_000 <= newest_output // 1_000_000_000):
         if time.monotonic() >= deadline:
             raise AssertionError(f"Dependency mtime did not advance beyond output mtime {newest_output}: {path}")
         time.sleep(0.05)

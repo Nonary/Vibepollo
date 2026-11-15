@@ -11,6 +11,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 
 parser = argparse.ArgumentParser(description=__doc__)
@@ -66,6 +67,8 @@ with tempfile.TemporaryDirectory(prefix="amf-output-first-") as temporary:
         (work / name).write_text(fake_clock(source))
     shutil.copyfile(Path(__file__).with_name("fixtures") / "amf_output_first_harness.cpp.in", work / "harness.cpp")
     binary = work / "regression"
-    subprocess.run([args.compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror", "-pthread",
+    subprocess.run([args.compiler, "-std=c++20",
+                    *(["-fexperimental-library"] if sys.platform == "darwin" else []),
+                    "-Wall", "-Wextra", "-Werror", "-pthread",
                     "-I", str(root), str(work / "harness.cpp"), "-o", str(binary)], check=True)
     subprocess.run([str(binary)], check=True, timeout=30)

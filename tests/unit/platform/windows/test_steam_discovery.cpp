@@ -454,7 +454,7 @@ TEST_F(SteamWindowsDiscovery, UserSourceReadRunsAsUserAndProtectedWritesRunAsSys
 TEST_F(SteamWindowsDiscovery, RestorationFailureTerminatesInsteadOfLeakingIdentity) {
   EXPECT_DEATH({
     platf::steam::windows_discovery::discovery_scope scope;
-    restore_ok = false; }, "terminate");
+    restore_ok = false; }, "terminat");
 }
 
 TEST_F(SteamWindowsDiscovery, NonDefaultRegistrationFeedsRealInstalledGameDiscovery) {

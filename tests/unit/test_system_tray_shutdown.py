@@ -36,6 +36,12 @@ program = r'''
 #include <utility>
 #include <vector>
 #include "src/system_tray_lifecycle.h"
+// Defining _WIN32 on the compiler command line breaks Apple's libc++ headers.
+#undef __APPLE__
+#undef __MACH__
+#ifndef _WIN32
+#define _WIN32
+#endif
 using namespace std::literals;
 struct NullLog { template<class T> NullLog &operator<<(const T &) { return *this; } };
 #define BOOST_LOG(level) NullLog {}
@@ -251,6 +257,6 @@ with tempfile.TemporaryDirectory(prefix="tray-shutdown-") as temporary:
     cpp, exe = path / "test.cpp", path / "test"
     cpp.write_text(program)
     subprocess.run([compiler, "-std=c++20", "-O2", "-Wall", "-Wextra", "-Werror",
-                    "-pthread", "-D_WIN32", "-I", str(root), *sys.argv[3:], str(cpp), "-o", str(exe)], check=True)
+                    "-pthread", "-I", str(root), *sys.argv[3:], str(cpp), "-o", str(exe)], check=True)
     subprocess.run([str(exe)], check=True, timeout=20)
 print("Production Windows tray startup, cancellation, restart and concurrent/self teardown passed")

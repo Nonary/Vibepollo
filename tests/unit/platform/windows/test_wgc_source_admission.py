@@ -51,6 +51,7 @@ def main():
 #include <thread>
 #include <utility>
 #include <vector>
+#include "src/jthread.h"
 #include "src/platform/windows/wgc_capture_policy.h"
 using namespace std::chrono_literals;
 std::ostringstream log_output;
@@ -250,7 +251,7 @@ int main() {
   g_activity_admission_fps.store(120, std::memory_order_relaxed);
   std::atomic<bool> reader_started = false, reader_finished = false;
   bool transition_admitted = false;
-  std::jthread reader([&] {
+  util::jthread reader([&] {
     reader_started = true;
     transition_admitted = submit(transition, 30'041'667, 3'004'166'700);
     reader_finished = true;

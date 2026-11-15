@@ -8,6 +8,7 @@ model of QueryDisplayConfig and SetDisplayConfig.
 """
 import pathlib
 import subprocess
+import sys
 import tempfile
 
 root = pathlib.Path(__file__).resolve().parents[2]
@@ -473,6 +474,6 @@ with tempfile.TemporaryDirectory(prefix='layout-hold-') as d:
     cpp = pathlib.Path(d) / 'test.cpp'
     binary = pathlib.Path(d) / 'test'
     cpp.write_text(program)
-    subprocess.run(['g++', '-std=c++23', '-O1', '-pthread', '-Wall', '-Wextra', '-Werror', '-I', str(root), str(cpp), '-o', str(binary)], check=True)
+    subprocess.run(['g++', '-std=c++23', *(['-fexperimental-library'] if sys.platform == 'darwin' else []), '-O1', '-pthread', '-Wall', '-Wextra', '-Werror', '-I', str(root), str(cpp), '-o', str(binary)], check=True)
     subprocess.run([str(binary)], check=True, timeout=20)
 print('Layout hold: stream-only layout restored and saved after a hotplug; user changes, other stream displays, a busy desktop and lost ownership left alone')

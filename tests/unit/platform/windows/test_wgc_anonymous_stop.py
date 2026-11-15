@@ -41,6 +41,7 @@ code = r'''
 #include <future>
 #include <iostream>
 #include <memory>
+#include <optional>
 #include <span>
 #include <sstream>
 #include <string>
@@ -55,8 +56,8 @@ template<size_t N> void wcsncpy_s(wchar_t (&out)[N], const wchar_t* in, int){std
 #endif
 struct TestClock {
  using time_point=std::chrono::steady_clock::time_point;
- static inline auto origin=std::chrono::steady_clock::now();
- static time_point now(){return time_point((std::chrono::steady_clock::now()-origin)*100);}
+ static inline std::atomic<long long> elapsed_ms{0};
+ static time_point now(){return time_point(std::chrono::milliseconds(elapsed_ms.load()));}
 };
 namespace platf::dxgi {
 constexpr uint8_t ACK_MSG=2;
@@ -72,7 +73,7 @@ struct State {
  void operation(int here,int timeout){
   ++calls;
   if(here==phase&&!entered_once){entered_once=true;entered.set_value();resume.wait();}
-  if(timeout>0)std::this_thread::sleep_for(std::chrono::microseconds(timeout*10));
+  if(timeout>0)TestClock::elapsed_ms.fetch_add(timeout);
  }
 };
 class NativePipe:public INamedPipe {
@@ -124,8 +125,8 @@ void cancel(int phase){
  auto pipe=make_pipe(state,stop);
  auto worker=std::async(std::launch::async,[&]{pipe->wait_for_client_connection(5000);});
  check(entered.wait_for(1s)==std::future_status::ready,"entered actual nested handshake stage");
- stop=true;int at_stop=state->calls;resume.set_value();
- check(worker.wait_for(90ms)==std::future_status::ready,"cancelled composite handshake returns before nominal video watchdog");
+ stop=true;int at_stop=state->calls;auto stop_time=TestClock::now();resume.set_value();
+ check(worker.wait_for(2s)==std::future_status::ready&&(TestClock::now()-stop_time)<9000ms,"cancelled composite handshake returns before nominal video watchdog");
  worker.get();check(state->calls==at_stop,"stop prevents another nested native wait");
  check(state->disconnects==0,"stop prevents data handoff of cancelled generation");
  int completed=state->calls;std::array<uint8_t,8> buffer{};size_t bytes=9;

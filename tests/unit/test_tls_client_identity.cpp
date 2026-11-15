@@ -54,6 +54,25 @@ namespace {
     struct transport_t {
       std::shared_ptr<connection_t> connection;
       std::unique_ptr<boost::asio::ip::tcp::socket> peer;
+
+      transport_t() = default;
+      transport_t(std::shared_ptr<connection_t> conn, std::unique_ptr<boost::asio::ip::tcp::socket> p):
+          connection(std::move(conn)),
+          peer(std::move(p)) {}
+      transport_t(transport_t &&) noexcept = default;
+      transport_t &operator=(transport_t &&) noexcept = default;
+
+      ~transport_t() {
+        boost::system::error_code ec;
+        if (peer && peer->is_open()) {
+          peer->set_option(boost::asio::socket_base::linger(true, 0), ec);
+          peer->close(ec);
+        }
+        if (connection && connection->socket && connection->socket->lowest_layer().is_open()) {
+          connection->socket->lowest_layer().set_option(boost::asio::socket_base::linger(true, 0), ec);
+          connection->socket->lowest_layer().close(ec);
+        }
+      }
     };
 
     transport_factory_t():

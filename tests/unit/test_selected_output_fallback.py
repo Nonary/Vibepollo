@@ -103,6 +103,10 @@ program = r'''
 #include <string>
 #include <vector>
 ''' + '#include "' + str(args.source_dir.resolve() / "platform/windows/display_helper_request_policy.h") + '"\n' + r'''
+// Defining _WIN32 on the compiler command line breaks Apple's libc++ headers.
+#ifndef _WIN32
+#define _WIN32
+#endif
 #define BOOST_LOG(level) std::ostringstream()
 namespace boost {
   bool iequals(const std::string &a, const std::string &b) {
@@ -357,7 +361,7 @@ with tempfile.TemporaryDirectory(prefix="selected-output-fallback-") as temporar
     source.write_text(program)
     binary = directory / "test"
     subprocess.run([args.compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror",
-                    "-Wno-missing-field-initializers", "-D_WIN32",
+                    "-Wno-missing-field-initializers",
                     "-I", str(args.source_dir.resolve().parent), str(source),
                     str(args.source_dir / "platform/windows/display_helper_request_policy.cpp"),
                     "-o", str(binary)], check=True)

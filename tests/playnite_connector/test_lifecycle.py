@@ -34,4 +34,5 @@ with tempfile.TemporaryDirectory(prefix="playnite-lifecycle-") as directory:
                     "--artifacts-path", directory, f"-p:ConnectorFrameworkMajor={major}"],
                    env=env, check=True, timeout=60)
     assembly = Path(directory) / "bin/ConnectorLifecycle/release/ConnectorLifecycle.dll"
-    subprocess.run([args.dotnet, str(assembly)], env=env, check=True, timeout=30)
+    run_env = dict(env, TMPDIR="/tmp") if sys.platform == "darwin" else env
+    subprocess.run([args.dotnet, str(assembly)], env=run_env, check=True, timeout=30)

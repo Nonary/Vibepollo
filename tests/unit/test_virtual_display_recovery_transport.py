@@ -8,6 +8,7 @@ policy are compiled from their production definitions.
 
 import pathlib
 import subprocess
+import sys
 import tempfile
 
 
@@ -666,7 +667,9 @@ with tempfile.TemporaryDirectory(prefix="virtual-display-recovery-") as temporar
     cpp.write_text(PROGRAM)
     subprocess.run(
         [
-            "g++", "-std=c++20", "-pthread", "-Wall", "-Wextra", "-Werror",
+            "g++", "-std=c++20",
+            *(["-fexperimental-library"] if sys.platform == "darwin" else []),
+            "-pthread", "-Wall", "-Wextra", "-Werror",
             "-Wno-missing-field-initializers", "-I", str(ROOT), str(cpp), "-o", str(binary),
         ],
         check=True,
