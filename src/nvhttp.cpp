@@ -34,6 +34,7 @@
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/algorithm/string/trim.hpp>
+#include <boost/asio/ip/network_v4.hpp>
 #include <boost/asio/ssl/context.hpp>
 #include <boost/asio/ssl/context_base.hpp>
 #include <boost/property_tree/json_parser.hpp>
@@ -4212,6 +4213,17 @@ namespace nvhttp {
       return true;
     }
 
+    /**
+     * @brief Whether the address is in 100.64.0.0/10 (RFC 6598 shared address space).
+     * @details This is the range Tailscale assigns to its nodes, and carrier-grade NAT uses it too.
+     *          An address here identifies a path to this host, not a place on its home network.
+     */
+    static bool is_shared_address_space(const boost::asio::ip::address &address) {
+      static const auto shared_space = boost::asio::ip::make_network_v4("100.64.0.0/10");
+      const auto normalized = net::normalize_address(address);
+      return normalized.is_v4() && shared_space.hosts().find(normalized.to_v4()) != shared_space.hosts().end();
+    }
+
     template<class T>
     void serverinfo(std::shared_ptr<typename SimpleWeb::ServerBase<T>::Response> response, std::shared_ptr<typename SimpleWeb::ServerBase<T>::Request> request) {
       print_req<T>(request);
@@ -4331,7 +4343,14 @@ namespace nvhttp {
       // have that implemented. For now, we will emulate the behavior of GFE+GS-IPv6-Forwarder,
       // which returns 127.0.0.1 as LocalIP for IPv6 connections. Moonlight clients with IPv6
       // support know to ignore this bogus address.
-      if (local_endpoint.address().is_v6() && !local_endpoint.address().to_v6().is_v4_mapped()) {
+      //
+      // The same applies to a connection made through a Tailscale address (100.64.0.0/10). That
+      // address is how this client reached the host, not where the host sits on its LAN. Reporting
+      // it makes Moonlight replace the stored LAN address with the Tailscale one, so the client
+      // never tries the LAN address again at home when Tailscale is off. Moonlight ignores a
+      // LocalIP that starts with 127., so it keeps whatever LAN address it already has.
+      if ((local_endpoint.address().is_v6() && !local_endpoint.address().to_v6().is_v4_mapped()) ||
+          is_shared_address_space(local_endpoint.address())) {
         tree.put("root.LocalIP", "127.0.0.1");
       } else {
         tree.put("root.LocalIP", net::addr_to_normalized_string(local_endpoint.address()));
