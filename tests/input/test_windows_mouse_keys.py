@@ -107,6 +107,33 @@ struct fake_task_pool {
 } task_pool;
 std::filesystem::path record_directory;
 std::filesystem::path appdata() { return record_directory; }
+// The process runs in current_session, whose logon started at current_logon.
+using LPWSTR = wchar_t *;
+struct LARGE_INTEGER {
+  std::int64_t QuadPart;
+};
+struct WTSINFOW {
+  LARGE_INTEGER LogonTime;
+};
+void *const WTS_CURRENT_SERVER_HANDLE = nullptr;
+enum WTS_INFO_CLASS { WTSSessionInfo = 24 };
+DWORD current_session = 1;
+std::int64_t current_logon = 1000;
+bool fail_session = false;
+WTSINFOW session_info;
+DWORD GetCurrentProcessId() { return 42; }
+int ProcessIdToSessionId(DWORD, DWORD *session_id) {
+  if (fail_session) return 0;
+  *session_id = current_session;
+  return 1;
+}
+int WTSQuerySessionInformationW(void *, DWORD, WTS_INFO_CLASS, LPWSTR *buffer, DWORD *bytes) {
+  session_info.LogonTime.QuadPart = current_logon;
+  *buffer = reinterpret_cast<LPWSTR>(&session_info);
+  *bytes = sizeof(session_info);
+  return 1;
+}
+void WTSFreeMemory(void *) {}
 '''
 
 TESTS = r'''
@@ -117,7 +144,10 @@ void check(bool ok, const char *name) {
 }
 const MOUSEKEYS original {sizeof(MOUSEKEYS), 0x40, 77, 3000, 5, 0, 0};
 const MOUSEKEYS streaming {sizeof(MOUSEKEYS), MKF_MOUSEKEYSON | MKF_AVAILABLE, 10, 1000, 0, 0, 0};
-bool record_exists() { return std::filesystem::exists(record_directory / "mouse_keys_restore.txt"); }
+std::filesystem::path record_path(DWORD session) {
+  return record_directory / ("mouse_keys_restore-" + std::to_string(session) + ".txt");
+}
+bool record_exists(DWORD session = current_session) { return std::filesystem::exists(record_path(session)); }
 void run_polls() {
   auto due = std::move(task_pool.delayed);
   task_pool.delayed.clear();
@@ -130,6 +160,7 @@ void restart_host() {
   mouse_keys_restore_deferred = false;
   mouse_keys_restore_poll_scheduled = false;
   previous_mouse_keys_state = {};
+  mouse_keys_record_owner.reset();
   task_pool.delayed.clear();
 }
 void reset(MOUSEKEYS initial = original) {
@@ -137,8 +168,11 @@ void reset(MOUSEKEYS initial = original) {
   get_calls = sets = 0;
   mouse_present = fail_get = fail_set = raw_fail = false;
   raw_mice = 0;
+  current_session = 1;
+  current_logon = 1000;
+  fail_session = false;
   restart_host();
-  std::filesystem::remove(record_directory / "mouse_keys_restore.txt");
+  for (const DWORD session : {1u, 2u}) std::filesystem::remove(record_path(session));
 }
 // A mouse arrived while Mouse Keys was on and Windows missed it, then the stream ended.
 void defer_restore() {
@@ -258,7 +292,7 @@ int main(int argc, char **argv) {
   check(desktop == original && sets == 0 && !enabled_mouse_keys, "startup without a record does nothing");
 
   reset();
-  { std::ofstream corrupt {record_directory / "mouse_keys_restore.txt"}; corrupt << "garbage\n"; }
+  { std::ofstream corrupt {record_path(current_session)}; corrupt << "garbage\n"; }
   recover_mouse_keys();
   check(desktop == original && sets == 0 && !record_exists() && !enabled_mouse_keys,
         "unreadable record is discarded");
@@ -281,6 +315,25 @@ int main(int argc, char **argv) {
   raw_mice = 0; run_polls();
   auto user_time = original; user_time.iTimeToMaxSpeed = 2500;
   check(released(user_time), "restarted host restores only the settings Sunshine still holds");
+
+  // Records belong to the logon that wrote them.
+  defer_restore(); restart_host();
+  current_session = 2; desktop = streaming; sets = 0; recover_mouse_keys();
+  check(sets == 0 && desktop == streaming && !enabled_mouse_keys && record_exists(1) && task_pool.delayed.empty(),
+        "another session's record is left alone and never restores its settings here");
+  current_session = 1; desktop = streaming; raw_mice = 1; recover_mouse_keys();
+  check(deferred_on(), "the record's own session still resumes the deferral");
+
+  defer_restore(); restart_host();
+  current_logon = 2000; desktop = streaming; sets = 0; recover_mouse_keys();
+  check(sets == 0 && desktop == streaming && !enabled_mouse_keys && !record_exists() && task_pool.delayed.empty(),
+        "a later logon reusing the session ID discards the record without writing");
+
+  reset(); fail_session = true; enable_mouse_keys();
+  check(enabled_mouse_keys && !record_exists(1) && !record_exists(2),
+        "an unidentified logon writes no record");
+  restore_mouse_keys();
+  check(desktop == original && !enabled_mouse_keys, "an unidentified logon still restores at stream end");
 
   std::cout << cases << " Mouse Keys cases, " << failures << " failed\n";
   return failures ? 1 : 0;

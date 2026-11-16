@@ -1776,60 +1776,120 @@ namespace platf {
     }
 
     /**
-     * @brief Path of the record that Sunshine owns the current Mouse Keys settings.
+     * @brief The interactive logon whose Mouse Keys settings this process changes.
      *
-     * It exists from turning Mouse Keys on until the user's settings are restored,
-     * and holds those settings. Mouse Keys changes last for the Windows session, so
-     * if Sunshine exits first, including while the restore is deferred, the next
-     * process finishes the restore at startup (see recover_mouse_keys).
+     * Mouse Keys settings belong to a logon. The service starts Sunshine in the
+     * active console session, so a later process can run in another session, or
+     * in a later logon that reuses this session ID. The logon time tells those
+     * logons apart.
      */
-    std::filesystem::path mouse_keys_record_path() {
-      return appdata() / "mouse_keys_restore.txt";
+    struct mouse_keys_owner_t {
+      DWORD session_id = 0;
+      std::int64_t logon_time = 0;
+    };
+
+    std::optional<mouse_keys_owner_t> current_mouse_keys_owner() {
+      DWORD session_id = 0;
+      if (!ProcessIdToSessionId(GetCurrentProcessId(), &session_id)) {
+        return std::nullopt;
+      }
+      WTSINFOW *info = nullptr;
+      DWORD bytes = 0;
+      if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session_id, WTSSessionInfo, reinterpret_cast<LPWSTR *>(&info), &bytes) || !info) {
+        return std::nullopt;
+      }
+      const std::int64_t logon_time = info->LogonTime.QuadPart;
+      WTSFreeMemory(info);
+      if (logon_time == 0) {
+        return std::nullopt;  // No user is logged on to this session.
+      }
+      return mouse_keys_owner_t {session_id, logon_time};
     }
 
-    constexpr std::string_view mouse_keys_record_tag = "vibepollo-mouse-keys-v1";
+    // The owner of the record this process wrote, guarded by mouse_keys_mutex.
+    std::optional<mouse_keys_owner_t> mouse_keys_record_owner;
+
+    /**
+     * @brief Path of the record that Sunshine owns a logon's Mouse Keys settings.
+     *
+     * It exists from turning Mouse Keys on until the user's settings are restored,
+     * and holds those settings and the logon they belong to. Mouse Keys changes
+     * last for the logon, so if Sunshine exits first, including while the restore
+     * is deferred, the next process in that logon finishes the restore at startup
+     * (see recover_mouse_keys). Each session has its own record, so a process in
+     * another session leaves it alone.
+     */
+    std::filesystem::path mouse_keys_record_path(const DWORD session_id) {
+      return appdata() / ("mouse_keys_restore-" + std::to_string(session_id) + ".txt");
+    }
+
+    constexpr std::string_view mouse_keys_record_tag = "vibepollo-mouse-keys-v2";
 
     void write_mouse_keys_record(const MOUSEKEYS &original) {
-      try {
-        std::ofstream file {mouse_keys_record_path(), std::ios::binary | std::ios::trunc};
-        file << mouse_keys_record_tag << ' ' << original.dwFlags << ' ' << original.iMaxSpeed << ' '
-             << original.iTimeToMaxSpeed << ' ' << original.iCtrlSpeed << '\n';
-        file.flush();
-        if (file.good()) {
-          return;
+      const auto owner = current_mouse_keys_owner();
+      if (owner) {
+        try {
+          std::ofstream file {mouse_keys_record_path(owner->session_id), std::ios::binary | std::ios::trunc};
+          file << mouse_keys_record_tag << ' ' << owner->logon_time << ' ' << original.dwFlags << ' '
+               << original.iMaxSpeed << ' ' << original.iTimeToMaxSpeed << ' ' << original.iCtrlSpeed << '\n';
+          file.flush();
+          if (file.good()) {
+            mouse_keys_record_owner = owner;
+            return;
+          }
+        } catch (...) {
         }
-      } catch (...) {
       }
       BOOST_LOG(warning) << "Unable to record the original state of Mouse Keys; it will not be restored if Sunshine exits first."sv;
     }
 
     void clear_mouse_keys_record() {
+      if (!mouse_keys_record_owner) {
+        return;
+      }
       std::error_code ec;
-      std::filesystem::remove(mouse_keys_record_path(), ec);
+      std::filesystem::remove(mouse_keys_record_path(mouse_keys_record_owner->session_id), ec);
+      mouse_keys_record_owner.reset();
     }
 
-    std::optional<MOUSEKEYS> read_mouse_keys_record() {
+    /**
+     * @brief Read the record for `owner`'s logon.
+     *
+     * A record from an earlier logon that reused the session ID belongs to
+     * settings Windows has already reset, so it is discarded without a restore.
+     */
+    std::optional<MOUSEKEYS> read_mouse_keys_record(const mouse_keys_owner_t &owner) {
+      const auto path = mouse_keys_record_path(owner.session_id);
       std::error_code ec;
-      if (!std::filesystem::exists(mouse_keys_record_path(), ec)) {
+      if (!std::filesystem::exists(path, ec)) {
         return std::nullopt;
       }
+      bool readable = false;
       try {
-        std::ifstream file {mouse_keys_record_path(), std::ios::binary};
+        std::ifstream file {path, std::ios::binary};
         std::string tag;
+        std::int64_t logon_time = 0;
         std::uint32_t flags = 0, max_speed = 0, time_to_max_speed = 0, ctrl_speed = 0;
-        if (file >> tag >> flags >> max_speed >> time_to_max_speed >> ctrl_speed && tag == mouse_keys_record_tag) {
-          MOUSEKEYS state = {};
-          state.cbSize = sizeof(state);
-          state.dwFlags = flags;
-          state.iMaxSpeed = max_speed;
-          state.iTimeToMaxSpeed = time_to_max_speed;
-          state.iCtrlSpeed = ctrl_speed;
-          return state;
+        if (file >> tag >> logon_time >> flags >> max_speed >> time_to_max_speed >> ctrl_speed && tag == mouse_keys_record_tag) {
+          readable = true;
+          if (logon_time == owner.logon_time) {
+            MOUSEKEYS state = {};
+            state.cbSize = sizeof(state);
+            state.dwFlags = flags;
+            state.iMaxSpeed = max_speed;
+            state.iTimeToMaxSpeed = time_to_max_speed;
+            state.iCtrlSpeed = ctrl_speed;
+            return state;
+          }
         }
       } catch (...) {
       }
-      BOOST_LOG(warning) << "Ignoring an unreadable record of the original Mouse Keys state."sv;
-      clear_mouse_keys_record();
+      if (readable) {
+        BOOST_LOG(info) << "Discarding a Mouse Keys record from an earlier logon to this session."sv;
+      } else {
+        BOOST_LOG(warning) << "Ignoring an unreadable record of the original Mouse Keys state."sv;
+      }
+      std::filesystem::remove(path, ec);
       return std::nullopt;
     }
 
@@ -1988,7 +2048,11 @@ namespace platf {
     if (enabled_mouse_keys) {
       return;
     }
-    const auto original = read_mouse_keys_record();
+    const auto owner = current_mouse_keys_owner();
+    if (!owner) {
+      return;
+    }
+    const auto original = read_mouse_keys_record(*owner);
     if (!original) {
       return;
     }
@@ -1996,6 +2060,7 @@ namespace platf {
     BOOST_LOG(info) << "Sunshine exited before restoring the original state of Mouse Keys; restoring it now."sv;
     previous_mouse_keys_state = *original;
     enabled_mouse_keys = true;
+    mouse_keys_record_owner = owner;
     restore_or_defer_mouse_keys_locked();
   }
 
