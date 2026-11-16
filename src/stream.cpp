@@ -4041,6 +4041,19 @@ namespace stream {
     }
 #endif
 
+    void pause_after_abandoned_launch() {
+      if (webrtc_stream::has_active_or_pending_sessions() || webrtc_stream::has_teardown_in_progress()) {
+        return;
+      }
+      BOOST_LOG(info) << "The launch the app was kept running for ended without starting a stream; pausing the app."sv;
+      proc::proc.pause(true);
+#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+      if (proc::proc.current_app_id() > 0) {
+        system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
+      }
+#endif
+    }
+
     std::uint32_t launch_session_id(const session_t &session) {
       return session.launch_session_id;
     }
@@ -4211,9 +4224,8 @@ namespace stream {
       if (last_rtsp_session) {
         webrtc_stream::set_rtsp_sessions_active(false);
         // A session that stopped before its control stream attached still holds
-        // its own renewed launch here, as may the other sessions clear() is
-        // joining with it; clear() releases them only after all the joins, and
-        // nothing retries the pause then. Only other launches keep the app up.
+        // its own renewed launch here, as may other sessions clear() removed,
+        // until their posted cleanups run. Only other launches keep the app up.
         const bool rtsp_pending = rtsp_stream::has_other_pending_launch_or_startup(session.launch_session_id);
         const bool webrtc_active =
           webrtc_stream::has_active_or_pending_sessions() ||
@@ -4221,6 +4233,9 @@ namespace stream {
         if (!rtsp_pending && !webrtc_active) {
           proc::proc.pause(true);
         }
+        // The pending launch's stream takes the app over. If that launch goes
+        // away without starting one, the RTSP server pauses the app then.
+        rtsp_stream::set_last_session_pause_deferred(rtsp_pending && !webrtc_active);
         const bool is_paused = proc::proc.current_app_id() > 0;
         if (is_paused) {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1

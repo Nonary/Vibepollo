@@ -942,6 +942,7 @@ namespace rtsp_stream {
         std::lock_guard<std::mutex> lock(_launch_sessions_mutex);
         const auto now = std::chrono::steady_clock::now();
         expired_guids = expire_launch_sessions_locked(now, &expired_owners, &expired_sessions);
+        retire_departed_launch_sessions_locked(expired_guids, expired_sessions);
         switch (_launch_sessions.add(std::move(launch_session), now, config::stream.ping_timeout, remote_session::max_client_vdds * 2)) {
           case pending_launches_t::add_result_e::full:
             BOOST_LOG(error) << "RTSP pending-launch registry is full; refusing launch " << launch_session_id;
@@ -1117,6 +1118,7 @@ namespace rtsp_stream {
         BOOST_LOG(debug) << "Attempted to clear unknown RTSP launch session: "sv << launch_session_id;
       } else if (!pending_launches_remain) {
         set_pending_vulkan_hdr_layer_stream(false);
+        retry_deferred_last_session_pause();
       }
       if (removed) {
         const stream::session::shared_runtime_finalize_context_t finalize_context {
@@ -1131,6 +1133,29 @@ namespace rtsp_stream {
       asio::post(io_context, [this]() {
         arm_launch_timer();
       });
+    }
+
+    void set_last_session_pause_deferred(const bool deferred) {
+      _last_session_pause_deferred.store(deferred, std::memory_order_release);
+    }
+
+    /**
+     * @brief Pause the app if the last session left it running for launches that are gone.
+     *
+     * The last RTSP session's join leaves the app running while another launch
+     * is pending, since that launch's stream takes it over. If every such
+     * launch then expires, fails to start or is cleared without a stream, no
+     * join follows to pause it, so the server does it here.
+     *
+     * @pre The lifecycle gate is held, which orders this against admission and joins.
+     */
+    void retry_deferred_last_session_pause() {
+      if (!_last_session_pause_deferred.load(std::memory_order_acquire) ||
+          session_count() != 0 || has_pending_launch_or_startup()) {
+        return;
+      }
+      _last_session_pause_deferred.store(false, std::memory_order_release);
+      stream::session::pause_after_abandoned_launch();
     }
 
     /**
@@ -1668,6 +1693,9 @@ namespace rtsp_stream {
         release_pending_runtime_holds(pending);
         reconcile_abandoned_monitor(pending);
       }
+      if (!expired_sessions.empty() && !pending_launches_remain) {
+        retry_deferred_last_session_pause();
+      }
       for (const auto &owner : pending_policy::expired_remote_input_owners(expired_owners)) {
         nvhttp::notify_remote_input_transport_lost(owner.client_uuid, owner.generation);
       }
@@ -1895,6 +1923,36 @@ namespace rtsp_stream {
       return expired_guids;
     }
 
+    /**
+     * @brief Remove the launches of sessions clear() removed, before admission.
+     *
+     * A session that stopped before its control stream attached keeps its
+     * renewed launch until its posted session_clear() runs, and that callback
+     * can lose the lifecycle gate to a retry's admission. No stream can start
+     * from such a launch any more, so it is retired like an expired one
+     * before the duplicate plaintext source check, or plaintext routing,
+     * can see it. The posted session_clear() then only drops its departing
+     * mark. Launches of other sessions are untouched.
+     *
+     * @pre `_launch_sessions_mutex` and the lifecycle gate are held.
+     */
+    void retire_departed_launch_sessions_locked(
+      std::vector<std::array<std::uint8_t, 16>> &retired_guids,
+      std::vector<std::shared_ptr<launch_session_t>> &retired_sessions
+    ) {
+      if (_departing_launch_ids.empty()) {
+        return;
+      }
+      const auto departed = _launch_sessions.remove_if([this](const launch_session_t &session) {
+        return std::ranges::find(_departing_launch_ids, session.id) != _departing_launch_ids.end();
+      });
+      for (const auto &session : departed) {
+        BOOST_LOG(debug) << "Retiring the launch of a stopped session before admitting another: "sv << session->unique_id;
+        retired_guids.push_back(session->virtual_display_guid_bytes);
+        retired_sessions.push_back(session);
+      }
+    }
+
     void arm_launch_timer_locked() {
       raised_timer.cancel();
 
@@ -1929,6 +1987,9 @@ namespace rtsp_stream {
     // clear() returns or, for a launch it clears, until session_clear() runs.
     // See has_other_pending_launch_or_startup().
     std::vector<uint32_t> _departing_launch_ids;
+    // The last session's join left the app running for a pending launch.
+    // See retry_deferred_last_session_pause().
+    std::atomic_bool _last_session_pause_deferred {false};
     std::string plaintext_route_warning;
 
     boost::asio::io_context io_context;
@@ -1967,6 +2028,10 @@ namespace rtsp_stream {
 
   bool has_other_pending_launch_or_startup(uint32_t launch_session_id) {
     return server.has_other_pending_launch_or_startup(launch_session_id);
+  }
+
+  void set_last_session_pause_deferred(const bool deferred) {
+    server.set_last_session_pause_deferred(deferred);
   }
 
   void set_vulkan_hdr_layer_pending_stream(bool active) {
