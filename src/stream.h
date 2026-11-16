@@ -141,6 +141,14 @@ namespace stream {
     void stop(session_t &session);
     void graceful_stop(session_t &session);
     void join(session_t &session, bool lifecycle_lock_held = false);
+
+    /**
+     * @brief Pause the app once the launch the last session left it running for is gone.
+     *
+     * Runs the pause the last session's join deferred to that launch, unless
+     * WebRTC now owns the app. Requires the lifecycle gate.
+     */
+    void pause_after_abandoned_launch();
     state_e state(session_t &session);
     bool has_running_video(const session_t &session);
     inline bool send(session_t &session, const std::string_view &payload);

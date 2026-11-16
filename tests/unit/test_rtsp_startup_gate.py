@@ -145,6 +145,8 @@ struct Server {
  // These cases never expire a session. Expiry is covered by the reconnect fixture.
  std::vector<std::array<std::uint8_t,16>> expire_launch_sessions_locked(auto, auto *, auto *) {return {};}
  void finalize_expired_launch_sessions(const auto&, bool, const auto&, const auto&) {}
+ // Nothing departs in these cases. The terminal composition test covers that path.
+ void retire_departed_launch_sessions_locked(auto &, auto &) {}
  // The launch's startup claim ends with the start result, before publication.
  void finish_launch_startup(std::uint32_t id,const std::string &unique_id,bool ok) {
    assert(id==1&&unique_id=="pending");

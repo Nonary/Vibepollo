@@ -371,6 +371,14 @@ namespace rtsp_stream {
   bool has_other_pending_launch_or_startup(uint32_t launch_session_id);
 
   /**
+   * @brief Record whether the last RTSP session's join left the app running for a pending launch.
+   *
+   * If it did and that launch goes away without starting a stream, the RTSP
+   * server pauses the app then. Call with the lifecycle gate held.
+   */
+  void set_last_session_pause_deferred(bool deferred);
+
+  /**
    * @brief Publish whether an HDR stream launch is pending before the RTSP session is active.
    *
    * Vulkan applications can query swapchain formats immediately at process startup. The Vulkan HDR
