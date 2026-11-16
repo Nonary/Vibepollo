@@ -2859,6 +2859,13 @@ namespace display_helper_integration {
     // worker cannot acquire the gate afterward and supersede this restore.
     VDISPLAY::cancel_all_virtual_display_recovery_monitors();
     BOOST_LOG(debug) << "Display helper: recovery monitors cancelled for accepted REVERT.";
+    // Declared before the execution lock so it runs after the lock is
+    // released. start_watchdog() keeps an already-running worker.
+    display_helper::failed_revert_policy::retry_arm_t retry_watchdog {[] {
+      if (!shutdown_requested()) {
+        start_watchdog();
+      }
+    }};
     std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex());
     invalidate_apply_verification();
     clear_pending_apply_queue_locked();
@@ -2879,6 +2886,7 @@ namespace display_helper_integration {
         display_policy == FinalRestoreDisplayPolicy::RemoveAfterRestore,
         proc::proc.current_app_id() > 0,
       });
+      retry_watchdog.arm();
       return true;
     };
     if (!ensure_helper_started(false, allow_disabled_recovery)) {

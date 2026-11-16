@@ -4,6 +4,7 @@
  */
 #pragma once
 
+#include <functional>
 #include <mutex>
 #include <optional>
 #include <utility>
@@ -87,6 +88,38 @@ namespace display_helper::failed_revert_policy {
     mutable std::mutex mutex_;
     std::optional<request_t> request_;
     int applies_in_flight_ = 0;
+  };
+
+  // Starts the retry worker after the caller's locks are released. A REVERT
+  // first missed while no watchdog runs, such as one from an idle settings
+  // save, would otherwise wait for the next stream to start one. The worker
+  // can be stopping and waiting on those same locks, so it must not be
+  // started while they are held.
+  class retry_arm_t {
+  public:
+    explicit retry_arm_t(std::function<void()> start_retry):
+        start_retry_(std::move(start_retry)) {}
+
+    retry_arm_t(const retry_arm_t &) = delete;
+    retry_arm_t &operator=(const retry_arm_t &) = delete;
+
+    ~retry_arm_t() {
+      if (!armed_ || !start_retry_) {
+        return;
+      }
+      try {
+        start_retry_();
+      } catch (...) {
+      }
+    }
+
+    void arm() {
+      armed_ = true;
+    }
+
+  private:
+    std::function<void()> start_retry_;
+    bool armed_ = false;
   };
 
   // Brackets one APPLY attempt. It settles as failed unless `applied(true)` is

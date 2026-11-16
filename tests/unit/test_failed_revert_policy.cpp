@@ -164,3 +164,53 @@ TEST(FailedRevertPolicy, ApplyThatThrowsKeepsTheMissedRevert) {
   }
   EXPECT_TRUE(slot.take_if_replayable(idle).has_value());
 }
+
+// The idle DD settings-save path: streaming_will_stop() has already stopped the
+// watchdog, and the save's REVERT finds the helper unavailable.
+TEST(FailedRevertPolicy, IdleRevertMissedWithNoWatchdogStartsOneThatReplaysIt) {
+  policy::slot_t slot;
+  std::mutex execution_mutex;
+  bool watchdog_running = false;
+  bool started_with_lock_held = false;
+  int watchdog_starts = 0;
+
+  policy::request_t settings_save;
+  settings_save.prefer_golden_if_current_missing = true;
+  settings_save.allow_disabled_recovery = true;
+  {
+    policy::retry_arm_t retry_watchdog {[&] {
+      started_with_lock_held = !execution_mutex.try_lock();
+      if (!started_with_lock_held) {
+        execution_mutex.unlock();
+      }
+      ++watchdog_starts;
+      watchdog_running = true;
+    }};
+    std::unique_lock execution_lock(execution_mutex);
+    slot.remember(settings_save);
+    retry_watchdog.arm();
+    EXPECT_FALSE(watchdog_running);
+  }
+  EXPECT_EQ(watchdog_starts, 1);
+  EXPECT_FALSE(started_with_lock_held);
+
+  // The new watchdog's tick, once the helper is reachable: the host is still
+  // idle, and nothing started a stream.
+  ASSERT_TRUE(watchdog_running);
+  const auto replay = slot.take_if_replayable(idle);
+  ASSERT_TRUE(replay.has_value());
+  EXPECT_TRUE(replay->prefer_golden_if_current_missing);
+  EXPECT_TRUE(replay->allow_disabled_recovery);
+  EXPECT_FALSE(replay->retain_paused_app);
+  EXPECT_FALSE(slot.pending());
+}
+
+TEST(FailedRevertPolicy, RevertThatReachesTheHelperStartsNoWatchdog) {
+  int watchdog_starts = 0;
+  {
+    policy::retry_arm_t retry_watchdog {[&] {
+      ++watchdog_starts;
+    }};
+  }
+  EXPECT_EQ(watchdog_starts, 0);
+}
