@@ -54,8 +54,8 @@ namespace platf {
     void keyboard_mouse_consumer(std::uint16_t usage, bool pressed);
     void keyboard_mouse_button(std::uint8_t button, bool pressed);
     void keyboard_mouse_relative(int x, int y, int wheel, int pan);
-    // Coordinates span the full virtual desktop. Startup rejects producers
-    // without one ordered mouse queue; uncertain events are never replayed.
+    // Coordinates span the virtual desktop. UMDF primary-display input and
+    // off-primary Windows input use receipt fences; uncertain events are not replayed.
     void keyboard_mouse_absolute(std::uint16_t x, std::uint16_t y);
 
     /**

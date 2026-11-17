@@ -97,7 +97,7 @@ class WindowsValidationWorkflow(unittest.TestCase):
         self.assertIn("daily_unsigned: ${{ inputs.qualify_nightly_installer }}", windows)
 
     def test_signing_is_confined_to_nightly_and_production_signing_workflow(self):
-        daily_gamepad = step(self.reusable, "Self-sign only the daily gamepad catalog and setup tool")
+        daily_gamepad = step(self.reusable, "Self-sign the daily UMDF gamepad with the pinned identity")
         self.assertIn("if: inputs.daily_unsigned", daily_gamepad)
         self.assertIn("secrets.daily_gamepad_pfx_base64", daily_gamepad)
         self.assertIn("secrets.daily_gamepad_pfx_password", daily_gamepad)

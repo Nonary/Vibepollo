@@ -270,7 +270,6 @@ jobs:
 
           $packageRoot = Join-Path $env:RUNNER_TEMP 'vhf-gamepad-producer-release'
           .\scripts\download_libvirtualgamepad_release.ps1 `
-            -RequireMouseMapper `
             -Repository $env:VHF_REPOSITORY `
             -Tag $env:VHF_TAG `
             -ExpectedArchiveSha256 $env:VHF_ARCHIVE_SHA256 `
@@ -463,7 +462,6 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $packageRoot = Join-Path $env:RUNNER_TEMP 'vhf-gamepad-producer-release'
           .\scripts\download_libvirtualgamepad_release.ps1 `
-            -RequireMouseMapper `
             -ValidateOnly `
             -Repository $env:VHF_REPOSITORY `
             -Tag $env:VHF_TAG `
@@ -677,7 +675,7 @@ jobs:
           .\scripts\download_truehdr_runtime_release.ps1 @args
           "SUNSHINE_TRUEHDR_RUNTIME_DIR=$env:TRUEHDR_RUNTIME_ROOT" >> $env:GITHUB_ENV
 
-      - name: Self-sign only the daily gamepad catalog and setup tool
+      - name: Self-sign the daily UMDF gamepad with the pinned identity
         if: inputs.daily_unsigned
         shell: pwsh
         env:
@@ -734,7 +732,6 @@ jobs:
           fi
           vhf_gamepad_package_arg=(
             -DSUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER=ON
-            -DSUNSHINE_REQUIRE_VHF_MOUSE_MAPPER_PACKAGE=ON
             -DSUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR="$(cygpath -u "${VHF_PACKAGE_ROOT}")"
             -DSUNSHINE_VHF_GAMEPAD_RELEASE_TAG="${VHF_TAG}"
             -DSUNSHINE_VHF_GAMEPAD_RELEASE_ASSET_SHA256="${VHF_ARCHIVE_SHA256}"
@@ -1041,7 +1038,6 @@ jobs:
           }
           $packageDir = Join-Path $extractRoot 'Apollo\drivers\vhf-gamepad'
           .\packaging\windows\virtual_gamepad_driver\refresh_driver_package.ps1 `
-            -RequireMouseMapper `
             -AllowLocalTestPackage:($env:DAILY_UNSIGNED -eq 'true') `
             -ValidateOnly `
             -PrebuiltPackageDir $env:VHF_PACKAGE_ROOT `
@@ -1128,6 +1124,9 @@ jobs:
             if ((Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $packaged -Algorithm SHA256).Hash) {
               throw "Packaged $driver installer is not the policy-tested source script."
             }
+          }
+          foreach ($scriptName in @('driver-inventory.ps1', 'install-bundled-drivers.ps1')) {
+            if ((Get-FileHash (Join-Path $PWD "src_assets/windows/drivers/$scriptName")).Hash -cne (Get-FileHash (Join-Path $extractRoot "Apollo/drivers/$scriptName")).Hash) { throw "Packaged shared driver script differs from tested source: $scriptName" }
           }
           & powershell.exe -NoProfile -NonInteractive -File packaging/windows/test_gamepad_published_package.ps1 -FixtureRoot $gamepadRoot -RepositoryRoot $PWD
           if ($LASTEXITCODE -ne 0) { throw 'Actual daily MSI gamepad package validation failed.' }

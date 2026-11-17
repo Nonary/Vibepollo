@@ -1,5 +1,6 @@
 [CmdletBinding()]
 param(
+    [switch]$FunctionsOnly,
     [switch] $Uninstall,
     [ValidateSet(0, 1)]
     [int]$DailyUnsignedPolicy = 0,
@@ -134,13 +135,18 @@ function Test-SafeDriverInstall {
     $infName = [IO.Path]::GetFileName($InfPath)
     # Both queries must succeed. An empty successful query means missing;
     # errors, missing active versions, and unreadable store INFs mean unknown.
-    $packages = @(Get-WindowsDriver -Online -All -ErrorAction Stop | Where-Object {
+    if (Get-Command Get-SharedDriverInventory -ErrorAction SilentlyContinue) {
+        $inventory = Get-SharedDriverInventory -InfName $infName -HardwareId $HardwareId
+        $packages = @($inventory.Packages); $devices = @($inventory.Devices)
+    } else {
+    $packages = @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
         [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq $infName
     })
     $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
         ([string]$_.DeviceID).StartsWith($HardwareId, [StringComparison]::OrdinalIgnoreCase) -or
         ([string]$_.HardwareID).Equals($HardwareId, [StringComparison]::OrdinalIgnoreCase)
     })
+    }
     $installed = @()
     foreach ($device in $devices) {
         # CIM reports the active INF's numeric DriverVersion (not DriverDate).
@@ -425,6 +431,11 @@ function Assert-ManifestHash {
 
 # A mapper package is identified explicitly, so old pinned gamepad-only archives
 # retain their existing contract. New producer payloads must carry all three files.
+function Test-MouseMapperDeclared {
+    param([Parameter(Mandatory=$true)]$Manifest)
+    return $null -ne $Manifest.PSObject.Properties['features'] -and
+        $null -ne $Manifest.features -and $null -ne $Manifest.features.PSObject.Properties['mouse_mapper']
+}
 function Test-MouseMapperFeature {
     param([Parameter(Mandatory = $true)] $Manifest)
     if ($null -eq $Manifest.PSObject.Properties['features'] -or
@@ -440,11 +451,13 @@ function Get-MouseMapperPayload {
 function Assert-ManifestPayloadContract {
     param(
         [Parameter(Mandatory = $true)] $Manifest,
-        [Parameter(Mandatory = $true)][string] $Root
+        [Parameter(Mandatory = $true)][string] $Root,
+        [switch]$DeferMapper
     )
 
     $expectedPayload = @($manifestPayload)
-    if (Test-MouseMapperFeature -Manifest $Manifest) { $expectedPayload += @(Get-MouseMapperPayload) }
+    $hasMapper = if ($DeferMapper) { Test-MouseMapperDeclared -Manifest $Manifest } else { Test-MouseMapperFeature -Manifest $Manifest }
+    if ($hasMapper) { $expectedPayload += @(Get-MouseMapperPayload) }
     if ([string] $Manifest.signing.channel -eq 'self-signed-local-test') {
         $expectedPayload += $localTestCertificate
     }
@@ -457,6 +470,7 @@ function Assert-ManifestPayloadContract {
     # immutable payload hashes are known. Hash-check every channel-owned file.
     $signedDownstream = [string] $Manifest.signing.channel -eq $msiRequestChannel
     foreach ($relativePath in $expectedPayload) {
+        if ($DeferMapper -and $relativePath -in @(Get-MouseMapperPayload)) { continue }
         if ($signedDownstream -and $downstreamSignedFiles -contains $relativePath) {
             # Re-signed after this manifest was written, so the recorded hash
             # is expected not to match. Its signature is checked below.
@@ -496,6 +510,13 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography.Pkcs;
 public static class VhfLocalTrustValidation {
+    [DllImport("ntdll.dll")] static extern int NtQuerySystemInformation(int kind, ref CodeIntegrity info, uint size, IntPtr returned);
+    [StructLayout(LayoutKind.Sequential)] struct CodeIntegrity { public uint Length, Options; }
+    public static bool IsTestSigningEnabled() {
+        var info=new CodeIntegrity { Length=8 };
+        if(NtQuerySystemInformation(103,ref info,8,IntPtr.Zero)!=0) throw new InvalidOperationException("Cannot determine active Windows code-integrity policy.");
+        return (info.Options & 2)!=0;
+    }
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] struct FileInfo {
         public uint Size; [MarshalAs(UnmanagedType.LPWStr)] public string Path; public IntPtr File, Subject;
     }
@@ -702,7 +723,7 @@ function Ensure-ConsentedLocalGamepadTrust {
 }
 
 function Assert-DriverPackage {
-    param([Parameter(Mandatory = $true)][string] $Root, [switch]$AllowUntrustedLocalPackage)
+    param([Parameter(Mandatory = $true)][string] $Root, [switch]$AllowUntrustedLocalPackage, [switch]$DeferMapper)
 
     foreach ($relativePath in $packageFiles) {
         Assert-File -Path (Join-Path $Root ($relativePath -replace '/', '\\'))
@@ -722,7 +743,7 @@ function Assert-DriverPackage {
         (@($manifest.signing.signed_downstream) -join "`n") -cne ($downstreamSignedFiles -join "`n")) {
         throw '[VibeshineVhfGamepad] MSI-signing manifest does not declare the exact downstream-signed payloads.'
     }
-    Assert-ManifestPayloadContract -Manifest $manifest -Root $Root
+    Assert-ManifestPayloadContract -Manifest $manifest -Root $Root -DeferMapper:$DeferMapper
 
     $certificatePath = Join-Path $Root ($localTestCertificate -replace '/', '\\')
     $hasLocalCertificate = Test-Path -LiteralPath $certificatePath -PathType Leaf
@@ -796,13 +817,15 @@ function Assert-DriverPackage {
     }
 
     $mapperInfPath = $null
-    if (Test-MouseMapperFeature -Manifest $manifest) {
+    if (-not $DeferMapper -and (Test-MouseMapperFeature -Manifest $manifest)) {
         $mapperInfPath = Join-Path $Root 'mouse_mapper/VibeshineVhfMouseMapper.inf'
         $mapperCatalogPath = Join-Path $Root 'mouse_mapper/VibeshineVhfMouseMapper.cat'
         $mapperSysPath = Join-Path $Root 'mouse_mapper/VibeshineVhfMouseMapper.sys'
         Initialize-LocalGamepadTrustValidation
         if ($hasLocalCertificate -and $manifest.mouse_mapper.kernel_signing -ceq 'self-signed-local-test') {
             [VhfLocalTrustValidation]::VerifyCatalog($mapperCatalogPath, $localCertificate.Thumbprint, @($mapperInfPath, $mapperSysPath))
+            [VhfLocalTrustValidation]::VerifyTool($mapperSysPath, $localCertificate.Thumbprint)
+            if (-not [VhfLocalTrustValidation]::IsTestSigningEnabled()) { throw 'The nightly mouse mapper is signed, but Windows test-signing is not enabled. Certificate trust alone does not authorize kernel-driver loading. Boot security settings were left unchanged.' }
         } else {
             if ($manifest.mouse_mapper.kernel_signing -cne 'windows-kernel-policy') { throw 'The bundled mapper is an unsigned producer artifact and is not eligible for kernel installation. A separately trusted kernel-signed mapper package is required; publishing or MSI signing does not grant that trust.' }
             [VhfLocalTrustValidation]::VerifyKernelCatalog($mapperCatalogPath, @($mapperInfPath, $mapperSysPath))
@@ -810,6 +833,8 @@ function Assert-DriverPackage {
     }
 
     return [PSCustomObject]@{
+        Root = $Root
+        Manifest = $manifest
         MapperInfPath = $mapperInfPath
         InfPath = Join-Path $Root 'driver/VibeshineVhfGamepad.inf'
         SetupToolPath = $toolPath
@@ -846,8 +871,13 @@ function Invoke-PnpUtil {
     Assert-File -Path $pnputil
     # Keep PnPUtil's localized diagnostic text visible without allowing it to
     # become this function's return value.
-    & $pnputil @Arguments | Out-Host
-    $exitCode = $LASTEXITCODE
+    if ('VibeshineDriverInventory' -as [type]) { [VibeshineDriverInventory]::Invalidate() }
+    try {
+        & $pnputil @Arguments | Out-Host
+        $exitCode = $LASTEXITCODE
+    } finally {
+        if ('VibeshineDriverInventory' -as [type]) { [VibeshineDriverInventory]::Invalidate() }
+    }
     if ($exitCode -notin $AllowedExitCodes) {
         throw "[VibeshineVhfGamepad] pnputil failed with exit code $exitCode."
     }
@@ -855,18 +885,25 @@ function Invoke-PnpUtil {
 }
 
 function Remove-DriverStorePackage {
+    if (Get-Command Get-SharedDriverInventory -ErrorAction SilentlyContinue) {
+        $packages = @((Get-SharedDriverInventory -InfName 'VibeshineVhfGamepad.inf' -HardwareId 'ROOT\VIBESHINEVIRTUALGAMEPAD').Packages)
+        $packages += @((Get-SharedDriverInventory -InfName 'VibeshineVhfMouseMapper.inf' -HardwareId 'ROOT\VIBESHINEVIRTUALGAMEPAD').Packages)
+    } else {
     $command = Get-Command Get-WindowsDriver -ErrorAction SilentlyContinue
     if ($null -eq $command) {
         throw '[VibeshineVhfGamepad] Get-WindowsDriver is unavailable; refusing to guess Driver Store package names.'
     }
 
-    $packages = @(Get-WindowsDriver -Online -All | Where-Object {
-        [IO.Path]::GetFileName([string] $_.OriginalFileName) -in @('VibeshineVhfGamepad.inf', 'VibeshineVhfMouseMapper.inf') -and -not [string]::IsNullOrWhiteSpace($_.PublishedName)
+    $packages = @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
+        [IO.Path]::GetFileName([string] $_.OriginalFileName) -in @('VibeshineVhfGamepad.inf', 'VibeshineVhfMouseMapper.inf')
     })
+    }
     $rebootRequired = $false
     foreach ($package in $packages) {
-        Write-DriverMessage "Removing owned Driver Store package $($package.PublishedName)."
-        $exitCode = Invoke-PnpUtil -Arguments @('/delete-driver', $package.PublishedName, '/uninstall')
+        $published = [string]$package.Driver
+        if ($published -notmatch '^oem\d+\.inf$') { throw 'Unknown owned package identity; Driver Store removal deferred.' }
+        Write-DriverMessage "Removing owned Driver Store package $published."
+        $exitCode = Invoke-PnpUtil -Arguments @('/delete-driver', $published, '/uninstall')
         $rebootRequired = $rebootRequired -or ($exitCode -eq $rebootExitCode)
     }
     return $rebootRequired
@@ -877,7 +914,7 @@ function Get-MapperInstallDeclaration {
     $manifestPath = Join-Path $Root 'manifest.json'
     Assert-File -Path $manifestPath
     $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    if (Test-MouseMapperFeature -Manifest $manifest) { return $manifest }
+    if (Test-MouseMapperDeclared -Manifest $manifest) { return $manifest }
     return $null
 }
 
@@ -895,9 +932,18 @@ function Assert-MapperInstallCompatibility {
     $expectedId = 'HID\VID_{0:X4}&PID_{1:X4}&REV_0100&COL02' -f [uint16]$Manifest.mouse_mapper.vendor_id, [uint16]$Manifest.mouse_mapper.product_id
     if ($hardwareId -cne $expectedId -or $Manifest.mouse_mapper.transport_version -ne 1) { throw 'Mapper identity/transport metadata does not match its catalog-bound INF.' }
     $target = Get-InfComponentVersion -Path $InfPath
-    $packages = @(Get-WindowsDriver -Online -All -ErrorAction Stop | Where-Object {
+    if (Get-Command Get-SharedDriverInventory -ErrorAction SilentlyContinue) {
+        $inventory = Get-SharedDriverInventory -InfName 'VibeshineVhfMouseMapper.inf' -HardwareId $hardwareId
+        $packages = @($inventory.Packages); $devices = @($inventory.Devices)
+    } else {
+    $packages = @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
         [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq 'VibeshineVhfMouseMapper.inf'
     })
+    $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
+        ([string]$_.DeviceID).StartsWith($hardwareId, [StringComparison]::OrdinalIgnoreCase) -or
+        ([string]$_.HardwareID).Equals($hardwareId, [StringComparison]::OrdinalIgnoreCase)
+    })
+    }
     foreach ($package in $packages) {
         $path = [string]$package.OriginalFileName
         if (-not [IO.Path]::IsPathRooted($path)) {
@@ -906,10 +952,6 @@ function Assert-MapperInstallCompatibility {
         }
         if ((Get-InfComponentVersion -Path $path) -gt $target) { throw 'A newer mapper package exists; refusing to stage an older mapper. Supply a compatible package at least as new. Both drivers retained.' }
     }
-    $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
-        ([string]$_.DeviceID).StartsWith($hardwareId, [StringComparison]::OrdinalIgnoreCase) -or
-        ([string]$_.HardwareID).Equals($hardwareId, [StringComparison]::OrdinalIgnoreCase)
-    })
     foreach ($device in $devices) {
         if ((ConvertTo-DriverComponentVersion ([string]$device.DriverVersion)) -gt $target) { throw 'A newer active mapper exists; refusing to downgrade it. Both drivers retained.' }
     }
@@ -920,9 +962,18 @@ function Assert-MapperInstallCompatibility {
 function Test-MapperParentInstallRequired {
     param([Parameter(Mandatory = $true)][string]$InfPath)
     $target = Get-InfComponentVersion -Path $InfPath
-    $packages = @(Get-WindowsDriver -Online -All -ErrorAction Stop | Where-Object {
+    if (Get-Command Get-SharedDriverInventory -ErrorAction SilentlyContinue) {
+        $inventory = Get-SharedDriverInventory -InfName 'VibeshineVhfGamepad.inf' -HardwareId 'ROOT\VIBESHINEVIRTUALGAMEPAD'
+        $packages = @($inventory.Packages); $devices = @($inventory.Devices)
+    } else {
+    $packages = @(Get-WindowsDriver -Online -ErrorAction Stop | Where-Object {
         [IO.Path]::GetFileName([string]$_.OriginalFileName) -ieq 'VibeshineVhfGamepad.inf'
     })
+    $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
+        ([string]$_.DeviceID).StartsWith('ROOT\VIBESHINEVIRTUALGAMEPAD\', [StringComparison]::OrdinalIgnoreCase) -or
+        ([string]$_.HardwareID).Equals('ROOT\VIBESHINEVIRTUALGAMEPAD', [StringComparison]::OrdinalIgnoreCase)
+    })
+    }
     foreach ($package in $packages) {
         $path = [string]$package.OriginalFileName
         if (-not [IO.Path]::IsPathRooted($path)) {
@@ -933,10 +984,6 @@ function Test-MapperParentInstallRequired {
             throw 'A newer parent package is staged; this candidate cannot attest its mouse identity/transport. Supply a matching package at least as new. Both drivers retained; no trust or driver changes made.'
         }
     }
-    $devices = @(Get-CimInstance -ClassName Win32_PnPSignedDriver -ErrorAction Stop | Where-Object {
-        ([string]$_.DeviceID).StartsWith('ROOT\VIBESHINEVIRTUALGAMEPAD\', [StringComparison]::OrdinalIgnoreCase) -or
-        ([string]$_.HardwareID).Equals('ROOT\VIBESHINEVIRTUALGAMEPAD', [StringComparison]::OrdinalIgnoreCase)
-    })
     $requiresInstall = $devices.Count -eq 0
     foreach ($device in $devices) {
         $active = ConvertTo-DriverComponentVersion ([string]$device.DriverVersion)
@@ -951,6 +998,36 @@ function Test-MapperParentInstallRequired {
     return $requiresInstall
 }
 
+function Assert-OptionalMapperPackage {
+    param([Parameter(Mandatory=$true)]$Package)
+    $manifest = $Package.Manifest
+    $root = $Package.Root
+    if (-not (Test-MouseMapperFeature -Manifest $manifest)) { return $null }
+    $clock = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        foreach ($relative in @(Get-MouseMapperPayload)) { Assert-ManifestHash -Manifest $manifest -Root $root -RelativePath $relative }
+        $inf = Join-Path $root 'mouse_mapper/VibeshineVhfMouseMapper.inf'
+        $cat = Join-Path $root 'mouse_mapper/VibeshineVhfMouseMapper.cat'
+        $sys = Join-Path $root 'mouse_mapper/VibeshineVhfMouseMapper.sys'
+        Initialize-LocalGamepadTrustValidation
+        if ($null -ne $Package.LocalCertificate -and $manifest.mouse_mapper.kernel_signing -ceq 'self-signed-local-test') {
+            [VhfLocalTrustValidation]::VerifyCatalog($cat, $Package.LocalCertificate.Thumbprint, @($inf, $sys))
+            [VhfLocalTrustValidation]::VerifyTool($sys, $Package.LocalCertificate.Thumbprint)
+            if (-not [VhfLocalTrustValidation]::IsTestSigningEnabled()) {
+                throw 'The nightly mouse mapper is signed, but active Windows policy does not enable test-signing. Certificate trust alone does not authorize kernel loading. Security settings were left unchanged.'
+            }
+        } elseif ($manifest.mouse_mapper.kernel_signing -ceq 'windows-kernel-policy') {
+            [VhfLocalTrustValidation]::VerifyKernelCatalog($cat, @($inf, $sys))
+        } else {
+            throw 'The bundled mouse mapper has no eligible signature; the base gamepad package is validated separately.'
+        }
+        Assert-MapperInstallCompatibility -InfPath $inf -Manifest $manifest
+        return $inf
+    } finally {
+        Write-DriverMessage "DRIVER_OPERATION:mapper-validation elapsed_ms=$($clock.ElapsedMilliseconds)"
+    }
+}
+
 function Install-DriverPackage {
     Assert-Administrator
     $localTest = Test-Path -LiteralPath (Join-Path $PSScriptRoot 'driver/VibeshineVhfGamepad.cer')
@@ -960,14 +1037,21 @@ function Install-DriverPackage {
         $installParent = Test-MapperParentInstallRequired -InfPath (Join-Path $PSScriptRoot 'driver/VibeshineVhfGamepad.inf')
     }
     if (-not $installParent -and $null -eq $mapperDeclaration) { return 0 }
-    $package = Assert-DriverPackage -Root $PSScriptRoot -AllowUntrustedLocalPackage
+    $validationClock = [Diagnostics.Stopwatch]::StartNew()
+    $package = Assert-DriverPackage -Root $PSScriptRoot -AllowUntrustedLocalPackage -DeferMapper
+    Write-DriverMessage "DRIVER_OPERATION:base-package-validation elapsed_ms=$($validationClock.ElapsedMilliseconds)"
     if ($null -ne $mapperDeclaration) {
-        if ($null -eq $package.MapperInfPath) { throw 'Declared mapper payload is missing; retained parent does not satisfy mapper installation.' }
-        Assert-MapperInstallCompatibility -InfPath $package.MapperInfPath -Manifest $mapperDeclaration
+        # The optional ordered mouse child has no dependency from the base
+        # controller path. Verify it independently, before any attempt to stage.
+        try {
+            $package.MapperInfPath = Assert-OptionalMapperPackage -Package $package
+        } catch {
+            Write-DriverMessage "VIRTUAL_MOUSE_MAPPER_WARNING: $($_.Exception.Message) Base gamepad installation continues independently."
+        }
     }
     $trustState = $null
     try {
-        if ($null -ne $package.LocalCertificate -and ($installParent -or $mapperDeclaration.mouse_mapper.kernel_signing -ceq 'self-signed-local-test')) {
+        if ($null -ne $package.LocalCertificate -and ($installParent -or $null -ne $package.MapperInfPath)) {
             $trustConsent = $AllowLocalGamepadCertificateTrust
             $trustConsentThumbprint = $ConsentCertificateThumbprint
             if ($package.LocalCertificate.Thumbprint -ine '7F1868BF86698A8674F40E686B02C8C702BD3B88') {
@@ -990,18 +1074,33 @@ function Install-DriverPackage {
         # it stages the package. The installed product deliberately does not ship
         # SDK-only signtool.exe just to repeat that platform validation.
         $mapperExitCode = 0
+        $mapperStaged = $false
         if ($null -ne $package.MapperInfPath) {
             # Stage and bind the mapper before starting/restarting the UMDF parent.
-            $mapperExitCode = Invoke-PnpUtil -Arguments @('/add-driver', $package.MapperInfPath, '/install')
+            try {
+                $mapperExitCode = Invoke-PnpUtil -Arguments @('/add-driver', $package.MapperInfPath, '/install')
+                $mapperStaged = $true
+            } catch {
+                Write-DriverMessage "VIRTUAL_MOUSE_MAPPER_WARNING: Mapper staging failed: $($_.Exception.Message) Base gamepad installation continues independently."
+            }
         }
         if (-not $installParent) {
-            Write-DriverMessage 'Retained the equal-version active parent; staged the validated mapper payload. Runtime readiness is checked when input opens.'
+            if ($mapperStaged) {
+                Write-DriverMessage 'Retained the equal-version active parent; staged the validated mapper payload. Runtime readiness is checked when input opens.'
+            } else {
+                Write-DriverMessage 'Retained the equal-version active parent; optional mapper was not installed.'
+            }
             if ($mapperExitCode -eq $rebootExitCode) { Write-DriverMessage 'VIRTUAL_GAMEPAD_RESTART_REQUIRED'; return $rebootExitCode }
             return 0
         }
         $pnputilExitCode = Invoke-PnpUtil -Arguments @('/add-driver', $package.InfPath)
-        & $package.SetupToolPath install --inf $package.InfPath | Out-Host
-        $setupExitCode = $LASTEXITCODE
+        if ('VibeshineDriverInventory' -as [type]) { [VibeshineDriverInventory]::Invalidate() }
+        try {
+            & $package.SetupToolPath install --inf $package.InfPath | Out-Host
+            $setupExitCode = $LASTEXITCODE
+        } finally {
+            if ('VibeshineDriverInventory' -as [type]) { [VibeshineDriverInventory]::Invalidate() }
+        }
         if ($setupExitCode -ne 0 -and $setupExitCode -ne $rebootExitCode) {
             throw "[VibeshineVhfGamepad] Root-device setup failed with exit code $setupExitCode."
         }
@@ -1031,9 +1130,14 @@ function Install-DriverPackage {
 
 function Uninstall-DriverPackage {
     Assert-Administrator
-    $package = Assert-DriverPackage -Root $PSScriptRoot
-    & $package.SetupToolPath remove | Out-Host
-    $setupExitCode = $LASTEXITCODE
+    $package = Assert-DriverPackage -Root $PSScriptRoot -DeferMapper
+    if ('VibeshineDriverInventory' -as [type]) { [VibeshineDriverInventory]::Invalidate() }
+    try {
+        & $package.SetupToolPath remove | Out-Host
+        $setupExitCode = $LASTEXITCODE
+    } finally {
+        if ('VibeshineDriverInventory' -as [type]) { [VibeshineDriverInventory]::Invalidate() }
+    }
     if ($setupExitCode -ne 0 -and $setupExitCode -ne $rebootExitCode) {
         throw "[VibeshineVhfGamepad] Root-device removal failed with exit code $setupExitCode."
     }
@@ -1049,6 +1153,10 @@ function Uninstall-DriverPackage {
     return 0
 }
 
+if ($FunctionsOnly) { return }
+if (Test-Path -LiteralPath (Join-Path $PSScriptRoot '../driver-inventory.ps1')) {
+    . (Join-Path $PSScriptRoot '../driver-inventory.ps1')
+}
 try {
     $exitCode = if ($Uninstall) { Uninstall-DriverPackage } else { Install-DriverPackage }
     if ($exitCode -eq $rebootExitCode -and $InstallerBestEffort) {

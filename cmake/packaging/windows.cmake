@@ -116,6 +116,11 @@ if (TARGET sunshine_display_helper)
 endif()
 install(FILES "${CMAKE_BINARY_DIR}/uninstall.exe" DESTINATION "." COMPONENT application)
 
+install(FILES
+    "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/driver-inventory.ps1"
+    "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/install-bundled-drivers.ps1"
+    DESTINATION "drivers" COMPONENT assets)
+
 # Drivers (SudoVDA virtual display)
 set(SUDOVDA_SOURCE_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/sudovda")
 set(SUDOVDA_DRIVER_FILES
@@ -394,9 +399,6 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
     endif()
 
     set(SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_ARGS "")
-    if(SUNSHINE_REQUIRE_VHF_MOUSE_MAPPER_PACKAGE)
-        list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_ARGS -RequireMouseMapper)
-    endif()
     if(SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE)
         list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_ARGS -AllowLocalTestPackage)
         list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_LOCAL_TEST_FILES
@@ -421,10 +423,6 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
         endif()
     endif()
 
-    set(SUNSHINE_VIRTUAL_GAMEPAD_REQUIRE_MAPPER_ARGS "")
-    if(SUNSHINE_REQUIRE_VHF_MOUSE_MAPPER_PACKAGE)
-        list(APPEND SUNSHINE_VIRTUAL_GAMEPAD_REQUIRE_MAPPER_ARGS -RequireMouseMapper)
-    endif()
     if(SUNSHINE_DOWNLOAD_LIBVIRTUALGAMEPAD_RELEASE)
         if(NOT EXISTS "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_DOWNLOAD_SCRIPT}")
             message(FATAL_ERROR
@@ -440,7 +438,6 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
                     -ExpectedDriverVer "${SUNSHINE_VHF_GAMEPAD_DRIVER_VER}"
                     -ExpectedProtocolVersion "${SUNSHINE_VHF_GAMEPAD_PROTOCOL_VERSION}"
                     -OutDir "${SUNSHINE_EFFECTIVE_LIBVIRTUALGAMEPAD_PREBUILT_DIR}"
-                    ${SUNSHINE_VIRTUAL_GAMEPAD_REQUIRE_MAPPER_ARGS}
             DEPENDS "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_DOWNLOAD_SCRIPT}"
             COMMENT "Downloading pinned VHF gamepad producer release"
             VERBATIM)
@@ -490,15 +487,6 @@ if(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER)
     install(FILES ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_PACKAGE_FILES}
             DESTINATION "${SUNSHINE_VHF_GAMEPAD_DRIVER_DESTINATION}/driver"
             COMPONENT virtual_gamepad_driver)
-    # Refresh validates every mapper byte before staging. Optional file install
-    # preserves old immutable producer archives; features.mouse_mapper=1 itself
-    # requires all three files in both refresh and installed-package validation.
-    foreach(_vhf_mapper_file IN LISTS SUNSHINE_VHF_MOUSE_MAPPER_FILES)
-        install(FILES "${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_SOURCE_DIR}/${_vhf_mapper_file}"
-                DESTINATION "${SUNSHINE_VHF_GAMEPAD_DRIVER_DESTINATION}/mouse_mapper"
-                COMPONENT virtual_gamepad_driver OPTIONAL)
-    endforeach()
-    unset(_vhf_mapper_file)
     install(FILES ${SUNSHINE_VIRTUAL_GAMEPAD_DRIVER_TOOL_FILES}
             DESTINATION "${SUNSHINE_VHF_GAMEPAD_DRIVER_DESTINATION}/tools"
             COMPONENT virtual_gamepad_driver)

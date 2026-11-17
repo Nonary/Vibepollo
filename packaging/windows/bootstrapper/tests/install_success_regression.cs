@@ -37,7 +37,7 @@ internal static class InstallSuccessRegression {
       .Invoke(window, new object[] { action, "Install", "Installing fixture...", typeof(InstallerWindow).Namespace.Replace("Installer", "") + " installation completed." });
     Check(Field<TextBlock>(window, "_overlayTitleText").Text == title, name + ": final dialog title");
     var message = Field<TextBlock>(window, "_overlayMessageText").Text;
-    Check(message.Contains("Save logs") == (warning || !result.Succeeded), name + ": support report prompt");
+    Check((message.IndexOf("save logs", StringComparison.OrdinalIgnoreCase) >= 0) == (warning || !result.Succeeded), name + ": support report prompt");
     if (result.Succeeded && !warning) {
       Check(Field<TextBlock>(window, "_statusText").Foreground == Field<Brush>(window, "_statusSuccessBrush"), name + ": green success");
       Check(Field<TextBlock>(window, "_statusDetailText").Text.Contains("restart is required") == reboot, name + ": reboot detail");
@@ -86,6 +86,11 @@ internal static class InstallSuccessRegression {
       Check(Failures(path).Count > 0, marker + ": genuine component error retained");
     }
     var displayWarning = Path.Combine(directory, "display-inventory-warning.log");
+    var mapperWarning = Path.Combine(directory, "optional-mapper-warning.log");
+    File.WriteAllText(mapperWarning, "[VibeshineVhfGamepad] VIRTUAL_MOUSE_MAPPER_WARNING: signed mapper requires active Windows test-signing policy. Base gamepad installation continues independently.");
+    var mapperFailures = string.Join("\n", Failures(mapperWarning));
+    Check(mapperFailures.Contains("mouse mapper") && mapperFailures.Contains("test-signing policy"), "Optional mapper warning must retain its component and policy detail");
+    Check(!mapperFailures.Contains("Virtual gamepad driver setup failed"), "Optional mapper warning must not claim the independently updated gamepad failed");
     // The saved report has no driver prefix and a warning wrapped across an
     // interleaved MSI action boundary. Sunshine then reports healthy retention.
     File.WriteAllLines(displayWarning, new[] {

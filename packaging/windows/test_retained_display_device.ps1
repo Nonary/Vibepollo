@@ -25,10 +25,14 @@ if (!$FixtureCase) {
     # Installation opt-outs must bypass the driver script entirely.
     [xml]$wix = Get-Content (Join-Path $RepositoryRoot 'packaging/windows/wix/patch_custom_actions.wxs') -Raw
     # CPackWiXPatch is an unnamespaced patch document, unlike custom_actions.wxs.
-    $action = $wix.SelectSingleNode('//Custom[@Action="InstallVirtualDisplayDriver"]')
+    $action = $wix.SelectSingleNode('//Custom[@Action="InstallBundledDrivers"]')
+    [xml]$definitions = Get-Content (Join-Path $RepositoryRoot 'packaging/windows/wix/custom_actions.wxs') -Raw
+    $namespace = [Xml.XmlNamespaceManager]::new($definitions.NameTable)
+    $namespace.AddNamespace('w','http://schemas.microsoft.com/wix/2006/wi')
+    $arguments = $definitions.SelectSingleNode('//w:CustomAction[@Id="SetInstallBundledDrivers"]',$namespace).Value
     if (!$action -or !$action.InnerText.Contains('NOT REMOVE') -or
-        !$action.InnerText.Contains('INSTALL_DISPLAY_DRIVERS = "1"') -or
-        !$action.InnerText.Contains('INSTALL_VIRTUAL_DISPLAY_DRIVER <> "0"')) {
+        !$arguments.Contains('-InstallDisplayDrivers [INSTALL_DISPLAY_DRIVERS]') -or
+        !$arguments.Contains('-InstallVirtualDisplay [INSTALL_VIRTUAL_DISPLAY_DRIVER]')) {
         throw 'Explicit MSI display-driver opt-outs must remain authoritative.'
     }
     Write-Host "$($cases.Count) production guard/device repair fixtures and MSI opt-out wiring passed. Windows inventory, signature verification and mutation boundaries were mocked; inventory child processes and deadlines were real; no driver, trust, service or display operation ran."

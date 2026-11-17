@@ -204,6 +204,11 @@ try {
     & (Join-Path $RepositoryRoot 'packaging/windows/test_optional_display_guard.ps1') -RepositoryRoot $RepositoryRoot
     & (Join-Path $RepositoryRoot 'packaging/windows/test_retained_display_device.ps1') -RepositoryRoot $RepositoryRoot
     & (Join-Path $RepositoryRoot 'packaging/windows/test_display_reboot_state.ps1') -RepositoryRoot $RepositoryRoot
+    & (Join-Path $RepositoryRoot 'packaging/windows/test_installer_migration_idempotence.ps1')
+    # Keep native inventory/read-only runspace fixtures isolated from the gate's
+    # mocked commands and static provider state. No driver mutations are run.
+    & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -File (Join-Path $RepositoryRoot 'packaging/windows/test_shared_driver_inventory.ps1') -RepositoryRoot $RepositoryRoot
+    if ($LASTEXITCODE -ne 0) { throw 'Shared driver inventory and component isolation tests failed.' }
     Write-Host 'Driver installation safety checks passed. No installers, drivers, trust stores, services or restarts were executed.'
 } finally {
     # Only delete the exact uniquely created scratch directory.

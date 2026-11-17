@@ -1982,6 +1982,33 @@ if(SUNSHINE_TEST_ENABLE_COMPONENT AND Python3_Interpreter_FOUND AND CMAKE_CXX_CO
             "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
     set_tests_properties(test_component_update_notification_tray_interface PROPERTIES LABELS "component")
 endif()
+if(WIN32)
+    # Explicit manual target only: injects input and requires an installed driver.
+    add_executable(probe_vhf_mouse_receipts_windows EXCLUDE_FROM_ALL
+        input/probe_vhf_mouse_receipts_windows.cpp
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/client/client.cpp")
+    target_compile_features(probe_vhf_mouse_receipts_windows PRIVATE cxx_std_20)
+    target_include_directories(probe_vhf_mouse_receipts_windows PRIVATE
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/include")
+    target_link_libraries(probe_vhf_mouse_receipts_windows PRIVATE cfgmgr32 user32 setupapi hid Threads::Threads)
+    add_executable(test_vhf_mouse_receipt_windows input/test_vhf_mouse_receipt_windows.cpp)
+    target_compile_features(test_vhf_mouse_receipt_windows PRIVATE cxx_std_20)
+    target_include_directories(test_vhf_mouse_receipt_windows PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}")
+    target_link_libraries(test_vhf_mouse_receipt_windows PRIVATE cfgmgr32 user32 Threads::Threads)
+    if(MSVC)
+        target_compile_options(test_vhf_mouse_receipt_windows PRIVATE /UNDEBUG)
+    else()
+        target_compile_options(test_vhf_mouse_receipt_windows PRIVATE -UNDEBUG)
+    endif()
+    add_test(NAME regression_vhf_mouse_receipt_windows COMMAND test_vhf_mouse_receipt_windows)
+    set_tests_properties(regression_vhf_mouse_receipt_windows PROPERTIES LABELS "component" TIMEOUT 10)
+endif()
+if(Python3_Interpreter_FOUND)
+    add_test(NAME regression_bundled_driver_sequence
+        COMMAND "${Python3_EXECUTABLE}" "${SUNSHINE_TEST_REPOSITORY_ROOT}/packaging/windows/bootstrapper/tests/test_bundled_driver_sequence.py")
+    set_tests_properties(regression_bundled_driver_sequence PROPERTIES LABELS "component" TIMEOUT 30)
+endif()
 find_program(SUNSHINE_TEST_GXX NAMES g++)
 if(Python3_Interpreter_FOUND AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_test(NAME regression_wgc_screensaver_capture

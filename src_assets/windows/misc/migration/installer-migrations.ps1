@@ -71,24 +71,28 @@ function Set-SunshineConfigOption {
     }
 
     $original = Read-Utf8TextFile -Path $ConfigPath
-    $pattern = '(?im)^(\s*)' + [System.Text.RegularExpressions.Regex]::Escape($Name) + '(\s*=\s*)([^#;\r\n]*)(\s*(?:[#;].*)?)$'
+    $pattern = '(?im)^([ \t]*)' + [System.Text.RegularExpressions.Regex]::Escape($Name) + '([ \t]*=[ \t]*)([^#;\r\n]*?)([ \t]*(?:[#;][^\r\n]*)?\r?)$'
     $updated = [System.Text.RegularExpressions.Regex]::Replace(
         $original,
         $pattern,
         {
             param($match)
 
+            if ($match.Groups[3].Value -ceq $Value) {
+                return $match.Value
+            }
             return '{0}{1}{2}{3}{4}' -f `
                 $match.Groups[1].Value, `
                 $Name, `
                 $match.Groups[2].Value, `
                 $Value, `
                 $match.Groups[4].Value
-        },
-        1
+        }
     )
 
-    if ($updated -ceq $original) {
+    # An existing value can already be correct. Equality is not evidence that
+    # the option is absent: appending here duplicates it on every upgrade.
+    if (-not [System.Text.RegularExpressions.Regex]::IsMatch($original, $pattern)) {
         $separator = if ($original.EndsWith("`n") -or $original.EndsWith("`r")) { '' } else { [Environment]::NewLine }
         $updated = $original + $separator + $line + [Environment]::NewLine
     }

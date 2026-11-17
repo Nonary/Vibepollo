@@ -14,7 +14,7 @@ function Reset-Case {
  $script:stores=@{Root=@();TrustedPublisher=@()}; $script:imports=@(); $script:removals=@(); $script:storeReads=0
  $script:parentStoreVersion=$null
  $script:mapperDeclared=$false;$script:mapperInstalledVersion=$null;$script:mapperStoreVersion=$null;$script:mapperVendorId=43981
- $script:mapperInf=$null; $script:mapperExit=0; $script:events=@()
+ $script:mapperInf=$null; $script:mapperExit=0; $script:mapperOnlyFailure=$false; $script:events=@()
  $script:installed=$null; $script:queryFailure=$false; $script:validationFailure=$false; $script:stagingFailure=$false; $script:postTrustFailure=$false; $script:importFailure=$false
  $script:validationCalls=0; $script:stagingCalls=0; $script:setupCalls=0; $script:untrustedStatus='UnknownError'; $script:setupFailure=$false
  $script:AllowLocalGamepadCertificateTrust=0; $script:ConsentCertificateThumbprint='none'; $script:DailyUnsignedPolicy=1; $script:rebootExitCode=3010
@@ -47,16 +47,23 @@ function Get-AuthenticodeSignature {
  return [pscustomobject]@{Status=$status;SignerCertificate=$script:certificate}
 }
 function Assert-DriverPackage {
- param($Root,[switch]$AllowUntrustedLocalPackage)
+ param($Root,[switch]$AllowUntrustedLocalPackage,[switch]$DeferMapper)
  $script:validationCalls++
  Assert-Check $AllowUntrustedLocalPackage 'Local validation must be explicit and independent of trust'
+ Assert-Check $DeferMapper 'Base validation must isolate optional mapper validation'
  if($script:validationFailure){throw 'Mock cryptographic binding/payload tamper rejection'}
- return [pscustomobject]@{MapperInfPath=$script:mapperInf;InfPath='mock.inf';CatalogPath='mock.cat';SetupToolPath='Invoke-MockSetup';LocalCertificate=$script:certificate;ProductionPublisherCertificate=$null}
+ return [pscustomobject]@{MapperInfPath=$null;InfPath='mock.inf';CatalogPath='mock.cat';SetupToolPath='Invoke-MockSetup';LocalCertificate=$script:certificate;ProductionPublisherCertificate=$null}
 }
 function Get-ChildItem {
  param($LiteralPath,$ErrorAction)
  $script:storeReads++; $name=Split-Path $LiteralPath -Leaf
  return @($script:stores[$name] | ForEach-Object {[pscustomobject]@{Thumbprint=$_}})
+}
+function Assert-OptionalMapperPackage {
+ param($Package)
+ if($null -eq $script:mapperInf){throw 'Missing mapper payload'}
+ Assert-MapperInstallCompatibility -InfPath $script:mapperInf -Manifest (Get-MapperInstallDeclaration '')
+ return $script:mapperInf
 }
 function Add-ValidatedLocalGamepadCertificate {
  param($Certificate,$StoreName)
@@ -69,7 +76,7 @@ function Remove-ValidatedLocalGamepadCertificate {
  $script:stores[$StoreName]=@($script:stores[$StoreName] | Where-Object {$_ -cne $Certificate.Thumbprint}); $script:removals+=$StoreName
 }
 function Write-DriverMessage {param($Message)}
-function Invoke-PnpUtil {param($Arguments);$script:stagingCalls++;$script:events+=@($Arguments[1]);if($script:stagingFailure){throw 'Mock staging failure'};if($Arguments[1] -ceq 'mapper.inf'){return $script:mapperExit};return 0}
+function Invoke-PnpUtil {param($Arguments);$script:stagingCalls++;$script:events+=@($Arguments[1]);if($script:stagingFailure -or ($script:mapperOnlyFailure -and $Arguments[1] -ceq 'mapper.inf')){throw 'Mock staging failure'};if($Arguments[1] -ceq 'mapper.inf'){return $script:mapperExit};return 0}
 function Invoke-MockSetup {$script:events+=@('setup');$script:setupCalls++;$global:LASTEXITCODE=if($script:setupFailure){1}else{0}}
 function Get-PublicLocalGamepadCertificate {param($CertificatePath);return $script:certificate}
 function Expect-Failure([string]$Case,[string]$MessagePattern="") {$failed=$false;$message="";try{$null=Install-DriverPackage}catch{$failed=$true;$message=$_.Exception.Message};Assert-Check $failed "Expected safe failure: $Case";if($MessagePattern){Assert-Check ($message -match $MessagePattern) "Wrong failure reason for ${Case}: $message"}}
@@ -114,25 +121,29 @@ foreach($mapperExit in @(0,3010)) {
  Assert-Check (($script:events -join ',') -ceq 'mapper.inf,mock.inf,setup') 'Mapper staging must precede source package staging and root creation'
 }
 Reset-Case;$script:stores.Root=@($script:certificate.Thumbprint);$script:stores.TrustedPublisher=@($script:certificate.Thumbprint);$script:mapperInf='mapper.inf';$script:stagingFailure=$true
-Expect-Failure 'mapper staging failure';Assert-Check ($script:stagingCalls -eq 1 -and $script:setupCalls -eq 0 -and ($script:events -join ',') -ceq 'mapper.inf') 'Mapper staging failure must prevent source/root creation'
+Expect-Failure 'both mapper and base staging fail';Assert-Check ($script:stagingCalls -eq 2 -and $script:setupCalls -eq 0 -and ($script:events -join ',') -ceq 'mapper.inf,mock.inf') 'Mapper failure must still attempt the independently validated base package'
 foreach($parentVersion in @('1.2.0.10')) {
  Reset-Case;$script:installed=$parentVersion;$script:mapperInf='mapper.inf';$script:stores.Root=@($script:certificate.Thumbprint);$script:stores.TrustedPublisher=@($script:certificate.Thumbprint)
  Assert-Check ((Install-DriverPackage) -eq 0) 'An existing parent must still repair a missing mapper'
  Assert-Check ($script:validationCalls -eq 1 -and ($script:events -join ',') -ceq 'mapper.inf' -and $script:setupCalls -eq 0) 'Mapper validation/staging must run independently without replacing the equal active parent'
  Reset-Case;$script:installed=$parentVersion;$script:mapperDeclared=$true
- Expect-Failure 'existing parent with declared but missing mapper payload';Assert-NoChanges 'missing mapper despite existing parent'
+ Assert-Check ((Install-DriverPackage) -eq 0) 'Missing optional mapper must preserve the existing base driver';Assert-NoChanges 'missing mapper despite existing parent'
 }
+Reset-Case;$script:installed='1.2.0.9';$script:mapperDeclared=$true;$script:stores.Root=@($script:certificate.Thumbprint);$script:stores.TrustedPublisher=@($script:certificate.Thumbprint)
+Assert-Check ((Install-DriverPackage) -eq 0 -and ($script:events -join ',') -ceq 'mock.inf,setup') 'Missing optional mapper must not prevent a valid base upgrade'
+Reset-Case;$script:installed='1.2.0.9';$script:mapperInf='mapper.inf';$script:mapperOnlyFailure=$true;$script:stores.Root=@($script:certificate.Thumbprint);$script:stores.TrustedPublisher=@($script:certificate.Thumbprint)
+Assert-Check ((Install-DriverPackage) -eq 0 -and ($script:events -join ',') -ceq 'mapper.inf,mock.inf,setup') 'Mapper staging failure must not prevent a valid base upgrade'
 Reset-Case;$script:installed='1.2.0.10';$script:mapperInf='mapper.inf';$script:mapperStoreVersion='1.2.0.10';$script:stores.Root=@($script:certificate.Thumbprint);$script:stores.TrustedPublisher=@($script:certificate.Thumbprint);$script:stagingFailure=$true
-Expect-Failure 'failed mapper binding on existing parent';$script:stagingFailure=$false
+Assert-Check ((Install-DriverPackage) -eq 0) 'Mapper binding failure must preserve the equal active base';$script:stagingFailure=$false
 Assert-Check ((Install-DriverPackage) -eq 0) 'Retry must repair equal-version stored mapper with missing binding'
 Assert-Check (($script:events -join ',') -ceq 'mapper.inf,mapper.inf' -and $script:setupCalls -eq 0) 'Retry must stage mapper again and preserve the equal active parent'
 foreach($where in @('active','store')) {
  Reset-Case;$script:installed='1.2.0.10';$script:mapperInf='mapper.inf'
  if($where -ceq 'active'){$script:mapperInstalledVersion='1.2.0.11'}else{$script:mapperStoreVersion='1.2.0.11'}
- Expect-Failure "newer $where mapper";Assert-NoChanges 'newer mapper must never be downgraded'
+ Assert-Check ((Install-DriverPackage) -eq 0) "Newer $where mapper must be isolated";Assert-NoChanges 'newer mapper must never be downgraded'
 }
 Reset-Case;$script:installed='1.2.0.10';$script:mapperInf='mapper.inf';$script:mapperVendorId=1
-Expect-Failure 'mapper metadata/INF identity mismatch';Assert-NoChanges 'incompatible mapper payload'
+Assert-Check ((Install-DriverPackage) -eq 0) 'Mapper identity mismatch must preserve the equal base';Assert-NoChanges 'incompatible mapper payload'
 # A package in Driver Store must not be confused with an existing root node.
 Reset-Case;$script:parentStoreVersion='1.2.0.10';$script:mapperInf='mapper.inf';$script:stores.Root=@($script:certificate.Thumbprint);$script:stores.TrustedPublisher=@($script:certificate.Thumbprint)
 Assert-Check ((Install-DriverPackage) -eq 0) 'Equal staged-only parent must create/verify its missing root'

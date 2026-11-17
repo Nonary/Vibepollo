@@ -157,6 +157,9 @@
          complete install. Vibepollo reconciles drivers and the layer at startup and
          surfaces a Web UI toggle + dashboard warning. -->
     <CustomAction Id="InstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="InstallBundledDrivers" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="SetInstallBundledDrivers" Property="InstallBundledDrivers"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\install-bundled-drivers.ps1&quot; -InstallDisplayDrivers [INSTALL_DISPLAY_DRIVERS] -InstallSudovda [INSTALL_SUDOVDA] -InstallVirtualDisplay [INSTALL_VIRTUAL_DISPLAY_DRIVER] -InstallGamepad [INSTALL_VIRTUAL_GAMEPAD_DRIVER] -DailyUnsignedPolicy [DAILY_UNSIGNED_DRIVER_POLICY] -AllowLocalTestCertificate [ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE] -AllowLocalGamepadCertificateTrust [ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST] -ConsentCertificateThumbprint &quot;[LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT]&quot;" />
     <CustomAction Id="InstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="InstallVirtualGamepadDriver" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="InstallUsbIpTransport" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />

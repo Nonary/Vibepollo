@@ -282,19 +282,17 @@ is passed explicitly. Origin verification is impossible from a developer machine
 `scripts/signpath_sign.ps1` remains available for manual/test signing but is
 **non-origin** and not a supported release path.
 
-## Ordered mouse KMDF mapper
+## UMDF mouse input
 
-The optional `drivers/vhf-gamepad/mouse_mapper/` INF/SYS/CAT payload is published
-unsigned by its producer, with `kernel_signing=unsigned-producer`. Ingest verifies
-its original `NotSigned` status, fresh catalog evidence and exact hashes. Keep
-all mapper bytes unchanged in the consumer MSI request; only the existing UMDF
-CAT and setup EXE are signing exceptions. Mapper CAT/SYS are explicitly listed
-as unsigned payloads, not downstream signing targets.
+The bundled producer is the immutable beta.10 UMDF package. Relative input,
+buttons, wheels and primary-display absolute input use its inbox Mouhid
+collections. The host fences Raw Input receipts when switching collections or backends;
+same-collection movement stays asynchronous. Absolute positions outside the primary
+screen use Windows SendInput with a tagged desktop receipt. No custom kernel
+mouse mapper is packaged or required.
 
-Publishing or packaging those bytes does not grant kernel trust. Final
-production MSI qualification and installation retain `/kp`/Windows kernel
-policy and exact catalog membership checks; an unsigned mapper cannot pass
-those checks merely because the MSI container or UMDF catalog was signed.
-Separate kernel signing for future native deployment is outside the current
-unsigned producer release. See the producer
-[packaging contract](../../third-party/libvirtualgamepad/docs/MOUSE_MAPPER_PACKAGING.md).
+Nightlies retain the existing pinned local-certificate workflow: sign the UMDF
+catalog and setup EXE, preserve catalog-bound INF/DLL bytes, then verify final
+signer identities and catalog membership. Stable builds retain the production
+MSI signing request. Recipient certificate trust still requires the existing
+explicit consent; the installer never changes Windows kernel signing policy.

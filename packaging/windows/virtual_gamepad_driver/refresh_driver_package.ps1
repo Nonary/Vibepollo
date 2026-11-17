@@ -338,16 +338,29 @@ function Assert-Package {
         } else {
             $localMapper = $AllowLocalTest -and $manifest.mouse_mapper.kernel_signing -ceq 'self-signed-local-test'
             if (-not $localMapper -and $manifest.mouse_mapper.kernel_signing -cne 'windows-kernel-policy') { throw 'Unsupported mapper signing metadata.' }
-            $mapperPolicy = if ($localMapper) { '/pa' } else { '/kp' }
-            $mapperSignTool = Resolve-SignTool -ExplicitPath $SignToolPath
-            foreach ($relativePath in @('mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys')) {
-                & $mapperSignTool verify '/v' $mapperPolicy '/c' $mapperCatalog (Join-Path $Root $relativePath) | Out-Host
-                if ($LASTEXITCODE -ne 0) { throw "Mapper policy/catalog membership verification failed for '$relativePath'." }
-            }
             if ($localMapper) {
-                $mapperSigner = (Get-AuthenticodeSignature -LiteralPath $mapperCatalog).SignerCertificate
+                # Packaging verifies exact-certificate integrity without adding
+                # trust on CI. Kernel loading is a separate installer/OS check.
                 $localSigner = [Security.Cryptography.X509Certificates.X509Certificate2]::new($certificatePath)
-                if ($null -eq $mapperSigner -or $mapperSigner.Thumbprint -ine $localSigner.Thumbprint) { throw 'Mapper local signer differs from the package certificate.' }
+                if (-not ('VhfLocalTrustValidation' -as [type])) {
+                    $verifierSource = Join-Path $PSScriptRoot '../../../src_assets/windows/drivers/vhf-gamepad/install.ps1'
+                    $tokens=$null; $parseErrors=$null
+                    $verifierAst = [Management.Automation.Language.Parser]::ParseFile($verifierSource, [ref]$tokens, [ref]$parseErrors)
+                    if ($parseErrors.Count) { throw 'Cannot parse nightly package verifier.' }
+                    foreach ($name in @('Add-DriverInteropType', 'Initialize-LocalGamepadTrustValidation')) {
+                        $definition = $verifierAst.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}.GetNewClosure(), $true)
+                        . ([scriptblock]::Create($definition.Extent.Text))
+                    }
+                    Initialize-LocalGamepadTrustValidation
+                }
+                [VhfLocalTrustValidation]::VerifyCatalog($mapperCatalog, $localSigner.Thumbprint, @((Join-Path $Root 'mouse_mapper/VibeshineVhfMouseMapper.inf'), $mapperSys))
+                [VhfLocalTrustValidation]::VerifyTool($mapperSys, $localSigner.Thumbprint)
+            } else {
+                $mapperSignTool = Resolve-SignTool -ExplicitPath $SignToolPath
+                foreach ($relativePath in @('mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys')) {
+                    & $mapperSignTool verify '/v' '/kp' '/c' $mapperCatalog (Join-Path $Root $relativePath) | Out-Host
+                    if ($LASTEXITCODE -ne 0) { throw "Mapper policy/catalog membership verification failed for '$relativePath'." }
+                }
             }
         }
     }

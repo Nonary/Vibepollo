@@ -46,16 +46,16 @@ try {
     $cmakeFile = Join-Path $root 'gate.cmake'
     @"
 include("$contract")
-if(NOT SUNSHINE_REQUIRE_VHF_MOUSE_MAPPER_PACKAGE)
-  message(FATAL_ERROR "Bundled candidate mapper requirement must default ON.")
+if(SUNSHINE_REQUIRE_VHF_MOUSE_MAPPER_PACKAGE)
+  message(FATAL_ERROR "Bundled UMDF candidate must not require a kernel mapper.")
 endif()
 "@ | Set-Content -LiteralPath $cmakeFile
     & cmake -P $cmakeFile
     if ($LASTEXITCODE -ne 0) { throw 'Candidate CMake default is not enforced.' }
     $workflow = Get-Content -LiteralPath (Join-Path $repositoryRoot '.github/workflows/ci-windows.yml') -Raw
-    if ($workflow -notmatch '-DSUNSHINE_REQUIRE_VHF_MOUSE_MAPPER_PACKAGE=ON') { throw 'Host CI does not explicitly require the mapper.' }
+    if ($workflow -match '-DSUNSHINE_REQUIRE_VHF_MOUSE_MAPPER_PACKAGE=ON') { throw 'Host CI requires a kernel mapper.' }
     foreach ($call in [regex]::Matches($workflow, '(?m)^\s+\.\\scripts\\download_libvirtualgamepad_release\.ps1 `\r?\n(?:[^\r\n]*`\r?\n)*[^\r\n]*')) {
-        if ($call.Value -notmatch '-RequireMouseMapper') { throw 'A host producer download/revalidation call omitted the candidate gate.' }
+        if ($call.Value -match '-RequireMouseMapper') { throw 'A host producer download requires a kernel mapper.' }
     }
-    Write-Output 'Mapper candidate gate passed: default ON, explicit CI requirement, legacy metadata rejected for candidates and retained for verification utilities.'
+    Write-Output 'UMDF candidate gate passed: production has no mapper dependency; historical mapper payload verification remains strict.'
 } finally { Remove-Item -LiteralPath $root -Recurse -Force }

@@ -49,8 +49,39 @@ try {
   Write-Output 'Daily package hashes and UMDF signatures validated; unsigned mapper correctly refused final kernel installation. No trust or driver mutation executed.'
   return
  }
- $validated=Assert-DriverPackage -Root $scratch -AllowUntrustedLocalPackage
+ $validated=Assert-DriverPackage -Root $scratch -AllowUntrustedLocalPackage -DeferMapper
+ if($null -ne $fixtureManifest.PSObject.Properties['features'] -and $fixtureManifest.features.mouse_mapper -eq 1) {
+  $mapperCat=Join-Path $scratch 'mouse_mapper/VibeshineVhfMouseMapper.cat'
+  $mapperSys=Join-Path $scratch 'mouse_mapper/VibeshineVhfMouseMapper.sys'
+  $mapperInf=Join-Path $scratch 'mouse_mapper/VibeshineVhfMouseMapper.inf'
+  foreach($relative in @(Get-MouseMapperPayload)){Assert-ManifestHash -Manifest $fixtureManifest -Root $scratch -RelativePath $relative}
+  [VhfLocalTrustValidation]::VerifyCatalog($mapperCat,$validated.LocalCertificate.Thumbprint,@($mapperInf,$mapperSys))
+  [VhfLocalTrustValidation]::VerifyTool($mapperSys,$validated.LocalCertificate.Thumbprint)
+  if(-not [VhfLocalTrustValidation]::IsTestSigningEnabled()) {
+   $failure='';try{$null=Assert-OptionalMapperPackage -Package $validated}catch{$failure=$_.Exception.Message}
+   if($failure -notmatch 'policy does not enable test-signing'){throw "Expected kernel policy refusal: $failure"}
+  }
+ }
  if($null -eq $validated.LocalCertificate){throw 'Local package must be independently verified'}
+ if($null -ne $fixtureManifest.PSObject.Properties['features'] -and $fixtureManifest.features.mouse_mapper -eq 1) {
+  foreach($relative in @(Get-MouseMapperPayload)) {
+   $path=Join-Path $scratch $relative;$original=[IO.File]::ReadAllBytes($path)
+   try {
+    $changed=$original.Clone();$changed[[int]($changed.Length/2)]=$changed[[int]($changed.Length/2)] -bxor 1
+    [IO.File]::WriteAllBytes($path,$changed)
+    $base=Assert-DriverPackage -Root $scratch -AllowUntrustedLocalPackage -DeferMapper
+    if($null -eq $base.LocalCertificate){throw 'Optional mapper tamper prevented independent base validation'}
+    $failure='';try{$null=Assert-OptionalMapperPackage -Package $base}catch{$failure=$_.Exception.Message}
+    if($failure -notmatch 'Manifest hash mismatch'){throw "Optional mapper tamper was not caught before policy/staging: $failure"}
+    $rejected=$false
+    try{[VhfLocalTrustValidation]::VerifyCatalog($mapperCat,$validated.LocalCertificate.Thumbprint,@($mapperInf,$mapperSys))}catch{$rejected=$true}
+    if(-not $rejected){throw "Native catalog verification accepted modified mapper package: $relative"}
+   } finally { [IO.File]::WriteAllBytes($path,$original) }
+  }
+  $rejected=$false
+  try{[VhfLocalTrustValidation]::VerifyTool($mapperSys,('0'*40))}catch{$rejected=$true}
+  if(-not $rejected){throw 'Mapper embedded signature accepted a different certificate identity'}
+ }
  function Expect-Rejected([scriptblock]$Action,[string]$Case) {
   $failed=$false;try{& $Action}catch{$failed=$true}
   if(!$failed){throw "Real package validation accepted $Case"}
@@ -60,7 +91,7 @@ try {
  if($catalogStatus -ne 'Valid' -or $toolStatus -ne 'Valid') {
   Expect-Rejected {Assert-DriverPackage -Root $scratch} 'untrusted package without independent verification'
  } else {
-  $alreadyTrusted=Assert-DriverPackage -Root $scratch
+  $alreadyTrusted=Assert-DriverPackage -Root $scratch -DeferMapper
   if($null -ne $alreadyTrusted.LocalCertificate){throw 'Existing trust must not request new local trust'}
  }
  foreach($relative in @('driver/VibeshineVhfGamepad.inf','driver/VibeshineVhfGamepad.dll','driver/VibeshineVhfGamepad.cat','tools/VibeshineVhfGamepadDeviceSetup.exe')) {

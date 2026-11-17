@@ -70,6 +70,7 @@ function Start-Process {
     $process = [pscustomobject]@{ ExitCode = $code; TimedOut = ($kind + ':' + $script:counts[$kind]) -eq $config.TimeoutAt }
     $process | Add-Member ScriptMethod WaitForExit { param($Milliseconds) return !$this.TimedOut }
     $process | Add-Member ScriptMethod Kill { Record 'kill-timeout' }
+    $process | Add-Member ScriptMethod Dispose {}
     return $process
 }
 function Invoke-DriverHealthProcess {
