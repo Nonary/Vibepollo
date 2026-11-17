@@ -1936,7 +1936,7 @@ namespace platf {
 
     enum class mouse_keys_restore_e {
       restored,  ///< Sunshine no longer owns Mouse Keys.
-      failed,  ///< Windows refused the restore; Mouse Keys is still on.
+      failed,  ///< Windows refused to read or restore the settings; Mouse Keys is unchanged.
       kept_on,  ///< Restoring would or might hide the cursor, so Mouse Keys was turned back on.
     };
 
@@ -1951,14 +1951,22 @@ namespace platf {
      * Detect that, or a failed check for it, and turn Mouse Keys back on so the
      * cursor stays visible.
      *
+     * Only the settings Sunshine still holds are restored, so if the current
+     * settings cannot be read, nothing is written: Sunshine keeps ownership and
+     * the record, and a later stream end or startup retries.
+     *
      * @pre `mouse_keys_mutex` is held and `enabled_mouse_keys` is true.
      */
     mouse_keys_restore_e restore_mouse_keys_locked() {
       MOUSEKEYS current = {};
       current.cbSize = sizeof(current);
-      const bool have_current = SystemParametersInfoW(SPI_GETMOUSEKEYS, 0, &current, 0);
-      auto target = have_current ? mouse_keys_restore_target(current, previous_mouse_keys_state) : previous_mouse_keys_state;
-      if (have_current && same_mouse_keys(target, current)) {
+      if (!SystemParametersInfoW(SPI_GETMOUSEKEYS, 0, &current, 0)) {
+        auto winerr = GetLastError();
+        BOOST_LOG(warning) << "Unable to read the current state of Mouse Keys to restore it: "sv << winerr;
+        return mouse_keys_restore_e::failed;
+      }
+      auto target = mouse_keys_restore_target(current, previous_mouse_keys_state);
+      if (same_mouse_keys(target, current)) {
         // Every setting Sunshine changed has been changed again since.
         release_mouse_keys_locked();
         return mouse_keys_restore_e::restored;
@@ -1975,8 +1983,7 @@ namespace platf {
         return mouse_keys_restore_e::restored;
       }
 
-      auto keep_on = have_current ? current : streaming_mouse_keys_state();
-      if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &keep_on, 0)) {
+      if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &current, 0)) {
         auto winerr = GetLastError();
         BOOST_LOG(warning) << "Windows may have lost track of the connected mouse and hidden its cursor; unable to turn Mouse Keys back on: "sv << winerr;
         release_mouse_keys_locked();
