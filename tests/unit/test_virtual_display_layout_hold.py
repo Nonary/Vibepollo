@@ -247,13 +247,16 @@ LayoutObservation observed() {
 int main() {
  // One enumeration becomes the connected set, the switched-on set, and which
  // of them are Vibeshine's own displays.
- const auto reading=observe_layout({{"Virtual1","DISPLAY20"},{"PORTRAIT",""},{"wide",""}});
+ const display_device::EnumeratedDeviceList enumerated_devices{{"Virtual1","DISPLAY20"},{"PORTRAIT",""},{"wide",""}};
+ const auto reading=observe_layout(enumerated_devices);
  assert(reading);
  assert((reading->connected==std::set<std::string>{"portrait","virtual1","wide"}));
  assert((reading->active==std::set<std::string>{"virtual1"}));
  assert((reading->virtual_displays==std::set<std::string>{"virtual1"}));
  // A display that cannot be identified could be the stream display.
- assert(!observe_layout({{"virtual1","DISPLAY20"},{"",""}}));
+ const display_device::EnumeratedDeviceList unidentified_devices{{"virtual1","DISPLAY20"},{"",""}};
+ const auto unidentified_reading=observe_layout(unidentified_devices);
+ assert(!unidentified_reading);
 
  // The other display is switched off, not left out, the stream display moves
  // back to the origin, and the result is saved for the connected set.
