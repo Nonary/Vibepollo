@@ -606,7 +606,6 @@ namespace webrtc_stream {
 
         VDISPLAY::VirtualDisplayRecoveryParams recovery_params;
         recovery_params.guid = virtual_display_guid;
-        recovery_params.exclusive_layout = !wants_extended_layout;
         recovery_params.width = vd_width;
         recovery_params.height = vd_height;
         recovery_params.fps = vd_fps;

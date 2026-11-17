@@ -21,6 +21,11 @@ target_presence = function('    MonitorTargetPresence monitor_target_presence(')
 target_presence = target_presence.replace('monitor_target_presence(', 'actual_monitor_target_presence(')
 reactivate_presence = function('    bool reactivate_owned_virtual_display(')
 reactivate_presence = reactivate_presence.replace('monitor_target_presence(', 'actual_monitor_target_presence(')
+monitor_loop = function('    void run_virtual_display_recovery_monitor(')
+monitor_loop = monitor_loop.replace('monitor_target_presence(', 'actual_monitor_target_presence(')
+monitor_loop = monitor_loop.replace('std::chrono::steady_clock::now()', 'monitor_time')
+monitor_timing = source[source.index('    constexpr auto RECOVERY_STABLE_REQUIREMENT'):
+                        source.index('    constexpr auto DRIVER_RECOVERY_WARMUP_DELAY')]
 gdi_name_check = function('    bool is_gdi_display_name(')
 presence_check = function('    bool is_virtual_display_present(')
 presence_check = presence_check.replace('is_virtual_display_present(', 'actual_is_virtual_display_present(')
@@ -31,8 +36,6 @@ serial_number_from_id = function('    std::uint32_t virtual_display_serial_numbe
 edid_match = function('    bool matches_virtual_display_id_edid(')
 container_lookup = function('    std::optional<GUID> monitor_container_id_from_device_path(')
 stable_identity_match = function('    bool matches_virtual_display_id_identity(')
-layout_observation = function('    struct LayoutObservation {') + ';'
-observe_layout = function('    std::optional<LayoutObservation> observe_layout(')
 
 program = r'''
 #include "src/capture_recovery.h"
@@ -47,7 +50,6 @@ program = r'''
 #include <future>
 #include <iomanip>
 #include <optional>
-#include <set>
 #include <sstream>
 #include <stop_token>
 #include <string>
@@ -186,11 +188,10 @@ struct Manager {
 };
 Manager manager;Manager *man=&manager;
 }
-''' + layout_observation + r'''
 struct RecoveryMonitorState {
- struct Params {std::string client_name;};
+ struct Params {std::string client_name; unsigned max_attempts=3;};
  Params params;
- std::optional<LayoutObservation> layout_observation;
+ bool confirmed_active_at_schedule=true;
  int guid_uuid=1;
  std::optional<std::wstring> current_display_name=L"DISPLAY15",current_monitor_device_path=L"monitor1";
  std::optional<std::string> current_device_id="virtual1",normalized_monitor_device_path="monitor1";
@@ -223,7 +224,6 @@ struct EnumeratedDevice {
   :m_device_id(device_id),m_monitor_device_path(monitor_path),m_display_name(display_name),
    m_friendly_name(friendly_name),virtual_display(is_virtual),m_edid(edid) {}
 };
-using EnumeratedDeviceList=std::vector<EnumeratedDevice>;
 struct WinApiLayer {
  std::optional<CcdConfig> queryDisplayConfig(QueryType) const {return ccd_query_ok?std::optional<CcdConfig>{CcdConfig{ccd_paths}}:std::nullopt;}
  std::string getDeviceId(const CcdPath &path) const {return path.device_id;}
@@ -263,8 +263,41 @@ bool reactivate_owned_virtual_display(const std::string &id,const std::function<
  ++helper_applies;return helper_ok;
 }
 }
-''' + function('    std::optional<std::wstring> resolve_virtual_display_name_for_device_id(') + '\n' + monitor_path_for_id + '\n' + gdi_name_check + '\n' + presence_check + '\n' + observe_layout + '\n' + ccd_presence + '\n' + driver_presence + '\n' + target_presence + '\n' + reactivate_presence + r'''
+''' + function('    std::optional<std::wstring> resolve_virtual_display_name_for_device_id(') + '\n' + monitor_path_for_id + '\n' + gdi_name_check + '\n' + presence_check + '\n' + ccd_presence + '\n' + driver_presence + '\n' + target_presence + '\n' + reactivate_presence + r'''
+std::chrono::steady_clock::time_point monitor_time{};
+int recreation_attempts=0;
+bool attempt_virtual_display_recovery(RecoveryMonitorState&,std::stop_token) {
+ ++recreation_attempts;
+ return false;
+}
+bool wait_for_monitor_stop(std::stop_token,std::chrono::steady_clock::duration delay) {
+ if(monitor_time.time_since_epoch()<25s) {
+  assert(helper_applies==0 && recreation_attempts==0 && resets==0);
+ }
+ monitor_time+=delay;
+ const auto elapsed=monitor_time.time_since_epoch();
+ enumerated_devices={{"virtual1","monitor1","DISPLAY15","",true}};
+ // Start with two inactive physical displays. Unplug one, then enable the other
+ // while the first is absent. Reconnect both alongside a virtual peer.
+ if(elapsed<12s || elapsed>=15s) {
+  enumerated_devices.emplace_back("physical-a","path-a",elapsed>=15s?"DISPLAY1":"","",false);
+ }
+ enumerated_devices.emplace_back("physical-b","path-b",elapsed>=13s?"DISPLAY2":"","",false);
+ if(elapsed>=15s) {
+  enumerated_devices.emplace_back("peer","peer-path","DISPLAY3","",true);
+ }
+ // Only losing the owned display's active path should reach reactivation.
+ if(elapsed>=25s) {
+  enumerated_devices.front().m_display_name.clear();
+ }
+ return helper_applies>0 || elapsed>=27s;
+}
+''' + monitor_timing + '\n' + monitor_loop + r'''
 int main() {
+ run_virtual_display_recovery_monitor(RecoveryMonitorState{},{});
+ assert(monitor_time.time_since_epoch()>=25s);
+ assert(helper_applies==1 && recreation_attempts==0 && resets==0);
+ helper_applies=0;
  assert(VDISPLAY::policy::readiness_has_dynamic_identity_hint(true,false,false,false,false,false));
  assert(VDISPLAY::policy::readiness_has_strong_identity_hint(true,false,false,false));
  assert(VDISPLAY::policy::readiness_rejects_weak_identity_candidate(true,true));
@@ -467,20 +500,6 @@ int main() {
  enumerated_devices={{"virtual1","monitor1","DISPLAY16","",true}};
  assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::present_active);
  assert(identity_state.current_display_name==L"DISPLAY16");
- // The same enumeration is kept as the layout reading for the exclusive hold.
- assert(identity_state.layout_observation);
- assert(identity_state.layout_observation->connected==std::set<std::string>{"virtual1"});
- assert(identity_state.layout_observation->active==std::set<std::string>{"virtual1"});
- enumerated_devices={{"virtual1","monitor1","DISPLAY16","",true},{"Physical","monitor2","","",false}};
- assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::present_active);
- assert((identity_state.layout_observation->connected==std::set<std::string>{"physical","virtual1"}));
- assert(identity_state.layout_observation->active==std::set<std::string>{"virtual1"});
- assert(identity_state.layout_observation->virtual_displays==std::set<std::string>{"virtual1"});
- // An unidentified display leaves no reading rather than a partial one.
- enumerated_devices={{"virtual1","monitor1","DISPLAY16","",true},{"","monitor2","","",false}};
- assert(actual_monitor_target_presence(identity_state)==MonitorTargetPresence::present_active);
- assert(!identity_state.layout_observation);
- enumerated_devices={{"virtual1","monitor1","DISPLAY16","",true}};
  // A friendly-name candidate with a different ID cannot establish presence
  // for a monitor that owns an exact driver lease.
  identity_state.current_device_id.reset();

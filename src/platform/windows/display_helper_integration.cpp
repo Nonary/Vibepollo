@@ -2703,27 +2703,6 @@ namespace display_helper_integration {
     );
   }
 
-  bool run_owned_layout_repair(
-    const std::function<bool()> &validate_owner,
-    const std::function<void()> &repair,
-    const std::function<bool()> &cancelled
-  ) {
-    // The caller observes the desktop again within a fraction of a second, so
-    // never wait here: a queued APPLY or REVERT decides the layout instead.
-    std::unique_lock<std::mutex> execution_lock(pending_apply_execution_mutex(), std::try_to_lock);
-    if (!execution_lock.owns_lock() || cancellation_requested(cancelled) || has_pending_apply() ||
-        g_restore_expected.load(std::memory_order_acquire) || !validate_owner() ||
-        cancellation_requested(cancelled)) {
-      return false;
-    }
-    auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(false);
-    if (!borrowed_output_mutation) {
-      return false;
-    }
-    repair();
-    return true;
-  }
-
   bool apply(
     const DisplayApplyRequest &request,
     ApplyVerificationTicket *verification_ticket,

@@ -11,13 +11,4 @@ namespace display_helper_integration {
     const std::function<bool()> &validate_owner,
     std::function<bool()> cancelled
   );
-
-  // Run a host-side layout repair for an owned live target, or decline without
-  // waiting when an APPLY, a REVERT or a restore owns the desktop. The repair
-  // runs with the display mutation gate held. Returns whether it ran.
-  bool run_owned_layout_repair(
-    const std::function<bool()> &validate_owner,
-    const std::function<void()> &repair,
-    const std::function<bool()> &cancelled
-  );
 }  // namespace display_helper_integration

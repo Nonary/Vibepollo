@@ -2148,8 +2148,6 @@ if(Python3_Interpreter_FOUND AND SUNSHINE_TEST_GXX)
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_virtual_display_reactivation.py")
     add_test(NAME regression_virtual_display_live_recovery
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_virtual_display_live_recovery.py")
-    add_test(NAME regression_virtual_display_layout_hold
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_virtual_display_layout_hold.py")
 endif()
 
 if(TARGET test_component_resource_locale_catalog)

@@ -1229,9 +1229,6 @@ namespace nvhttp {
     ) {
       VDISPLAY::VirtualDisplayRecoveryParams recovery_params;
       recovery_params.guid = virtual_display_guid;
-      recovery_params.exclusive_layout =
-        launch_session.virtual_display_layout_override.value_or(config::video.virtual_display_layout) ==
-        config::video_t::virtual_display_layout_e::exclusive;
       recovery_params.requested_resolution_only = launch_session.requested_resolution_only;
       recovery_params.width = launch_session.resolution_override ?
                                 static_cast<uint32_t>(launch_session.resolution_override->width) :
