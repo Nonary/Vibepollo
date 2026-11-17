@@ -308,6 +308,29 @@ int main(int argc, char **argv) {
   defer_restore(); desktop = original; sets = 0; run_polls();
   check(released(original) && sets == 0, "user restoring the settings by hand ends the deferral without writing");
 
+  // A failed read of the current settings never writes the snapshot over a user change.
+  defer_restore(); desktop.iMaxSpeed = 63; fail_get = true; sets = 0; restore_mouse_keys();
+  check(enabled_mouse_keys && mouse_keys_restore_deferred && desktop.iMaxSpeed == 63 && desktop.dwFlags == streaming.dwFlags &&
+          sets == 0 && record_exists() && task_pool.delayed.size() == 1,
+        "failed read at a later stream end keeps a user change made while deferred, and ownership");
+  run_polls();
+  check(enabled_mouse_keys && desktop.iMaxSpeed == 63 && sets == 0 && task_pool.delayed.size() == 1,
+        "deferred poll retries after a failed read without writing");
+  fail_get = false; raw_mice = 0; run_polls();
+  check(released(user_speed), "retry after a failed read restores only the settings Sunshine still holds");
+
+  defer_restore(); desktop.iMaxSpeed = 63; restart_host(); fail_get = true; sets = 0; recover_mouse_keys();
+  check(enabled_mouse_keys && desktop.iMaxSpeed == 63 && desktop.dwFlags == streaming.dwFlags && sets == 0 && record_exists(),
+        "failed read during same-logon recovery keeps a user change and ownership");
+  fail_get = false; raw_mice = 0; restore_mouse_keys();
+  check(released(user_speed), "stream end after a failed recovery read restores only the settings Sunshine still holds");
+
+  reset(); enable_mouse_keys(); fail_get = true; sets = 0; restore_mouse_keys();
+  check(enabled_mouse_keys && desktop == streaming && sets == 0 && record_exists(),
+        "failed read at stream end writes nothing and keeps ownership");
+  fail_get = false; restore_mouse_keys();
+  check(released(original), "next stream end after a failed read restores the original settings");
+
   defer_restore(); desktop.iTimeToMaxSpeed = 2500; restart_host(); recover_mouse_keys();
   check(enabled_mouse_keys && mouse_keys_restore_deferred && desktop.iTimeToMaxSpeed == 2500 &&
           desktop.dwFlags == streaming.dwFlags && record_exists() && task_pool.delayed.size() == 1,
