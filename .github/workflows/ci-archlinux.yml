@@ -397,12 +397,14 @@ jobs:
           grep -qx 'depend = mokutil>=0.7.2' <<< "${package_info}"
           grep -qx 'depend = wayland-utils' <<< "${package_info}"
           grep -qx 'depend = xorg-xdpyinfo' <<< "${package_info}"
+          for bridge_dep in gcc binutils pkgconf vulkan-headers; do
+            grep -qx "depend = ${bridge_dep}" <<< "${package_info}"
+          done
           grep -qx $'\tmakedepends = nodejs' .SRCINFO
           grep -qx $'\tmakedepends = npm' .SRCINFO
           grep -qx $'\tmakedepends = ninja' .SRCINFO
           grep -qx $'\tmakedepends = kwin' .SRCINFO
           grep -qx $'\tmakedepends = qt6-base' .SRCINFO
-          grep -qx $'\tmakedepends = vulkan-headers' .SRCINFO
           grep -qx 'usr/bin/vibepollo' <<< "${package_files}"
           if grep -qx 'usr/bin/sunshine' <<< "${package_files}"; then
             echo "::error::The Vibepollo package unexpectedly contains the legacy Sunshine executable."
@@ -417,7 +419,20 @@ jobs:
           grep -qx 'usr/libexec/vibeshine/vibepollo-session-broker' <<< "${package_files}"
           grep -qx 'usr/libexec/vibeshine/vibepollo-provider-scan' <<< "${package_files}"
           grep -qx 'usr/libexec/vibeshine/vibepollo-profile-import' <<< "${package_files}"
-          grep -qx 'usr/lib/libvibeshine-kwin-gpu.so' <<< "${package_files}"
+          bridge_candidate='usr/lib/vibepollo/kwin-bridge/libvibeshine-kwin-gpu.so'
+          grep -qx "${bridge_candidate}" <<< "${package_files}"
+          if grep -Eq '^usr/lib/libvibeshine-kwin-gpu(-local)?\.so$' <<< "${package_files}"; then
+            echo "::error::The package contains an active KWin preload before ABI validation."
+            exit 1
+          fi
+          grep -qx 'usr/libexec/vibeshine/vibepollo-kwin-bridge-rebuild' <<< "${package_files}"
+          grep -qx 'usr/lib/sysusers.d/vibepollo-kwin-build.conf' <<< "${package_files}"
+          grep -qx 'usr/share/libalpm/hooks/00-vibepollo-kwin-bridge-deactivate.hook' <<< "${package_files}"
+          grep -qx 'usr/share/libalpm/hooks/95-vibepollo-kwin-bridge.hook' <<< "${package_files}"
+          grep -qx 'usr/lib/vibepollo/kwin-bridge/kwin_bridge_abi.h' <<< "${package_files}"
+          for kwin_unit in plasma-kwin_wayland plasma-login-kwin_wayland; do
+            grep -qx "usr/lib/systemd/user/${kwin_unit}.service.d/vibeshine-kwin-local-gpu.conf" <<< "${package_files}"
+          done
           grep -qx 'usr/lib/sysusers.d/vibepollo.conf' <<< "${package_files}"
 
           # Extract the bridge and the two network-facing execution-chain
@@ -428,18 +443,16 @@ jobs:
           bsdtar --xattrs -xpf "${package}" -C "${capability_check_root}" \
             usr/bin/vibepollo \
             usr/libexec/vibeshine/vibepollo-session-exec \
-            usr/lib/libvibeshine-kwin-gpu.so
-          # Matching KWin 6.8 builds must include both native hooks, not just
-          # the legacy bridge that silently leaves these outputs on CPU copies.
-          if [[ "$(readlink -f /usr/lib/libkwin.so)" == /usr/lib/libkwin.so.6.8.* ]]; then
-            readelf --dyn-syms --wide \
-              "${capability_check_root}/usr/lib/libvibeshine-kwin-gpu.so" \
-              > "${capability_check_root}/kwin-bridge-symbols.txt"
-            grep -q ' _ZN4KWin26GbmGraphicsBufferAllocator8allocateERKNS_21GraphicsBufferOptionsE$' \
+            "${bridge_candidate}"
+          test "$(stat -c '%a' "${capability_check_root}/${bridge_candidate}")" = 644
+          readelf --dyn-syms --wide \
+            "${capability_check_root}/${bridge_candidate}" \
+            > "${capability_check_root}/kwin-bridge-symbols.txt"
+          for symbol in gbm_bo_create gbm_bo_create_with_modifiers gbm_bo_create_with_modifiers2 \
+            _ZNK4KWin10GpuManager26findCompatibleRenderDeviceEP10_drmDevice; do
+            awk -v symbol="$symbol" '$7 != "UND" && $8 == symbol { found=1 } END { exit !found }' \
               "${capability_check_root}/kwin-bridge-symbols.txt"
-            grep -q ' _ZNK4KWin10GpuManager26findCompatibleRenderDeviceEP10_drmDevice$' \
-              "${capability_check_root}/kwin-bridge-symbols.txt"
-          fi
+          done
           for capability_path in \
             "${capability_check_root}/usr/bin/vibepollo" \
             "${capability_check_root}/usr/libexec/vibeshine/vibepollo-session-exec"; do

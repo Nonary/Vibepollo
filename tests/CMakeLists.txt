@@ -1688,6 +1688,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_kms_encoder_tiers.py"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_linux_kms_encoder_tiers PROPERTIES LABELS "component" TIMEOUT 45)
+        add_test(NAME test_component_linux_kwin_bridge_refresh
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_kwin_bridge_refresh.py")
+        set_tests_properties(test_component_linux_kwin_bridge_refresh
+            PROPERTIES LABELS "component" TIMEOUT 120)
         if(SUNSHINE_TEST_BASH_EXECUTABLE)
             add_test(NAME test_component_linux_machine_locale
                 COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"

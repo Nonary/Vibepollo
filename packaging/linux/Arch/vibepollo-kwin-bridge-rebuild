@@ -1,0 +1,180 @@
+#!/usr/bin/python3 -I
+"""Activate the package-built KWin bridge after validating the installed KWin."""
+
+import fcntl
+import os
+from pathlib import Path
+import pwd
+import re
+import shlex
+import stat
+import subprocess
+import sys
+import tempfile
+
+
+LIBDIR = Path("/usr/lib")
+PRODUCT = "vibepollo"
+BUILDER = f"{PRODUCT}-kwin-build"
+BASE = "libvibeshine-kwin-gpu.so"
+ALIASES = (BASE, "libvibeshine-kwin-gpu-local.so")
+ACTIVATION = "vibeshine-kwin-bridge.env"
+LEGACY_ALLOCATOR = "_ZN4KWin26GbmGraphicsBufferAllocatorC1EP10gbm_devicem"
+NATIVE_ALLOCATOR = "_ZN4KWin26GbmGraphicsBufferAllocatorC1EPNS_9DrmDeviceE"
+RENDER_HOOK = "_ZNK4KWin10GpuManager26findCompatibleRenderDeviceEP10_drmDevice"
+BRIDGE_EXPORTS = {
+    "gbm_create_device", "gbm_bo_create", "gbm_bo_create_with_modifiers",
+    "gbm_bo_create_with_modifiers2", "vibeshine_kwin_gpu_interposer_abi", RENDER_HOOK,
+}
+MAX_LIBRARY_SIZE = 8 * 1024 * 1024
+
+
+def trusted_path(path, *, directory=False):
+    for parent in reversed(path.parents):
+        info = parent.lstat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+            raise ValueError(f"unsafe package directory {parent}")
+    info = path.lstat()
+    valid_type = stat.S_ISDIR if directory else stat.S_ISREG
+    if not valid_type(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise ValueError(f"unsafe package path {path}")
+
+
+def command(args, work, worker):
+    identity = {}
+    if worker is not None:
+        args = ["/usr/bin/setpriv", "--no-new-privs", *args]
+        identity = dict(user=worker.pw_uid, group=worker.pw_gid, extra_groups=[])
+    result = subprocess.run(
+        args, cwd=work, env={"PATH": "/usr/bin", "LC_ALL": "C", "TMPDIR": str(work),
+                            "PKG_CONFIG_LIBDIR": "/usr/lib/pkgconfig:/usr/share/pkgconfig"},
+        check=False, capture_output=True, text=True, errors="replace",
+        timeout=60, umask=0o077, **identity,
+    )
+    if result.returncode:
+        detail = result.stderr.strip().splitlines()[-3:]
+        raise ValueError(f"{Path(args[0]).name} failed ({result.returncode}): {' '.join(detail)[:800]}")
+    return result.stdout
+
+
+def exports(library, work, worker):
+    symbols = command(["/usr/bin/readelf", "--dyn-syms", "--wide", str(library)], work, worker)
+    return {fields[7].split("@", 1)[0] for line in symbols.splitlines()
+            if len(fields := line.split()) >= 8 and fields[3] == "FUNC" and
+            fields[4] in ("GLOBAL", "WEAK") and fields[5] == "DEFAULT" and fields[6] != "UND"}
+
+
+def verify_native_abi(kwin, header, work, worker):
+    symbols = exports(kwin, work, worker)
+    legacy = LEGACY_ALLOCATOR in symbols and NATIVE_ALLOCATOR not in symbols
+    native = NATIVE_ALLOCATOR in symbols and LEGACY_ALLOCATOR not in symbols and RENDER_HOOK in symbols
+    if not (legacy or native):
+        raise ValueError("the installed KWin allocator interface is unsupported")
+    if RENDER_HOOK not in symbols:
+        return
+    cflags = shlex.split(command(
+        ["/usr/bin/pkg-config", "--cflags", "libdrm", "gbm", "Qt6Gui"], work, worker))
+    # The mangled symbol does not encode its return type.
+    command(["/usr/bin/g++", "-std=c++20", *cflags, "-I/usr/include/kwin",
+             "-fno-access-control", "-fsyntax-only", "-x", "c++", "-include",
+             str(header), "/dev/null"], work, worker)
+
+
+def atomic_publish(libdir, name, data, mode):
+    with tempfile.NamedTemporaryFile(dir=libdir, prefix=".kwin-bridge-", delete=False) as staged:
+        try:
+            staged.write(data)
+            staged.flush()
+            os.fchmod(staged.fileno(), mode)
+            os.fsync(staged.fileno())
+            os.replace(staged.name, libdir / name)
+        finally:
+            Path(staged.name).unlink(missing_ok=True)
+
+
+def deactivate(libdir):
+    # Already running processes keep their mappings. Removing both names also
+    # covers wrappers that inherited a preload value on an earlier release.
+    for alias in ALIASES:
+        (libdir / alias).unlink(missing_ok=True)
+    atomic_publish(libdir, ACTIVATION, b"LD_PRELOAD=\n", 0o644)
+
+
+def file_identity(info):
+    return info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns
+
+
+def activate(libdir, candidate, header, kwin, worker):
+    trusted_path(kwin)
+    trusted_path(candidate)
+    trusted_path(header)
+    kwin_identity = file_identity(kwin.stat())
+    bridge_info = candidate.stat()
+    bridge_identity = file_identity(bridge_info)
+    if stat.S_IMODE(bridge_info.st_mode) != 0o644 or not 0 < bridge_info.st_size <= MAX_LIBRARY_SIZE:
+        raise ValueError("invalid package-owned bridge")
+    with tempfile.TemporaryDirectory(prefix="kwin-bridge-probe-") as directory:
+        work = Path(directory)
+        # The compiler can write temporary probe data. Its output never supplies
+        # bytes for the privileged loader.
+        if worker is not None:
+            os.chown(work, worker.pw_uid, worker.pw_gid)
+        verify_native_abi(kwin, header, work, worker)
+        if not BRIDGE_EXPORTS <= exports(candidate, work, worker):
+            raise ValueError("the package-owned bridge is missing required exports")
+    with os.fdopen(os.open(candidate, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as source:
+        if file_identity(os.fstat(source.fileno())) != bridge_identity:
+            raise ValueError("the package-owned bridge changed during verification")
+        data = source.read(MAX_LIBRARY_SIZE + 1)
+        if len(data) != bridge_info.st_size or file_identity(os.fstat(source.fileno())) != bridge_identity:
+            raise ValueError("the package-owned bridge changed while reading")
+    if (libdir / "libkwin.so").resolve(strict=True) != kwin or file_identity(kwin.stat()) != kwin_identity:
+        raise ValueError("KWin changed during bridge verification")
+    for alias in ALIASES:
+        atomic_publish(libdir, alias, data, 0o4755)
+    atomic_publish(libdir, ACTIVATION, f"LD_PRELOAD={BASE}\n".encode("ascii"), 0o644)
+
+
+def update_installed_bridge(*, deactivate_only=False):
+    trusted_path(LIBDIR, directory=True)
+    deactivate(LIBDIR)
+    if deactivate_only:
+        return
+    try:
+        kwin = (LIBDIR / "libkwin.so").resolve(strict=True)
+    except FileNotFoundError:
+        return
+    try:
+        if kwin.parent != LIBDIR or not re.fullmatch(r"libkwin\.so\.6\.\d+\.\d+", kwin.name):
+            raise ValueError("unrecognized installed KWin library")
+        worker = pwd.getpwnam(BUILDER)
+        if not worker.pw_uid or not worker.pw_gid:
+            raise ValueError("the bridge probe account must be unprivileged")
+        package = LIBDIR / PRODUCT / "kwin-bridge"
+        activate(LIBDIR, package / BASE, package / "kwin_bridge_abi.h", kwin, worker)
+    except (KeyError, OSError, ValueError, subprocess.SubprocessError):
+        deactivate(LIBDIR)
+        raise
+    print(f"{PRODUCT} GPU bridge verified for {kwin.name}. It will load on the next compositor launch.")
+
+
+def main():
+    if sys.argv[1:] not in ([], ["--deactivate"]):
+        print(f"Usage: {Path(sys.argv[0]).name} [--deactivate]", file=sys.stderr)
+        return 2
+    if os.geteuid() != 0:
+        print("The KWin bridge refresh must run as root.", file=sys.stderr)
+        return 1
+    try:
+        fd = os.open("/run/vibeshine-kwin-bridge.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            update_installed_bridge(deactivate_only=sys.argv[1:] == ["--deactivate"])
+    except (KeyError, OSError, ValueError, subprocess.SubprocessError) as error:
+        print(f"warning: {PRODUCT} KWin GPU bridge is unavailable: {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
