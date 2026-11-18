@@ -43,9 +43,9 @@
 using namespace std::literals;
 
 namespace tablet_posture::backend {
-  bool apply_gaming(bool enter);
+  gaming_result_e apply_gaming(bool enter);
 
-  void recover_gaming();
+  bool recover_gaming();
 }  // namespace tablet_posture::backend
 
 namespace tablet_posture::backend {
@@ -98,6 +98,11 @@ namespace tablet_posture::backend {
 
     std::filesystem::path journal_path() {
       return platf::appdata() / "gaming_posture.journal";
+    }
+
+    /// Exists while the host is in a gaming posture it entered itself, so that a later host process can leave it.
+    std::filesystem::path entered_path() {
+      return platf::appdata() / "gaming_posture.entered";
     }
 
     std::string narrow(const wchar_t *text) {
@@ -198,11 +203,12 @@ namespace tablet_posture::backend {
 
     /// Verdict of a switch, also the exit code of the switch instance.
     enum switch_result_e : int {
-      switched = 0,  ///< The host is in the wanted state.
+      switched = 0,  ///< This switch put the host in the wanted state.
       unchanged = 1,  ///< Windows did not change state in time; a confirmation may be waiting on screen.
       bad_request = 2,
       unsupported = 3,
       no_home_app = 4,  ///< The user chose no home app, so Windows offers no switch.
+      already = 5,  ///< The host was in the wanted state before; nothing was switched.
     };
 
     /// Switch from this process, which must run as the logged-on user. The call into Windows does not
@@ -213,7 +219,7 @@ namespace tablet_posture::backend {
         return unsupported;
       }
       if ((api.active() != FALSE) == enter) {
-        return switched;
+        return already;
       }
       if (!api.can_set || api.can_set() == FALSE) {
         return no_home_app;
@@ -253,17 +259,17 @@ namespace tablet_posture::backend {
         std::this_thread::sleep_for(switch_poll);
       }
       const int code = child.exit_code();
-      return code >= switched && code <= no_home_app ? static_cast<switch_result_e>(code) : unchanged;
+      return code >= switched && code <= already ? static_cast<switch_result_e>(code) : unchanged;
     }
   }  // namespace
 
-  bool apply_gaming(bool enter) {
+  gaming_result_e apply_gaming(bool enter) {
     const auto &api = gaming_api();
     if (!api.supported || !api.set || api.supported() == FALSE) {
       if (enter) {
         BOOST_LOG(warning) << "Gaming posture: this Windows does not offer the Xbox full screen experience"sv;
       }
-      return !enter;
+      return enter ? gaming_result_e::failed : gaming_result_e::already;
     }
 
     supply_answers();
@@ -272,7 +278,7 @@ namespace tablet_posture::backend {
     const bool own_switch = api.can_set && api.can_set() != FALSE;
     const auto result = own_switch ? switch_in_process(enter) : switch_as_user(enter);
 
-    if (result != switched) {
+    if (result != switched && result != already) {
       const auto action = enter ? "enter"sv : "leave"sv;
       if (result == no_home_app) {
         BOOST_LOG(warning) << "Gaming posture: Windows cannot "sv << action
@@ -286,15 +292,28 @@ namespace tablet_posture::backend {
       }
     }
     if (!enter || result != switched) {
-      // Nothing more to confirm once the host is back on the desktop, or when it never left it.
+      // Nothing more to confirm once the host is back on the desktop, or when it made no switch.
       withdraw_answers();
     }
-    return result == switched;
+
+    std::error_code ec;
+    if (enter && result == switched) {
+      std::ofstream(entered_path()) << '\n';
+    } else if (!enter && (result == switched || result == already)) {
+      std::filesystem::remove(entered_path(), ec);
+    }
+
+    if (result == switched) {
+      return gaming_result_e::switched;
+    }
+    return result == already ? gaming_result_e::already : gaming_result_e::failed;
   }
 
-  void recover_gaming() {
+  bool recover_gaming() {
     // A leave supplies its answers again, so nothing a previous host process left behind is needed.
     withdraw_answers();
+    std::error_code ec;
+    return std::filesystem::exists(entered_path(), ec);
   }
 }  // namespace tablet_posture::backend
 

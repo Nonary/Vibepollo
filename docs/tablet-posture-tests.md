@@ -6,7 +6,7 @@ posture; these tests check each trigger and the Windows result.
 ## Tools
 
 - Host state: `GET https://<host>:47990/api/tablet-posture` (Bearer API token). Fields: `applied` (what Windows was
-  told), `wanted`, `mode` (`desktop`, `tablet` or `handheld`), `gaming` (the Xbox full screen experience is on),
+  told), `wanted`, `mode` (`desktop`, `tablet` or `handheld`), `gaming` (the host entered the Xbox full screen experience),
   `override`, `clients[]` with `touch_primary`.
 - Simulate the keyboard without a client: `POST /api/tablet-posture` with `{"mode":"slate"}` (detached),
   `{"mode":"laptop"}` (attached), `{"mode":"auto"}` (clients decide again).
@@ -65,6 +65,11 @@ back to what they were (normally absent), and `tablet_posture.journal` in the co
     experience; `tablet`: tablet mode only; `desktop`: desktop.
 11. **No home app.** Set the home app to None, stream from a handheld client: warning `the logged-on user has no home
     app`, the client keeps tablet mode, no confirmation appears on the host screen.
+12. **Experience already on.** Enter the Xbox full screen experience by hand (Win+F11), then stream from a handheld
+    client: log `host was already in the Xbox full screen experience; it stays on after the session`, `gaming` false
+    in the API. Stop the stream: the host returns to laptop and the experience is still on.
+13. **Crash in the experience.** During test 9, kill the host process and start it again: `gaming_posture.entered`
+    exists before the start; the host leaves the experience within a few seconds and the file is gone.
 
 ## Known limits
 

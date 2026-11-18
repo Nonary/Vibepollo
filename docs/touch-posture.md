@@ -227,10 +227,16 @@ How the host switches:
   is never touched. A journal file in the config folder removes leftovers at the next start if the host
   stopped abnormally.
 
+- The host leaves only what it entered. When the user is in the experience already as a handheld session
+  starts, the host switches nothing and the experience stays on after the session. While the host is in an
+  experience it entered itself, the file `gaming_posture.entered` exists in the config folder; a host that
+  stopped abnormally leaves the experience at its next start.
+
 When the switch does not happen (no home app, an older build, a confirmation the host does not know) the log
 says why and the client keeps tablet mode. The host does not retry until the wanted mode changes.
 
 Log lines: `Tablet posture: host is now in the Xbox full screen experience`,
+`Tablet posture: host was already in the Xbox full screen experience; it stays on after the session`,
 `Gaming posture: Windows cannot enter the Xbox full screen experience: the logged-on user has no home app. ...`,
 `Tablet posture: could not enter the Xbox full screen experience; staying in tablet mode`.
 

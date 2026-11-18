@@ -56,11 +56,20 @@ namespace tablet_posture {
   /// Force the state regardless of clients (a simulated keyboard detach/attach); nullopt gives control back to the clients.
   void set_override(std::optional<client_mode_e> forced);
 
+  namespace backend {
+    /// Outcome of a request to enter or leave the gaming posture.
+    enum class gaming_result_e {
+      switched,  ///< The host made the switch.
+      already,  ///< The host was in the wanted state before; nothing was switched.
+      failed,
+    };
+  }  // namespace backend
+
   struct status_t {
     state_e applied;  ///< What Windows was last told.
     state_e wanted;  ///< What the clients (or the override) ask for.
     client_mode_e wanted_mode;  ///< The wanted state as a mode: desktop, tablet or handheld.
-    bool gaming_applied;  ///< The gaming posture (Xbox full screen experience) is on.
+    bool gaming_applied;  ///< The host entered the gaming posture (Xbox full screen experience) and will leave it.
     std::optional<state_e> override_state;
     std::optional<client_mode_e> override_mode;
     bool enabled;  ///< touch_tablet_mode

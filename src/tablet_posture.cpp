@@ -20,13 +20,14 @@ namespace tablet_posture {
     bool apply(state_e state);
 
     /// Enter (`true`) or leave (`false`) the gaming posture, the Xbox full screen experience. Only called while the host is a slate. Implemented per platform.
-    bool apply_gaming(bool enter);
+    gaming_result_e apply_gaming(bool enter);
 
     /// Undo a previous host process' leftovers; with `resync` also put a freshly booted indicator back to laptop. Implemented per platform.
     void recover(bool resync);
 
-    /// Undo what a previous host process left behind for the gaming posture. Implemented per platform.
-    void recover_gaming();
+    /// Undo what a previous host process left behind for the gaming posture. Returns true when that process
+    /// entered the gaming posture and never left it. Implemented per platform.
+    bool recover_gaming();
   }  // namespace backend
 
 #ifndef _WIN32
@@ -35,13 +36,15 @@ namespace tablet_posture {
       return true;
     }
 
-    bool apply_gaming(bool) {
-      return true;
+    gaming_result_e apply_gaming(bool) {
+      return gaming_result_e::switched;
     }
 
     void recover(bool) {}
 
-    void recover_gaming() {}
+    bool recover_gaming() {
+      return false;
+    }
   }  // namespace backend
 #endif
 
@@ -77,15 +80,16 @@ namespace tablet_posture {
       std::optional<std::chrono::steady_clock::time_point> laptop_due;
       std::optional<std::chrono::steady_clock::time_point> retry_due;
       std::optional<std::chrono::steady_clock::time_point> gaming_leave_due;
-      // The gaming state a failed enter was last tried for: no retry until the wanted state changes again.
-      std::optional<bool> gaming_failed_for;
+      // The wanted gaming state that needs no further attempt until it changes again: the enter failed, or
+      // the user was in the gaming posture already.
+      std::optional<bool> gaming_settled_for;
       while (!stopping) {
         const auto wanted = registry.state();
         const bool wanted_gaming = registry.gaming();
         const auto now = std::chrono::steady_clock::now();
 
-        if (gaming_failed_for && *gaming_failed_for != wanted_gaming) {
-          gaming_failed_for.reset();
+        if (gaming_settled_for && *gaming_settled_for != wanted_gaming) {
+          gaming_settled_for.reset();
         }
 
         // Leave the gaming posture first, after the same grace as laptop, and before any switch to laptop.
@@ -99,9 +103,9 @@ namespace tablet_posture {
           }
           gaming_leave_due.reset();
           lock.unlock();
-          const bool left = backend::apply_gaming(false);
+          const auto left = backend::apply_gaming(false);
           lock.lock();
-          if (!left) {
+          if (left == backend::gaming_result_e::failed) {
             BOOST_LOG(warning) << "Tablet posture: could not leave the Xbox full screen experience"sv;
           }
           gaming_applied = false;
@@ -143,16 +147,20 @@ namespace tablet_posture {
         laptop_due.reset();
         retry_due.reset();
 
-        if (wanted_gaming && applied == state_e::slate && !gaming_applied && !gaming_failed_for) {
+        if (wanted_gaming && applied == state_e::slate && !gaming_applied && !gaming_settled_for) {
           lock.unlock();
-          const bool entered = backend::apply_gaming(true);
+          const auto entered = backend::apply_gaming(true);
           lock.lock();
-          if (entered) {
+          if (entered == backend::gaming_result_e::switched) {
             BOOST_LOG(info) << "Tablet posture: host is now in the Xbox full screen experience"sv;
             gaming_applied = true;
+          } else if (entered == backend::gaming_result_e::already) {
+            // The user chose it before the session, so it is not the host's to leave afterwards.
+            BOOST_LOG(info) << "Tablet posture: host was already in the Xbox full screen experience; it stays on after the session"sv;
+            gaming_settled_for = true;
           } else {
             BOOST_LOG(warning) << "Tablet posture: could not enter the Xbox full screen experience; staying in tablet mode"sv;
-            gaming_failed_for = true;
+            gaming_settled_for = true;
           }
           continue;
         }
@@ -222,7 +230,11 @@ namespace tablet_posture {
   void recover() {
     std::lock_guard lock {mutex};
     backend::recover(config::video.touch_tablet_mode);
-    backend::recover_gaming();
+    if (backend::recover_gaming()) {
+      // A previous host process entered the gaming posture and never left it: the worker leaves it now.
+      gaming_applied = true;
+      changed();
+    }
   }
 
   void shutdown() {
