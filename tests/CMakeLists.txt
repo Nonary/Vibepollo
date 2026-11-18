@@ -2315,3 +2315,12 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
             "${CMAKE_CURRENT_LIST_DIR}/unit/test_homebrew_formula.py")
     set_tests_properties(test_component_homebrew_formula PROPERTIES LABELS "component;packaging" TIMEOUT 60)
 endif()
+
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+    add_test(NAME test_component_upnp_igd_status
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_upnp_igd_status.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_upnp_igd_status
+        PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
