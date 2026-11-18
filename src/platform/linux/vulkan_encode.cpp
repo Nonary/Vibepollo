@@ -1,7 +1,7 @@
 /**
  * @file src/platform/linux/vulkan_encode.cpp
  * @brief Vulkan-native encoder: DMA-BUF -> Vulkan compute (RGB->YUV) -> Vulkan Video encode.
- *        No EGL/GL dependency — all GPU work stays in a single Vulkan queue.
+ *        Direct Vulkan import, GPU snapshot, then a synchronized linear CPU upload.
  */
 #include <array>
 #include <cstring>
@@ -28,6 +28,9 @@ extern "C" {
 }
 
 #include "graphics.h"
+#ifdef __linux__
+  #include "dmabuf_linear_upload.h"
+#endif
 #include "src/config.h"
 #include "src/logging.h"
 #include "src/utility.h"
@@ -64,11 +67,10 @@ namespace vk {
     VkApplicationInfo app = {VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.apiVersion = VK_API_VERSION_1_1;
 
-    static const std::array<const char *, 1> instance_exts = {VK_EXT_PHYSICAL_DEVICE_DRM_EXTENSION_NAME};
+    // DRM properties belong to a physical device. Requesting their device
+    // extension on the instance makes compliant loaders reject its creation.
     VkInstanceCreateInfo ci = {VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
     ci.pApplicationInfo = &app;
-    ci.enabledExtensionCount = instance_exts.size();
-    ci.ppEnabledExtensionNames = instance_exts.data();
     VkInstance inst = VK_NULL_HANDLE;
     if (vkCreateInstance(&ci, nullptr, &inst) != VK_SUCCESS) {
       return std::nullopt;
@@ -267,9 +269,20 @@ namespace vk {
       // Load extension functions
       vk_dev.getMemoryFdProperties = (PFN_vkGetMemoryFdPropertiesKHR)
         vkGetDeviceProcAddr(vk_dev.dev, "vkGetMemoryFdPropertiesKHR");
-      if (!vk_dev.getMemoryFdProperties) {
-        BOOST_LOG(error) << "Vulkan device does not expose vkGetMemoryFdPropertiesKHR";
-        return -1;
+#ifdef __linux__
+      VkPhysicalDeviceDrmPropertiesEXT drm {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRM_PROPERTIES_EXT};
+      VkPhysicalDeviceProperties2 properties {VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &drm};
+      vkGetPhysicalDeviceProperties2(vk_dev.phys_dev, &properties);
+      if (drm.hasRender) {
+        snapshot_node = "/dev/dri/renderD" + std::to_string(drm.renderMinor);
+      } else if (capture_device_path) {
+        snapshot_node = *capture_device_path;
+      }
+#endif
+      for (int i = 0; i < vk_dev.ctx->nb_enabled_dev_extensions; ++i) {
+        if (std::strcmp(vk_dev.ctx->enabled_dev_extensions[i], VK_EXT_QUEUE_FAMILY_FOREIGN_EXTENSION_NAME) == 0) {
+          external_family = VK_QUEUE_FAMILY_FOREIGN_EXT;
+        }
       }
 
       if (!create_compute_pipeline()) {
@@ -325,8 +338,8 @@ namespace vk {
         return -1;
       }
 
-      if (!import_dmabuf(descriptor.sd, cmd.sources[submission_slot])) {
-        BOOST_LOG(error) << "Failed to import DMA-BUF"sv;
+      if (!prepare_source(descriptor.sd, submission_slot)) {
+        BOOST_LOG(error) << "All capture paths failed for Vulkan Video"sv;
         return -1;
       }
 
@@ -609,7 +622,90 @@ namespace vk {
       return true;
     }
 
+    bool prepare_source(const egl::surface_descriptor_t &surface, std::size_t slot) {
+      auto &output = cmd.sources[slot];
+#ifdef __linux__
+      if (!egl::wait_for_source(surface)) {
+        return false;
+      }
+      auto import = [&](const auto &candidate) { return import_dmabuf(candidate, output); };
+      return egl::import_source_with_fallbacks(surface, import,
+        [&](const auto &input) { return snapshot_device.copy(snapshots[slot], snapshot_node, input, import); },
+        [&](const auto &input) { return upload_source(input, output); });
+#else
+      return import_dmabuf(surface, output);
+#endif
+    }
+
+#ifdef __linux__
+    // The staging allocation stays with its submission until that slot's GPU fence signals.
+    bool upload_source(const egl::surface_descriptor_t &surface, src_image_t &output) {
+      std::vector<std::uint8_t> pixels;
+      std::string detail;
+      if (!egl::linear_upload::read_pixels(surface, pixels, detail)) {
+        BOOST_LOG(error) << detail;
+        return false;
+      }
+      src_image_t candidate;
+      auto cleanup = util::fail_guard([&] { destroy_src_image(candidate); });
+      VkBufferCreateInfo buffer {VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+      buffer.size = pixels.size();
+      buffer.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+      VK_CHECK_BOOL(vkCreateBuffer(vk_dev.dev, &buffer, nullptr, &candidate.staging));
+      VkMemoryRequirements requirements;
+      vkGetBufferMemoryRequirements(vk_dev.dev, candidate.staging, &requirements);
+      const auto host = find_memory_type(requirements.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, false);
+      if (!host) {
+        return false;
+      }
+      VkMemoryAllocateInfo memory {VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+      memory.allocationSize = requirements.size;
+      memory.memoryTypeIndex = *host;
+      VK_CHECK_BOOL(vkAllocateMemory(vk_dev.dev, &memory, nullptr, &candidate.staging_mem));
+      VK_CHECK_BOOL(vkBindBufferMemory(vk_dev.dev, candidate.staging, candidate.staging_mem, 0));
+      void *mapped = nullptr;
+      VK_CHECK_BOOL(vkMapMemory(vk_dev.dev, candidate.staging_mem, 0, buffer.size, 0, &mapped));
+      std::memcpy(mapped, pixels.data(), pixels.size());
+      vkUnmapMemory(vk_dev.dev, candidate.staging_mem);
+
+      const auto [format, swizzle] = drm_fourcc_to_vk_format(surface.fourcc);
+      VkImageCreateInfo image {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+      image.imageType = VK_IMAGE_TYPE_2D;
+      image.format = format;
+      image.extent = {static_cast<uint32_t>(surface.width), static_cast<uint32_t>(surface.height), 1};
+      image.mipLevels = image.arrayLayers = 1;
+      image.samples = VK_SAMPLE_COUNT_1_BIT;
+      image.tiling = VK_IMAGE_TILING_OPTIMAL;
+      image.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+      VK_CHECK_BOOL(vkCreateImage(vk_dev.dev, &image, nullptr, &candidate.image));
+      vkGetImageMemoryRequirements(vk_dev.dev, candidate.image, &requirements);
+      const auto device = find_memory_type(requirements.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, true);
+      if (!device) {
+        return false;
+      }
+      memory.allocationSize = requirements.size;
+      memory.memoryTypeIndex = *device;
+      VK_CHECK_BOOL(vkAllocateMemory(vk_dev.dev, &memory, nullptr, &candidate.mem));
+      VK_CHECK_BOOL(vkBindImageMemory(vk_dev.dev, candidate.image, candidate.mem, 0));
+      VkImageViewCreateInfo view {VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+      view.image = candidate.image;
+      view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+      view.format = format;
+      view.components = swizzle;
+      view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+      VK_CHECK_BOOL(vkCreateImageView(vk_dev.dev, &view, nullptr, &candidate.view));
+      candidate.extent = image.extent;
+      output = candidate;
+      candidate = {};
+      return true;
+    }
+#endif
+
     bool import_dmabuf(const egl::surface_descriptor_t &sd, src_image_t &output) {
+      if (!vk_dev.getMemoryFdProperties || (sd.direct_import_required && sd.modifier == DRM_FORMAT_MOD_INVALID)) {
+        return false;
+      }
       if (sd.fds[0] < 0 || sd.width <= 0 || sd.height <= 0 || sd.pitches[0] == 0) {
         BOOST_LOG(error) << "Invalid DMA-BUF descriptor"sv;
         return false;
@@ -669,6 +765,14 @@ namespace vk {
         const int plane_count = expected;
 
         for (int i = 0; i < plane_count; ++i) {
+          // The VkImage below is bound to the allocation exported by plane 0.
+          if (i > 0) {
+            struct stat first {}, plane {};
+            if (fstat(sd.fds[0], &first) || fstat(sd.fds[i], &plane) ||
+                first.st_dev != plane.st_dev || first.st_ino != plane.st_ino) {
+              return false;
+            }
+          }
           drm_layouts[i].offset = sd.offsets[i];
           drm_layouts[i].rowPitch = sd.pitches[i];
         }
@@ -966,15 +1070,34 @@ namespace vk {
       src_barrier.srcAccessMask = VK_ACCESS_2_NONE;
       src_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
       src_barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
-      src_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      src_barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
       src_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
       src_barrier.image = cmd.sources[slot].image;
       src_barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-      src_barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
+      src_barrier.srcQueueFamilyIndex = external_family;
       src_barrier.dstQueueFamilyIndex = vk_dev.compute_qf;
       VkDependencyInfo source_dependency = {VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
       source_dependency.imageMemoryBarrierCount = 1;
       source_dependency.pImageMemoryBarriers = &src_barrier;
+      const auto &source = cmd.sources[slot];
+      if (source.staging) {
+        src_barrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        src_barrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        src_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        src_barrier.dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        src_barrier.srcQueueFamilyIndex = src_barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        vkCmdPipelineBarrier2(cmd_buf, &source_dependency);
+        VkBufferImageCopy region {};
+        region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        region.imageExtent = source.extent;
+        vkCmdCopyBufferToImage(cmd_buf, source.staging, source.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+        src_barrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        src_barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        src_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
+        src_barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+        src_barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        src_barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+      }
       vkCmdPipelineBarrier2(cmd_buf, &source_dependency);
 
       // Transition cursor image if needed
@@ -1032,6 +1155,17 @@ namespace vk {
       uint32_t gy = (frame->height + 15) / 16;
       vkCmdDispatch(cmd_buf, gx, gy, 1);
 
+      if (!source.staging) {
+        src_barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+        src_barrier.srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+        src_barrier.dstStageMask = VK_PIPELINE_STAGE_2_NONE;
+        src_barrier.dstAccessMask = VK_ACCESS_2_NONE;
+        src_barrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        src_barrier.newLayout = VK_IMAGE_LAYOUT_GENERAL;
+        src_barrier.srcQueueFamilyIndex = vk_dev.compute_qf;
+        src_barrier.dstQueueFamilyIndex = external_family;
+        vkCmdPipelineBarrier2(cmd_buf, &source_dependency);
+      }
       VK_CHECK(vkEndCommandBuffer(cmd_buf));
 
       // Submit with timeline semaphore signaling for FFmpeg
@@ -1132,6 +1266,12 @@ namespace vk {
     }
 
     void destroy_src_image(src_image_t &image) {
+      if (image.staging) {
+        vkDestroyBuffer(vk_dev.dev, image.staging, nullptr);
+      }
+      if (image.staging_mem) {
+        vkFreeMemory(vk_dev.dev, image.staging_mem, nullptr);
+      }
       if (image.view) {
         vkDestroyImageView(vk_dev.dev, image.view, nullptr);
       }
@@ -1221,7 +1361,17 @@ namespace vk {
 
     static constexpr int CMD_RING_SIZE = 3;
 
+    std::uint32_t external_family = VK_QUEUE_FAMILY_EXTERNAL;
+#ifdef __linux__
+    std::string snapshot_node;
+    egl::snapshot_device_t snapshot_device;
+    std::array<egl::gpu_snapshot_t, CMD_RING_SIZE> snapshots;
+#endif
+
     struct src_image_t {
+      VkBuffer staging = VK_NULL_HANDLE;
+      VkDeviceMemory staging_mem = VK_NULL_HANDLE;
+      VkExtent3D extent {};
       VkImage image = VK_NULL_HANDLE;
       VkDeviceMemory mem = VK_NULL_HANDLE;
       VkImageView view = VK_NULL_HANDLE;

@@ -65,16 +65,38 @@ namespace {
     EXPECT_FALSE(egl::can_cpu_upload_surface(surface));
   }
 
-  TEST(DmabufSurface, SuccessfulDirectImportNeverUploads) {
+  TEST(DmabufSurface, SuccessfulDirectImportSkipsBothFallbacks) {
     egl::surface_descriptor_t surface;
     int imports = 0;
+    int copies = 0;
     int uploads = 0;
-    const auto result = egl::import_source_with_cpu_fallback(surface,
+    const auto result = egl::import_source_with_fallbacks(surface,
       [&](const auto &) { ++imports; return std::optional<int> {17}; },
+      [&](const auto &) { ++copies; return std::optional<int> {20}; },
       [&](const auto &) { ++uploads; return std::optional<int> {23}; });
     EXPECT_EQ(result, 17);
     EXPECT_EQ(imports, 1);
+    EXPECT_EQ(copies, 0);
     EXPECT_EQ(uploads, 0);
+  }
+
+  TEST(DmabufSurface, SuccessfulGpuCopySkipsCpuUploadForAnyModifier) {
+    for (const auto modifier : {0ULL, 0x00ffffffffffffffULL, 0x0300000000606013ULL}) {
+      egl::surface_descriptor_t surface;
+      surface.modifier = modifier;
+      surface.direct_import_required = true;
+      const auto result = egl::import_source_with_fallbacks(surface,
+        [](const auto &) { return std::optional<int> {}; },
+        [&](const auto &descriptor) {
+          EXPECT_EQ(&descriptor, &surface);
+          return std::optional<int> {20};
+        },
+        [](const auto &) {
+          ADD_FAILURE() << "CPU upload after a successful GPU copy";
+          return std::optional<int> {};
+        });
+      EXPECT_EQ(result, 20);
+    }
   }
 
   TEST(DmabufSurface, FailedLinearImportUploadsWithoutChangingRequestedLayout) {
@@ -92,16 +114,24 @@ namespace {
       surface.direct_import_required = true;
       surface.modifier = 0;  // Explicitly linear managed framebuffer.
       int imports = 0;
+      int copies = 0;
       int uploads = 0;
-      const auto result = egl::import_source_with_cpu_fallback(surface,
+      const auto result = egl::import_source_with_fallbacks(surface,
         [&](const auto &descriptor) {
           ++imports;
           EXPECT_EQ(&descriptor, &surface);
           return std::optional<int> {};
         },
         [&](const auto &descriptor) {
+          EXPECT_EQ(imports, 1);
+          EXPECT_EQ(&descriptor, &surface);
+          ++copies;
+          return std::optional<int> {};
+        },
+        [&](const auto &descriptor) {
           ++uploads;
           EXPECT_EQ(imports, 1);
+          EXPECT_EQ(copies, 1);
           EXPECT_EQ(&descriptor, &surface);
           EXPECT_EQ(descriptor.width, width);
           EXPECT_EQ(descriptor.height, height);
@@ -123,12 +153,15 @@ namespace {
       surface.direct_import_required = true;
       surface.modifier = modifier;
       int imports = 0;
+      int copies = 0;
       int uploads = 0;
-      const auto result = egl::import_source_with_cpu_fallback(surface,
+      const auto result = egl::import_source_with_fallbacks(surface,
         [&](const auto &) { ++imports; return std::optional<int> {}; },
+        [&](const auto &) { ++copies; return std::optional<int> {}; },
         [&](const auto &) { ++uploads; return std::optional<int> {23}; });
       EXPECT_FALSE(result);
       EXPECT_EQ(imports, 1);
+      EXPECT_EQ(copies, 1);
       EXPECT_EQ(uploads, 0);
     }
   }
@@ -136,7 +169,8 @@ namespace {
   TEST(DmabufSurface, FailedCpuUploadRemainsAnImportFailure) {
     egl::surface_descriptor_t surface;
     int uploads = 0;
-    const auto result = egl::import_source_with_cpu_fallback(surface,
+    const auto result = egl::import_source_with_fallbacks(surface,
+      [](const auto &) { return std::optional<int> {}; },
       [](const auto &) { return std::optional<int> {}; },
       [&](const auto &) { ++uploads; return std::optional<int> {}; });
     EXPECT_FALSE(result);

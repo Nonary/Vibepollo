@@ -1684,6 +1684,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
 
     find_program(SUNSHINE_TEST_PYTHON_EXECUTABLE NAMES python3)
     if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+        add_test(NAME test_component_linux_kms_encoder_tiers
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_kms_encoder_tiers.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_linux_kms_encoder_tiers PROPERTIES LABELS "component" TIMEOUT 45)
         if(SUNSHINE_TEST_BASH_EXECUTABLE)
             add_test(NAME test_component_linux_machine_locale
                 COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
@@ -2203,6 +2207,14 @@ if(TARGET linux-truehdr)
     add_test(NAME linux_truehdr_private_context_gpu COMMAND test_linux_truehdr_gpu "${SUNSHINE_TRUEHDR_LINUX_ROOT}" private-context)
     set_tests_properties(linux_truehdr_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu" TIMEOUT 60)
     set_tests_properties(linux_truehdr_private_context_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu" TIMEOUT 60)
+endif()
+
+if(TARGET glad_gles2 AND LIBDRM_FOUND AND SUNSHINE_ENABLE_DRM)
+    add_executable(test_kms_gpu_snapshot test_kms_gpu_snapshot.cpp "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/linux/gpu_snapshot.cpp")
+    target_include_directories(test_kms_gpu_snapshot PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}" ${LIBDRM_INCLUDE_DIRS})
+    target_link_libraries(test_kms_gpu_snapshot PRIVATE glad glad_gles2 nlohmann_json::nlohmann_json gbm ${LIBDRM_LIBRARIES} ${CMAKE_DL_LIBS})
+    add_test(NAME kms_gpu_snapshot COMMAND test_kms_gpu_snapshot)
+    set_tests_properties(kms_gpu_snapshot PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu" TIMEOUT 30)
 endif()
 
 if(TARGET pyrowave-linux)

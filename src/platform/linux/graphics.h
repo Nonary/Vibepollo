@@ -15,6 +15,9 @@
 
 // local includes
 #include "dmabuf_surface.h"
+#if defined(__linux__)
+  #include "gpu_snapshot.h"
+#endif
 #include "misc.h"
 #include "src/logging.h"
 #include "src/platform/common.h"
@@ -254,6 +257,33 @@ namespace egl {
       display_t::pointer egl_display,
       const surface_descriptor_t &xrgb
     );
+
+#if defined(__linux__)
+  // A Vulkan encoder opens EGL on its selected DRM node only after direct import fails.
+  class snapshot_device_t {
+  public:
+    bool copy(gpu_snapshot_t &snapshot, const std::string &node, const surface_descriptor_t &source, const gpu_snapshot_t::import_t &import);
+
+  private:
+    std::chrono::steady_clock::time_point retry_after {};
+    file_t fd;
+    gbm::gbm_t gbm;
+    display_t display;
+  };
+#endif
+
+  // Keep the fallback state on the encoder/capture GL owner thread.
+  class rgb_import_t {
+  public:
+    std::optional<rgb_t> prepare(display_t::pointer display, gbm::device *device, const surface_descriptor_t &surface);
+
+  private:
+#if defined(__linux__)
+    gpu_snapshot_t snapshot;
+    bool snapshot_logged = false;
+    bool direct_logged = false;
+#endif
+  };
 
   rgb_t create_blank(platf::img_t &img);
 

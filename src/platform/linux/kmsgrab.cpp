@@ -2273,13 +2273,9 @@ namespace platf {
           return status;
         }
 
-        auto rgb_opt = egl::import_source(display.get(), surface.sd);
-
+        auto rgb_opt = rgb_import.prepare(display.get(), gbm.get(), surface.sd);
         if (!rgb_opt) {
-          rgb_opt = egl::upload_source(display.get(), surface.sd);
-          if (!rgb_opt) {
-            return capture_e::error;
-          }
+          return capture_e::error;
         }
 
         auto &rgb = *rgb_opt;
@@ -2327,6 +2323,7 @@ namespace platf {
       gbm::gbm_t gbm;
       egl::display_t display;
       egl::ctx_t ctx;
+      egl::rgb_import_t rgb_import;
     };
 
     class display_vram_t: public display_t {

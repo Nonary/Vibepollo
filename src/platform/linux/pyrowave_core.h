@@ -2,11 +2,12 @@
  * @brief Vulkan PyroWave encoder, independent of capture and network lifetimes.
  */
 #pragma once
-#include "dmabuf_surface.h"
+#include "gpu_snapshot.h"
 #include "truehdr.h"
 
 #include <array>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
 #include <vector>
@@ -23,6 +24,7 @@ namespace pyrowave::linux_gpu {
 
   struct source_t {
     const egl::surface_descriptor_t *surface = nullptr;
+    std::function<bool(const egl::surface_descriptor_t &, const egl::gpu_snapshot_t::import_t &)> gpu_snapshot;
     // RAM capture and test images are BGRA8. Stride is in bytes.
     const std::uint8_t *pixels = nullptr;
     int width = 0, height = 0, stride = 0;

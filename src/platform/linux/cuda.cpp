@@ -505,20 +505,13 @@ namespace cuda {
         // For dummy images, use a blank RGB texture instead of importing a DMA-BUF
         rgb = egl::create_blank(img);
       } else if (descriptor.sequence > sequence) {
-        sequence = descriptor.sequence;
-
-        rgb = egl::rgb_t {};
-
-        auto rgb_opt = egl::import_source(display.get(), descriptor.sd);
-
+        auto rgb_opt = rgb_import.prepare(display.get(), gbm.get(), descriptor.sd);
         if (!rgb_opt) {
-          rgb_opt = egl::upload_source(display.get(), descriptor.sd);
-          if (!rgb_opt) {
-            return -1;
-          }
+          return -1;
         }
 
         rgb = std::move(*rgb_opt);
+        sequence = descriptor.sequence;
       }
 
       // Perform the color conversion and scaling in GL
@@ -591,6 +584,7 @@ namespace cuda {
     int width;
 
     std::uint64_t sequence;
+    egl::rgb_import_t rgb_import;
     egl::rgb_t rgb;
 
     registered_resource_t y_res;
@@ -826,17 +820,12 @@ namespace cuda {
       if (descriptor.sequence == 0) {
         rgb = egl::create_blank(img);
       } else if (descriptor.sequence > sequence) {
-        sequence = descriptor.sequence;
-        rgb = {};
-
-        auto imported = egl::import_source(display.get(), descriptor.sd);
+        auto imported = rgb_import.prepare(display.get(), gbm.get(), descriptor.sd);
         if (!imported) {
-          imported = egl::upload_source(display.get(), descriptor.sd);
-          if (!imported) {
-            return -1;
-          }
+          return -1;
         }
         rgb = std::move(*imported);
+        sequence = descriptor.sequence;
       }
 
       sws.load_vram(descriptor, offset_x, offset_y, rgb->tex[0]);
@@ -921,6 +910,7 @@ namespace cuda {
     NV_ENC_BUFFER_FORMAT buffer_format {NV_ENC_BUFFER_FORMAT_UNDEFINED};
     egl::sws_t sws;
     egl::nv12_t nv12;
+    egl::rgb_import_t rgb_import;
     egl::rgb_t rgb;
     registered_resource_t y_res;
     registered_resource_t uv_res;

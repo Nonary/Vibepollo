@@ -10,6 +10,7 @@
 
 // local includes
 #include "graphics.h"
+#include "dmabuf_egl.h"
 #include "src/file_handler.h"
 #include "src/logging.h"
 #include "src/video.h"
@@ -21,6 +22,7 @@
 #include <linux/dma-buf.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 
 extern "C" {
 #include <libavutil/pixdesc.h>
@@ -620,102 +622,10 @@ namespace egl {
     return ctx;
   }
 
-  struct plane_attr_t {
-    EGLAttrib fd;
-    EGLAttrib offset;
-    EGLAttrib pitch;
-    EGLAttrib lo;
-    EGLAttrib hi;
-  };
-
-  inline plane_attr_t get_plane(std::uint32_t plane_indice) {
-    switch (plane_indice) {
-      case 0:
-        return {
-          EGL_DMA_BUF_PLANE0_FD_EXT,
-          EGL_DMA_BUF_PLANE0_OFFSET_EXT,
-          EGL_DMA_BUF_PLANE0_PITCH_EXT,
-          EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT,
-          EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT,
-        };
-      case 1:
-        return {
-          EGL_DMA_BUF_PLANE1_FD_EXT,
-          EGL_DMA_BUF_PLANE1_OFFSET_EXT,
-          EGL_DMA_BUF_PLANE1_PITCH_EXT,
-          EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT,
-          EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT,
-        };
-      case 2:
-        return {
-          EGL_DMA_BUF_PLANE2_FD_EXT,
-          EGL_DMA_BUF_PLANE2_OFFSET_EXT,
-          EGL_DMA_BUF_PLANE2_PITCH_EXT,
-          EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT,
-          EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT,
-        };
-      case 3:
-        return {
-          EGL_DMA_BUF_PLANE3_FD_EXT,
-          EGL_DMA_BUF_PLANE3_OFFSET_EXT,
-          EGL_DMA_BUF_PLANE3_PITCH_EXT,
-          EGL_DMA_BUF_PLANE3_MODIFIER_LO_EXT,
-          EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT,
-        };
-    }
-
-    // Avoid warning
-    return {};
-  }
-
-  /**
-   * @brief Get EGL attributes for eglCreateImage() to import the provided surface.
-   * @param surface The surface descriptor.
-   * @return Vector of EGL attributes.
-   */
-  std::vector<EGLAttrib> surface_descriptor_to_egl_attribs(const surface_descriptor_t &surface) {
-    std::vector<EGLAttrib> attribs;
-
-    attribs.emplace_back(EGL_WIDTH);
-    attribs.emplace_back(surface.width);
-    attribs.emplace_back(EGL_HEIGHT);
-    attribs.emplace_back(surface.height);
-    attribs.emplace_back(EGL_LINUX_DRM_FOURCC_EXT);
-    attribs.emplace_back(surface.fourcc);
-
-    for (auto x = 0; x < 4; ++x) {
-      auto fd = surface.fds[x];
-      if (fd < 0) {
-        continue;
-      }
-
-      auto plane_attr = get_plane(x);
-
-      attribs.emplace_back(plane_attr.fd);
-      attribs.emplace_back(fd);
-      attribs.emplace_back(plane_attr.offset);
-      attribs.emplace_back(surface.offsets[x]);
-      attribs.emplace_back(plane_attr.pitch);
-      attribs.emplace_back(surface.pitches[x]);
-
-      if (surface.modifier != DRM_FORMAT_MOD_INVALID) {
-        attribs.emplace_back(plane_attr.lo);
-        attribs.emplace_back(surface.modifier & 0xFFFFFFFF);
-        attribs.emplace_back(plane_attr.hi);
-        attribs.emplace_back(surface.modifier >> 32);
-      }
-    }
-
-    attribs.emplace_back(EGL_NONE);
-    return attribs;
-  }
-
   std::optional<rgb_t> import_source(display_t::pointer egl_display, const surface_descriptor_t &xrgb) {
-    auto attribs = surface_descriptor_to_egl_attribs(xrgb);
-
     rgb_t rgb {
       egl_display,
-      eglCreateImage(egl_display, EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, nullptr, attribs.data()),
+      create_dmabuf_image(egl_display, xrgb),
       gl::tex_t::make(1)
     };
 
@@ -754,6 +664,71 @@ namespace egl {
     return rgb;
   }
 
+#if defined(__linux__)
+  bool snapshot_device_t::copy(gpu_snapshot_t &snapshot, const std::string &node, const surface_descriptor_t &source, const gpu_snapshot_t::import_t &import) {
+    if (!display) {
+      if (node.empty() || std::chrono::steady_clock::now() < retry_after) {
+        return false;
+      }
+      retry_after = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+      file_t opened {open(node.c_str(), O_RDWR | O_CLOEXEC)};
+      if (opened.el < 0 || !gbm::create_device) {
+        return false;
+      }
+      gbm::gbm_t device {gbm::create_device(opened.el)};
+      if (!device || !(display = make_display(device.get()))) {
+        return false;
+      }
+      gbm = std::move(device);
+      fd = std::move(opened);
+    }
+    return snapshot.copy(display.get(), gbm.get(), source, import);
+  }
+#endif
+
+  std::optional<rgb_t> rgb_import_t::prepare(display_t::pointer display, gbm::device *device, const surface_descriptor_t &surface) {
+    bool context_restored = true;
+    auto copy_source = [&](const auto &input) -> std::optional<rgb_t> {
+#if defined(__linux__)
+      // Don't overwrite a snapshot still sampled by the previous conversion.
+      if (snapshot.has_output()) {
+        gl::ctx.Finish();
+      }
+      const auto current = eglGetCurrentContext();
+      const auto api = eglQueryAPI();
+      std::optional<rgb_t> imported;
+      snapshot.copy(display, device, input, [&](const auto &candidate) {
+        imported = import_source(display, candidate);
+        return imported.has_value();
+      });
+      context_restored = eglGetCurrentContext() == current && eglQueryAPI() == api;
+      if (!context_restored) {
+        BOOST_LOG(error) << "Couldn't restore GL context after the GPU DMA-BUF copy";
+        return std::nullopt;
+      }
+      if (imported && !snapshot_logged) {
+        BOOST_LOG(info) << "Using GPU DMA-BUF snapshot fallback for capture";
+        snapshot_logged = true;
+      }
+      return imported;
+#endif
+      return std::nullopt;
+    };
+    return import_source_with_fallbacks(surface,
+      [&](const auto &input) {
+        auto direct = import_source(display, input);
+#if defined(__linux__)
+        if (direct && input.direct_import_required && !direct_logged) {
+          BOOST_LOG(info) << "Using direct KMS framebuffer DMA-BUF import";
+          direct_logged = true;
+        }
+#endif
+        return direct;
+      },
+      copy_source,
+      [&](const auto &input) { return context_restored ? upload_source(display, input) : std::nullopt; });
+  }
+
   std::optional<rgb_t> upload_source(display_t::pointer egl_display, const surface_descriptor_t &xrgb) {
     if (!can_cpu_upload_surface(xrgb)) {
       BOOST_LOG(error) << "CPU DMA-BUF upload requires a linear framebuffer layout; managed implicit imports cannot be mapped safely.";
@@ -762,13 +737,15 @@ namespace egl {
     if (xrgb.direct_import_required) {
       static std::atomic_bool warned {false};
       if (!warned.exchange(true, std::memory_order_relaxed)) {
-        BOOST_LOG(warning) << "Managed virtual framebuffer rejected direct GPU import (fourcc="
+        BOOST_LOG(warning) << "Managed virtual framebuffer could not use GPU import or copy (fourcc="
                            << util::hex(xrgb.fourcc).to_string_view() << ", modifier="
                            << util::hex(xrgb.modifier).to_string_view()
                            << "); using the linear CPU upload fallback.";
       }
     }
-    if (xrgb.fds[0] < 0 || xrgb.width <= 0 || xrgb.height <= 0 || xrgb.pitches[0] == 0 || xrgb.pitches[0] % sizeof(std::uint32_t) != 0) {
+    if (xrgb.fds[0] < 0 || xrgb.fds[1] >= 0 || xrgb.fds[2] >= 0 || xrgb.fds[3] >= 0 ||
+        xrgb.width <= 0 || xrgb.height <= 0 || xrgb.pitches[0] % sizeof(std::uint32_t) ||
+        static_cast<unsigned>(xrgb.width) > xrgb.pitches[0] / sizeof(std::uint32_t)) {
       return std::nullopt;
     }
 
@@ -821,22 +798,36 @@ namespace egl {
     const auto row_bytes = static_cast<std::size_t>(xrgb.pitches[0]);
     const auto height = static_cast<std::size_t>(xrgb.height);
     const auto offset = static_cast<std::size_t>(xrgb.offsets[0]);
-    if (height > std::numeric_limits<std::size_t>::max() / row_bytes || offset > std::numeric_limits<std::size_t>::max() - row_bytes * height) {
+    const auto active_bytes = static_cast<std::size_t>(xrgb.width) * sizeof(std::uint32_t);
+    const auto available = std::numeric_limits<std::size_t>::max() - offset;
+    if (active_bytes > available || height - 1 > (available - active_bytes) / row_bytes) {
       return std::nullopt;
     }
-    const auto mapped_size = offset + row_bytes * height;
+    const auto mapped_size = offset + row_bytes * (height - 1) + active_bytes;
+    struct stat backing {};
+    if (fstat(xrgb.fds[0], &backing) || backing.st_size < 0 || static_cast<std::uintmax_t>(backing.st_size) < mapped_size) {
+      return std::nullopt;
+    }
     void *mapped = mmap(nullptr, mapped_size, PROT_READ, MAP_SHARED, xrgb.fds[0], 0);
     if (mapped == MAP_FAILED) {
       BOOST_LOG(error) << "Couldn't map RGB DMA-BUF for CPU upload: " << strerror(errno);
       return std::nullopt;
     }
 
-    dma_buf_sync sync {.flags = DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ};
-    (void) ioctl(xrgb.fds[0], DMA_BUF_IOCTL_SYNC, &sync);
+    auto unmap = util::fail_guard([&] { munmap(mapped, mapped_size); });
+    auto sync_access = [&](std::uint64_t flags) {
+      dma_buf_sync sync {.flags = flags | DMA_BUF_SYNC_READ};
+      int status;
+      do {
+        status = ioctl(xrgb.fds[0], DMA_BUF_IOCTL_SYNC, &sync);
+      } while (status < 0 && (errno == EAGAIN || errno == EINTR));
+      return status == 0;
+    };
+    if (!sync_access(DMA_BUF_SYNC_START)) {
+      return std::nullopt;
+    }
+    auto finish_read = util::fail_guard([&] { sync_access(DMA_BUF_SYNC_END); });
     auto cleanup = util::fail_guard([&]() {
-      sync.flags = DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ;
-      (void) ioctl(xrgb.fds[0], DMA_BUF_IOCTL_SYNC, &sync);
-      munmap(mapped, mapped_size);
       gl::ctx.PixelStorei(GL_UNPACK_ROW_LENGTH, 0);
       gl::ctx.BindTexture(GL_TEXTURE_2D, 0);
     });
@@ -861,6 +852,10 @@ namespace egl {
       static_cast<const std::uint8_t *>(mapped) + offset
     );
     const auto upload_error = gl::ctx.GetError();
+    finish_read.disable();
+    if (!sync_access(DMA_BUF_SYNC_END)) {
+      return std::nullopt;
+    }
     if (upload_error != GL_NO_ERROR) {
       BOOST_LOG(error) << "CPU DMA-BUF texture upload failed: "
                        << util::hex(upload_error).to_string_view();
