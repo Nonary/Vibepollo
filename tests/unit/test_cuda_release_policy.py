@@ -140,10 +140,15 @@ source "$REPO/packaging/linux/Arch/PKGBUILD"
 srcdir="$PWD"
 pkgdir="$PWD/pkg"
 ctest() { echo ctest >> "$GATE_LOG"; return "$CTEST_RESULT"; }
-cmake() { [[ "$1" == --install && "$2" == build ]]; echo package >> "$GATE_LOG"; }
+cmake() {
+  [[ "$1" == --install && "$2" == build ]] || return 97
+  install -Dm4755 /dev/null "$DESTDIR/usr/lib/$pkgname/kwin-bridge/libvibeshine-kwin-gpu.so"
+  echo package >> "$GATE_LOG"
+}
 check
 cd "$srcdir"
 package
+[[ "$(stat -c %a "$pkgdir/usr/lib/$pkgname/kwin-bridge/libvibeshine-kwin-gpu.so")" == 644 ]]
 '''
             for name, elf, ctest_result, gates in (
                     ("success", "fixture.sm_61.cubin", "0", ["version", "pascal", "ctest", "package"]),
