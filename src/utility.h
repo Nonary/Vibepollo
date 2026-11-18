@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cctype>
 #include <condition_variable>
+#include <cstddef>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -207,10 +208,10 @@ namespace util {
 
     buf.reserve(data_len);
 
-    auto *data = (uint8_t *) &_struct;
+    auto const *data = reinterpret_cast<std::byte const *>(&_struct);
 
     for (size_t x = 0; x < data_len; ++x) {
-      buf.push_back(data[x]);
+      buf.push_back(std::to_integer<uint8_t>(data[x]));
     }
   }
 
@@ -308,6 +309,10 @@ namespace util {
     std::string hex;
     hex.resize(str_size);
 
+    if (begin == end) {
+      return hex;
+    }
+
     const char _bits[16] {
       '0',
       '1',
@@ -368,7 +373,7 @@ namespace util {
       return true;
     };
 
-    auto buf_size = std::count_if(std::begin(hex), std::end(hex), is_convertable) / 2;
+    auto buf_size = std::min<std::size_t>(std::count_if(std::begin(hex), std::end(hex), is_convertable) / 2, sizeof(T));
     auto padding = sizeof(T) - buf_size;
 
     const char *data = hex.data() + hex.size() - 1;

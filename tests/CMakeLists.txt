@@ -2324,3 +2324,10 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
     set_tests_properties(test_component_upnp_igd_status
         PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
+
+sunshine_register_component(NAME test_component_utility_hex TEST_SOURCE unit/test_utility_hex.cpp
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
+
+sunshine_register_component(NAME test_component_round_robin TEST_SOURCE unit/test_round_robin.cpp)
+sunshine_register_component(NAME test_component_stat_tracker_bounds TEST_SOURCE unit/test_stat_tracker_bounds.cpp
+    LINK_LIBRARIES Boost::format)
