@@ -1906,10 +1906,25 @@ namespace platf {
       return std::nullopt;
     }
 
+    // A restore Windows refused is retried every second; only the first failure
+    // in a row is logged as a warning. Guarded by mouse_keys_mutex.
+    bool mouse_keys_restore_failing = false;
+
+    /// @pre `mouse_keys_mutex` is held.
+    void log_mouse_keys_restore_failure(const std::string_view what, const DWORD winerr) {
+      if (mouse_keys_restore_failing) {
+        BOOST_LOG(debug) << what << ": "sv << winerr;
+      } else {
+        BOOST_LOG(warning) << what << ": "sv << winerr << "; retrying every second."sv;
+      }
+      mouse_keys_restore_failing = true;
+    }
+
     /// @pre `mouse_keys_mutex` is held.
     void release_mouse_keys_locked() {
       enabled_mouse_keys = false;
       mouse_keys_restore_deferred = false;
+      mouse_keys_restore_failing = false;
       clear_mouse_keys_record();
     }
 
@@ -1966,7 +1981,7 @@ namespace platf {
      *
      * Only the settings Sunshine still holds are restored, so if the current
      * settings cannot be read, nothing is written: Sunshine keeps ownership and
-     * the record, and a later stream end or startup retries.
+     * the record, and the caller retries.
      *
      * @pre `mouse_keys_mutex` is held and `enabled_mouse_keys` is true.
      */
@@ -1974,8 +1989,7 @@ namespace platf {
       MOUSEKEYS current = {};
       current.cbSize = sizeof(current);
       if (!SystemParametersInfoW(SPI_GETMOUSEKEYS, 0, &current, 0)) {
-        auto winerr = GetLastError();
-        BOOST_LOG(warning) << "Unable to read the current state of Mouse Keys to restore it: "sv << winerr;
+        log_mouse_keys_restore_failure("Unable to read the current state of Mouse Keys to restore it"sv, GetLastError());
         return mouse_keys_restore_e::failed;
       }
       auto target = mouse_keys_restore_target(current, previous_mouse_keys_state);
@@ -1986,8 +2000,7 @@ namespace platf {
       }
 
       if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &target, 0)) {
-        auto winerr = GetLastError();
-        BOOST_LOG(warning) << "Unable to restore original state of Mouse Keys: "sv << winerr;
+        log_mouse_keys_restore_failure("Unable to restore original state of Mouse Keys"sv, GetLastError());
         return mouse_keys_restore_e::failed;
       }
 
@@ -2002,21 +2015,64 @@ namespace platf {
         release_mouse_keys_locked();
         return mouse_keys_restore_e::restored;
       }
+      mouse_keys_restore_failing = false;
       return mouse_keys_restore_e::kept_on;
     }
 
+    void poll_mouse_keys_restore();
+
+    /// @pre `mouse_keys_mutex` is held.
+    void schedule_mouse_keys_poll_locked() {
+      if (!mouse_keys_restore_poll_scheduled) {
+        mouse_keys_restore_poll_scheduled = true;
+        task_pool.pushDelayed(poll_mouse_keys_restore, 1s);
+      }
+    }
+
     /**
-     * @brief While Mouse Keys is kept on, restore it once no mouse is connected.
+     * @brief Restore Mouse Keys now, or keep it on and retry.
      *
-     * With no mouse connected, restoring is safe: the next mouse to arrive is
-     * counted normally. An enumeration error proves nothing, so it only retries.
-     * A later stream's end also retries the restore.
+     * A restore that would hide the cursor is deferred until no mouse is
+     * connected. One that Windows refused, including a failed read of the current
+     * settings, is retried every second.
+     *
+     * @pre `mouse_keys_mutex` is held and `enabled_mouse_keys` is true.
      */
-    void poll_deferred_mouse_keys_restore() {
+    void restore_or_defer_mouse_keys_locked() {
+      switch (restore_mouse_keys_locked()) {
+        case mouse_keys_restore_e::restored:
+          return;
+        case mouse_keys_restore_e::failed:
+          schedule_mouse_keys_poll_locked();
+          return;
+        case mouse_keys_restore_e::kept_on:
+          if (!mouse_keys_restore_deferred) {
+            BOOST_LOG(warning) << "Keeping Mouse Keys on: a mouse may have reconnected while it was on, and if Windows lost track of it, "
+                                  "turning Mouse Keys off would hide the cursor. It will be restored once no mouse is connected."sv;
+          }
+          mouse_keys_restore_deferred = true;
+          schedule_mouse_keys_poll_locked();
+          return;
+      }
+    }
+
+    /**
+     * @brief Retry a restore that Windows refused or that was deferred.
+     *
+     * A refused restore is retried like a stream end. A deferred one runs once no
+     * mouse is connected: the next mouse to arrive is then counted normally. An
+     * enumeration error or a failed read proves nothing, so it only retries. A
+     * later stream's end also retries the restore.
+     */
+    void poll_mouse_keys_restore() {
       const auto lock = std::lock_guard(mouse_keys_mutex);
-      if (!mouse_keys_restore_deferred || !enabled_mouse_keys) {
+      mouse_keys_restore_poll_scheduled = false;
+      if (!enabled_mouse_keys) {
         mouse_keys_restore_deferred = false;
-        mouse_keys_restore_poll_scheduled = false;
+        return;
+      }
+      if (!mouse_keys_restore_deferred) {
+        restore_or_defer_mouse_keys_locked();
         return;
       }
 
@@ -2027,39 +2083,17 @@ namespace platf {
         if (same_mouse_keys(target, current)) {
           BOOST_LOG(info) << "Mouse Keys was changed since the stream ended; keeping the new settings."sv;
           release_mouse_keys_locked();
-          mouse_keys_restore_poll_scheduled = false;
           return;
         }
 
         if (raw_input_mouse_present() == false && SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &target, 0)) {
           BOOST_LOG(info) << "No mouse is connected anymore; restored the original state of Mouse Keys."sv;
           release_mouse_keys_locked();
-          mouse_keys_restore_poll_scheduled = false;
           return;
         }
       }
 
-      task_pool.pushDelayed(poll_deferred_mouse_keys_restore, 1s);
-    }
-
-    /**
-     * @brief Restore Mouse Keys now, or keep it on and retry once no mouse is connected.
-     *
-     * @pre `mouse_keys_mutex` is held and `enabled_mouse_keys` is true.
-     */
-    void restore_or_defer_mouse_keys_locked() {
-      if (restore_mouse_keys_locked() != mouse_keys_restore_e::kept_on) {
-        return;
-      }
-      if (!mouse_keys_restore_deferred) {
-        BOOST_LOG(warning) << "Keeping Mouse Keys on: a mouse may have reconnected while it was on, and if Windows lost track of it, "
-                              "turning Mouse Keys off would hide the cursor. It will be restored once no mouse is connected."sv;
-      }
-      mouse_keys_restore_deferred = true;
-      if (!mouse_keys_restore_poll_scheduled) {
-        mouse_keys_restore_poll_scheduled = true;
-        task_pool.pushDelayed(poll_deferred_mouse_keys_restore, 1s);
-      }
+      schedule_mouse_keys_poll_locked();
     }
   }  // namespace
 

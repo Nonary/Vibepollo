@@ -159,6 +159,7 @@ void restart_host() {
   enabled_mouse_keys = false;
   mouse_keys_restore_deferred = false;
   mouse_keys_restore_poll_scheduled = false;
+  mouse_keys_restore_failing = false;
   previous_mouse_keys_state = {};
   mouse_keys_record_owner.reset();
   task_pool.delayed.clear();
@@ -235,9 +236,16 @@ int main(int argc, char **argv) {
   check(desktop == original && !enabled_mouse_keys, "failed enable can retry");
 
   reset(); enable_mouse_keys(); fail_set = true; restore_mouse_keys();
-  check(enabled_mouse_keys && previous_mouse_keys_state == original && record_exists(),
-        "failed restoration retains original snapshot");
-  fail_set = false; enable_mouse_keys(); restore_mouse_keys();
+  check(enabled_mouse_keys && previous_mouse_keys_state == original && record_exists() && task_pool.delayed.size() == 1,
+        "failed restoration retains original snapshot and queues a retry");
+  run_polls();
+  check(enabled_mouse_keys && desktop == streaming && task_pool.delayed.size() == 1,
+        "retry keeps polling while Windows refuses the restore");
+  fail_set = false; run_polls();
+  check(released(original), "retry restores a refused write without another stream or restart");
+
+  reset(); enable_mouse_keys(); fail_set = true; restore_mouse_keys();
+  fail_set = false; enable_mouse_keys(); restore_mouse_keys(); run_polls();
   check(released(original), "later cleanup retries restoration without replacing original baseline");
 
   reset(); enable_mouse_keys(); restore_mouse_keys(); restore_mouse_keys();
@@ -320,16 +328,35 @@ int main(int argc, char **argv) {
   check(released(user_speed), "retry after a failed read restores only the settings Sunshine still holds");
 
   defer_restore(); desktop.iMaxSpeed = 63; restart_host(); fail_get = true; sets = 0; recover_mouse_keys();
-  check(enabled_mouse_keys && desktop.iMaxSpeed == 63 && desktop.dwFlags == streaming.dwFlags && sets == 0 && record_exists(),
-        "failed read during same-logon recovery keeps a user change and ownership");
-  fail_get = false; raw_mice = 0; restore_mouse_keys();
-  check(released(user_speed), "stream end after a failed recovery read restores only the settings Sunshine still holds");
+  check(enabled_mouse_keys && desktop.iMaxSpeed == 63 && desktop.dwFlags == streaming.dwFlags && sets == 0 && record_exists() &&
+          task_pool.delayed.size() == 1,
+        "failed read during same-logon recovery keeps a user change and ownership, and queues a retry");
+  fail_get = false; run_polls();
+  check(enabled_mouse_keys && mouse_keys_restore_deferred && desktop.iMaxSpeed == 63 && desktop.dwFlags == streaming.dwFlags &&
+          task_pool.delayed.size() == 1,
+        "retry after a failed recovery read resumes the deferral while the mouse stays connected");
+  raw_mice = 0; run_polls();
+  check(released(user_speed), "resumed deferral after a failed recovery read restores only the settings Sunshine still holds");
 
+  // A failed first read is retried without another stream or restart.
   reset(); enable_mouse_keys(); fail_get = true; sets = 0; restore_mouse_keys();
-  check(enabled_mouse_keys && desktop == streaming && sets == 0 && record_exists(),
-        "failed read at stream end writes nothing and keeps ownership");
-  fail_get = false; restore_mouse_keys();
-  check(released(original), "next stream end after a failed read restores the original settings");
+  check(enabled_mouse_keys && desktop == streaming && sets == 0 && record_exists() && task_pool.delayed.size() == 1,
+        "failed first read at stream end writes nothing, keeps ownership and queues a retry");
+  run_polls(); run_polls();
+  check(enabled_mouse_keys && desktop == streaming && sets == 0 && record_exists() && task_pool.delayed.size() == 1,
+        "retry keeps polling without writing while the read fails");
+  fail_get = false; run_polls();
+  check(released(original), "retry restores once the read succeeds, without another stream or restart");
+
+  reset(); enable_mouse_keys(); restart_host(); fail_get = true; sets = 0; recover_mouse_keys();
+  check(enabled_mouse_keys && desktop == streaming && sets == 0 && record_exists() && task_pool.delayed.size() == 1,
+        "failed first read during startup recovery writes nothing and queues a retry");
+  fail_get = false; run_polls();
+  check(released(original), "retry restores after a failed recovery read without another stream or restart");
+
+  reset(); enable_mouse_keys(); fail_get = true; restore_mouse_keys();
+  fail_get = false; restore_mouse_keys(); run_polls();
+  check(released(original), "a stream end that restores first leaves the queued retry nothing to do");
 
   defer_restore(); desktop.iTimeToMaxSpeed = 2500; restart_host(); recover_mouse_keys();
   check(enabled_mouse_keys && mouse_keys_restore_deferred && desktop.iTimeToMaxSpeed == 2500 &&
