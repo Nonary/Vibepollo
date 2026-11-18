@@ -415,6 +415,8 @@ namespace platf::publish {
       if (poll_thread.joinable()) {
         poll_thread.join();
       }
+
+      poll.reset();
     }
   };
 
@@ -445,6 +447,12 @@ namespace platf::publish {
       return nullptr;
     }
 
-    return std::make_unique<deinit_t>(std::thread {avahi::simple_poll_loop, poll.get()});
+    return std::make_unique<deinit_t>(std::thread {[]() {
+      avahi::simple_poll_loop(poll.get());
+      // The poll loop no longer services this client after shutdown or failure.
+      // Its entry group is owned by the client, so never retain a dangling group.
+      client.reset();
+      group = nullptr;
+    }});
   }
 }  // namespace platf::publish
