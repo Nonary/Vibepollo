@@ -7,6 +7,7 @@
 #include "src/logging.h"
 #include "src/platform/windows/display_helper_coordinator.h"
 #include "src/platform/windows/misc.h"
+#include "src/posture_state.h"
 
 #include <algorithm>
 #include <array>
@@ -832,6 +833,14 @@ namespace VDISPLAY {
       return VDISPLAY_SUNSHINE::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays, requested_resolution_only);
     }
     if (requested_resolution_only) return std::nullopt;
+    posture::display_key_t posture_display_key {};
+    std::memcpy(posture_display_key.data(), &guid, posture_display_key.size());
+    if (const auto posture_size = posture::desired_size(posture_display_key)) {
+      // The SudoVDA driver has a static EDID and no size field or IOCTL, so the posture size cannot be applied.
+      BOOST_LOG(warning) << "Posture: SudoVDA cannot report a custom physical size; ignoring requested "
+                         << posture_size->width_mm << 'x' << posture_size->height_mm
+                         << " mm (diagonal " << posture::size_diagonal_mm(*posture_size) << " mm) and keeping the driver's fixed monitor size. Use the bundled virtual display driver for touch posture sizing.";
+    }
     return VDISPLAY_SUDOVDA::createVirtualDisplay(s_client_uid, s_client_name, s_hdr_profile, width, height, fps, guid, base_fps_millihz, framegen_refresh_active, framegen_refresh_multiplier, hdr_requested, allow_pending_enumeration, replace_existing, preserve_peer_displays);
   }
 
@@ -875,13 +884,23 @@ namespace VDISPLAY {
   bool removeVirtualDisplay(const GUID &guid) {
     auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
     if (!borrowed_output_mutation) return false;
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::removeVirtualDisplay(guid) : VDISPLAY_SUDOVDA::removeVirtualDisplay(guid);
+    const bool removed = use_sunshine_driver() ? VDISPLAY_SUNSHINE::removeVirtualDisplay(guid) : VDISPLAY_SUDOVDA::removeVirtualDisplay(guid);
+    if (removed) {
+      posture::display_key_t posture_display_key {};
+      std::memcpy(posture_display_key.data(), &guid, posture_display_key.size());
+      posture::forget_display(posture_display_key);
+    }
+    return removed;
   }
 
   bool removeAllVirtualDisplays() {
     auto borrowed_output_mutation = display_helper::borrow::native_mutation_scope_t::enter(display_helper::borrow::helper_process().load(std::memory_order_acquire));
     if (!borrowed_output_mutation) return false;
-    return use_sunshine_driver() ? VDISPLAY_SUNSHINE::removeAllVirtualDisplays() : VDISPLAY_SUDOVDA::removeAllVirtualDisplays();
+    const bool removed = use_sunshine_driver() ? VDISPLAY_SUNSHINE::removeAllVirtualDisplays() : VDISPLAY_SUDOVDA::removeAllVirtualDisplays();
+    if (removed) {
+      posture::forget_all_displays();
+    }
+    return removed;
   }
 
   void schedule_virtual_display_recovery_monitor(const VirtualDisplayRecoveryParams &params) {

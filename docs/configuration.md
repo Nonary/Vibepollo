@@ -2442,6 +2442,101 @@ These settings are host-wide and are not application runtime overrides.
     </tr>
 </table>
 
+### touch_posture_diagonal_mm
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Physical screen diagonal, in millimetres, that the Vibepollo virtual display reports to Windows for touch-primary
+            clients: clients that send <code>clientPosture</code> <code>phone</code>, <code>handheld</code> or <code>tablet</code>
+            (or <code>clientTouch=1</code> without a posture), and paired clients marked as a touch device that send no posture.
+            Every such client gets this one diagonal, whatever its own screen size, resolution or aspect ratio; the stream
+            resolution only decides how the diagonal is split into width and height. Windows docks its touch keyboard
+            only on small displays, so the value must be between 100 and 419 (16.5 in); anything else is ignored with a
+            warning in the log and the default is used. Requires the Vibepollo virtual display driver.
+            See docs/touch-posture.md.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            356
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            touch_posture_diagonal_mm = 330
+            @endcode</td>
+    </tr>
+</table>
+
+### touch_tablet_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Windows only. Windows switches to tablet behaviour (touch keyboard for text fields, tablet taskbar) only when it
+            believes the machine is a convertible whose keyboard is detached or folded back. While a touch-primary client
+            streams (see <code>touch_posture_diagonal_mm</code>) the host reports exactly that to Windows through Windows' own
+            laptop/slate indicator; when no touch-primary client streams, or the client reports a laptop or desktop posture
+            (keyboard attached), the host reports a laptop. Clients change it live through the <code>/posture</code> endpoint.
+            See docs/touch-posture.md.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            enabled
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            touch_tablet_mode = disabled
+            @endcode</td>
+    </tr>
+</table>
+
+### handheld_mode
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Windows only. What a client that reports the <code>handheld</code> class gets while it streams.
+            <code>xbox_fullscreen</code> reports the host as a tablet (see <code>touch_tablet_mode</code>) and asks
+            Windows for the Xbox full screen experience; where Windows cannot enter it (older build, or no home app
+            chosen under Settings &gt; Gaming &gt; Xbox mode) the handheld client gets tablet mode. <code>tablet</code> never asks for the Xbox full screen experience.
+            <code>desktop</code> treats handheld clients like
+            keyboard-attached desktops. A client can override this with its own host mode in the web UI.
+            Has no effect when <code>touch_tablet_mode</code> is disabled. See docs/touch-posture.md.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            xbox_fullscreen
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Choices</td>
+        <td colspan="2">@code{}
+            xbox_fullscreen
+            tablet
+            desktop
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            handheld_mode = tablet
+            @endcode</td>
+    </tr>
+</table>
+
 ### minimum_fps_target
 
 <table>

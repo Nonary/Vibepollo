@@ -8,6 +8,7 @@
 #include "config.h"
 #include "framegen_policy.h"
 #include "hdr_stream_policy.h"
+#include "posture_size.h"
 #include "remote_session.h"
 
 #include <array>
@@ -121,6 +122,9 @@ namespace rtsp_stream {
     // Moonlight's VRR request passed its launch-time VSync, display-refresh,
     // and adaptive-headroom checks. The renderer may still fall back later.
     bool client_vrr_requested = false;
+    // Validated clientPosture/clientTouch/clientDiagonalMm/clientDpi launch arguments plus the
+    // paired-client touch device flag. Empty hints keep the display size exactly as before.
+    posture::hints_t client_posture;
     bool requested_resolution_only = false;
     std::string virtual_display_catalog_error;
     bool client_display_mode_override;

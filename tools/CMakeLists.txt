@@ -119,7 +119,6 @@ add_executable(sunshine_end_stream_hotkey end_stream_hotkey.cpp)
 target_link_libraries(sunshine_end_stream_hotkey PRIVATE user32 wtsapi32)
 target_compile_definitions(sunshine_end_stream_hotkey PRIVATE _WIN32_WINNT=0x0602)
 target_compile_options(sunshine_end_stream_hotkey PRIVATE ${SUNSHINE_COMPILE_OPTIONS})
-
 # Display settings helper: detached helper that applies/reverts display settings via IPC.
 # One exe hosts both engines (legacy + v2), selected by --engine= or persisted state.
 add_executable(sunshine_display_helper

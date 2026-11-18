@@ -236,6 +236,12 @@ const virtualLayoutOptions = [
   ),
 ];
 
+const handheldModeOptions = [
+  option('xbox_fullscreen', 'config.handheld_mode_xbox_fullscreen'),
+  option('tablet', 'config.handheld_mode_tablet'),
+  option('desktop', 'config.handheld_mode_desktop'),
+];
+
 const virtualScaleOptions = [
   option('-1', 'ui.settings.options.virtual_scale.recommended'),
   option('0', 'ui.settings.options.virtual_scale.preserve'),
@@ -907,6 +913,17 @@ export const settingsCategories: SettingsCategory[] = [
           boolean('always_send_scancodes', { platform: 'windows' }),
           boolean('high_resolution_scrolling'),
           boolean('native_pen_touch', { platform: 'windows' }),
+          boolean('touch_tablet_mode', { platform: 'windows' }),
+          select('handheld_mode', handheldModeOptions, {
+            platform: 'windows',
+            visibleWhen: { key: 'touch_tablet_mode', notEquals: false },
+          }),
+          number('touch_posture_diagonal_mm', {
+            min: 100,
+            max: 419,
+            step: 1,
+            platform: 'windows',
+          }),
         ],
       },
       {
@@ -1233,6 +1250,9 @@ export const settingsDefaults: Record<string, unknown> = {
   always_send_scancodes: true,
   high_resolution_scrolling: true,
   native_pen_touch: true,
+  touch_tablet_mode: true,
+  handheld_mode: 'xbox_fullscreen',
+  touch_posture_diagonal_mm: 356,
   key_repeat_delay: 500,
   key_repeat_frequency: 24.9,
   install_steam_audio_drivers: true,

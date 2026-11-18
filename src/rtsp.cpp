@@ -234,6 +234,7 @@ namespace rtsp_stream {
     snapshot->force_sdr = force_sdr;
     snapshot->client_vrr_requested = client_vrr_requested;
     snapshot->perm = perm;
+    snapshot->client_posture = client_posture;
     snapshot->fps = fps;
     // Copied, not moved: the io_context thread still owns the original session.
     // stream::session::alloc() moves these out of the clone on the startup worker.
