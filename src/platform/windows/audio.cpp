@@ -869,12 +869,13 @@ namespace platf::audio {
         status = audio_capture->GetNextPacketSize(&packet_size)
       ) {
         DWORD buffer_flags;
+        UINT64 device_position = 0;
         UINT64 packet_qpc = 0;
         status = audio_capture->GetBuffer(
           (BYTE **) &sample_aligned.samples,
           &block_aligned.audio_sample_size,
           &buffer_flags,
-          nullptr,
+          &device_position,
           &packet_qpc
         );
 
@@ -896,8 +897,9 @@ namespace platf::audio {
         if (continuous_buffer) {
           auto valid = !(buffer_flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR) &&
                        packet_qpc <= static_cast<UINT64>(INT64_MAX) &&
-                       continuous_buffer->put(static_cast<std::int64_t>(packet_qpc), block_aligned.audio_sample_size,
-                                              sample_aligned.samples, buffer_flags & AUDCLNT_BUFFERFLAGS_SILENT);
+                       continuous_buffer->put(static_cast<std::int64_t>(packet_qpc), device_position, block_aligned.audio_sample_size,
+                                              sample_aligned.samples, buffer_flags & AUDCLNT_BUFFERFLAGS_SILENT,
+                                              buffer_flags & AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY);
           audio_capture->ReleaseBuffer(block_aligned.audio_sample_size);
           if (!valid && !timestamp_warning_logged) {
             // An uncertain timestamp is not endpoint invalidation. Keep the
