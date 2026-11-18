@@ -29,7 +29,9 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: Test numeric version allocation contracts
-        run: python -m unittest discover -s scripts/tests -p test_numeric_release.py
+        run: |
+          python -m unittest discover -s scripts/tests -p test_numeric_release.py
+          python -m unittest discover -s scripts/tests -p test_shared_feature_line.py
       - name: Resolve immutable numeric candidate
         id: version
         env:

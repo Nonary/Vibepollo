@@ -76,6 +76,16 @@ int main() {
                                           {"version", "2.0.16"}, {"source_commit", std::string(40, 'd')}};
   auto embedded_numeric_nightly = with_body(numeric_nightly);
   assert(release_selection::verified_nightly_release(embedded_numeric_nightly, "2.0.16"));
+  for (const auto *installed : {"2.14.8", "2.17.6"}) {
+    auto aligned = numeric_nightly;
+    aligned["tag_name"] = "2.18.0";
+    aligned["nightly_metadata"]["tag"] = "2.18.0";
+    aligned["nightly_metadata"]["version"] = "2.18.0";
+    assert(select(json::array({aligned}), installed, true)["tag_name"] == "2.18.0");
+    assert(select(json::array({aligned}), installed, false).is_null());
+    assert(select(json::array({aligned}), "2.18.1", true).is_null());
+    assert(select(json::array({release("2.19.0")}), "2.18.1", false)["tag_name"] == "2.19.0");
+  }
   auto non_prerelease_numeric = embedded_numeric_nightly;
   non_prerelease_numeric["prerelease"] = false;
   assert(!release_selection::verified_nightly_release(non_prerelease_numeric, "2.0.16"));
