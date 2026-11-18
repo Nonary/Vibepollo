@@ -120,9 +120,9 @@ def validate_live_numeric_version(repository, tag, commit, channel="nightly"):
     releases = json.loads(run("gh", "api", "--paginate", "--slurp", f"repos/{repository}/releases?per_page=100"))
     refs, channels = tag_refs()
     previous = previous_successful_nightly(repository, releases)
-    expected = numeric_release.resolve(releases, refs, commit,
-                                       os.environ["DAILY_RELEASE_SOURCE_BRANCH"], channel, channels,
-                                       previous)
+    expected = numeric_release.resolve_live(
+        repository, releases, refs, commit, os.environ["DAILY_RELEASE_SOURCE_BRANCH"],
+        channel, channels, previous, require_tip=False)
     if expected.get("should_release") != "true" or expected.get("tag") != tag:
         raise ValueError("Published release state changed during the build; rerun with a current numeric version")
 
@@ -177,8 +177,8 @@ def resolve():
             # allocated above every published release.
             numeric_release.warn(f"Previous nightly {previous['tag']} is not an ancestor of {branch}; history was rewound")
     refs, tag_channels = tag_refs()
-    info = numeric_release.resolve(releases, refs, commit, branch, "nightly", tag_channels,
-                                   previous)
+    info = numeric_release.resolve_live(repository, releases, refs, commit, branch,
+                                        "nightly", tag_channels, previous)
     info.update({"stable_anchor_tag": stable_tag, "stable_anchor_commit": stable_commit})
     if info.get("should_release") != "true":
         info["should_build"] = "false"

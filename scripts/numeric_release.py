@@ -5,9 +5,9 @@ the annotated tag after checking the resolved outputs. Stable, prerelease and
 nightly builds share one numeric version sequence; channel identity lives in
 release metadata rather than in the tag suffix.
 
-Every allocation is strictly above the highest published version. Each fix
-since the last published source advances patch; any feature advances minor
-(once per feature) and resets patch, ignoring the fixes alongside it.
+Live allocations share a feature line across Vibeshine and Vibepollo. The
+published release sources, patch calculation and numeric reservations are
+local to each repository.
 """
 import argparse
 import importlib.util
@@ -196,7 +196,7 @@ def _commit_for_tag(tag, refs):
 
 
 def resolve(releases, refs, source_commit, source_branch, channel, tag_channels=None,
-            qualified_nightly=None):
+            qualified_nightly=None, *, feature_line=None):
     """Allocate the next version above everything already posted.
 
     The base is the highest version carried by any published release, so a
@@ -244,29 +244,57 @@ def resolve(releases, refs, source_commit, source_branch, channel, tag_channels=
                  "numbering continues above every published version regardless")
 
     claims = tag_claims(refs)
+    if feature_line is not None and feature_line < base[:2]:
+        raise ValueError("Shared feature line is behind a published release")
     # A retry reuses this source's own reservation while it still outranks
     # every published version and no other tag claims the same number.
-    own = sorted((tag for tag in refs
-                  if re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", tag) and tag_channels.get(tag) == channel),
+    own = sorted((tag for tag in refs if supported_version_key(tag)
+                  and re.fullmatch(r"v?[0-9]+\.[0-9]+\.[0-9]+", tag)
+                  and (feature_line is not None or tag_channels.get(tag) == channel)),
                  key=version_key, reverse=True)
     for tag in own:
-        if version_key(tag) > base and claims[version_key(tag)] == [tag] \
-                and _tag_commit(tag, refs) == source_commit:
+        if _tag_commit(tag, refs) != source_commit:
+            continue
+        key = version_key(tag)
+        if (key > base and claims[key] == [tag] and tag_channels.get(tag) == channel
+                and not tag.startswith("v")
+                and (feature_line is None or key[:2] == feature_line)):
             return {**common, "tag": tag, "version": tag, "should_release": "true",
                     "tag_exists": "true"}
+        if feature_line is not None:
+            return {**common, "should_release": "false", "skip_reason":
+                    f"Existing reservation {tag} for {source_commit} cannot be reused; "
+                    "allocate from a later qualifying source"}
 
     sources = sorted({commit for commit in commits.values() if commit})
     missing = sorted(tag for tag, commit in commits.items() if not commit)
+    if feature_line is not None and any(supported_version_key(tag) for tag in missing):
+        raise ValueError("Published numeric release is missing from local Git history")
     if missing:
         warn(f"Published releases without fetched tags: {', '.join(missing)}; their commits may be counted again")
     messages = run("git", "log", "--format=%s", source_commit, "--not", *sources).splitlines()
-    try:
-        candidate = next_version(".".join(map(str, base)), messages)
-    except ValueError as error:
-        if "No feat or fix commits" not in str(error):
-            raise
-        return {**common, "should_release": "false", "skip_reason": str(error)}
-    key = version_key(candidate)
+    if feature_line is None:
+        try:
+            key = version_key(next_version(".".join(map(str, base)), messages))
+        except ValueError as error:
+            if "No feat or fix commits" not in str(error):
+                raise
+            return {**common, "should_release": "false", "skip_reason": str(error)}
+    else:
+        features, fixes = conventional_counts(messages)
+        if not (features or fixes):
+            return {**common, "should_release": "false", "skip_reason":
+                    "No feat or fix commits since the previous published release"}
+        if feature_line == base[:2]:
+            patch = base[2] + max(fixes, 1)
+        else:
+            patch = 0 if features else fixes
+        # Even failed allocations reserve their numbers. Never issue a new
+        # number below any reservation already made on this line.
+        reserved = max((claim[2] for claim in claims if claim[:2] == feature_line), default=-1)
+        key = (*feature_line, max(patch, reserved + 1))
+        if key[2] > 654:
+            raise ValueError("Resolved version exceeds the Windows installer version range")
     while key in claims:
         warn(f"Version {'.'.join(map(str, key))} is already tagged ({', '.join(sorted(claims[key]))}); "
              "taking the next patch")
@@ -280,7 +308,7 @@ def resolve(releases, refs, source_commit, source_branch, channel, tag_channels=
 
 def validate_tag(releases, refs, tag_channels, tag, source_commit, source_branch,
                  primary_branch, confirmation, channel, qualified_nightly=None,
-                 source_branch_commit=None):
+                 source_branch_commit=None, *, feature_line=None):
     """Recompute a numeric release tag against live GitHub state before signing."""
     validate_source(os.environ.get("GITHUB_REPOSITORY", ""), source_branch, confirmation)
     validate_channel_branch(channel, source_branch, primary_branch)
@@ -306,7 +334,7 @@ def validate_tag(releases, refs, tag_channels, tag, source_commit, source_branch
     filtered = [[release for release in page if release.get("tag_name") != tag]
                 for page in releases]
     result = resolve(filtered, refs, source_commit, source_branch, channel,
-                     tag_channels, qualified_nightly)
+                     tag_channels, qualified_nightly, feature_line=feature_line)
     if result.get("tag") != tag or result.get("should_release") != "true":
         raise ValueError("Numeric release tag is no longer the live next version; allocate a new version")
     stable = latest_stable_release(filtered)
@@ -387,6 +415,22 @@ def latest_qualified_nightly(repository, releases):
                                   lambda tag: run("git", "rev-parse", f"refs/tags/{tag}^{{commit}}"))
 
 
+def live_feature_line(repository, branch, source, refs, *, require_tip=False):
+    spec = importlib.util.spec_from_file_location(
+        "shared_feature_line", Path(__file__).with_name("shared_feature_line.py"))
+    shared = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shared)
+    return shared.current_line(repository, branch, source, refs, supported_version_key,
+                               require_tip=require_tip)
+
+
+def resolve_live(repository, releases, refs, source, branch, channel, tag_channels,
+                 qualified_nightly, *, require_tip=True):
+    line = live_feature_line(repository, branch, source, refs, require_tip=require_tip)
+    return resolve(releases, refs, source, branch, channel, tag_channels,
+                   qualified_nightly, feature_line=line)
+
+
 def resolve_from_environment():
     repository = os.environ["GITHUB_REPOSITORY"]
     branch = os.environ.get("RELEASE_SOURCE_BRANCH", "")
@@ -400,8 +444,8 @@ def resolve_from_environment():
     releases = release_pages(repository)
     refs, tag_channels = read_refs()
     qualified_nightly = latest_qualified_nightly(repository, releases)
-    result = resolve(releases, refs, source, branch, channel, tag_channels,
-                     qualified_nightly)
+    result = resolve_live(repository, releases, refs, source, branch, channel, tag_channels,
+                          qualified_nightly)
     with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
         for key, value in result.items():
             output.write(f"{key}={value}\n")
@@ -422,14 +466,16 @@ if __name__ == "__main__":
         run("git", "fetch", "--no-tags", "origin",
             f"+refs/heads/{source_branch}:refs/remotes/origin/numeric-release-source")
         source_branch_commit = run("git", "rev-parse", "refs/remotes/origin/numeric-release-source^{commit}")
+        source = os.environ["RELEASE_SOURCE_COMMIT"]
+        line = live_feature_line(repository, source_branch, source, refs)
         result = validate_tag(releases, refs, channels, os.environ["RELEASE_TAG"],
-                              os.environ["RELEASE_SOURCE_COMMIT"],
+                              source,
                               source_branch,
                               os.environ["RELEASE_PRIMARY_BRANCH"],
                               os.environ["RELEASE_SOURCE_CONFIRMED"],
                               os.environ["RELEASE_CHANNEL"],
                               latest_qualified_nightly(repository, releases),
-                              source_branch_commit)
+                              source_branch_commit, feature_line=line)
         if args.command == "generate-notes":
             prior_releases = [[release for release in page
                                if release.get("tag_name") != os.environ["RELEASE_TAG"]]

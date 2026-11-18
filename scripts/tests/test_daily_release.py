@@ -55,7 +55,7 @@ class DailyTests(unittest.TestCase):
             with patch.object(daily, "run", return_value=json.dumps(pages)), \
                  patch.object(daily, "tag_refs", return_value=(refs, {})), \
                  patch.object(daily, "previous_successful_nightly", return_value=None), \
-                 patch.object(daily.numeric_release, "resolve", return_value={
+                 patch.object(daily.numeric_release, "resolve_live", return_value={
                      "should_release": "true", "tag": "2.0.7"}):
                 daily.validate_live_numeric_version("Nonary/vibeshine", "2.0.7", SHA, "nightly")
                 with self.assertRaisesRegex(ValueError, "Published release state changed"):
@@ -135,13 +135,13 @@ class DailyTests(unittest.TestCase):
                 with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(STABLE_PAGES), "", BASE]) as commands:
                     with patch.object(daily, "previous_successful_nightly", return_value=None), \
                          patch.object(daily, "tag_refs", return_value=({"2.0.0": BASE}, {})), \
-                         patch.object(daily.numeric_release, "resolve", return_value={"commit": SHA, "tag": "2.0.7", "version": "2.0.7", "channel": "nightly", "should_release": "true"}) as allocator:
+                         patch.object(daily.numeric_release, "resolve_live", return_value={"commit": SHA, "tag": "2.0.7", "version": "2.0.7", "channel": "nightly", "should_release": "true"}) as allocator:
                         daily.resolve()
             self.assertIn(f"commit={SHA}", output.read_text())
             self.assertIn("version=2.0.7", output.read_text())
             self.assertIn("should_build=true", output.read_text())
             self.assertEqual(commands.call_args_list[0].args, ("git", "fetch", "--no-tags", "origin", "refs/heads/master:refs/remotes/origin/daily-source"))
-            self.assertEqual(allocator.call_args.args[4], "nightly")
+            self.assertEqual(allocator.call_args.args[5], "nightly")
 
     def test_canary_pins_remote_tip_separately_from_default_workflow_commit(self):
         control = "b" * 40
@@ -153,7 +153,7 @@ class DailyTests(unittest.TestCase):
                 with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(STABLE_PAGES), "", BASE]) as commands:
                     with patch.object(daily, "previous_successful_nightly", return_value=None), \
                          patch.object(daily, "tag_refs", return_value=({"2.0.0": BASE}, {})), \
-                         patch.object(daily.numeric_release, "resolve", return_value={"commit": SHA, "tag": "2.0.7", "version": "2.0.7", "channel": "nightly", "should_release": "true"}):
+                         patch.object(daily.numeric_release, "resolve_live", return_value={"commit": SHA, "tag": "2.0.7", "version": "2.0.7", "channel": "nightly", "should_release": "true"}):
                         daily.resolve()
             self.assertIn(f"commit={SHA}", output.read_text())
             self.assertIn("should_build=true", output.read_text())
@@ -197,13 +197,13 @@ class DailyTests(unittest.TestCase):
                 with patch.object(daily, "run", side_effect=["", SHA, "", json.dumps(STABLE_PAGES), "", BASE]) as commands:
                     with patch.object(daily, "previous_successful_nightly", return_value=None), \
                          patch.object(daily, "tag_refs", return_value=({"2.0.0": BASE}, {})), \
-                         patch.object(daily.numeric_release, "resolve", return_value={"commit": SHA, "tag": "2.0.7", "version": "2.0.7", "channel": "nightly", "should_release": "true"}) as allocator:
+                         patch.object(daily.numeric_release, "resolve_live", return_value={"commit": SHA, "tag": "2.0.7", "version": "2.0.7", "channel": "nightly", "should_release": "true"}) as allocator:
                         daily.resolve()
             self.assertIn(f"commit={SHA}", output.read_text())
             self.assertIn("version=2.0.7", output.read_text())
             self.assertIn("should_build=true", output.read_text())
             self.assertEqual(commands.call_args_list[0].args, ("git", "fetch", "--no-tags", "origin", "refs/heads/master:refs/remotes/origin/daily-source"))
-            self.assertEqual(allocator.call_args.args[4], "nightly")
+            self.assertEqual(allocator.call_args.args[5], "nightly")
 
     def test_only_published_validated_nightly_is_a_skip_baseline(self):
         releases = [[
@@ -269,7 +269,7 @@ class DailyTests(unittest.TestCase):
                     with patch.object(daily, 'run', side_effect=commands), \
                          patch.object(daily, 'previous_successful_nightly', return_value=None), \
                          patch.object(daily, 'tag_refs', return_value=({'2.0.0': BASE}, {})), \
-                         patch.object(daily.numeric_release, 'resolve', return_value={'commit': SHA, 'tag': '2.1.0', 'version': '2.1.0', 'channel': 'nightly', 'should_release': 'true'}):
+                         patch.object(daily.numeric_release, 'resolve_live', return_value={'commit': SHA, 'tag': '2.1.0', 'version': '2.1.0', 'channel': 'nightly', 'should_release': 'true'}):
                         if advanced:
                             with self.assertRaisesRegex(ValueError, 'advanced after dispatch'): daily.resolve()
                             self.assertFalse(output.exists())

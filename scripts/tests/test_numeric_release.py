@@ -43,6 +43,38 @@ class NumericReleaseTests(unittest.TestCase):
             raise AssertionError(f"Unexpected command: {args}")
         return run
 
+
+    def test_shared_line_skips_unchanged_and_counts_fork_patch_locally(self):
+        for changes, expected in (("docs: no release", None),
+                                  ("fix: one\nfix: two", "2.18.2"),
+                                  ("feat: local feature\nfix: one", "2.18.0")):
+            with self.subTest(changes=changes), patch.object(release, "run", side_effect=self.fake_git(changes)):
+                result = release.resolve(RELEASES, REFS, SOURCE, "canary", "nightly",
+                                         feature_line=(2, 18))
+                self.assertEqual(result.get("tag"), expected)
+
+        pages = [[dict(STABLE, tag_name="2.18.3")]]
+        refs = {"2.18.3": BASE, "2.18.4": "c" * 40}
+        with patch.object(release, "run", side_effect=self.fake_git("feat: late port", refs)):
+            result = release.resolve(pages, refs, SOURCE, "canary", "nightly", feature_line=(2, 18))
+        self.assertEqual(result["tag"], "2.18.5")
+
+    def test_shared_line_retry_is_immutable_across_channels_and_line_changes(self):
+        refs = {**REFS, "2.18.3": SOURCE}
+        channels = {"2.18.3": "nightly"}
+        with patch.object(release, "run", side_effect=self.fake_git("fix: retry", refs)):
+            retry = release.resolve(RELEASES, refs, SOURCE, "canary", "nightly",
+                                    channels, feature_line=(2, 18))
+            superseded = release.resolve(RELEASES, refs, SOURCE, "canary", "nightly",
+                                         channels, feature_line=(2, 19))
+            other_channel = release.resolve(RELEASES, refs, SOURCE, "master", "stable",
+                                            channels, feature_line=(2, 18))
+        self.assertEqual(retry["tag"], "2.18.3")
+        self.assertEqual(retry["tag_exists"], "true")
+        for outcome in (superseded, other_channel):
+            self.assertEqual(outcome["should_release"], "false")
+            self.assertNotIn("tag", outcome)
+
     def test_each_fix_advances_patch_and_features_advance_minor(self):
         fixes = ["fix(ui): correction"] * 10
         self.assertEqual(release.next_version("2.0.6", fixes), "2.0.16")

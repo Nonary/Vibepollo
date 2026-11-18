@@ -47,6 +47,7 @@ jobs:
       - name: Test daily release contracts
         run: |
           python -m unittest discover -s scripts/tests -p test_numeric_release.py
+          python -m unittest discover -s scripts/tests -p test_shared_feature_line.py
           python -m unittest discover -s scripts/tests -p test_daily_release.py
           python -m unittest discover -s scripts/tests -p test_nightly_release_id.py
           python -m unittest discover -s .github/scripts -p test_vhf_release_identity.py
@@ -66,8 +67,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           DAILY_TAG: ${{ steps.identity.outputs.tag }}
           DAILY_COMMIT: ${{ steps.identity.outputs.commit }}
+          DAILY_PRIMARY_BRANCH: ${{ github.event.repository.default_branch }}
+          DAILY_RELEASE_SOURCE_BRANCH: ${{ vars.DAILY_RELEASE_SOURCE_BRANCH }}
+          DAILY_RELEASE_SOURCE_CONFIRMED: ${{ vars.DAILY_RELEASE_SOURCE_CONFIRMED }}
+          DAILY_RELEASE_MIGRATION_CONFIRMED: ${{ vars.DAILY_RELEASE_MIGRATION_CONFIRMED }}
         run: |
           set -euo pipefail
+          recheck="$(mktemp)"
+          trap 'rm -f "$recheck"' EXIT
+          GITHUB_OUTPUT="$recheck" python scripts/daily_release.py resolve
+          grep -Fx "tag=$DAILY_TAG" "$recheck"
+          grep -Fx "commit=$DAILY_COMMIT" "$recheck"
+          grep -Fx 'should_build=true' "$recheck"
           # Persist channel identity on the immutable tag so retries and consumers
           # can distinguish stable, prerelease, and nightly numeric versions.
           if tag_json="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$DAILY_TAG" 2>/dev/null)"; then
@@ -214,6 +225,7 @@ jobs:
           test "$(jq -r '.object.sha' <<< "$tag_json")" = "$DAILY_COMMIT"
           test "$(jq -r '.message' <<< "$tag_json")" = $'Vibepollo release channel: nightly\nSource branch: canary'
           python scripts/daily_release.py public --assets daily-assets --destination public-assets --product Vibepollo
+          python scripts/daily_release.py validate-live
           if gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::Nightly $DAILY_TAG already has a GitHub Release or draft. Refusing to mutate it."
             exit 1
