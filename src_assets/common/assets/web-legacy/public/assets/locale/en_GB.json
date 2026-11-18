@@ -894,7 +894,7 @@
     "crash_dump_dismiss_error": "Failed to dismiss crash notification.",
     "keybindings": "Keybindings",
     "minimum_fps_target": "Minimum FPS Target",
-    "minimum_fps_target_desc": "The lowest effective FPS a stream can reach. A value of 0 is treated as roughly half of the stream's FPS. A setting of 20 is recommended if you stream 24 or 30fps content.",
+    "minimum_fps_target_desc": "Controls idle-frame timing. Defaults to 20 FPS. At 0, asynchronous encoders such as PyroWave use the stream’s frame interval. On macOS, ScreenCaptureKit uses one fifth of the stream FPS, with a minimum of 10 FPS. Actual frame delivery depends on the capture and encoder path.",
     "min_log_level": "Log Level",
     "min_log_level_0": "Verbose",
     "min_log_level_1": "Debug",

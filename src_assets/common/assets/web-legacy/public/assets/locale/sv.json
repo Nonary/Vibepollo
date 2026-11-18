@@ -741,7 +741,7 @@
     "max_bitrate": "Maximal bithastighet",
     "max_bitrate_desc": "Maximal bithastighet (i Kbps) som Vibepollo kommer att koda strömmen på. Om satt till 0, kommer den alltid att använda den bithastighet som Moonlight begärt.",
     "minimum_fps_target": "Minsta FPS-mål",
-    "minimum_fps_target_desc": "Den lägsta effektiva FPS en ström kan nå. Värdet 0 behandlas ungefär som hälften av strömmens FPS. Inställningen 20 rekommenderas om du strömmar innehåll i 24 eller 30 fps.",
+    "minimum_fps_target_desc": "Styr intervallet mellan bildrutor som skickas när bilden står stilla. Standardvärdet är 20 FPS. Med värdet 0 använder asynkrona kodare, däribland PyroWave, strömmens bildruteintervall. ScreenCaptureKit på macOS använder en femtedel av strömmens bildfrekvens, dock minst 10 FPS. Hur ofta bildrutor faktiskt skickas beror på hur de fångas in och kodas.",
     "rtx_hdr_title": "RTX HDR (AI SDR → HDR)",
     "rtx_hdr_intro": "Standardjusteringsvärden för appaktiverad RTX HDR-konvertering. Under en RTX HDR-ström använder skrivbordet och icke-matchande bildrutor SDR Brightness med neutral kontrast och mättnad.",
     "rtx_hdr": "RTX HDR",

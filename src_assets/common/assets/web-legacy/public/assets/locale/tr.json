@@ -741,7 +741,7 @@
     "max_bitrate": "Maksimum Bit Hızı",
     "max_bitrate_desc": "Vibepollo'ın akışı kodlayacağı maksimum bit hızı (Kbps cinsinden). 0 olarak ayarlanırsa, her zaman Moonlight tarafından istenen bit hızını kullanır.",
     "minimum_fps_target": "Minimum FPS Hedefi",
-    "minimum_fps_target_desc": "Bir akışın ulaşabileceği en düşük etkin FPS. 0 değeri, akışın FPS'sinin yaklaşık yarısı olarak kabul edilir. 24 veya 30 fps içerik yayınlıyorsanız 20 ayarı önerilir.",
+    "minimum_fps_target_desc": "Görüntü değişmediğinde karelerin gönderim aralığını belirler. Varsayılan değer 20 FPS’dir. Değer 0 olduğunda PyroWave dâhil asenkron kodlayıcılar akışın kare aralığını kullanır. macOS’te ScreenCaptureKit, akış FPS’sinin beşte birini kullanır ve alt sınır 10 FPS’dir. Karelerin gerçekte ne sıklıkta gönderildiği, görüntü yakalama ve kodlama yöntemine bağlıdır.",
     "rtx_hdr_title": "RTX HDR (AI SDR → HDR)",
     "rtx_hdr_intro": "Uygulama tarafından etkinleştirilen RTX HDR dönüşümü için varsayılan ayar değerleri. Bir RTX HDR akışı sırasında masaüstü ve eşleşmeyen kareler, nötr kontrast ve doygunlukla SDR Parlaklığı kullanır.",
     "rtx_hdr": "RTX HDR",

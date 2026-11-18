@@ -674,7 +674,7 @@
     "max_bitrate": "Maximum Bitrate",
     "max_bitrate_desc": "The maximum bitrate (in Kbps) that Vibepollo will encode the stream at. If set to 0, it will always use the bitrate requested by Moonlight.",
     "minimum_fps_target": "Minimum FPS Target",
-    "minimum_fps_target_desc": "The lowest effective FPS a stream can reach. A value of 0 is treated as roughly half of the stream's FPS. A setting of 20 is recommended if you stream 24 or 30fps content.",
+    "minimum_fps_target_desc": "Controls idle-frame timing. Defaults to 20 FPS. At 0, asynchronous encoders such as PyroWave use the stream’s frame interval. On macOS, ScreenCaptureKit uses one fifth of the stream FPS, with a minimum of 10 FPS. Actual frame delivery depends on the capture and encoder path.",
     "session_token_ttl_seconds": "Web UI Session Timeout (seconds)",
     "session_token_ttl_seconds_desc": "How long a Web UI login session remains valid before requiring re-authentication. Reduce for higher security; increase for convenience.",
     "remember_me_refresh_token_ttl_seconds": "Trusted device lifetime (seconds)",

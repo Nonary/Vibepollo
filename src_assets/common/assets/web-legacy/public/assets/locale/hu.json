@@ -741,7 +741,7 @@
     "max_bitrate": "Maximális bitráta",
     "max_bitrate_desc": "A maximális bitráta (Kbps-ben), amit a Vibepollo a stream kódolásához használ. Ha 0-ra állítod, mindig a Moonlight által kért bitrátát használja.",
     "minimum_fps_target": "Minimális FPS cél",
-    "minimum_fps_target_desc": "A legalacsonyabb effektív FPS, amit egy stream elérhet. A 0 érték körülbelül a stream FPS-ének felét jelenti. A 20-as beállítás ajánlott, ha 24- vagy 30fps tartalmakat streamelsz.",
+    "minimum_fps_target_desc": "A képkockák küldési ütemét szabályozza, amikor a kép nem változik. Az alapértelmezett érték 20 FPS. 0 esetén az aszinkron kódolók, például a PyroWave, a stream képkockái közötti időközt használják. A macOS ScreenCaptureKit a stream FPS-ének ötödét használja, de legalább 10 FPS-t. A képkockák tényleges küldési üteme a képrögzítési és kódolási módtól függ.",
     "rtx_hdr_title": "RTX HDR (MI SDR → HDR)",
     "rtx_hdr_intro": "Alapértelmezett hangolási értékek az alkalmazás által engedélyezett RTX HDR átalakításhoz. RTX HDR stream közben az asztali és a nem egyező képkockák SDR fényerőt használnak semleges kontraszttal és telítettséggel.",
     "rtx_hdr": "RTX HDR",

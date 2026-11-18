@@ -741,7 +741,7 @@
     "max_bitrate": "最大ビットレート",
     "max_bitrate_desc": "Vibepolloがストリームをエンコードする最大ビットレート（Kbps単位）。0に設定すると、Moonlightが要求するビットレートが常に使用されます。",
     "minimum_fps_target": "最小 FPS 目標",
-    "minimum_fps_target_desc": "ストリームが到達できる最低実効 FPS です。0 はストリーム FPS の約半分として扱われます。24 または 30fps コンテンツをストリーミングする場合は 20 を推奨します。",
+    "minimum_fps_target_desc": "画面が変化しないときのフレーム送信間隔を制御します。既定値は20 FPSです。0を指定すると、PyroWaveなどの非同期エンコーダーはストリームの1フレーム分の間隔を使用します。macOSのScreenCaptureKitはストリームのFPSの5分の1（最低10 FPS）を使用します。実際のフレーム送信間隔は、キャプチャとエンコードの方式によって異なります。",
     "rtx_hdr_title": "RTX HDR (AI SDR -> HDR)",
     "rtx_hdr_intro": "アプリで有効化されるRTX HDR変換の既定の調整値です。RTX HDRストリーム中は、デスクトップおよび一致しないフレームには、ニュートラルなコントラストと彩度でSDR輝度が使用されます。",
     "rtx_hdr": "RTX HDR",

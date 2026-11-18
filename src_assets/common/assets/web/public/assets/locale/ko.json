@@ -740,7 +740,7 @@
     "max_bitrate": "최대 비트",
     "max_bitrate_desc": "Vibepollo이 스트림을 인코딩할 최대 비트 전송률(Kbps)입니다. 0으로 설정하면 항상 Moonlight에서 요청한 비트레이트를 사용합니다.",
     "minimum_fps_target": "최소 FPS 대상",
-    "minimum_fps_target_desc": "스트림이 도달할 수 있는 가장 낮은 유효 FPS입니다. 0 값은 스트림 FPS의 대략 절반으로 처리됩니다. 24 또는 30 FPS 콘텐츠를 스트리밍하는 경우 20으로 설정하는 것이 좋습니다.",
+    "minimum_fps_target_desc": "화면이 바뀌지 않을 때 프레임 전송 간격을 제어합니다. 기본값은 20 FPS입니다. 0으로 설정하면 PyroWave를 비롯한 비동기 인코더는 스트림의 프레임 간격을 사용합니다. macOS의 ScreenCaptureKit은 스트림 FPS의 5분의 1을 사용하며 최솟값은 10 FPS입니다. 실제 프레임 전송 간격은 캡처 및 인코딩 방식에 따라 달라집니다.",
     "rtx_hdr_title": "RTX HDR(AI SDR → HDR)",
     "rtx_hdr_intro": "앱에서 활성화한 RTX HDR 변환의 기본 조정 값입니다. RTX HDR 스트림 중에는 데스크톱 및 일치하지 않는 프레임이 중립 대비와 채도의 SDR 밝기를 사용합니다.",
     "rtx_hdr": "RTX HDR",

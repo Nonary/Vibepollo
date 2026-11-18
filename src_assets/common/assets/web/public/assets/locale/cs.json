@@ -740,7 +740,7 @@
     "max_bitrate": "Maximální bitrate",
     "max_bitrate_desc": "Maximální bitrate (v Kb/s), kterým bude Vibepollo kódovat datový tok. Pokud je nastaven na 0, bude vždy použit bitrate požadovaný aplikací Moonlight.",
     "minimum_fps_target": "Minimální cílová hodnota FPS",
-    "minimum_fps_target_desc": "Nejnižší efektivní FPS, kterého může stream dosáhnout. Hodnota 0 je považována za zhruba polovinu FPS streamu. Pokud streamujete obsah s 24 nebo 30 snímky za sekundu, doporučuje se nastavení 20.",
+    "minimum_fps_target_desc": "Řídí časování snímků při nečinnosti. Výchozí hodnota je 20 FPS. Při hodnotě 0 používají asynchronní enkodéry včetně PyroWave interval jednoho snímku streamu. ScreenCaptureKit v macOS používá pětinu snímkové frekvence streamu, nejméně však 10 FPS. Skutečné doručování snímků závisí na způsobu snímání a kódování.",
     "rtx_hdr_title": "RTX HDR (AI SDR → HDR)",
     "rtx_hdr_intro": "Výchozí hodnoty ladění pro převod RTX HDR povolený aplikací. Během streamu RTX HDR používají plocha a neshodující se snímky jas SDR s neutrálním kontrastem a sytostí.",
     "rtx_hdr": "RTX HDR",
