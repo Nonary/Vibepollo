@@ -467,6 +467,50 @@ TEST_F(DualSenseUsbipGamepadTests, OutputWaitsForQueueCapacityAndKeepsItsLatestS
   EXPECT_TRUE(drain(feedback).empty());
 }
 
+TEST_F(DualSenseUsbipGamepadTests, RumbleStopReplacesPendingOutputAndSurvivesRebind) {
+  sessions::set_application_active(true);
+  platf::usbip_gamepad_t backend;
+  auto feedback = queue(1);
+  auto metadata = arrival();
+  metadata.persist_after_disconnect = true;
+  ASSERT_EQ(backend.alloc({0, 3}, metadata, feedback), 0);
+  auto endpoint = fake_transport::current[0];
+  endpoint->hid(rumble_report(100, 100));
+  auto messages = drain(feedback);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages[0].data.rumble.lowfreq, 100 << 8);
+
+  feedback->raise(platf::gamepad_feedback_msg_t::make_rgb_led(11, 1, 2, 3));
+  endpoint->hid(rumble_report(120, 120));
+  lvg::driver::ds5_output_report stop {};
+  stop.report_id = 2;
+  endpoint->hid(stop);
+  endpoint->hid(stop);
+  ASSERT_EQ(drain(feedback).size(), 1u);
+  backend.update(0, {});
+  messages = drain(feedback);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages[0].type, platf::gamepad_feedback_e::rumble);
+  EXPECT_EQ(messages[0].data.rumble.lowfreq, 0);
+  EXPECT_EQ(messages[0].data.rumble.highfreq, 0);
+  backend.update(0, {});
+  EXPECT_TRUE(drain(feedback).empty());
+
+  backend.free(0);
+  auto resumed = queue();
+  ASSERT_EQ(backend.alloc({0, 4}, metadata, resumed), 0);
+  messages = drain(resumed);
+  ASSERT_FALSE(messages.empty());
+  EXPECT_EQ(messages[0].type, platf::gamepad_feedback_e::rumble);
+  EXPECT_EQ(messages[0].data.rumble.lowfreq, 0);
+  EXPECT_EQ(messages[0].data.rumble.highfreq, 0);
+  endpoint->hid(rumble_report(70, 80));
+  messages = drain(resumed);
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(messages[0].data.rumble.lowfreq, 70 << 8);
+  EXPECT_EQ(messages[0].data.rumble.highfreq, 80 << 8);
+}
+
 TEST_F(DualSenseUsbipGamepadTests, IndependentTriggerCommandsKeepEnablesAndOrderAcrossQueueStalls) {
   platf::usbip_gamepad_t backend;
   auto feedback = queue(2);
