@@ -65,15 +65,15 @@ class NumericReleaseTests(unittest.TestCase):
         with patch.object(release, "run", side_effect=self.fake_git("fix: retry", refs)):
             retry = release.resolve(RELEASES, refs, SOURCE, "canary", "nightly",
                                     channels, feature_line=(2, 18))
-            superseded = release.resolve(RELEASES, refs, SOURCE, "canary", "nightly",
+            after_peer_advance = release.resolve(RELEASES, refs, SOURCE, "canary", "nightly",
                                          channels, feature_line=(2, 19))
             other_channel = release.resolve(RELEASES, refs, SOURCE, "master", "stable",
                                             channels, feature_line=(2, 18))
         self.assertEqual(retry["tag"], "2.18.3")
         self.assertEqual(retry["tag_exists"], "true")
-        for outcome in (superseded, other_channel):
-            self.assertEqual(outcome["should_release"], "false")
-            self.assertNotIn("tag", outcome)
+        self.assertEqual(after_peer_advance, retry)
+        self.assertEqual(other_channel["should_release"], "false")
+        self.assertNotIn("tag", other_channel)
 
     def test_each_fix_advances_patch_and_features_advance_minor(self):
         fixes = ["fix(ui): correction"] * 10

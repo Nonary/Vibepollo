@@ -64,16 +64,16 @@ The resolver reads both repositories without credentials. It checks branch
 ancestry, protocol agreement, local tag freshness and the highest numeric
 reservation across both repositories. It reads both ref sets again before
 accepting the snapshot. Nightly and stable verify the candidate before writing
-their own protected tag, then check the line again before publication. A
-feature merged after the final successful check takes effect on the next
-allocation. A reserved SHA can retry the same tag while it is valid on the
-current line. If the line overtakes a reservation, leave the tag in place and
-use a later qualifying source. Inspect retained upload drafts as described in
+their own protected tag. The tag freezes the numeric version, channel and
+source SHA. Publication checks the tag and local release order; a peer
+publication or a newer shared line will not invalidate a frozen tag. A newer
+local publication can make the reservation too old to publish, and only new
+allocations adopt a newer shared line. Inspect retained upload drafts as described in
 [the nightly runbook](../docs/daily-prereleases.md) before manual recovery.
 A failed build or upload leaves the shared line and existing tags intact.
 
-If a repository is unavailable, the input changes during validation, or the
-branch/protocol checks fail, pause publication until the inputs are coherent.
+If shared inputs are unavailable or change during new allocation, retry once
+the protected branch and tag inputs are coherent.
 After adoption, restore the protected history or roll forward with a coordinated
 correction above both repositories' numeric high-water marks. Returning to
 independent allocators can break the shared line. Preserve existing tags and

@@ -163,6 +163,7 @@ jobs:
       DAILY_STABLE_ANCHOR_TAG: ${{ needs.prepare.outputs.stable_anchor_tag }}
       DAILY_STABLE_ANCHOR_COMMIT: ${{ needs.prepare.outputs.stable_anchor_commit }}
       DAILY_RELEASE_SOURCE_BRANCH: ${{ vars.DAILY_RELEASE_SOURCE_BRANCH }}
+      DAILY_RELEASE_SOURCE_CONFIRMED: ${{ vars.DAILY_RELEASE_SOURCE_CONFIRMED }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -225,7 +226,6 @@ jobs:
           test "$(jq -r '.object.sha' <<< "$tag_json")" = "$DAILY_COMMIT"
           test "$(jq -r '.message' <<< "$tag_json")" = $'Vibepollo release channel: nightly\nSource branch: canary'
           python scripts/daily_release.py public --assets daily-assets --destination public-assets --product Vibepollo
-          python scripts/daily_release.py validate-live
           if gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             echo "::error::Nightly $DAILY_TAG already has a GitHub Release or draft. Refusing to mutate it."
             exit 1

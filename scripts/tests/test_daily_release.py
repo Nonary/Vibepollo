@@ -46,20 +46,22 @@ class DailyTests(unittest.TestCase):
         with patch.object(daily, "run", return_value=BASE):
             self.assertEqual(daily.stable_anchor(STABLE_PAGES), ("2.0.0", BASE))
 
-    def test_numeric_publication_requires_the_reserved_tag_to_still_be_current(self):
-        stable_release = dict(tag_name="2.0.6", draft=False, prerelease=False,
-                              published_at="2026-11-01T00:00:00Z")
-        pages = [[stable_release]]
-        refs = {"2.0.6": BASE}
-        with patch.dict(os.environ, DAILY_RELEASE_SOURCE_BRANCH="canary"):
-            with patch.object(daily, "run", return_value=json.dumps(pages)), \
-                 patch.object(daily, "tag_refs", return_value=(refs, {})), \
-                 patch.object(daily, "previous_successful_nightly", return_value=None), \
-                 patch.object(daily.numeric_release, "resolve_live", return_value={
-                     "should_release": "true", "tag": "2.0.7"}):
-                daily.validate_live_numeric_version("Nonary/vibeshine", "2.0.7", SHA, "nightly")
-                with self.assertRaisesRegex(ValueError, "Published release state changed"):
-                    daily.validate_live_numeric_version("Nonary/vibeshine", "2.0.8", SHA, "nightly")
+    def test_numeric_publication_requires_an_exact_annotated_local_reservation(self):
+        repository = "Nonary/Vibepollo"
+        refs = {"2.0.0": BASE, "2.18.1": SHA, "2.18.2": SHA}
+        channels = {"2.18.1": "nightly"}
+        with patch.dict(os.environ, DAILY_RELEASE_SOURCE_BRANCH="canary",
+                        DAILY_RELEASE_SOURCE_CONFIRMED=f"{repository}:canary"), \
+             patch.object(daily, "run", side_effect=["", SHA, ""] * 2), \
+             patch.object(daily, "tag_refs", return_value=(refs, channels)), \
+             patch.object(daily, "previous_successful_nightly", return_value=None), \
+             patch.object(daily.numeric_release, "release_pages", return_value=STABLE_PAGES), \
+             patch.object(daily.numeric_release, "run", side_effect=lambda *args: args[2][:40]), \
+             patch.object(daily.numeric_release, "live_feature_line",
+                          side_effect=AssertionError("Publication queried the peer feature line")):
+            daily.validate_live_numeric_version(repository, "2.18.1", SHA)
+            with self.assertRaisesRegex(ValueError, "immutable channel"):
+                daily.validate_live_numeric_version(repository, "2.18.2", SHA)
 
     def test_linux_requires_exact_source_version_run_and_hash(self):
         for scenario in ('valid', 'source', 'version', 'run', 'hash', 'extra'):

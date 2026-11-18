@@ -195,6 +195,17 @@ def _commit_for_tag(tag, refs):
     return run("git", "rev-parse", f"{commit}^{{commit}}")
 
 
+def release_context(releases, refs, source_commit, source_branch, channel, qualified_nightly):
+    prior = latest_release(releases)
+    prior_tag = prior["tag_name"] if prior else ""
+    if qualified_nightly and qualified_nightly.get("tag") == prior_tag:
+        prior_commit = qualified_nightly["source_commit"]
+    else:
+        prior_commit = _tag_commit(prior_tag, refs) or ""
+    return {"commit": source_commit, "channel": channel, "source_branch": source_branch,
+            "previous_tag": prior_tag, "previous_source_commit": prior_commit}
+
+
 def resolve(releases, refs, source_commit, source_branch, channel, tag_channels=None,
             qualified_nightly=None, *, feature_line=None):
     """Allocate the next version above everything already posted.
@@ -214,14 +225,7 @@ def resolve(releases, refs, source_commit, source_branch, channel, tag_channels=
     validate_published_numeric_bounds(releases)
 
     base = posted_version(releases, qualified_nightly)
-    prior = latest_release(releases)
-    prior_tag = prior["tag_name"] if prior else ""
-    if qualified_nightly and qualified_nightly.get("tag") == prior_tag:
-        prior_commit = qualified_nightly["source_commit"]
-    else:
-        prior_commit = _tag_commit(prior_tag, refs) or ""
-    common = {"commit": source_commit, "channel": channel, "source_branch": source_branch,
-              "previous_tag": prior_tag, "previous_source_commit": prior_commit}
+    common = release_context(releases, refs, source_commit, source_branch, channel, qualified_nightly)
     commits = published_tag_commits(releases, refs)
 
     # Existing releases at this exact source are immutable identities. They
@@ -258,7 +262,7 @@ def resolve(releases, refs, source_commit, source_branch, channel, tag_channels=
         key = version_key(tag)
         if (key > base and claims[key] == [tag] and tag_channels.get(tag) == channel
                 and not tag.startswith("v")
-                and (feature_line is None or key[:2] == feature_line)):
+                and (feature_line is None or key[:2] <= feature_line)):
             return {**common, "tag": tag, "version": tag, "should_release": "true",
                     "tag_exists": "true"}
         if feature_line is not None:
@@ -306,19 +310,15 @@ def resolve(releases, refs, source_commit, source_branch, channel, tag_channels=
             "tag_exists": "false"}
 
 
-def validate_tag(releases, refs, tag_channels, tag, source_commit, source_branch,
-                 primary_branch, confirmation, channel, qualified_nightly=None,
-                 source_branch_commit=None, *, feature_line=None):
-    """Recompute a numeric release tag against live GitHub state before signing."""
-    validate_source(os.environ.get("GITHUB_REPOSITORY", ""), source_branch, confirmation)
-    validate_channel_branch(channel, source_branch, primary_branch)
-    if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", tag):
-        raise ValueError("The allocator gate accepts only plain numeric tags")
+def validate_reservation(releases, refs, tag_channels, tag, source_commit, source_branch,
+                         channel, qualified_nightly, source_branch_commit):
+    """Verify a frozen tag against the local publication order and exact source."""
+    key = supported_version_key(tag)
+    if key is None or not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", tag):
+        raise ValueError("The allocator gate accepts only supported plain numeric tags")
     if tag_channels.get(tag) != channel:
         raise ValueError("Numeric release tag lacks the exact immutable channel annotation")
-    if channel != "stable":
-        raise ValueError("Numeric signing currently accepts stable tags only; nightly prereleases use the daily publisher")
-    if _commit_for_tag(tag, refs) != source_commit:
+    if not re.fullmatch(r"[0-9a-f]{40}", source_commit) or _commit_for_tag(tag, refs) != source_commit:
         raise ValueError("Numeric release tag target does not match the exact release source commit")
     if not source_branch_commit:
         raise ValueError("Exact confirmed source branch tip is required to validate a numeric tag")
@@ -326,17 +326,39 @@ def validate_tag(releases, refs, tag_channels, tag, source_commit, source_branch
         run("git", "merge-base", "--is-ancestor", source_commit, source_branch_commit)
     except subprocess.CalledProcessError as error:
         raise ValueError("Numeric release tag source is not reachable from the confirmed source branch") from error
+
+    validate_published_numeric_bounds(releases)
+    if key <= posted_version(releases, qualified_nightly):
+        raise ValueError("Numeric reservation must outrank all published releases in this repository")
+    if tag_claims(refs).get(key) != [tag]:
+        raise ValueError("Numeric reservation conflicts with another tag in this repository")
+    commits = published_tag_commits(releases, refs)
+    if any(supported_version_key(name) and not commit for name, commit in commits.items()):
+        raise ValueError("Published numeric release is missing from local Git history")
+    if any(released(release) and commits.get(release["tag_name"]) == source_commit
+           for release in published(releases)):
+        raise ValueError("Source already has a published numeric release in this repository")
+    return {**release_context(releases, refs, source_commit, source_branch, channel, qualified_nightly),
+            "tag": tag, "version": tag, "should_release": "true", "tag_exists": "true"}
+
+
+def validate_tag(releases, refs, tag_channels, tag, source_commit, source_branch,
+                 primary_branch, confirmation, channel, qualified_nightly=None,
+                 source_branch_commit=None):
+    """Verify a frozen numeric stable tag before signing or publication."""
+    validate_source(os.environ.get("GITHUB_REPOSITORY", ""), source_branch, confirmation)
+    validate_channel_branch(channel, source_branch, primary_branch)
+    if tag_channels.get(tag) != channel:
+        raise ValueError("Numeric release tag lacks the exact immutable channel annotation")
+    if channel != "stable":
+        raise ValueError("Numeric signing currently accepts stable tags only; nightly prereleases use the daily publisher")
     matching = [release for page in releases for release in page if release.get("tag_name") == tag]
-    for release in matching:
-        expected_prerelease = channel in {"prerelease", "nightly"}
-        if release.get("prerelease") is not expected_prerelease:
-            raise ValueError("Existing release channel does not match its immutable tag channel")
+    if any(release.get("prerelease") is not False for release in matching):
+        raise ValueError("Existing release channel does not match its immutable tag channel")
     filtered = [[release for release in page if release.get("tag_name") != tag]
                 for page in releases]
-    result = resolve(filtered, refs, source_commit, source_branch, channel,
-                     tag_channels, qualified_nightly, feature_line=feature_line)
-    if result.get("tag") != tag or result.get("should_release") != "true":
-        raise ValueError("Numeric release tag is no longer the live next version; allocate a new version")
+    result = validate_reservation(filtered, refs, tag_channels, tag, source_commit, source_branch,
+                                  channel, qualified_nightly, source_branch_commit)
     stable = latest_stable_release(filtered)
     result["stable_anchor_tag"] = stable["tag_name"]
     result["stable_anchor_commit"] = _commit_for_tag(stable["tag_name"], refs)
@@ -382,12 +404,12 @@ def read_refs():
     refs = {}
     tag_channels = {}
     for line in run("git", "for-each-ref",
-                    "--format=%(refname:strip=2)%09%(objectname)%09%(contents:subject)",
+                    "--format=%(refname:strip=2)%09%(objectname)%09%(objecttype)%09%(contents:subject)",
                     "refs/tags").splitlines():
-        tag, object_id, subject = line.split("\t", 2)
+        tag, object_id, kind, subject = line.split("\t", 3)
         refs[tag] = object_id
         match = re.match(r"^Vibepollo release channel: (stable|prerelease|nightly)(?:\s|$)", subject)
-        if match:
+        if kind == "tag" and match:
             tag_channels[tag] = match[1]
     return refs, tag_channels
 
@@ -415,18 +437,18 @@ def latest_qualified_nightly(repository, releases):
                                   lambda tag: run("git", "rev-parse", f"refs/tags/{tag}^{{commit}}"))
 
 
-def live_feature_line(repository, branch, source, refs, *, require_tip=False):
+def live_feature_line(repository, branch, source, refs):
     spec = importlib.util.spec_from_file_location(
         "shared_feature_line", Path(__file__).with_name("shared_feature_line.py"))
     shared = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(shared)
     return shared.current_line(repository, branch, source, refs, supported_version_key,
-                               require_tip=require_tip)
+                               require_tip=True)
 
 
 def resolve_live(repository, releases, refs, source, branch, channel, tag_channels,
-                 qualified_nightly, *, require_tip=True):
-    line = live_feature_line(repository, branch, source, refs, require_tip=require_tip)
+                 qualified_nightly):
+    line = live_feature_line(repository, branch, source, refs)
     return resolve(releases, refs, source, branch, channel, tag_channels,
                    qualified_nightly, feature_line=line)
 
@@ -452,6 +474,40 @@ def resolve_from_environment():
     print(json.dumps(result))
 
 
+def validate_tag_from_environment(*, write_notes=False):
+    repository = os.environ["GITHUB_REPOSITORY"]
+    source_branch = os.environ["RELEASE_SOURCE_BRANCH"]
+    confirmation = os.environ["RELEASE_SOURCE_CONFIRMED"]
+    validate_source(repository, source_branch, confirmation)
+    run("git", "fetch", "--no-recurse-submodules", "origin", "refs/tags/*:refs/tags/*")
+    refs, channels = read_refs()
+    releases = release_pages(repository)
+    run("git", "fetch", "--no-tags", "origin",
+        f"+refs/heads/{source_branch}:refs/remotes/origin/numeric-release-source")
+    source_branch_commit = run("git", "rev-parse", "refs/remotes/origin/numeric-release-source^{commit}")
+    source = os.environ["RELEASE_SOURCE_COMMIT"]
+    result = validate_tag(releases, refs, channels, os.environ["RELEASE_TAG"],
+                          source,
+                          source_branch,
+                          os.environ["RELEASE_PRIMARY_BRANCH"],
+                          confirmation,
+                          os.environ["RELEASE_CHANNEL"],
+                          latest_qualified_nightly(repository, releases),
+                          source_branch_commit)
+    if write_notes:
+        prior_releases = [[release for release in page
+                           if release.get("tag_name") != os.environ["RELEASE_TAG"]]
+                          for page in releases]
+        generate_notes(os.environ["RELEASE_TAG"], os.environ["RELEASE_SOURCE_COMMIT"],
+                       os.environ["RELEASE_CHANNEL"],
+                       published_source_commits(prior_releases, refs),
+                       os.environ["RELEASE_NOTES_OUTPUT"])
+    with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+        for key, value in result.items():
+            output.write(f"{key}={value}\n")
+    return result
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("command", choices=["resolve", "validate-tag", "generate-notes"])
@@ -459,31 +515,4 @@ if __name__ == "__main__":
     if args.command == "resolve":
         resolve_from_environment()
     else:
-        repository = os.environ["GITHUB_REPOSITORY"]
-        releases = release_pages(repository)
-        refs, channels = read_refs()
-        source_branch = os.environ["RELEASE_SOURCE_BRANCH"]
-        run("git", "fetch", "--no-tags", "origin",
-            f"+refs/heads/{source_branch}:refs/remotes/origin/numeric-release-source")
-        source_branch_commit = run("git", "rev-parse", "refs/remotes/origin/numeric-release-source^{commit}")
-        source = os.environ["RELEASE_SOURCE_COMMIT"]
-        line = live_feature_line(repository, source_branch, source, refs)
-        result = validate_tag(releases, refs, channels, os.environ["RELEASE_TAG"],
-                              source,
-                              source_branch,
-                              os.environ["RELEASE_PRIMARY_BRANCH"],
-                              os.environ["RELEASE_SOURCE_CONFIRMED"],
-                              os.environ["RELEASE_CHANNEL"],
-                              latest_qualified_nightly(repository, releases),
-                              source_branch_commit, feature_line=line)
-        if args.command == "generate-notes":
-            prior_releases = [[release for release in page
-                               if release.get("tag_name") != os.environ["RELEASE_TAG"]]
-                              for page in releases]
-            generate_notes(os.environ["RELEASE_TAG"], os.environ["RELEASE_SOURCE_COMMIT"],
-                           os.environ["RELEASE_CHANNEL"],
-                           published_source_commits(prior_releases, refs),
-                           os.environ["RELEASE_NOTES_OUTPUT"])
-        with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
-            for key, value in result.items():
-                output.write(f"{key}={value}\n")
+        validate_tag_from_environment(write_notes=args.command == "generate-notes")
