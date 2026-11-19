@@ -77,6 +77,35 @@ TEST(PrivateDisplayCapturePolicy, FindsOnlyTheUniquelyConnectedPortAcrossGpus) {
   std::filesystem::remove_all(root);
 }
 
+TEST(PrivateDisplayCapturePolicy, KeepsTheReservedDrmCardUntilTheLastOwnerReleasesTheOutput) {
+  policy::reserved_connector_t connector;
+  std::map<std::string, std::string> reservations;
+  std::filesystem::path connected_port;
+  int lookups = 0;
+  const auto prepare = [&](const std::string &owner) {
+    connector.forget_if_released(reservations);
+    reservations.emplace(owner, "DP-1");
+    return connector.bind("DP-1", [&](const std::string &) {
+      ++lookups;
+      return connected_port;
+    });
+  };
+
+  EXPECT_FALSE(prepare("owner"));
+  connected_port = "/sys/class/drm/card0-DP-1";
+  EXPECT_EQ(prepare("owner"), "card0:DP-1");
+  connected_port = "/sys/class/drm/card1-DP-1";
+  EXPECT_EQ(prepare("owner"), "card0:DP-1");
+  EXPECT_EQ(prepare("mirror"), "card0:DP-1");
+  reservations.erase("owner");
+  EXPECT_EQ(prepare("mirror"), "card0:DP-1");
+  EXPECT_EQ(lookups, 2);
+
+  reservations.erase("mirror");
+  EXPECT_EQ(prepare("new-owner"), "card1:DP-1");
+  EXPECT_EQ(lookups, 3);
+}
+
 TEST(PrivateDisplayCapturePolicy, PortalShortcutOrderKeepsOnlyProvableDrmTargets) {
   const std::vector<std::string> active {"card1:Virtual-1", "card0:DP-1", "card2:DP-1", "card0:HDMI-A-1"};
   const auto targets = policy::qualify_portal_switch_targets(
