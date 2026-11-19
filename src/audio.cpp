@@ -551,7 +551,7 @@ namespace audio {
       case ac3: return "AC3";
       case eac3: return "EAC3";
       case opus:
-      default: return "Opus";
+      default: return "opus";
     }
   }
 
