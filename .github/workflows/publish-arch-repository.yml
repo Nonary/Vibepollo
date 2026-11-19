@@ -3,17 +3,15 @@ name: Publish signed Arch repository
 permissions: {}
 
 on:
+  schedule:
+    # Also covers stable releases published with GITHUB_TOKEN, which cannot trigger a release event.
+    - cron: '43 * * * *'
   workflow_dispatch:
     inputs:
       release_tag:
-        description: Published v-less Vibepollo release tag, for example 1.19.0
+        description: Exact published stable release tag, for example 2.0.6
         required: true
         type: string
-      allow_draft:
-        description: Publish the package from a draft release. Only for a first release whose assets were reviewed by hand.
-        required: false
-        type: boolean
-        default: false
 
 concurrency:
   group: arch-repository
@@ -22,6 +20,7 @@ concurrency:
 jobs:
   publish:
     name: Sign and publish Arch package
+    if: github.event_name == 'schedule' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
     container:
       image: archlinux/archlinux:base-devel
@@ -35,76 +34,92 @@ jobs:
     steps:
       - name: Install publication tools
         shell: bash
-        run: pacman -Syu --needed --noconfirm archlinux-keyring git github-cli gnupg jq
+        run: pacman -Syu --needed --noconfirm archlinux-keyring git github-cli gnupg jq python
 
       - name: Checkout publication workflow
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
         with:
           fetch-depth: 0
 
+      - name: Check out current Arch repository
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory '*'
+          publication_dir="${RUNNER_TEMP}/arch-repo"
+          if git ls-remote --exit-code origin refs/heads/arch-repo >/dev/null; then
+            git fetch --depth=1 origin refs/heads/arch-repo:refs/remotes/origin/arch-repo
+            git worktree add --detach "${publication_dir}" refs/remotes/origin/arch-repo
+          else
+            status=$?
+            [[ "$status" == 2 ]] || exit "$status"
+            git worktree add --detach "${publication_dir}" HEAD
+            git -C "${publication_dir}" switch --orphan arch-repo
+          fi
+
       - name: Download and verify published Arch package
         id: release
         shell: bash
         env:
-          ALLOW_DRAFT: ${{ inputs.allow_draft }}
           REQUESTED_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
-          source_tag="${REQUESTED_TAG#refs/tags/}"
-          source_tag="${source_tag#v}"
-          release_version="${source_tag}"
-          if [[ ! "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Unsupported release tag '${REQUESTED_TAG}'."
-            exit 1
+          asset_tool=.github/scripts/arch_release_assets.py
+          repo_dir="${RUNNER_TEMP}/arch-repo/x86_64"
+          if [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
+            release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest")"
+            release_version="$(jq -er '.tag_name' <<<"$release_json")"
+          else
+            release_version="$REQUESTED_TAG"
+            [[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+            release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${release_version}")"
           fi
+          selection="$(python "$asset_tool" select "$release_version" <<<"$release_json")"
+          IFS=$'\t' read -r asset_id package_name digest <<<"$selection"
+          {
+            echo "package_name=${package_name}"
+            echo "release_version=${release_version}"
+            echo "digest=${digest}"
+          } >>"$GITHUB_OUTPUT"
 
-          # The tags endpoint only resolves published releases. A draft has no tag
-          # ref yet, so with allow_draft fall back to matching tag_name in the list.
-          # gh api prints the error body on stdout, so drop it when the lookup fails.
-          release_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${source_tag}" 2>/dev/null)" || release_json=""
-          if [[ -z "${release_json}" && "${ALLOW_DRAFT}" == "true" ]]; then
-            release_json="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
-              | jq -cs --arg tag "${source_tag}" '[.[][] | select(.tag_name == $tag and .draft == true)] | first // empty')"
-          fi
-          if [[ -z "${release_json}" ]]; then
-            echo "::error::No release found for tag ${source_tag}."
-            exit 1
-          fi
-          if [[ "$(jq -r '.draft' <<<"${release_json}")" != false ]]; then
-            if [[ "${ALLOW_DRAFT}" != "true" ]]; then
-              echo "::error::Release ${source_tag} is still a draft."
-              exit 1
+          previous_version=""
+          previous_package=""
+          if [[ -e "$repo_dir/vibepollo.db" ]]; then
+            gpgv --keyring "$repo_dir/nonary-vibepollo.gpg" \
+              "$repo_dir/vibepollo.db.sig" "$repo_dir/vibepollo.db"
+            previous="$(python "$asset_tool" record "$repo_dir/vibepollo.db")"
+            IFS=$'\t' read -r previous_version previous_package previous_digest <<<"$previous"
+            if [[ "$package_name" == "$previous_package" ]]; then
+              if [[ "$digest" != "$previous_digest" ]]; then
+                echo "::error::Published release asset changed bytes without a new package version."
+                exit 1
+              fi
+              if grep -Fqx -- "$package_name"$'\t'"$digest" "$repo_dir/release-assets.tsv" 2>/dev/null; then
+                echo "changed=false" >>"$GITHUB_OUTPUT"
+                exit 0
+              fi
             fi
-            echo "::warning::Publishing the Arch package from draft release ${source_tag} because allow_draft was set."
           fi
 
-          mapfile -t package_assets < <(
-            jq -r '.assets[] | .name as $name | select(($name | test("^vibepollo-.+\\.pkg\\.tar\\.zst$")) and (($name | contains("-debug-")) | not)) | [.id, .name] | @tsv' <<<"${release_json}"
-          )
-          if (( ${#package_assets[@]} != 1 )); then
-            echo "::error::Expected exactly one non-debug Vibepollo Arch package on release ${source_tag}."
-            jq -r '.assets[].name' <<<"${release_json}" >&2
-            exit 1
-          fi
-
-          IFS=$'\t' read -r asset_id package_name <<<"${package_assets[0]}"
           mkdir -p incoming
           gh api -H 'Accept: application/octet-stream' \
             "repos/${GITHUB_REPOSITORY}/releases/assets/${asset_id}" >"incoming/${package_name}"
-
-          package_info="$(bsdtar -xOf "incoming/${package_name}" .PKGINFO)"
-          grep -Fqx 'pkgname = vibepollo' <<<"${package_info}"
-          # Keep this aligned with special_package_configuration.cmake: Arch
-          # pkgver strips SemVer's prerelease separator.
-          arch_package_version=${release_version//-/}
-          arch_package_version=${arch_package_version//+/.}
-          grep -Fqx "pkgver = ${arch_package_version}-1" <<<"${package_info}"
-          grep -Fqx 'arch = x86_64' <<<"${package_info}"
-
-          echo "package_name=${package_name}" >>"${GITHUB_OUTPUT}"
-          echo "release_version=${release_version}" >>"${GITHUB_OUTPUT}"
+          package_version="$(python "$asset_tool" verify "incoming/${package_name}" "$release_version" "$digest")"
+          if [[ -n "$previous_version" ]]; then
+            ordering="$(vercmp "$package_version" "$previous_version")"
+            if [[ "$ordering" == -1 || ( "$ordering" == 0 && "$package_name" != "$previous_package" ) ]]; then
+              echo "::error::Refusing to replace indexed package $previous_version with $package_version."
+              exit 1
+            fi
+          fi
+          if [[ "$previous_package" == "$package_name" ]]; then
+            previous_package=""
+          fi
+          echo "previous_package=${previous_package}" >>"$GITHUB_OUTPUT"
+          echo "changed=true" >>"$GITHUB_OUTPUT"
 
       - name: Import and verify repository signing key
+        if: steps.release.outputs.changed == 'true'
         id: signing-key
         shell: bash
         env:
@@ -135,6 +150,7 @@ jobs:
           echo "fingerprint=${fingerprint}" >>"${GITHUB_OUTPUT}"
 
       - name: Sign package and export public key
+        if: steps.release.outputs.changed == 'true'
         shell: bash
         env:
           FINGERPRINT: ${{ steps.signing-key.outputs.fingerprint }}
@@ -155,27 +171,20 @@ jobs:
           gpg --batch --verify "incoming/${PACKAGE_NAME}.sig" "incoming/${PACKAGE_NAME}"
 
       - name: Update repository database
+        if: steps.release.outputs.changed == 'true'
         shell: bash
         env:
           FINGERPRINT: ${{ steps.signing-key.outputs.fingerprint }}
           PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+          PREVIOUS_PACKAGE: ${{ steps.release.outputs.previous_package }}
+          ASSET_DIGEST: ${{ steps.release.outputs.digest }}
           SIGNING_PASSPHRASE: ${{ secrets.ARCH_REPO_GPG_PASSPHRASE }}
         run: |
           set -euo pipefail
-          # The checkout is owned by a different uid than the container user.
-          git config --global --add safe.directory '*'
           publication_dir="${RUNNER_TEMP}/arch-repo"
-          if git fetch --depth=1 origin refs/heads/arch-repo:refs/remotes/origin/arch-repo; then
-            git worktree add "${publication_dir}" refs/remotes/origin/arch-repo
-          else
-            git worktree add --detach "${publication_dir}" HEAD
-            git -C "${publication_dir}" switch --orphan arch-repo
-          fi
-
           mkdir -p "${publication_dir}/x86_64"
-          cp "incoming/${PACKAGE_NAME}" "incoming/${PACKAGE_NAME}.sig" \
-            incoming/nonary-vibepollo.gpg incoming/nonary-vibepollo.asc \
-            incoming/nonary-vibepollo-fingerprint.txt \
+          cp "incoming/${PACKAGE_NAME}.sig" incoming/nonary-vibepollo.gpg \
+            incoming/nonary-vibepollo.asc incoming/nonary-vibepollo-fingerprint.txt \
             "${publication_dir}/x86_64/"
 
           cd "${publication_dir}/x86_64"
@@ -185,7 +194,7 @@ jobs:
             vibepollo.db.tar.gz.sig vibepollo.db.tar.gz.old vibepollo.db.tar.gz.old.sig \
             vibepollo.files vibepollo.files.sig vibepollo.files.tar.gz \
             vibepollo.files.tar.gz.sig vibepollo.files.tar.gz.old vibepollo.files.tar.gz.old.sig
-          repo-add vibepollo.db.tar.gz "${PACKAGE_NAME}"
+          repo-add vibepollo.db.tar.gz "${GITHUB_WORKSPACE}/incoming/${PACKAGE_NAME}"
           printf '%s' "${SIGNING_PASSPHRASE}" | gpg \
             --batch --yes --pinentry-mode loopback --passphrase-fd 0 \
             --local-user "${FINGERPRINT}" --detach-sign vibepollo.db.tar.gz
@@ -199,15 +208,33 @@ jobs:
           cp vibepollo.files.tar.gz vibepollo.files
           cp vibepollo.files.tar.gz.sig vibepollo.files.sig
 
-          # Prune older payloads only after the new indexes have been signed.
+          for index in vibepollo.db vibepollo.files; do
+            gpgv --keyring "$PWD/nonary-vibepollo.gpg" "$index.sig" "$index"
+            record="$(python "${GITHUB_WORKSPACE}/.github/scripts/arch_release_assets.py" record "$index")"
+            IFS=$'\t' read -r version filename digest <<<"$record"
+            [[ "$filename" == "$PACKAGE_NAME" && "$digest" == "$ASSET_DIGEST" ]]
+          done
+
+          # Keep the previous stable payload available for clients holding a cached index.
+          if [[ ! "$PREVIOUS_PACKAGE" =~ ^vibepollo-[0-9]+\.[0-9]+\.[0-9]+-[0-9]+(\.[0-9]+)?-x86_64\.pkg\.tar\.zst$ ]]; then
+            PREVIOUS_PACKAGE=""
+          fi
+          printf '%s\t%s\n' "$PACKAGE_NAME" "$ASSET_DIGEST" >release-assets.new
+          if [[ -f release-assets.tsv && -n "$PREVIOUS_PACKAGE" && "$PREVIOUS_PACKAGE" != "$PACKAGE_NAME" ]]; then
+            awk -F '\t' -v package="$PREVIOUS_PACKAGE" '$1 == package' release-assets.tsv >>release-assets.new
+          fi
+          mv release-assets.new release-assets.tsv
+
           shopt -s nullglob
-          for old_package in vibepollo-*.pkg.tar.zst vibepollo-*.pkg.tar.zst.sig; do
-            if [[ "${old_package}" != "${PACKAGE_NAME}" && "${old_package}" != "${PACKAGE_NAME}.sig" ]]; then
-              rm -f -- "${old_package}"
-            fi
+          for path in vibepollo-*.pkg.tar.zst vibepollo-*.pkg.tar.zst.sig; do
+            case "$path" in
+              "${PACKAGE_NAME}.sig"|"${PREVIOUS_PACKAGE}"|"${PREVIOUS_PACKAGE}.sig") ;;
+              *) rm -f -- "$path" ;;
+            esac
           done
 
       - name: Commit published repository
+        if: steps.release.outputs.changed == 'true'
         shell: bash
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.release_version }}
@@ -228,4 +255,18 @@ jobs:
 
       - name: Deploy updated repository through Pages
         shell: bash
-        run: gh workflow run update-pages.yml --ref master
+        env:
+          CHANGED: ${{ steps.release.outputs.changed }}
+          PACKAGE_NAME: ${{ steps.release.outputs.package_name }}
+        run: |
+          set -euo pipefail
+          repo_dir="${RUNNER_TEMP}/arch-repo/x86_64"
+          server=https://nonary.github.io/Vibepollo/arch/x86_64
+          if [[ "$CHANGED" == false ]] &&
+             curl -fsS --max-time 20 "$server/vibepollo.db" | cmp -s - "$repo_dir/vibepollo.db" &&
+             curl -fsS --max-time 20 "$server/vibepollo.db.sig" | cmp -s - "$repo_dir/vibepollo.db.sig" &&
+             curl -fsSIL --max-time 20 "$server/$PACKAGE_NAME" >/dev/null; then
+            echo 'The signed package is already live.'
+            exit 0
+          fi
+          gh workflow run update-pages.yml --ref master

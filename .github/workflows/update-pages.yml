@@ -34,11 +34,27 @@ jobs:
           cp -a gh-pages-template/. _site/
           rm -f _site/.readthedocs.yaml _site/_config.yml
 
-          if git fetch --depth=1 origin refs/heads/arch-repo; then
+          if git ls-remote --exit-code origin refs/heads/arch-repo >/dev/null; then
+            git fetch --depth=1 origin refs/heads/arch-repo
             mkdir -p _site/arch
             git archive --format=tar FETCH_HEAD | tar -xf - -C _site/arch
           else
+            status=$?
+            [[ "$status" == 2 ]] || exit "$status"
             echo 'The Arch repository has not been published yet.' >_site/arch-repository-pending.txt
+          fi
+
+      - name: Restore and verify signed Arch release packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -d _site/arch/x86_64 ]]; then
+            if [[ -f _site/arch/x86_64/release-assets.tsv ]] && ! command -v bsdtar >/dev/null; then
+              sudo apt-get update
+              sudo apt-get install -y libarchive-tools
+            fi
+            python3 .github/scripts/arch_release_assets.py restore _site/arch/x86_64
+            rm -f _site/arch/x86_64/release-assets.tsv
           fi
 
       - name: Configure GitHub Pages
