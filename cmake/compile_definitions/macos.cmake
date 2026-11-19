@@ -41,6 +41,7 @@ list(APPEND SUNSHINE_EXTERNAL_LIBRARIES
         ${FOUNDATION_LIBRARY}
         ${IO_KIT_LIBRARY}
         ${SCREEN_CAPTURE_KIT_LIBRARY}
+        ${SECURITY_LIBRARY}
         ${SERVICE_MANAGEMENT_LIBRARY}
         ${VIDEO_TOOLBOX_LIBRARY})
 
@@ -48,6 +49,15 @@ set_source_files_properties(
         "${CMAKE_SOURCE_DIR}/src/platform/macos/sc_video.m"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/virtual_display.mm"
         PROPERTIES COMPILE_OPTIONS "-fobjc-arc")
+
+# The touch helper (tools/macos_touch_helper) owns the macOS 27 virtual touchscreen. Its code
+# signing identifier is fixed here, not taken from anyone's App ID: the signing script signs it
+# with this identifier whatever bundle id the signer's provisioning profile names.
+set(TOUCH_HELPER_IDENTIFIER "${PROJECT_FQDN}.touch-helper")
+set(TOUCH_HELPER_BUNDLE_NAME "${CMAKE_PROJECT_NAME}Touch")
+set(TOUCH_HELPER_EXECUTABLE_NAME "${CMAKE_PROJECT_NAME}Touch")
+set_source_files_properties("${CMAKE_SOURCE_DIR}/src/platform/macos/touchscreen.cpp" PROPERTIES COMPILE_DEFINITIONS
+        "TOUCH_HELPER_IDENTIFIER=\"${TOUCH_HELPER_IDENTIFIER}\";TOUCH_HELPER_BUNDLE_NAME=\"${TOUCH_HELPER_BUNDLE_NAME}\";TOUCH_HELPER_EXECUTABLE_NAME=\"${TOUCH_HELPER_EXECUTABLE_NAME}\"")
 
 set(APPLE_PLIST_TEMPLATE "${SUNSHINE_SOURCE_ASSETS_DIR}/macos/build/Info.plist.in")
 set(APPLE_PLIST_FILE "${CMAKE_BINARY_DIR}/Info.plist")
@@ -78,6 +88,10 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/macos/publish.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/sc_video.h"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/sc_video.m"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/touchscreen.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/touchscreen.h"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/touchscreen_policy.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/macos/touchscreen_policy.h"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/virtual_display.h"
         "${CMAKE_SOURCE_DIR}/src/platform/macos/virtual_display.mm"
         "${CMAKE_SOURCE_DIR}/third-party/TPCircularBuffer/TPCircularBuffer.c"
