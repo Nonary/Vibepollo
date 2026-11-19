@@ -5,5 +5,7 @@
 
 namespace platf {
   std::vector<std::string> kms_capture_targets(mem_type_e type);
+  /** Public shortcut order. KMS entries retain their card identity when it is the selected backend. */
+  std::vector<std::string> display_switch_targets(mem_type_e type, bool &uses_kms);
   std::shared_ptr<display_t> kms_display(mem_type_e type, const std::string &name, const video::config_t &config);
 }

@@ -60,6 +60,9 @@
 #include "src/config.h"
 #include "src/entry_handler.h"
 #include "src/logging.h"
+#ifdef SUNSHINE_BUILD_DRM
+  #include "kmsgrab.h"
+#endif
 #include "src/platform/common.h"
 #include "src/video.h"
 #include "packaging/linux/vibepollo-session-stream-environment.h"
@@ -1344,7 +1347,7 @@ namespace platf {
 #endif
   }
 
-  std::vector<std::string> display_names(mem_type_e hwdevice_type) {
+  static std::vector<std::string> selected_display_names(mem_type_e hwdevice_type, bool *switch_uses_kms) {
 #ifdef SUNSHINE_BUILD_GAMESCOPE
     if (sources[source::GAMESCOPE]) {
       // Preserve the session's logical target even if Gamescope discovery now
@@ -1365,6 +1368,10 @@ namespace platf {
 #endif
 #ifdef SUNSHINE_BUILD_DRM
     if (sources[source::KMS]) {
+      if (switch_uses_kms) {
+        *switch_uses_kms = true;
+        return kms_capture_targets(hwdevice_type);
+      }
       return kms_display_names(hwdevice_type);
     }
 #endif
@@ -1384,6 +1391,15 @@ namespace platf {
     }
 #endif
     return {};
+  }
+
+  std::vector<std::string> display_names(mem_type_e hwdevice_type) {
+    return selected_display_names(hwdevice_type, nullptr);
+  }
+
+  std::vector<std::string> display_switch_targets(mem_type_e hwdevice_type, bool &uses_kms) {
+    uses_kms = false;
+    return selected_display_names(hwdevice_type, &uses_kms);
   }
 
   std::vector<std::string> display_names_for_restore(
