@@ -622,11 +622,7 @@ esac
 
         publish_arch_workflow = load_workflow("publish-arch-repository.yml")
         self.assertIn("publish", publish_arch_workflow["jobs"])
-        publish_arch_text = (
-            ROOT / ".github" / "workflows" / "publish-arch-repository.yml"
-        ).read_text(encoding="utf-8")
-        self.assertIn("arch_package_version=${release_version//-/}", publish_arch_text)
-        self.assertIn("pkgver = ${arch_package_version}-1", publish_arch_text)
+        self.assertIn("workflow_dispatch", publish_arch_workflow["on"])
 
         getting_started = (ROOT / "docs" / "getting_started.md").read_text(
             encoding="utf-8"

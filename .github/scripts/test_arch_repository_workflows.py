@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import shutil
 import subprocess
@@ -79,10 +80,10 @@ class ArchRepositoryWorkflowTest(unittest.TestCase):
         self.assertIn("ARCH_REPO_GPG_PASSPHRASE", text)
         self.assertIn("ARCH_REPO_GPG_FINGERPRINT", text)
         self.assertIn("Imported signing key fingerprint does not match", text)
-        self.assertIn("Release ${source_tag} is still a draft", text)
-        self.assertIn("Expected exactly one non-debug Vibepollo Arch package", text)
-        self.assertIn("arch_package_version=${release_version//-/}", text)
-        self.assertIn("pkgver = ${arch_package_version}-1", text)
+        self.assertIn("schedule", workflow["on"])
+        self.assertNotIn("allow_draft", workflow["on"]["workflow_dispatch"]["inputs"])
+        self.assertIn("/releases/latest", text)
+        self.assertIn('vercmp "$package_version" "$previous_version"', text)
         self.assertIn("--detach-sign \"incoming/${PACKAGE_NAME}\"", text)
         self.assertIn("--detach-sign vibepollo.db.tar.gz", text)
         self.assertIn("gpg --batch --verify", text)
@@ -98,7 +99,7 @@ class ArchRepositoryWorkflowTest(unittest.TestCase):
 
 
 @unittest.skipUnless(
-    all(shutil.which(tool) for tool in ("repo-add", "bsdtar", "gpg", "gpgconf")),
+    all(shutil.which(tool) for tool in ("repo-add", "bsdtar", "gpg", "gpgconf", "gpgv", "vercmp", "git")),
     "Arch database publication fixtures require repo-add, bsdtar and gpg",
 )
 class ArchRepositoryPublicationTest(unittest.TestCase):
@@ -134,24 +135,59 @@ class ArchRepositoryPublicationTest(unittest.TestCase):
         self.root = Path(temporary_dir.name)
         self.repository = self.root / "arch-repo" / "x86_64"
         self.repository.mkdir(parents=True)
-        self.package_name = "vibepollo-2.0.0-1-x86_64.pkg.tar.zst"
+        self.incoming = self.root / "incoming"
+        self.incoming.mkdir()
+        self.product = "vibepollo"
+        self.tools_dir = self.root / "bin"
+        self.tools_dir.mkdir()
         self.env = self.signing_env | {
             "FINGERPRINT": self.fingerprint,
-            "PACKAGE_NAME": self.package_name,
             "SIGNING_PASSPHRASE": self.passphrase,
-            "publication_dir": str(self.repository.parent),
+            "GITHUB_WORKSPACE": str(self.root),
+            "RUNNER_TEMP": str(self.root),
+            "GITHUB_REPOSITORY": f"Nonary/{self.product}",
+            "GITHUB_EVENT_NAME": "schedule",
+            "GITHUB_OUTPUT": str(self.root / "outputs"),
+            "GIT_CONFIG_GLOBAL": str(self.root / "gitconfig"),
+            "PATH": f"{self.tools_dir}:{os.environ['PATH']}",
         }
+        helper = Path(".github/scripts/arch_release_assets.py")
+        (self.root / helper).parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / helper, self.root / helper)
+        self.helper = self.root / helper
         steps = load_workflow("publish-arch-repository.yml")["jobs"]["publish"]["steps"]
-        update = next(step["run"] for step in steps if step["name"] == "Update repository database")
-        # Execute the real database/signature/payload operations without a remote push.
-        self.publication_script = update[update.index('cd "${publication_dir}/x86_64"'):]
-        download = next(step["run"] for step in steps if step.get("id") == "release")
-        self.validation_script = download[
-            download.index("package_info="):download.index('echo "package_name=')
-        ]
+        self.publication_script = next(step["run"] for step in steps if step["name"] == "Update repository database")
+        self.signing_script = next(step["run"] for step in steps if step["name"] == "Sign package and export public key")
+        self.validation_script = next(step["run"] for step in steps if step.get("id") == "release")
+        self.deploy_script = next(step["run"] for step in steps if step["name"] == "Deploy updated repository through Pages")
         self.package_count = 0
 
-    def run_command(self, command: list[str], *, check: bool = True) -> subprocess.CompletedProcess:
+        self.write_tool("gh", """#!/bin/bash
+case "$1" in
+  api)
+    if [[ "$2" == "-H" ]]; then cat "$FIXTURE_ASSET"; else cat "$FIXTURE_RELEASE"; fi ;;
+  workflow) touch "$RUNNER_TEMP/deployment-requested" ;;
+  *) exit 1 ;;
+esac
+""")
+        self.write_tool("curl", """#!/bin/bash
+while [[ "$#" -gt 1 ]]; do
+  if [[ "$1" == "--output" ]]; then output="$2"; shift; fi
+  shift
+done
+if [[ -n "$output" ]]; then
+  cp "$RUNNER_TEMP/assets/${1##*/}" "$output"
+else
+  exit 22  # Simulate a push that succeeded while the previous Pages run failed.
+fi
+""")
+
+    def write_tool(self, name, text):
+        tool = self.tools_dir / name
+        tool.write_text(text, encoding="utf-8")
+        tool.chmod(0o755)
+
+    def run_command(self, command, *, check=True):
         result = subprocess.run(
             command, cwd=self.root, env=self.env, text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
@@ -160,101 +196,147 @@ class ArchRepositoryPublicationTest(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stdout)
         return result
 
-    def make_package(self, version: str, *, name: str = "vibepollo") -> Path:
+    def make_package(self, version, *, name=None, arch="x86_64"):
+        name = name or self.product
         self.package_count += 1
         contents = self.root / f"package-{self.package_count}"
         (contents / "usr" / "bin").mkdir(parents=True)
         (contents / "usr" / "bin" / name).write_text("fixture\n", encoding="utf-8")
         (contents / ".PKGINFO").write_text(
-            f"pkgname = {name}\npkgver = {version}\narch = x86_64\n"
-            "pkgdesc = Publication fixture\nsize = 8\nbuilddate = 1788846403\n",
+            f"pkgname = {name}\npkgver = {version}\narch = {arch}\n"
+            "pkgdesc = Publication fixture\nsize = 8\nbuilddate = 1788846403\ndepend = glibc>=2\n",
             encoding="utf-8",
         )
-        package = self.repository / f"{name}-{version}-x86_64.pkg.tar.zst"
+        assets = self.root / "assets"
+        assets.mkdir(exist_ok=True)
+        package = assets / f"{name}-{version.split(':')[-1]}-x86_64.pkg.tar.zst"
         self.run_command(["bsdtar", "--zstd", "-cf", str(package), "-C", str(contents), ".PKGINFO", "usr"])
-        self.run_command([
-            "gpg", "--batch", "--yes", "--pinentry-mode", "loopback", "--passphrase",
-            self.passphrase, "--local-user", self.fingerprint, "--detach-sign", str(package),
-        ])
         return package
 
-    def publish(self) -> None:
-        self.run_command(["bash", "-euo", "pipefail", "-c", self.publication_script])
+    def validate(self, package, tag, *, check=True, **overrides):
+        data = {
+            "tag_name": tag, "draft": False, "prerelease": False,
+            "published_at": "2026-11-03T04:07:29Z",
+            "assets": [{"id": 1, "name": package.name, "state": "uploaded",
+                        "digest": f"sha256:{hashlib.sha256(package.read_bytes()).hexdigest()}"}],
+        }
+        release = self.root / "release.json"
+        release.write_text(json.dumps(data | overrides), encoding="utf-8")
+        self.env.update(FIXTURE_ASSET=str(package), FIXTURE_RELEASE=str(release))
+        Path(self.env["GITHUB_OUTPUT"]).write_text("")
+        result = self.run_command(["bash", "-c", self.validation_script], check=check)
+        outputs = dict(line.split("=", 1) for line in Path(self.env["GITHUB_OUTPUT"]).read_text().splitlines())
+        return result, outputs
 
-    def assert_current_repository(self) -> None:
-        package = self.repository / self.package_name
-        digest = hashlib.sha256(package.read_bytes()).hexdigest()
+    def publish(self, package, tag):
+        _, outputs = self.validate(package, tag)
+        self.assertEqual(outputs["changed"], "true")
+        self.env.update(PACKAGE_NAME=outputs["package_name"], PREVIOUS_PACKAGE=outputs["previous_package"],
+                        ASSET_DIGEST=outputs["digest"])
+        self.run_command(["bash", "-c", self.signing_script])
+        self.run_command(["bash", "-c", self.publication_script])
+        self.assertFalse((self.repository / package.name).exists())
+        self.assertTrue((self.repository / f"{package.name}.sig").is_file())
+
+    def restore(self, directory=None, *, check=True):
+        target = directory or self.repository
+        return self.run_command(["python", str(self.helper), "restore", str(target)], check=check)
+
+    def test_rebuild_signed_indexes_restore_payloads_and_retry_pages(self):
+        old = self.make_package("2.0.0-1")
+        self.publish(old, "2.0.0")
+        latest = self.make_package("2.0.6-1")
+        self.publish(latest, "2.0.6")
+        self.assertEqual((self.repository / "release-assets.tsv").read_text().count("\n"), 2)
+
+        snapshot = self.root / "pages"
+        shutil.copytree(self.repository, snapshot)
+        self.restore(snapshot)
+        for package in (old, latest):
+            self.assertEqual((snapshot / package.name).read_bytes(), package.read_bytes())
+
+        expected = hashlib.sha256(latest.read_bytes()).hexdigest()
         for kind in ("db", "files"):
-            archive = self.repository / f"vibepollo.{kind}.tar.gz"
+            archive = snapshot / f"{self.product}.{kind}.tar.gz"
             entries = self.run_command(["bsdtar", "-tf", str(archive)]).stdout.splitlines()
-            self.assertEqual({entry.split("/")[0] for entry in entries}, {"vibepollo-2.0.0-1"})
-            description = self.run_command([
-                "bsdtar", "-xOf", str(archive), "vibepollo-2.0.0-1/desc",
-            ]).stdout
-            self.assertIn(f"%FILENAME%\n{self.package_name}\n", description)
-            self.assertIn("%VERSION%\n2.0.0-1\n", description)
-            self.assertIn(f"%SHA256SUM%\n{digest}\n", description)
-            self.run_command(["gpg", "--batch", "--verify", f"{archive}.sig", str(archive)])
-            for suffix in ("", ".sig"):
-                alias = self.repository / f"vibepollo.{kind}{suffix}"
-                self.assertFalse(alias.is_symlink())
-                self.assertEqual(alias.read_bytes(), Path(f"{archive}{suffix}").read_bytes())
-        self.run_command(["gpg", "--batch", "--verify", f"{package}.sig", str(package)])
-        self.assertEqual(
-            {path.name for path in self.repository.glob("vibepollo-*.pkg.tar.zst*")},
-            {self.package_name, f"{self.package_name}.sig"},
-        )
-        self.assertFalse(list(self.repository.glob("*.old*")))
+            self.assertEqual({entry.split("/")[0] for entry in entries}, {f"{self.product}-2.0.6-1"})
+            desc = self.run_command(["bsdtar", "-xOf", str(archive), f"{self.product}-2.0.6-1/desc"]).stdout
+            self.assertIn(f"%FILENAME%\n{latest.name}\n", desc)
+            self.assertIn("%DEPENDS%\nglibc>=2\n", desc)
+            self.assertIn(f"%SHA256SUM%\n{expected}\n", desc)
 
-    def test_first_publication_and_republication(self) -> None:
-        self.make_package("2.0.0-1")
-        self.publish()
-        self.assert_current_repository()
-        self.publish()
-        self.assert_current_repository()
+        _, outputs = self.validate(latest, "2.0.6")
+        self.assertEqual(outputs["changed"], "false")
+        self.env.update(CHANGED="false", PACKAGE_NAME=latest.name)
+        self.run_command(["bash", "-c", self.deploy_script])
+        self.assertTrue((self.root / "deployment-requested").exists())
 
-    def test_old_payloads_and_ghost_entries_are_replaced(self) -> None:
-        old = self.make_package("2.0.0beta.1-1")
-        ghost = self.make_package("1.0.0-1", name="removed-addon")
-        self.run_command(["repo-add", str(self.repository / "vibepollo.db.tar.gz"), str(old), str(ghost)])
-        ghost.unlink()
-        Path(f"{ghost}.sig").unlink()
-        # A stray broken package must never enter the new database's input list.
-        (self.repository / "vibepollo-9.9.9-1-x86_64.pkg.tar.zst").write_bytes(b"broken")
-        (self.repository / "vibepollo-orphan.pkg.tar.zst.sig").write_bytes(b"orphan")
-        for kind in ("db", "files"):
-            (self.repository / f"vibepollo.{kind}.tar.gz.old").write_bytes(b"old archive")
-            (self.repository / f"vibepollo.{kind}.tar.gz.old.sig").write_bytes(b"old signature")
-        self.make_package("2.0.0-1")
-        self.publish()
-        self.assert_current_repository()
+    def test_stale_publication_cannot_replace_remote_index(self):
+        old = self.make_package("2.0.0-1")
+        self.publish(old, "2.0.0")
+        remote = self.root / "remote.git"
+        self.run_command(["git", "init", "--bare", str(remote)])
+        publication = self.repository.parent
+        self.run_command(["git", "-C", str(publication), "init", "-b", "arch-repo"])
+        self.run_command(["git", "-C", str(publication), "remote", "add", "origin", str(remote)])
+        steps = load_workflow("publish-arch-repository.yml")["jobs"]["publish"]["steps"]
+        commit = next(step["run"] for step in steps if step["name"] == "Commit published repository")
+        self.env["RELEASE_VERSION"] = "2.0.0"
+        self.run_command(["bash", "-c", commit])
 
-    def test_missing_previous_payload_does_not_block_publication(self) -> None:
-        old = self.make_package("2.0.0beta.1-1")
-        self.run_command(["repo-add", str(self.repository / "vibepollo.db.tar.gz"), str(old)])
-        old.unlink()
-        Path(f"{old}.sig").unlink()
-        self.make_package("2.0.0-1")
-        self.publish()
-        self.assert_current_repository()
+        stale = self.root / "stale"
+        self.run_command(["git", "clone", "--branch", "arch-repo", str(remote), str(stale / "arch-repo")])
+        self.publish(self.make_package("2.0.6-1"), "2.0.6")
+        self.env["RELEASE_VERSION"] = "2.0.6"
+        self.run_command(["bash", "-c", commit])
+        successful_head = self.run_command(["git", "--git-dir", str(remote), "rev-parse", "arch-repo"]).stdout
 
-    def test_release_version_is_compared_literally(self) -> None:
-        incoming = self.root / "incoming"
-        incoming.mkdir()
-        for release, version, accepted in (
-            ("2.0.0", "2.0.0-1", True),
-            ("2.0.0-beta.2", "2.0.0beta.2-1", True),
-            ("2.0.0", "2x0x0-1", False),
-            ("2.0.0-beta.2", "2.0.0betaX2-1", False),
-        ):
-            with self.subTest(release=release, version=version):
-                package = self.make_package(version)
-                shutil.copyfile(package, incoming / self.package_name)
-                self.env.update(release_version=release, package_name=self.package_name)
-                result = self.run_command(
-                    ["bash", "-euo", "pipefail", "-c", self.validation_script], check=False,
-                )
-                self.assertEqual(result.returncode == 0, accepted, result.stdout)
+        self.env["RUNNER_TEMP"] = str(stale)
+        self.repository = stale / "arch-repo" / "x86_64"
+        self.publish(self.make_package("2.0.4-1"), "2.0.4")
+        self.env["RELEASE_VERSION"] = "2.0.4"
+        rejected = self.run_command(["bash", "-c", commit], check=False)
+        self.assertNotEqual(rejected.returncode, 0, rejected.stdout)
+        self.assertIn("[rejected]", rejected.stdout)
+        self.assertEqual(self.run_command(["git", "--git-dir", str(remote), "rev-parse", "arch-repo"]).stdout,
+                         successful_head)
+
+    def test_version_order_uses_epoch_and_pkgrel(self):
+        first = self.make_package("1:2.0.6-2")
+        self.publish(first, "2.0.6")
+        for tag, version in (("2.18.9", "2.18.9-1"), ("2.0.6", "1:2.0.6-1")):
+            with self.subTest(version=version):
+                result, _ = self.validate(self.make_package(version), tag, check=False)
+                self.assertIn("Refusing to replace indexed package", result.stdout)
+        self.publish(self.make_package("1:2.0.6-2.1"), "2.0.6")
+
+    def test_wrong_channel_architecture_and_bytes_fail_closed(self):
+        package = self.make_package("2.0.6-1")
+        for flag in ("draft", "prerelease"):
+            result, _ = self.validate(package, "2.0.6", check=False, **{flag: True})
+            self.assertNotEqual(result.returncode, 0, result.stdout)
+        result, _ = self.validate(package, "2.0.6daily.d20261118", check=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        wrong_arch = self.make_package("2.0.7-1", arch="aarch64")
+        result, _ = self.validate(wrong_arch, "2.0.7", check=False)
+        self.assertIn("Package metadata does not match", result.stdout)
+        self.publish(package, "2.0.6")
+        package.write_bytes(b"mismatched payload")
+        result, _ = self.validate(package, "2.0.6", check=False)
+        self.assertIn("changed bytes without a new package version", result.stdout)
+        result = self.restore(check=False)
+        self.assertIn("Release asset SHA-256 mismatch", result.stdout)
+
+    def test_pages_rejects_a_damaged_index_or_package_signature(self):
+        package = self.make_package("2.0.6-1")
+        self.publish(package, "2.0.6")
+        for filename in (f"{self.product}.db", f"{self.product}.files.sig", f"{package.name}.sig"):
+            with self.subTest(filename=filename):
+                original = self.repository / filename
+                content = original.read_bytes()
+                original.write_bytes(b"bad")
+                self.assertNotEqual(self.restore(check=False).returncode, 0)
+                original.write_bytes(content)
 
 
 if __name__ == "__main__":
