@@ -537,10 +537,10 @@ esac
         )
         self.assertEqual(
             drm_checkout["run"].splitlines()[0],
-            'git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --depth 1 -- third-party/libvirtualdisplay third-party/libvirtualgamepad',
+            'git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --depth 1 -- third-party/libvirtualdisplay-linux third-party/libvirtualgamepad',
         )
         for required in (
-            "third-party/libvirtualdisplay/linux/vibeshine-drm/Makefile",
+            "third-party/libvirtualdisplay-linux/linux/vibeshine-drm/Makefile",
             "third-party/libvirtualgamepad/linux/vibeshine-ds5/Makefile",
             "third-party/libvirtualgamepad/linux/vibeshine-ds5/dkms.conf.in",
         ):

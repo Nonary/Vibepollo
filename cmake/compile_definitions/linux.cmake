@@ -384,7 +384,10 @@ list(APPEND PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/linux/host_stats.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/linux/audio.cpp")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    list(APPEND SUNSHINE_EXTERNAL_LIBRARIES glad_gles2)
     list(APPEND PLATFORM_TARGET_FILES
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/gpu_snapshot.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/linux/gpu_snapshot.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/routed_link.h"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/routed_link.cpp"
             "${CMAKE_SOURCE_DIR}/src/platform/linux/display_power.cpp"

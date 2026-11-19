@@ -55,7 +55,7 @@ namespace util {
   hex_t hex(int) { return {}; }
 }
 struct Packet {
-  std::uint32_t frames; DWORD flags; UINT64 qpc; std::vector<float> samples;
+  std::uint32_t frames; DWORD flags; UINT64 qpc; std::vector<float> samples; UINT64 position=0;
 };
 struct Capture {
   std::deque<Packet> packets;
@@ -64,9 +64,9 @@ struct Capture {
   HRESULT GetNextPacketSize(std::uint32_t *out) {
     *out=packets.empty()?0:packets.front().frames; return status;
   }
-  HRESULT GetBuffer(BYTE **out, std::uint32_t *frames, DWORD *flags, void*, UINT64 *qpc) {
+  HRESULT GetBuffer(BYTE **out, std::uint32_t *frames, DWORD *flags, UINT64 *position, UINT64 *qpc) {
     auto &p=packets.front(); *out=reinterpret_cast<BYTE*>(p.samples.data());
-    *frames=p.frames; *flags=p.flags; *qpc=p.qpc; return status;
+    *frames=p.frames; *flags=p.flags; *qpc=p.qpc; *position=p.position; return status;
   }
   HRESULT ReleaseBuffer(std::uint32_t) { ++releases; packets.pop_front(); return S_OK; }
 };
@@ -143,6 +143,24 @@ int main() {
   CHECK(normal.sample(output)==capture_e::ok && output.front()==5);
   normal.capture.packets.push_back({240,AUDCLNT_BUFFERFLAGS_SILENT,0,{}});
   CHECK(normal.sample(output)==capture_e::ok && output.front()==0);
+  // Production GetBuffer must forward the device position. Timestamp jitter
+  // across otherwise contiguous packets cannot alter the sample sequence.
+  clock_ticks=origin;
+  mic_wasapi_t jittered;
+  jittered.continuous_buffer.emplace(48000,2,240,480,origin);
+  for (int n=0;n<8;++n) {
+    std::vector<float> values(960);
+    for (int i=0;i<960;++i) values[i]=float(n*960+i+1);
+    auto jitter=n==0?0:(n%2?9000:-9000);
+    jittered.capture.packets.push_back({480,n==0?AUDCLNT_BUFFERFLAGS_DATA_DISCONTINUITY:0,
+      static_cast<UINT64>(origin+n*100000+jitter),std::move(values),static_cast<UINT64>(n)*480});
+  }
+  int expected=1;
+  for (int n=0;n<16;++n) {
+    CHECK(jittered.sample(output)==capture_e::ok);
+    for (float value:output) CHECK(value==float(expected++));
+  }
+  CHECK(jittered.capture.releases==8);
   std::cout << "production WASAPI adapter tests passed\n";
 }
 '''.replace('SAMPLE', sample).replace('FILL', fill)

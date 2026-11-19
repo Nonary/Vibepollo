@@ -98,6 +98,9 @@ namespace pyrowave::host {
           source.cursor_dst_height = img->height;
           source.lut = img->crtc_gamma_lut.get();
           capture_device = img->capture_render_device;
+          source.gpu_snapshot = [this](const auto &frame, const auto &import) {
+            return snapshot_device.copy(snapshot, snapshot_render_device, frame, import);
+          };
         } else {
           if (!image.data) {
             return 1;
@@ -117,6 +120,7 @@ namespace pyrowave::host {
           if (!capture_device.empty()) {
             config.render_device = capture_device;
           }
+          snapshot_render_device = config.render_device;
           core = linux_gpu::core_t::create(config, detail);
           if (!core) {
             BOOST_LOG(error) << "PyroWave: " << detail;
@@ -159,6 +163,9 @@ namespace pyrowave::host {
       session_params_t params;
       std::shared_ptr<platf::display_t> display;
       policy::budget_t budget;
+      std::string snapshot_render_device;
+      egl::snapshot_device_t snapshot_device;
+      egl::gpu_snapshot_t snapshot;
       std::unique_ptr<linux_gpu::core_t> core;
 #ifdef SUNSHINE_ENABLE_NV_TRUEHDR
       std::unique_ptr<platf::rtx_hdr::foreground_t> foreground;

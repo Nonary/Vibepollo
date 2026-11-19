@@ -6,16 +6,16 @@
 #include <algorithm>
 #include <array>
 #include <cstdio>
-#include <src/platform/linux/pyrowave_linear_upload.h>
+#include <src/platform/linux/dmabuf_linear_upload.h>
 #include <unistd.h>
 
 namespace {
-  using pyrowave::linux_gpu::linear_upload::backing_extent_matches;
-  using pyrowave::linux_gpu::linear_upload::can_upload_surface;
-  using pyrowave::linux_gpu::linear_upload::copy_mapped_rows;
-  using pyrowave::linux_gpu::linear_upload::requires_external_image_barriers;
-  using pyrowave::linux_gpu::linear_upload::retry_sync_call;
-  using pyrowave::linux_gpu::linear_upload::should_attempt_linear_upload;
+  using egl::linear_upload::backing_extent_matches;
+  using egl::linear_upload::can_upload_surface;
+  using egl::linear_upload::copy_mapped_rows;
+  using egl::linear_upload::requires_external_image_barriers;
+  using egl::linear_upload::retry_sync_call;
+  using egl::linear_upload::should_attempt_linear_upload;
 
   TEST(PyrowaveLinearUpload, CopiesActiveBytesFromPitchedSurfaceWithOffset) {
     egl::surface_descriptor_t surface;
@@ -40,6 +40,24 @@ namespace {
     EXPECT_FALSE(should_attempt_linear_upload(surface, false));
     ASSERT_TRUE(copy_mapped_rows(surface, mapped, pixels));
     EXPECT_EQ(pixels, (std::vector<std::uint8_t> {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}));
+  }
+
+  TEST(PyrowaveLinearUpload, PreservesPackedTenBitWordsWithOffsetAndPadding) {
+    for (const auto format : {DRM_FORMAT_XRGB2101010, DRM_FORMAT_ARGB2101010, DRM_FORMAT_XBGR2101010, DRM_FORMAT_ABGR2101010}) {
+      egl::surface_descriptor_t surface;
+      surface.fourcc = format;
+      surface.direct_import_required = true;
+      surface.fds[0] = 3;
+      surface.width = surface.height = 2;
+      surface.pitches[0] = 12;
+      surface.offsets[0] = 4;
+      const std::vector<std::uint8_t> mapped {0,0,0,0, 1,2,3,4, 0xfe,0xfd,0xfc,0xfb, 0,0,0,0, 7,8,9,10, 0xff,0xff,0xff,0xff};
+      const std::vector<std::uint8_t> expected {1,2,3,4, 0xfe,0xfd,0xfc,0xfb, 7,8,9,10, 0xff,0xff,0xff,0xff};
+      std::vector<std::uint8_t> pixels;
+      ASSERT_TRUE(should_attempt_linear_upload(surface, true));
+      ASSERT_TRUE(copy_mapped_rows(surface, mapped, pixels));
+      EXPECT_EQ(expected, pixels);
+    }
   }
 
   TEST(PyrowaveLinearUpload, RejectsTiledImplicitAndUnknownFormats) {

@@ -2392,6 +2392,8 @@ pre_remove() {
 }
 
 post_remove() {
+  rm -f -- /usr/lib/libvibeshine-kwin-gpu.so /usr/lib/libvibeshine-kwin-gpu-local.so \
+    /usr/lib/vibeshine-kwin-bridge.env
   # The outgoing scriptlet may predate transaction ownership. Release only
   # this operation's barriers after package removal and exact cleanup proof.
   vibepollo_package_recover_failed_transaction || {

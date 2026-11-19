@@ -1,18 +1,19 @@
 /**
  * @file src/platform/windows/audio_continuous_buffer.h
- * @brief Bounded, timestamp-aligned loopback audio and silence.
+ * @brief Bounded loopback audio on a device-frame timeline with paced silence.
  */
 #pragma once
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <span>
 #include <vector>
 
 namespace platf::audio_detail {
-  // WASAPI packet QPC timestamps are already expressed in 100-nanosecond units.
-  // Keep the output cursor independent of event delivery: an empty/spurious
-  // event cannot create silence, and late packets cannot replay emitted time.
+  // QPC timestamps pace output, but are not sample-accurate packet positions.
+  // Use device-frame continuity between clock anchors so timestamp jitter
+  // cannot punch holes in audio or overwrite the preceding packet's tail.
   class continuous_buffer_t {
   public:
     static constexpr std::int64_t ticks_per_second = 10000000;
@@ -21,6 +22,7 @@ namespace platf::audio_detail {
         rate_ {rate},
         channels_ {channels},
         packet_frames_ {packet_frames},
+        resync_frames_ {std::max(device_frames, packet_frames)},
         margin_frames_ {2 * device_frames + packet_frames},
         max_backlog_ {std::max(2 * device_frames, 4 * packet_frames)},
         capacity_ {std::max(rate, 4 * (device_frames + packet_frames))},
@@ -36,19 +38,33 @@ namespace platf::audio_detail {
       }
     }
 
-    bool put(std::int64_t timestamp, std::uint32_t frames, const float *data, bool silent) {
+    bool put(std::int64_t timestamp, std::uint64_t device_position, std::uint32_t frames, const float *data, bool silent, bool discontinuity = false) {
       // Reject untrustworthy timestamps before arithmetic or allocation. The
       // caller discards unlocated audio while retaining the output clock.
-      if (timestamp < 0 || timestamp < origin_ - ticks_per_second) {
+      if (timestamp < 0 || timestamp < origin_ - ticks_per_second ||
+          device_position > std::numeric_limits<std::uint64_t>::max() - frames) {
         return false;
       }
-      auto first = frame_at(timestamp - origin_);
-      auto end = first + frames;
-      if (end <= cursor_) {
-        return true;
+      auto clock_first = frame_at(timestamp - origin_);
+      auto first = clock_first;
+      if (anchored_ && !discontinuity && device_position == next_device_position_) {
+        // Ignore sub-period QPC jitter. A larger offset starts a new segment:
+        // loopback can stop producing packets during silence, and the device
+        // clock can gradually drift relative to QPC even within one session.
+        auto offset = clock_first - next_frame_;
+        if (offset >= -resync_frames_ && offset <= resync_frames_) {
+          first = next_frame_;
+        }
       }
+      auto end = first + frames;
       if (first > cursor_ + capacity_ || end > cursor_ + capacity_) {
         return false;
+      }
+      anchored_ = true;
+      next_device_position_ = device_position + frames;
+      next_frame_ = end;
+      if (end <= cursor_) {
+        return true;
       }
       auto skip = std::max<std::int64_t>(0, cursor_ - first);
       for (auto frame = first + skip; frame < end; ++frame) {
@@ -104,8 +120,11 @@ namespace platf::audio_detail {
       cursor_ = next;
     }
 
-    std::int64_t rate_, channels_, packet_frames_, margin_frames_, max_backlog_, capacity_;
+    std::int64_t rate_, channels_, packet_frames_, resync_frames_, margin_frames_, max_backlog_, capacity_;
     std::int64_t origin_, cursor_ = 0;
+    std::int64_t next_frame_ = 0;
+    std::uint64_t next_device_position_ = 0;
+    bool anchored_ = false;
     std::vector<float> samples_;
   };
 }  // namespace platf::audio_detail

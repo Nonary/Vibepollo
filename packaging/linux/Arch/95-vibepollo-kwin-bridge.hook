@@ -1,0 +1,12 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Path
+Target = usr/lib/libkwin.so*
+Target = usr/lib/vibepollo/kwin-bridge/libvibeshine-kwin-gpu.so
+
+[Action]
+Description = Refreshing the Vibepollo GPU bridge for the installed KWin
+When = PostTransaction
+Depends = vibepollo
+Exec = /usr/libexec/vibeshine/vibepollo-kwin-bridge-rebuild

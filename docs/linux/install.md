@@ -56,6 +56,17 @@ running kernel are required: installing headers for a newer kernel is not enough
 The script verifies the virtual-display module after package installation and
 builds it if necessary; a missing module or build failure stops installation.
 
+The KWin bridge routes managed virtual-display scanout allocations through GBM.
+On Arch and CachyOS, package hooks check the installed KWin interface and
+activate the package-built bridge for the next compositor launch. A running
+compositor keeps the bridge it already loaded. After the first upgrade from
+an older bridge, sign out and back in once or reboot to load the new bridge.
+
+KMS capture tries direct DMA-BUF import, then a GPU copy into an
+encoder-compatible buffer, then CPU upload for framebuffers with a known
+linear layout. The GPU copy remains available before you sign out and when
+the installed KWin interface cannot activate the bridge.
+
 ### Legacy driver-source leftovers
 
 Unowned driver-source files left by earlier local updates inside a host-package-owned

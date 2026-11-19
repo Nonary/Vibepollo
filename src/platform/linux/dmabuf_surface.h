@@ -5,6 +5,9 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
+#include <cerrno>
+#include <poll.h>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -13,6 +16,8 @@
 #include <unistd.h>
 
 namespace egl {
+  inline constexpr std::uint64_t IMPLICIT_DMA_BUF_MODIFIER = 0x00ffffffffffffffULL;
+
   struct surface_descriptor_t {
     int width {};
     int height {};
@@ -23,6 +28,30 @@ namespace egl {
     std::uint32_t offsets[4] {};
     bool direct_import_required {};
   };
+
+  inline bool wait_for_source(const surface_descriptor_t &source) {
+    if (source.fds[0] < 0) {
+      return false;
+    }
+    std::array<pollfd, 4> fds {};
+    for (std::size_t i = 0; i < fds.size(); ++i) {
+      fds[i] = {source.fds[i], POLLIN, 0};
+    }
+    // Wait on each live plane, since an RGB modifier can have auxiliary planes.
+    for (auto &plane : fds) {
+      if (plane.fd < 0) {
+        continue;
+      }
+      int ready;
+      do {
+        ready = poll(&plane, 1, 1000);
+      } while (ready < 0 && errno == EINTR);
+      if (ready <= 0 || !(plane.revents & POLLIN) || (plane.revents & (POLLERR | POLLHUP | POLLNVAL))) {
+        return false;
+      }
+    }
+    return true;
+  }
 
   inline std::string describe_surface_layout(const surface_descriptor_t &surface) {
     std::ostringstream description;
@@ -55,20 +84,20 @@ namespace egl {
   }
 
   inline bool can_cpu_upload_surface(const surface_descriptor_t &surface) noexcept {
-    constexpr std::uint64_t implicit_modifier = 0x00ffffffffffffffULL;
     // Managed imports retain the exporter's layout. An implicit modifier is
     // unknown, so those bytes cannot safely be read as linear pixels.
     return surface.modifier == 0 ||
-      (surface.modifier == implicit_modifier && !surface.direct_import_required);
+      (surface.modifier == IMPLICIT_DMA_BUF_MODIFIER && !surface.direct_import_required);
   }
 
-  // Prefer zero-copy import. Only fall back to reading pixels when the
-  // descriptor's layout is safe to interpret on the CPU; never rewrite the
-  // producer's logical dimensions, pitch, offset, or modifier to force import.
-  // Callbacks keep this policy testable without a live EGL/VAAPI device.
-  template<class Import, class Upload>
-  auto import_source_with_cpu_fallback(const surface_descriptor_t &surface, Import &&import, Upload &&upload) {
+  // Keep the producer's descriptor intact for all three attempts. CPU access
+  // is only valid when we know how to interpret the original pixel layout.
+  template<class Import, class Snapshot, class Upload>
+  auto import_source_with_fallbacks(const surface_descriptor_t &surface, Import &&import, Snapshot &&snapshot, Upload &&upload) {
     auto result = import(surface);
+    if (!result) {
+      result = snapshot(surface);
+    }
     if (!result && can_cpu_upload_surface(surface)) {
       result = upload(surface);
     }

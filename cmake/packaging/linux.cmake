@@ -211,6 +211,27 @@ else()
                 RENAME "arch-package-hooks")
         install(FILES "${CMAKE_SOURCE_DIR}/packaging/linux/Arch/00-vibepollo-quiesce.hook"
                 DESTINATION "${CMAKE_INSTALL_DATADIR}/libalpm/hooks")
+        option(VIBESHINE_ARCH_KWIN_BRIDGE_REFRESH
+                "Validate and activate the KWin bridge after Arch package transactions" OFF)
+        if(VIBESHINE_ARCH_KWIN_BRIDGE_REFRESH)
+            if(NOT VIBESHINE_KWIN_GPU_LIBRARY_INSTALL_DIR STREQUAL "/usr/lib/vibepollo/kwin-bridge")
+                message(FATAL_ERROR "The Arch KWin bridge must install to its inactive package directory")
+            endif()
+            set(_arch_bridge "${CMAKE_SOURCE_DIR}/packaging/linux/Arch")
+            install(PROGRAMS "${_arch_bridge}/vibepollo-kwin-bridge-rebuild"
+                    DESTINATION "${VIBESHINE_PRIVILEGED_LIBEXEC_INSTALL_DIR}")
+            install(FILES "${_arch_bridge}/95-vibepollo-kwin-bridge.hook"
+                          "${_arch_bridge}/00-vibepollo-kwin-bridge-deactivate.hook"
+                    DESTINATION "${CMAKE_INSTALL_DATADIR}/libalpm/hooks")
+            install(FILES "${_arch_bridge}/vibepollo-kwin-build.conf"
+                    DESTINATION "${VIBESHINE_SYSUSERS_INSTALL_DIR}")
+            install(FILES "${_arch_bridge}/kwin_bridge_abi.h"
+                    DESTINATION "${VIBESHINE_KWIN_GPU_LIBRARY_INSTALL_DIR}")
+            foreach(_kwin_unit IN ITEMS plasma-kwin_wayland plasma-login-kwin_wayland)
+                install(FILES "${_arch_bridge}/vibeshine-kwin-local-gpu.conf"
+                        DESTINATION "/usr/lib/systemd/user/${_kwin_unit}.service.d")
+            endforeach()
+        endif()
         install(TARGETS vibepollo_session_exec vibepollo_app_supervisor
                 vibepollo_profile_import vibepollo_kwin_session_environment
                 vibepollo_provider_scan vibepollo_steam_launch vibepollo_display_power vibepollo_app_focus vibepollo_touch_map

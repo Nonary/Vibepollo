@@ -201,3 +201,10 @@ glad_add_library(glad_gl
 # Combine both into a single INTERFACE target so the rest of the project can simply link "glad".
 add_library(glad INTERFACE)
 target_link_libraries(glad INTERFACE glad_egl glad_gl)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    glad_add_library(glad_gles2 STATIC REPRODUCIBLE
+            LOCATION "${CMAKE_BINARY_DIR}/gladsources/glad_gles2"
+            MX API "gles2=2.0"
+            EXTENSIONS GL_OES_EGL_image GL_OES_EGL_image_external)
+endif()

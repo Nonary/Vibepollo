@@ -28,8 +28,10 @@ fi
 
 depends=(
   'avahi'
+  'binutils'  # inspect the installed KWin ABI and packaged bridge
   'curl'
   'dkms'
+  'gcc'  # check the installed KWin header signature
   'iproute2'
   'jq'
   'kmod'
@@ -54,11 +56,13 @@ depends=(
   'numactl'
   'openssl'
   'opus'
+  'pkgconf'
   'pyside6'
   'python>=3.9'
   'socat'
   'udev'
   'util-linux'
+  'vulkan-headers'  # required by the installed KWin header probe
   'vulkan-icd-loader'
   'wayland-utils'
   'xorg-xdpyinfo'
@@ -79,7 +83,6 @@ makedepends=(
   'python-jinja'  # required by the glad OpenGL/EGL loader generator
   'qt6-base'  # Qt Core headers used by KWin's public allocator API
   'shaderc'
-  'vulkan-headers'  # included by KWin's public graphics-buffer API
 )
 
 optdepends=(
@@ -169,6 +172,8 @@ build() {
       -D BUILD_DOCS=OFF
       -D BUILD_WERROR=ON
       -D CMAKE_INSTALL_PREFIX=/usr
+      -D VIBESHINE_ARCH_KWIN_BRIDGE_REFRESH=ON
+      -D VIBESHINE_KWIN_GPU_LIBRARY_INSTALL_DIR=/usr/lib/vibepollo/kwin-bridge
       -D SUNSHINE_EXECUTABLE_PATH=/usr/bin/vibepollo
       -D SUNSHINE_ASSETS_DIR="share/vibepollo"
       -D SUNSHINE_PUBLISHER_NAME='Nonary'
@@ -232,5 +237,6 @@ check() {
 
 package() {
     export MAKEFLAGS="${MAKEFLAGS:--j$(nproc)}"
-    DESTDIR="$pkgdir" cmake --install build
+    DESTDIR="$pkgdir" cmake --install build || return
+    chmod 0644 "$pkgdir/usr/lib/vibepollo/kwin-bridge/libvibeshine-kwin-gpu.so"
 }

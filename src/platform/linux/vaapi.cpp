@@ -421,21 +421,14 @@ namespace va {
         // For dummy images, use a blank RGB texture instead of importing a DMA-BUF
         rgb = egl::create_blank(img);
       } else if (descriptor.sequence > sequence) {
-        sequence = descriptor.sequence;
-
-        rgb = egl::rgb_t {};
-
-        auto rgb_opt = egl::import_source_with_cpu_fallback(
-          descriptor.sd,
-          [this](const auto &surface) { return egl::import_source(display.get(), surface); },
-          [this](const auto &surface) { return egl::upload_source(display.get(), surface); }
-        );
+        auto rgb_opt = rgb_import.prepare(display.get(), gbm.get(), descriptor.sd);
 
         if (!rgb_opt) {
           return -1;
         }
 
         rgb = std::move(*rgb_opt);
+        sequence = descriptor.sequence;
       }
 
       sws.load_vram(descriptor, offset_x, offset_y, rgb->tex[0]);
@@ -458,6 +451,7 @@ namespace va {
     }
 
     std::uint64_t sequence;
+    egl::rgb_import_t rgb_import;
     egl::rgb_t rgb;
 
     int offset_x;

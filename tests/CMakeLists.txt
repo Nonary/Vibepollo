@@ -387,6 +387,14 @@ set(SUNSHINE_TEST_FAST_FOUNDATION_SOURCES
 
 # Header-only VHF ownership recovery runs on every platform without a driver.
 find_package(Threads REQUIRED)
+# Compile the production crypto implementation with controlled failures at the
+# OpenSSL name and signing boundaries. No application or hardware is required.
+sunshine_add_test_target(
+    NAME test_component_crypto_compat
+    CATEGORY COMPONENT
+    TEST_SOURCES unit/test_crypto_compat.cpp
+    LINK_LIBRARIES OpenSSL::Crypto nlohmann_json::nlohmann_json)
+
 sunshine_add_test_target(
     NAME test_fast_vhf_gamepad_recovery
     CATEGORY FAST
@@ -1676,6 +1684,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND SUNSHINE_TEST_ENABLE_COMPONENT)
 
     find_program(SUNSHINE_TEST_PYTHON_EXECUTABLE NAMES python3)
     if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+        add_test(NAME test_component_linux_kms_encoder_tiers
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_kms_encoder_tiers.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_linux_kms_encoder_tiers PROPERTIES LABELS "component" TIMEOUT 45)
+        add_test(NAME test_component_linux_kwin_bridge_refresh
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_kwin_bridge_refresh.py")
+        set_tests_properties(test_component_linux_kwin_bridge_refresh
+            PROPERTIES LABELS "component" TIMEOUT 120)
         if(SUNSHINE_TEST_BASH_EXECUTABLE)
             add_test(NAME test_component_linux_machine_locale
                 COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
@@ -1930,6 +1947,10 @@ if(Python3_Interpreter_FOUND AND UNIX AND SUNSHINE_TEST_ENABLE_COMPONENT)
     set_tests_properties(regression_macos_build_api_compatibility PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
 if(Python3_Interpreter_FOUND)
+    add_test(NAME regression_boost_locale_source_group
+        COMMAND "${CMAKE_COMMAND}" -E env "CMAKE_COMMAND=${CMAKE_COMMAND}"
+            "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_LIST_DIR}/unit/test_boost_locale_patch.py")
+    set_tests_properties(regression_boost_locale_source_group PROPERTIES LABELS "component" TIMEOUT 30)
     if(UNIX AND SUNSHINE_TEST_ENABLE_COMPONENT)
         find_program(SUNSHINE_TEST_WEB_MAKE NAMES gmake make)
         find_program(SUNSHINE_TEST_WEB_NINJA NAMES ninja ninja-build)
@@ -2193,6 +2214,14 @@ if(TARGET linux-truehdr)
     set_tests_properties(linux_truehdr_private_context_gpu PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu" TIMEOUT 60)
 endif()
 
+if(TARGET glad_gles2 AND LIBDRM_FOUND AND SUNSHINE_ENABLE_DRM)
+    add_executable(test_kms_gpu_snapshot test_kms_gpu_snapshot.cpp "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/linux/gpu_snapshot.cpp")
+    target_include_directories(test_kms_gpu_snapshot PRIVATE "${SUNSHINE_TEST_REPOSITORY_ROOT}" ${LIBDRM_INCLUDE_DIRS})
+    target_link_libraries(test_kms_gpu_snapshot PRIVATE glad glad_gles2 nlohmann_json::nlohmann_json gbm ${LIBDRM_LIBRARIES} ${CMAKE_DL_LIBS})
+    add_test(NAME kms_gpu_snapshot COMMAND test_kms_gpu_snapshot)
+    set_tests_properties(kms_gpu_snapshot PROPERTIES SKIP_RETURN_CODE 77 LABELS "integration;gpu" TIMEOUT 30)
+endif()
+
 if(TARGET pyrowave-linux)
     if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
         add_test(NAME test_component_pyrowave_shutdown
@@ -2314,4 +2343,29 @@ if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
         COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
             "${CMAKE_CURRENT_LIST_DIR}/unit/test_homebrew_formula.py")
     set_tests_properties(test_component_homebrew_formula PROPERTIES LABELS "component;packaging" TIMEOUT 60)
+endif()
+
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE)
+    add_test(NAME test_component_upnp_igd_status
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_upnp_igd_status.py"
+            --compiler "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_upnp_igd_status
+        PROPERTIES LABELS "component" TIMEOUT 60)
+endif()
+
+sunshine_register_component(NAME test_component_utility_hex TEST_SOURCE unit/test_utility_hex.cpp
+    LINK_LIBRARIES nlohmann_json::nlohmann_json)
+
+sunshine_register_component(NAME test_component_round_robin TEST_SOURCE unit/test_round_robin.cpp)
+sunshine_register_component(NAME test_component_stat_tracker_bounds TEST_SOURCE unit/test_stat_tracker_bounds.cpp
+    LINK_LIBRARIES Boost::format)
+
+if(SUNSHINE_TEST_PYTHON_EXECUTABLE AND NOT WIN32)
+    add_test(NAME test_component_avahi_lifetime
+        COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+            "${CMAKE_CURRENT_LIST_DIR}/unit/test_avahi_lifetime.py"
+            --repo "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}")
+    set_tests_properties(test_component_avahi_lifetime
+        PROPERTIES LABELS "component" TIMEOUT 60)
 endif()
