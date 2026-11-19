@@ -1050,6 +1050,16 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 --build-dir "${CMAKE_CURRENT_BINARY_DIR}/webrtc-peer-lifetime-composition"
                 --compiler "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_webrtc_peer_lifetime_composition PROPERTIES LABELS "component" TIMEOUT 60)
+        add_test(NAME test_component_linux_kms_connector_routing
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_kmsgrab_connector_routing.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_linux_kms_connector_routing PROPERTIES LABELS "component" TIMEOUT 30)
+        add_test(NAME test_component_linux_x11_monitor_hotplug
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_x11_monitor_hotplug.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_linux_x11_monitor_hotplug PROPERTIES LABELS "component" TIMEOUT 30)
         add_test(NAME test_component_linux_private_capture_resume
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_private_capture_resume.py"

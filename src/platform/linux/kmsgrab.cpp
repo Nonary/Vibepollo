@@ -668,14 +668,30 @@ namespace platf {
           return {};
         }
 
-        std::vector<std::pair<prop_t, std::uint64_t>> props;
-        props.reserve(obj_prop->count_props);
+        return read_properties(obj_prop->count_props, obj_prop->props, obj_prop->prop_values);
+      }
 
-        for (auto x = 0; x < obj_prop->count_props; ++x) {
-          props.emplace_back(drmModeGetProperty(fd.el, obj_prop->props[x]), obj_prop->prop_values[x]);
+      std::vector<std::pair<prop_t, std::uint64_t>> read_properties(std::size_t count, const std::uint32_t *ids, const std::uint64_t *values) {
+        std::vector<std::pair<prop_t, std::uint64_t>> properties;
+        properties.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+          properties.emplace_back(drmModeGetProperty(fd.el, ids[i]), values[i]);
         }
+        return properties;
+      }
 
-        return props;
+      std::optional<std::vector<std::pair<prop_t, std::uint64_t>>> routed_connector_props(std::uint32_t id, std::uint32_t crtc_id) {
+        const auto live = connector(id);
+        if (!live || live->connection != DRM_MODE_CONNECTED || !live->encoder_id) return std::nullopt;
+        // Read routing and HDR properties from the same connector snapshot.
+        auto properties = read_properties(live->count_props, live->props, live->prop_values);
+        if (const auto route = prop_value_by_name(properties, "CRTC_ID"sv)) {
+          if (*route != crtc_id) return std::nullopt;
+        } else {
+          const auto active_encoder = encoder(live->encoder_id);
+          if (!active_encoder || active_encoder->crtc_id != crtc_id) return std::nullopt;
+        }
+        return properties;
       }
 
       std::vector<std::pair<prop_t, std::uint64_t>> plane_props(std::uint32_t id) {
@@ -809,6 +825,7 @@ namespace platf {
         // legacy aliases, while every other value resolves through the stable
         // connector names produced by kms_display_names().
         auto numeric_alias = display_name.empty() ? std::optional<std::uint32_t> {0} : selection::parse_numeric_alias(display_name);
+        const bool card_qualified = display_name.find(':') != std::string::npos;
         std::optional<selection::monitor_t> selected_monitor;
         if (!numeric_alias) {
           selected_monitor = selection::resolve_named_monitor(display_name, named_monitors);
@@ -984,13 +1001,15 @@ namespace platf {
             crtc_id = plane->crtc_id;
             crtc_index = card.get_crtc_index_by_id(plane->crtc_id);
 
-            // Find the connector for this CRTC
+            // A CRTC can move to another connector after enumeration. Bind a
+            // card-qualified request to the connector actually driving it now.
+            qualified_connector = card_qualified;
             for (auto &connector : card.monitors()) {
               if (connector.crtc_id == crtc_id) {
                 // Mirrored connectors can share a CRTC. This constrained
                 // policy must inspect the explicitly named connector, rather
                 // than whichever connector was enumerated last for that CRTC.
-                if (linux_display::hyprland_kms_session() &&
+                if ((qualified_connector || linux_display::hyprland_kms_session()) &&
                     (!selected_monitor || !connector.connected ||
                      connector.name != selected_monitor->connector_name)) continue;
                 BOOST_LOG(info) << "Found connector ID ["sv << connector.connector_id << ']';
@@ -1001,6 +1020,8 @@ namespace platf {
                 hdr_metadata_blob_id = card.prop_value_by_name(connector_props, "HDR_OUTPUT_METADATA"sv);
               }
             }
+
+            if (qualified_connector && !connector_id) return -1;
 
             direct_import_required = card.requires_direct_import();
             this->card = std::move(card);
@@ -1341,6 +1362,21 @@ namespace platf {
 
       inline capture_e refresh(egl::owned_surface_t &surface, std::optional<std::chrono::steady_clock::time_point> &frame_timestamp) {
         auto *sd = &surface.sd;
+        // Sample the framebuffer before verifying its live connector. The
+        // presentation-event path already owns a frame from the requested CRTC.
+        fb_t fb;
+        if (!pending_exported_frame) {
+          plane_t plane = drmModeGetPlane(card.fd.el, plane_id);
+          frame_timestamp = std::chrono::steady_clock::now();
+          if (!plane || !plane->fb_id || (qualified_connector && plane->crtc_id != crtc_id)) {
+            return capture_e::reinit;
+          }
+          fb = card.fb(plane.get());
+          if (!fb) {
+            BOOST_LOG(warning) << "Couldn't get drm fb for plane ["sv << plane->fb_id << "]: "sv << strerror(errno);
+            return capture_e::timeout;
+          }
+        }
         // Recheck current connector state before delivering any frame. This
         // also rejects metadata changes that reuse the original blob ID.
         if (!sdr_capture_allowed()) {
@@ -1349,7 +1385,10 @@ namespace platf {
         }
         // Check for a change in HDR metadata
         if (connector_id) {
-          auto connector_props = card.connector_props(*connector_id);
+          auto observed = qualified_connector ? card.routed_connector_props(*connector_id, crtc_id) :
+                                               std::optional {card.connector_props(*connector_id)};
+          if (!observed) return capture_e::reinit;
+          const auto &connector_props = *observed;
           const auto current_hdr_metadata_blob_id = card.prop_value_by_name(connector_props, "HDR_OUTPUT_METADATA"sv);
           // This is a second fallible read after sdr_capture_allowed(). A
           // failed list read, missing standard HDR property, or missing
@@ -1395,24 +1434,8 @@ namespace platf {
           return capture_e::ok;
         }
 
-        plane_t plane = drmModeGetPlane(card.fd.el, plane_id);
-        frame_timestamp = std::chrono::steady_clock::now();
-
-        // A disconnected output temporarily has no plane framebuffer. End this
-        // capture generation instead of retrying and logging at the frame rate.
-        if (!plane || plane->fb_id == 0) {
-          return capture_e::reinit;
-        }
-
-        auto fb = card.fb(plane.get());
-        if (!fb) {
-          // This can happen if the display is being reconfigured while streaming
-          BOOST_LOG(warning) << "Couldn't get drm fb for plane ["sv << plane->fb_id << "]: "sv << strerror(errno);
-          return capture_e::timeout;
-        }
-
         if (!fb->handles[0]) {
-          BOOST_LOG(error) << "Couldn't get handle for DRM Framebuffer ["sv << plane->fb_id << "]: Probably not permitted"sv;
+          BOOST_LOG(error) << "Couldn't get handle for DRM Framebuffer ["sv << fb->fb_id << "]: Probably not permitted"sv;
           return capture_e::error;
         }
 
@@ -2120,6 +2143,7 @@ namespace platf {
       int crtc_index;
 
       std::optional<uint32_t> connector_id;
+      bool qualified_connector {false};
       std::optional<uint64_t> hdr_metadata_blob_id;
       hdr::generation_t hdr_metadata_generation;
       bool direct_import_required {false};
