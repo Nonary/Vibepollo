@@ -405,6 +405,7 @@ namespace platf {
       if (streamedMonitor != -1) {
         BOOST_LOG(info) << "Configuring selected display ("sv << streamedMonitor << ") to stream"sv;
         screen_res_t screenr {x11::rr::GetScreenResources(xdisplay.get(), xwindow)};
+        if (!screenr) return -1;
         int output = screenr->noutput;
 
         output_info_t result;
@@ -426,10 +427,10 @@ namespace platf {
 
         if (result->crtc) {
           crtc_info_t crt_info {x11::rr::GetCrtcInfo(xdisplay.get(), screenr.get(), result->crtc)};
+          if (!crt_info) return -1;
           BOOST_LOG(info)
             << "Streaming display: "sv << result->name << " with res "sv << crt_info->width << 'x' << crt_info->height << " offset by "sv << crt_info->x << 'x' << crt_info->y;
 
-          if (!crt_info) return -1;
           captured_connector.assign(result->name, result->nameLen);
           width = crt_info->width;
           height = crt_info->height;
@@ -781,6 +782,7 @@ namespace platf {
 
     auto xwindow = DefaultRootWindow(xdisplay.get());
     screen_res_t screenr {x11::rr::GetScreenResources(xdisplay.get(), xwindow)};
+    if (!screenr) return {};
     int output = screenr->noutput;
 
     std::vector<std::string> names;

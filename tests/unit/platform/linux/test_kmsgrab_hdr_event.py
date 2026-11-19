@@ -65,10 +65,12 @@ namespace platf {
    auto connector(unsigned){return std::optional<connector_t>(connector_t{});}
    auto encoder(unsigned){return std::optional<encoder_t>(encoder_t{});}
    using properties_t=std::vector<std::pair<std::shared_ptr<int>,uint64_t>>;
+   std::optional<properties_t> routed_connector_props(unsigned id,unsigned crtc){return properties_t{{std::make_shared<int>(1),10}};}
    auto connector_props(unsigned){return properties_t{{std::make_shared<int>(1),10}};}
    std::optional<uint64_t> prop_value_by_name(const properties_t&,std::string_view){return 10;}
   } card;
   std::optional<unsigned> connector_id=1;
+  bool qualified_connector=false;
   std::optional<uint64_t> hdr_metadata_blob_id=10;
 @@STRICT@@
   capture_e metadata_status(){

@@ -184,6 +184,7 @@ namespace platf {
       struct connector_t { int crtc_id=1; unsigned connector_id=91; bool connected=true; std::string name="Virtual-1"; int connection=DRM_MODE_CONNECTED; unsigned encoder_id=4; };
       std::vector<connector_t> monitors() { return {{1,probe::connector_id}}; }
       using properties_t=std::vector<std::pair<std::shared_ptr<int>,uint64_t>>;
+      std::optional<properties_t> routed_connector_props(unsigned id, unsigned) { return connector_props(id); }
       properties_t connector_props(unsigned) { return probe::current_id ? properties_t{{std::make_shared<int>(1),*probe::current_id}} : properties_t{}; }
       std::optional<uint64_t> prop_value_by_name(const properties_t& properties, std::string_view) { return properties.empty()? std::nullopt : std::optional<uint64_t>(properties.front().second); }
       std::optional<connector_t> connector(unsigned) { return connector_t{}; }

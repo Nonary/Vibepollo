@@ -236,6 +236,7 @@ def main():
     end=kms.index('\n',kms.index('hdr_metadata_blob_id = card.prop_value_by_name',start))
     properties='\n'.join(function(kms,marker)for marker in (
         '      std::vector<std::pair<prop_t, std::uint64_t>> props(',
+        '      std::vector<std::pair<prop_t, std::uint64_t>> read_properties(',
         '      std::vector<std::pair<prop_t, std::uint64_t>> connector_props(',
         '      std::optional<std::uint64_t> prop_value_by_name(',
     ))
