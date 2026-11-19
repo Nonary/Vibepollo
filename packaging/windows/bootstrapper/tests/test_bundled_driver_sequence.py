@@ -18,7 +18,6 @@ class BundledDriverSequence(unittest.TestCase):
     def test_single_coordinator_follows_existing_acl_housekeeping(self):
         self.assertEqual("InstallFiles", self.sequence["SetResetAcls"].get("After"))
         self.assertEqual("SetResetAcls", self.sequence["ResetAcls"].get("After"))
-        self.assertEqual("ResetAcls", self.sequence["SetInstallBundledDrivers"].get("After"))
         self.assertEqual("SetInstallBundledDrivers", self.sequence["InstallBundledDrivers"].get("After"))
         self.assertEqual("InstallBundledDrivers", self.sequence["SetInstallUsbIpTransport"].get("After"))
         for retired in ("InstallSudovda", "InstallVirtualDisplayDriver", "InstallVirtualGamepadDriver"):
@@ -27,12 +26,21 @@ class BundledDriverSequence(unittest.TestCase):
 
     def test_downstream_optional_failures_remain_nonfatal(self):
         for name in ("ResetAcls", "InstallSudovda", "InstallVirtualDisplayDriver",
-                     "InstallVirtualGamepadDriver", "InstallBundledDrivers", "RegisterVulkanHdrLayer"):
+                     "InstallVirtualGamepadDriver", "InstallBundledDrivers", "ClearVulkanHdrLayerBeforeInstall"):
             self.assertEqual("ignore", self.actions[name].get("Return"), name)
-        for name in ("SetRegisterVulkanHdrLayer", "RegisterVulkanHdrLayer"):
-            self.assertEqual("NOT REMOVE", self.sequence[name].text)
         for name in ("SetMigrateConfig", "MigrateConfig", "SetRunInstallerMigrations", "RunInstallerMigrations"):
             self.assertEqual("NOT Installed AND NOT REMOVE", self.sequence[name].text)
+
+    def test_installer_clears_stale_layers_without_enabling_them(self):
+        setter = "SetClearVulkanHdrLayerBeforeInstall"
+        action = "ClearVulkanHdrLayerBeforeInstall"
+        self.assertNotIn("RegisterVulkanHdrLayer", self.actions)
+        self.assertEqual("ResetAcls", self.sequence[setter].get("After"))
+        self.assertEqual(setter, self.sequence[action].get("After"))
+        self.assertEqual(action, self.sequence["SetInstallBundledDrivers"].get("After"))
+        self.assertEqual("NOT REMOVE", self.sequence[setter].text)
+        self.assertEqual("NOT REMOVE", self.sequence[action].text)
+        self.assertTrue(self.actions[setter].get("Value").endswith(" -UnregisterVulkanLayerOnly"))
 
     def test_dispatcher_preserves_selection_and_explicit_consent(self):
         command = self.actions["SetInstallBundledDrivers"].get("Value")

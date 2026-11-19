@@ -2,7 +2,7 @@ param(
     [switch]$Uninstall,
     [switch]$ValidateOnly,
     [switch]$AllowUnsignedCatalogForValidation,
-    [switch]$RegisterVulkanLayerOnly,
+    [switch]$ValidateVulkanLayerOnly,
     [switch]$UnregisterVulkanLayerOnly,
     [ValidateSet(0, 1)]
     [int]$DailyUnsignedPolicy = 0,
@@ -800,44 +800,14 @@ function Open-LocalMachineRegistryKey {
         [Microsoft.Win32.RegistryView]$View,
 
         [Parameter(Mandatory = $true)]
-        [string]$SubKey,
-
-        [bool]$Writable = $false,
-        [bool]$Create = $false
+        [string]$SubKey
     )
 
     $baseKey = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, $View)
     try {
-        if ($Create) {
-            return $baseKey.CreateSubKey($SubKey, $Writable)
-        }
-
-        return $baseKey.OpenSubKey($SubKey, $Writable)
+        return $baseKey.OpenSubKey($SubKey, $true)
     } finally {
         $baseKey.Dispose()
-    }
-}
-
-function Register-VulkanLayer {
-    # Check both DLL/manifest pairs before removing any working registration.
-    Assert-VulkanLayerPackage
-    Unregister-VulkanLayer
-    foreach ($layer in $vulkanLayers) {
-        $jsonFullPath = (Resolve-Path -LiteralPath $layer.Manifest).Path
-        $key = Open-LocalMachineRegistryKey `
-            -View $layer.View `
-            -SubKey $vulkanImplicitLayersSubKey `
-            -Writable $true `
-            -Create $true
-        if (-not $key) {
-            throw "[SunshineVirtualDisplay] Unable to open HKLM:\$vulkanImplicitLayersSubKey in $($layer.View)."
-        }
-        try {
-            $key.SetValue($jsonFullPath, 0, [Microsoft.Win32.RegistryValueKind]::DWord)
-            Write-Host "[SunshineVirtualDisplay] Vulkan HDR implicit layer registered in $($layer.View): $jsonFullPath"
-        } finally {
-            $key.Dispose()
-        }
     }
 }
 
@@ -845,8 +815,7 @@ function Unregister-VulkanLayer {
     foreach ($view in @([Microsoft.Win32.RegistryView]::Registry64, [Microsoft.Win32.RegistryView]::Registry32)) {
         $key = Open-LocalMachineRegistryKey `
             -View $view `
-            -SubKey $vulkanImplicitLayersSubKey `
-            -Writable $true
+            -SubKey $vulkanImplicitLayersSubKey
         if (-not $key) {
             continue
         }
@@ -1846,20 +1815,9 @@ function Install-SunshineVirtualDisplayDriver {
 
 $sharedInventoryPath = Join-Path $PSScriptRoot '../driver-inventory.ps1'
 if (Test-Path -LiteralPath $sharedInventoryPath) { . $sharedInventoryPath }
-if ($RegisterVulkanLayerOnly -and $UnregisterVulkanLayerOnly) {
-    throw '[SunshineVirtualDisplay] RegisterVulkanLayerOnly and UnregisterVulkanLayerOnly cannot be used together.'
-}
-
-if ($RegisterVulkanLayerOnly) {
+if ($ValidateVulkanLayerOnly) {
     Assert-VulkanLayerPackage
-    if ($ValidateOnly) {
-        Write-Host '[SunshineVirtualDisplay] Vulkan HDR layer package validated.'
-        exit 0
-    }
-
-    Assert-Administrator
-    Register-VulkanLayer
-    Write-Host '[SunshineVirtualDisplay] Vulkan HDR layer registration complete.'
+    Write-Host '[SunshineVirtualDisplay] Vulkan HDR layer package validated.'
     exit 0
 }
 
@@ -1929,7 +1887,6 @@ try {
     Undo-DisplayTrustProvisioning
     throw
 }
-Register-VulkanLayer
 
 Install-SunshineVirtualDisplayDriver
 Start-VirtualDisplayBrokerIfNeeded

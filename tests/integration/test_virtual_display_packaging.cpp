@@ -82,8 +82,9 @@ TEST(SunshineVirtualDisplayPackaging, WixUsesSystem64PowerShellAndSemanticAction
   EXPECT_EQ(contract::installer_powershell_architecture, "system64");
   EXPECT_LT(position(contract::install_sequence, "install_files"), position(contract::install_sequence, "reset_acls"));
   EXPECT_LT(position(contract::install_sequence, "install_sudovda"), position(contract::install_sequence, "install_sunshine_driver"));
-  EXPECT_LT(position(contract::install_sequence, "install_sunshine_driver"), position(contract::install_sequence, "register_vulkan_layer"));
-  EXPECT_LT(position(contract::install_sequence, "register_vulkan_layer"), position(contract::install_sequence, "migrate_config"));
+  EXPECT_LT(position(contract::install_sequence, "reset_acls"), position(contract::install_sequence, "clear_vulkan_layer_before_host_start"));
+  EXPECT_LT(position(contract::install_sequence, "clear_vulkan_layer_before_host_start"), position(contract::install_sequence, "install_sunshine_driver"));
+  EXPECT_LT(position(contract::install_sequence, "install_sunshine_driver"), position(contract::install_sequence, "migrate_config"));
 }
 
 TEST(SunshineVirtualDisplayPackaging, UninstallUnregistersLayersAndDriversBeforeFileRemoval) {

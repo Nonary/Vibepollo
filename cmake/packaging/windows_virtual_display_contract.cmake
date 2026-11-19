@@ -66,9 +66,9 @@ set(SUNSHINE_VDD_HEALTH_RECOVERY_SEQUENCE restart_device disable_device enable_d
 set(SUNSHINE_VDD_INSTALL_SEQUENCE
     install_files
     reset_acls
+    clear_vulkan_layer_before_host_start
     install_sudovda
     install_sunshine_driver
-    register_vulkan_layer
     migrate_config)
 set(SUNSHINE_VDD_UNINSTALL_SEQUENCE
     restore_nvidia_preferences
