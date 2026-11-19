@@ -10,6 +10,9 @@ and applications to Sunshine.
 > When a working directory is not specified, it defaults to the folder where the target application resides.
 
 
+Application and preparation commands receive `SUNSHINE_CLIENT_NAME`, the resolved name of the streaming client.
+It is passed as a literal environment value on brokered Linux application launches too.
+
 ## Common Examples
 
 ### Desktop

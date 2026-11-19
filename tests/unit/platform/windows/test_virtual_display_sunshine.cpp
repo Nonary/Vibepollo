@@ -122,6 +122,8 @@ TEST(SunshineVirtualDisplay, EncoderProbeEnsureDisplaySkippedForPerClientVirtual
 
 TEST(SunshineVirtualDisplay, EncoderProbeNeverCreatesHostOwnedDisplay) {
   EXPECT_FALSE(VDISPLAY::policy::should_create_host_probe_display());
+  EXPECT_TRUE(VDISPLAY::policy::should_create_host_probe_display(true));
+  EXPECT_FALSE(VDISPLAY::policy::should_create_host_probe_display(false));
 }
 
 TEST(SunshineVirtualDisplay, EnsureDisplayAppliesConfiguredRenderAdapterBeforeTemporaryCreation) {

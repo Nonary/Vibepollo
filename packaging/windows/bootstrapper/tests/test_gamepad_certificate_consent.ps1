@@ -55,7 +55,7 @@ try {
     $namespace.AddNamespace('w', 'http://schemas.microsoft.com/wix/2006/wi')
     $property = $wix.SelectSingleNode('//w:Property[@Id="ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST"]', $namespace)
     if ($property.Value -cne '$(var.VhfGamepadAllowLocalTest)' -or $property.Secure -cne 'yes') { throw 'MSI beta trust must follow verified local package presence, remain secure and preserve identity binding.' }
-    $action = $wix.SelectSingleNode('//w:CustomAction[@Id="SetInstallVirtualGamepadDriver"]', $namespace)
+    $action = $wix.SelectSingleNode('//w:CustomAction[@Id="SetInstallBundledDrivers"]', $namespace)
     if (-not $action.Value.Contains('-AllowLocalGamepadCertificateTrust [ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST]') -or -not $action.Value.Contains('-ConsentCertificateThumbprint "[LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT]"')) { throw 'MSI gamepad action lost explicit consent/identity binding.' }
     $reader = Get-Content (Join-Path $repo 'scripts/read_gamepad_certificate_identity.ps1') -Raw
     $contentCheck = $reader.IndexOf('GetCertContentType($certificateBytes)')

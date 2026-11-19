@@ -74,8 +74,8 @@ namespace wl {
     wl_display_roundtrip(display_internal.get());
   }
 
-  int display_t::init_until(std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed) {
-    display_internal.reset(platf::wayland_observation::connect_until(deadline, allowed));
+  int display_t::init_until(std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed, const char *display_name) {
+    display_internal.reset(platf::wayland_observation::connect_until(deadline, allowed, display_name));
     return display_internal ? 0 : -1;
   }
 
@@ -117,7 +117,7 @@ namespace wl {
     return wl_display_get_registry(display_internal.get());
   }
 
-  inline monitor_t::monitor_t(wl_output *output):
+  monitor_t::monitor_t(wl_output *output):
       output {output},
       wl_listener {
         &CLASS_CALL(monitor_t, wl_geometry),
@@ -166,10 +166,14 @@ namespace wl {
     std::int32_t height,
     std::int32_t refresh
   ) {
+    BOOST_LOG(info) << "[wayland] Resolution: "sv << width << 'x' << height;
+
+    if (!(flags & WL_OUTPUT_MODE_CURRENT)) {
+      return;
+    }
+
     viewport.width = width;
     viewport.height = height;
-
-    BOOST_LOG(info) << "[wayland] Resolution: "sv << width << 'x' << height;
   }
 
   void monitor_t::listen(zxdg_output_manager_v1 *output_manager) {
@@ -531,17 +535,25 @@ namespace wl {
     std::fill_n(sd.fds, 4, -1);
   };
 
-  std::vector<std::unique_ptr<monitor_t>> monitors(const char *display_name) {
+  std::vector<std::unique_ptr<monitor_t>> monitors(
+    const char *display_name, std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed
+  ) {
     display_t display;
 
-    if (display.init(display_name)) {
+    const bool bounded = deadline != std::chrono::steady_clock::time_point::max() || allowed;
+    if (bounded ? display.init_until(deadline, allowed, display_name) : display.init(display_name)) {
       return {};
     }
 
+    const auto roundtrip = [&] {
+      if (bounded) return display.roundtrip_until(deadline, allowed);
+      display.roundtrip();
+      return true;
+    };
     interface_t interface;
     interface.listen(display.registry());
 
-    display.roundtrip();
+    if (!roundtrip()) return {};
 
     if (!interface[interface_t::XDG_OUTPUT]) {
       BOOST_LOG(error) << "[wayland] Missing Wayland wire XDG_OUTPUT"sv;
@@ -552,21 +564,9 @@ namespace wl {
       monitor->listen(interface.output_manager);
     }
 
-    display.roundtrip();
+    if (!roundtrip()) return {};
 
     return std::move(interface.monitors);
-  }
-
-  static bool validate() {
-    display_t display;
-
-    return display.init() == 0;
-  }
-
-  int init() {
-    static bool validated = validate();
-
-    return !validated;
   }
 
 }  // namespace wl

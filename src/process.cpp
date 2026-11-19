@@ -1459,7 +1459,7 @@ namespace proc {
     // Web UI launches do not resolve the app through make_launch_session().
     // Carry app display policy into the session here so every launch path makes
     // the same physical-versus-virtual decision before creating a display.
-    if (_app.output_name_override) {
+    if (_app.output_name_override && !launch_session->capture_display_recovery) {
       launch_session->output_name_override = _app.output_name_override;
     }
     if (!launch_session->virtual_display_mode_override && _app.virtual_display_mode_override) {
@@ -1792,6 +1792,7 @@ namespace proc {
     // Sunshine Compatibility
     _env["SUNSHINE_APP_ID"] = _app.id;
     _env["SUNSHINE_APP_NAME"] = _app.name;
+    _env["SUNSHINE_CLIENT_NAME"] = launch_session->client_name;
     _env["SUNSHINE_CLIENT_WIDTH"] = std::to_string(render_width);
     _env["SUNSHINE_CLIENT_HEIGHT"] = std::to_string(render_height);
     _env["SUNSHINE_CLIENT_FPS"] = config::sunshine.envvar_compatibility_mode ? std::to_string(std::round((float) launch_session->fps / 1000.0f)) : fps_str;

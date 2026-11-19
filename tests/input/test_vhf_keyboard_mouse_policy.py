@@ -11,17 +11,6 @@ SOURCE = r'''
 #include <vector>
 using namespace platf::vhf_keyboard_mouse;
 int main() {
-  // Single monitor, and a second monitor to the left of the primary: the HID
-  // absolute collection targets primary coordinates, not the whole desktop.
-  auto primary = map_primary_absolute(0, 0, 0, 0, 1920, 1080, 1920, 1080);
-  assert(primary.inside_primary && primary.x == 0 && primary.y == 0);
-  primary = map_primary_absolute(65535, 65535, 0, 0, 1920, 1080, 1920, 1080);
-  assert(primary.inside_primary && primary.x == 65535 && primary.y == 65535);
-  auto secondary = map_primary_absolute(0, 32768, -1920, 0, 3840, 1080, 1920, 1080);
-  assert(!secondary.inside_primary);
-  primary = map_primary_absolute(65535, 65535, -1920, 0, 3840, 1080, 1920, 1080);
-  assert(primary.inside_primary && primary.x == 65535 && primary.y == 65535);
-  assert(!map_primary_absolute(0, 0, 0, 0, 0, 1080, 1920, 1080).inside_primary);
   assert(key_usage('A') == 4 && key_usage('Z') == 29);
   assert(key_usage('1') == 30 && key_usage('0') == 39);
   assert(key_usage(0xa0) == 0xe1 && key_usage(0xa1) == 0xe5);

@@ -92,8 +92,11 @@ struct config_t {
 }
 namespace display_device {
 static bool active = false;
-inline std::string map_output_name(const std::string &s) { return s; }
-inline bool output_is_active(const std::string &) { return active; }
+static int mapping_queries = 0, activity_queries = 0;
+enum class DisplayRecoveryBehavior { Skip };
+struct DisplayRecoveryBehaviorGuard { explicit DisplayRecoveryBehaviorGuard(DisplayRecoveryBehavior) {} };
+inline std::string map_output_name(const std::string &s) { ++mapping_queries; return s; }
+inline bool output_is_active(const std::string &) { ++activity_queries; return active; }
 }
 struct gate_t { bool quarantined = false; bool is_quarantined() const { return quarantined; } } native_amf_lifecycle_gate;
 struct state_t {
@@ -124,6 +127,7 @@ static void reset() {
   platf::dxgi::automatic = platf::dxgi::capture_output_identity_t {"A", {0, 1}};
   platf::dxgi::capture_tests = 0;
   display_device::active = false;
+  display_device::mapping_queries = display_device::activity_queries = 0;
   state.pending_virtual_display_adapter_hint.reset();
   state.pending_virtual_display_adapter_hint_ready_for_verification = false;
   native_amf_lifecycle_gate.quarantined = false;
@@ -131,10 +135,13 @@ static void reset() {
 int main() {
   reset();
   state.pending_virtual_display_adapter_hint = a;
+  config::active_output = "configured-output";
   const auto cached = build_probe_cache_key();
   for (int i = 0; i < 100; ++i) assert(build_probe_cache_key() == cached);
   assert(cached.adapter_identity == "luid=0:1" && cached.adapter_identity_resolved);
   assert(platf::dxgi::capture_tests == 0);
+
+  assert(display_device::mapping_queries == 0 && display_device::activity_queries == 0);
 
   // A real probe still verifies capture selection, never the lookup-only target.
   const auto target = resolve_probe_target();
@@ -171,6 +178,7 @@ int main() {
   const auto configured_key = build_probe_cache_key();
   for (int i = 0; i < 100; ++i) assert(build_probe_cache_key() == configured_key);
   assert(platf::dxgi::capture_tests == 0);
+  assert(display_device::mapping_queries == 0 && display_device::activity_queries == 0);
   assert(resolve_probe_target().display_name == "A");
   assert(platf::dxgi::capture_tests == 1);
   platf::configured.luid = b;

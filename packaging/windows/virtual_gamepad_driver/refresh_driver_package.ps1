@@ -7,6 +7,7 @@ param(
     [string] $PackageDir,
 
     [switch] $ValidateOnly,
+    [switch] $RequireMouseMapper,
     [switch] $AllowLocalTestPackage,
     [string] $ReleaseTag,
     [string] $ExpectedReleaseAssetSha256,
@@ -244,6 +245,20 @@ function Assert-ManifestHash {
     }
 }
 
+# A mapper package is identified explicitly, so old pinned gamepad-only archives
+# retain their existing contract. New producer payloads must carry all three files.
+function Test-MouseMapperFeature {
+    param([Parameter(Mandatory = $true)] $Manifest)
+    if ($null -eq $Manifest.PSObject.Properties['features'] -or
+        $null -eq $Manifest.features.PSObject.Properties['mouse_mapper']) { return $false }
+    if ($Manifest.features.mouse_mapper -ne 1 -or $null -eq $Manifest.mouse_mapper -or
+        $Manifest.mouse_mapper.transport_version -ne 1) { throw 'Unsupported mouse mapper package feature/version.' }
+    return $true
+}
+function Get-MouseMapperPayload {
+    return @('mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys', 'mouse_mapper/VibeshineVhfMouseMapper.cat')
+}
+
 function Assert-ManifestPayloadContract {
     param(
         [Parameter(Mandatory = $true)] $Manifest,
@@ -251,6 +266,7 @@ function Assert-ManifestPayloadContract {
     )
 
     $expectedPayload = @($manifestPayload)
+    if (Test-MouseMapperFeature -Manifest $Manifest) { $expectedPayload += @(Get-MouseMapperPayload) }
     if ([string] $Manifest.signing.channel -eq 'self-signed-local-test') {
         $expectedPayload += $localTestCertificate
     }
@@ -287,6 +303,7 @@ function Assert-Package {
         throw "[VibeshineVhfGamepad] Manifest is incomplete or uses an unsupported schema: $manifestPath"
     }
     Assert-ManifestPayloadContract -Manifest $manifest -Root $Root
+    if ($RequireMouseMapper -and -not (Test-MouseMapperFeature -Manifest $manifest)) { throw 'Ordered mouse candidate requires a producer package declaring features.mouse_mapper=1; refresh the actual published artifact pins first.' }
     if (-not $AllowLocalTest -and
         ($manifest.source_revision.ToLowerInvariant() -ne $ExpectedSourceRevision.ToLowerInvariant() -or
          $manifest.driver_ver -ne $ExpectedDriverVer -or
@@ -310,6 +327,44 @@ function Assert-Package {
     $dllPath = Join-Path $Root 'driver/VibeshineVhfGamepad.dll'
     $toolPath = Join-Path $Root 'tools/VibeshineVhfGamepadDeviceSetup.exe'
 
+    if (Test-MouseMapperFeature -Manifest $manifest) {
+        $mapperCatalog = Join-Path $Root 'mouse_mapper/VibeshineVhfMouseMapper.cat'
+        $mapperSys = Join-Path $Root 'mouse_mapper/VibeshineVhfMouseMapper.sys'
+        if ($manifest.mouse_mapper.kernel_signing -ceq 'unsigned-producer') {
+            # Publishing/packaging unsigned bytes is distinct from loading a
+            # kernel driver. Installation still requires Windows kernel trust.
+            Assert-UnsignedAuthenticode -Path $mapperCatalog
+            Assert-UnsignedAuthenticode -Path $mapperSys
+        } else {
+            $localMapper = $AllowLocalTest -and $manifest.mouse_mapper.kernel_signing -ceq 'self-signed-local-test'
+            if (-not $localMapper -and $manifest.mouse_mapper.kernel_signing -cne 'windows-kernel-policy') { throw 'Unsupported mapper signing metadata.' }
+            if ($localMapper) {
+                # Packaging verifies exact-certificate integrity without adding
+                # trust on CI. Kernel loading is a separate installer/OS check.
+                $localSigner = [Security.Cryptography.X509Certificates.X509Certificate2]::new($certificatePath)
+                if (-not ('VhfLocalTrustValidation' -as [type])) {
+                    $verifierSource = Join-Path $PSScriptRoot '../../../src_assets/windows/drivers/vhf-gamepad/install.ps1'
+                    $tokens=$null; $parseErrors=$null
+                    $verifierAst = [Management.Automation.Language.Parser]::ParseFile($verifierSource, [ref]$tokens, [ref]$parseErrors)
+                    if ($parseErrors.Count) { throw 'Cannot parse nightly package verifier.' }
+                    foreach ($name in @('Add-DriverInteropType', 'Initialize-LocalGamepadTrustValidation')) {
+                        $definition = $verifierAst.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq $name}.GetNewClosure(), $true)
+                        . ([scriptblock]::Create($definition.Extent.Text))
+                    }
+                    Initialize-LocalGamepadTrustValidation
+                }
+                [VhfLocalTrustValidation]::VerifyCatalog($mapperCatalog, $localSigner.Thumbprint, @((Join-Path $Root 'mouse_mapper/VibeshineVhfMouseMapper.inf'), $mapperSys))
+                [VhfLocalTrustValidation]::VerifyTool($mapperSys, $localSigner.Thumbprint)
+            } else {
+                $mapperSignTool = Resolve-SignTool -ExplicitPath $SignToolPath
+                foreach ($relativePath in @('mouse_mapper/VibeshineVhfMouseMapper.inf', 'mouse_mapper/VibeshineVhfMouseMapper.sys')) {
+                    & $mapperSignTool verify '/v' '/kp' '/c' $mapperCatalog (Join-Path $Root $relativePath) | Out-Host
+                    if ($LASTEXITCODE -ne 0) { throw "Mapper policy/catalog membership verification failed for '$relativePath'." }
+                }
+            }
+        }
+    }
+
     if ($manifest.signing.channel -eq $msiRequestChannel) {
         if ($AllowLocalTest) {
             throw '[VibeshineVhfGamepad] An MSI-signed package is not a local-test package.'
@@ -321,11 +376,9 @@ function Assert-Package {
             'driver/VibeshineVhfGamepad.cat',
             'tools/VibeshineVhfGamepadDeviceSetup.exe'
         ) -Name 'MSI signed_downstream'
-        Assert-ExactList -Actual @($manifest.signing.unsigned_payloads) -Expected @(
-            'driver/VibeshineVhfGamepad.cat',
-            'driver/VibeshineVhfGamepad.dll',
-            'tools/VibeshineVhfGamepadDeviceSetup.exe'
-        ) -Name 'MSI unsigned_payloads'
+        $expectedUnsigned = @('driver/VibeshineVhfGamepad.cat', 'driver/VibeshineVhfGamepad.dll', 'tools/VibeshineVhfGamepadDeviceSetup.exe')
+        if (Test-MouseMapperFeature -Manifest $manifest) { $expectedUnsigned += @('mouse_mapper/VibeshineVhfMouseMapper.cat', 'mouse_mapper/VibeshineVhfMouseMapper.sys') }
+        Assert-ExactList -Actual @($manifest.signing.unsigned_payloads) -Expected @($expectedUnsigned | Sort-Object) -Name 'MSI unsigned_payloads'
         if ($manifest.signing.catalog_membership.basis -cne 'fresh-inf2cat' -or
             $manifest.signing.catalog_membership.generator -cne 'Inf2Cat') {
             throw '[VibeshineVhfGamepad] Unsigned producer package lacks fresh Inf2Cat evidence.'
@@ -335,6 +388,8 @@ function Assert-Package {
             'driver/VibeshineVhfGamepad.dll',
             'driver/VibeshineVhfGamepad.inf'
         )
+        if (Test-MouseMapperFeature -Manifest $manifest) { $membershipFiles += @(Get-MouseMapperPayload) }
+        $membershipFiles = @($membershipFiles | Sort-Object)
         Assert-ExactList -Actual @($manifest.signing.catalog_membership.files.PSObject.Properties.Name | Sort-Object) -Expected $membershipFiles -Name 'catalog membership evidence files'
         foreach ($relativePath in $membershipFiles) {
             $path = Join-Path $Root ($relativePath -replace '/', '\')
@@ -428,13 +483,9 @@ function Assert-ConsumerReleaseLock {
         $lock.signing_channel -cne $msiRequestChannel) {
         throw '[VibeshineVhfGamepad] Consumer release lock does not match the pinned producer release.'
     }
-    Assert-ExactList -Actual @($lock.layout) -Expected @(
-        'driver/VibeshineVhfGamepad.cat',
-        'driver/VibeshineVhfGamepad.dll',
-        'driver/VibeshineVhfGamepad.inf',
-        'manifest.json',
-        'tools/VibeshineVhfGamepadDeviceSetup.exe'
-    ) -Name 'consumer release layout'
+    $expectedLayout = @($manifestPayload) + 'manifest.json'
+    if (Test-MouseMapperFeature -Manifest $Manifest) { $expectedLayout += @(Get-MouseMapperPayload) }
+    Assert-ExactList -Actual @($lock.layout | Sort-Object) -Expected @($expectedLayout | Sort-Object) -Name 'consumer release layout'
     Assert-ExactList -Actual @($lock.signed_downstream) -Expected @(
         'driver/VibeshineVhfGamepad.cat',
         'tools/VibeshineVhfGamepadDeviceSetup.exe'
@@ -598,7 +649,9 @@ try {
     foreach ($installerScript in $installerScripts) {
         Copy-Item -LiteralPath $installerScript -Destination (Join-Path $stageDir (Split-Path -Leaf $installerScript)) -Force
     }
-    foreach ($relativePath in $packageFiles) {
+    $stagedFiles = @($packageFiles)
+    if (Test-MouseMapperFeature -Manifest $prebuiltManifest) { $stagedFiles += @(Get-MouseMapperPayload) }
+    foreach ($relativePath in $stagedFiles) {
         $source = Join-Path $PrebuiltPackageDir ($relativePath -replace '/', '\\')
         $destination = Join-Path $stageDir ($relativePath -replace '/', '\\')
         New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null

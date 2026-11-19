@@ -339,9 +339,10 @@ namespace VDISPLAY {
    * @details Encoder capability validation uses synthetic surfaces and does not
    *          wait for this target to receive a GDI/DXGI capture identity.
    *          ready_for_capture() reports the separate publication state.
+   * @param startup_probe Allows temporary creation only for the bounded startup probe.
    * @return Driver ownership and the currently observed capture readiness.
    */
-  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid = std::nullopt);
+  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid = std::nullopt, bool startup_probe = false);
 
   /**
    * @brief Resolve an exact Windows device id to a usable GDI display name.

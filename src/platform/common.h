@@ -915,6 +915,10 @@ namespace platf {
     int width, height;
     int logical_width, logical_height;
     std::string input_output_name;
+#ifdef __linux__
+    // Connector actually opened, used to verify explicit switches before delivering frames.
+    std::string captured_connector;
+#endif
 
   protected:
     // collect capture timing data (at loglevel debug)
@@ -978,7 +982,7 @@ namespace platf {
    * @brief Name the current thread for use with development tools.
    * @note On Linux this will be truncated after 15 characters.
    */
-  void set_thread_name(const std::string &name);
+  void set_thread_name(std::string_view name);
 
   void enable_mouse_keys();
 

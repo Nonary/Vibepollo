@@ -1,10 +1,8 @@
-"""Compile launch fallback and output enumeration with deterministic Windows APIs.
+"""Replay production display-request precedence and helper preparation.
 
-The production selection/validation and final headless-fallback blocks run
-together, with both production driver predicates, request-policy dispatch,
-effective preparation mapping and topology policy. Windows APIs and request
-transport are stubbed; this is not a full helper launch. --source-dir supports before/after
-regression checks; --emit-only prepares the replay without compiling it.
+Ordinary startup may honor an explicit VDD request, but topology observations
+cannot request one before actual capture fails. The capture recovery harness
+covers that later boundary separately. External Windows queries remain inert.
 """
 
 import argparse
@@ -52,13 +50,15 @@ if policy_file.exists():
 
 topology = (args.source_dir / "platform/windows/display_helper_v2/topology_policy.cpp").read_text()
 preparation_mapping = function(display, "[[maybe_unused]] std::optional<SingleDisplayConfiguration::DevicePreparation> parse_device_prep_option(")
-validation_start = launch.index("      const auto requested_output_name =")
-apollo_output_ownership = "app_output_override ? *app_output_override" in launch[validation_start:validation_start + 200]
-validation_end = launch.index("      if (is_input_only) {", validation_start) if apollo_output_ownership else launch.index("      auto apply_virtual_display_request =", validation_start)
-validation = launch[validation_start:validation_end]
-fallback_end = launch.index("apply_framegen_refresh_policy(request_virtual_display);", validation_end)
-fallback_start = launch.rindex("if (!request_virtual_display", validation_end, fallback_end)
-fallback = function(launch[fallback_start:], "if (")
+preparation = function(launch, "    void prepare_virtual_display_for_session(")
+# The ordinary preparation path may create only an explicitly requested VDD.
+# Automatic recovery is tested at the actual capture-failure boundary separately.
+assert "should_auto_enable_virtual_display" not in preparation
+assert "get_output_state(" not in preparation
+selection_start = preparation.index("      std::optional<std::string> app_output_override;")
+selection_end = preparation.index("      const auto requested_virtual_display_mode", selection_start)
+validation = preparation[selection_start:selection_end]
+fallback = ""
 
 display_helpers = "\n".join(function(display, signature) for signature in (
     "bool output_exists(", "bool output_is_active(",
@@ -82,17 +82,10 @@ for backend in ("SUNSHINE", "SUDOVDA"):
     driver_helpers += function(source, f"bool VDISPLAY_{backend}::has_active_physical_display(") + "\n"
     driver_helpers += function(source, f"bool VDISPLAY_{backend}::should_auto_enable_virtual_display(") + "\n"
 
-# Apollo retains its physical-output pin release inside the headless block.
-# Model only that request transport; preserve and execute the actual pin logic.
-apollo_request_transport = r"""
-  std::optional<std::string> app_output_override = has_app_output_override ? std::optional {config::output} : std::nullopt;
-  std::optional<std::string> pending_output_override = app_output_override;
-  bool pinned_virtual_display_mode_disabled = has_app_output_override;
-  auto disable_virtual_display_request = [&] { launch_session->virtual_display = false; };
-""" if apollo_output_ownership else ""
-
 program = r'''
 #include <algorithm>
+#include "src/app_display_policy.h"
+#include "src/platform/windows/virtual_display_policy.h"
 #include <cctype>
 #include <iostream>
 #include <memory>
@@ -105,6 +98,7 @@ program = r'''
 ''' + '#include "' + str(args.source_dir.resolve() / "platform/windows/display_helper_request_policy.h") + '"\n' + r'''
 #define BOOST_LOG(level) std::ostringstream()
 namespace boost {
+  namespace algorithm { std::string trim_copy(const std::string &s) { return s; } }
   bool iequals(const std::string &a, const std::string &b) {
     return a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), [](unsigned char x, unsigned char y) { return std::tolower(x) == std::tolower(y); });
   }
@@ -175,6 +169,9 @@ namespace VDISPLAY_SUNSHINE { bool has_active_physical_display(); bool should_au
 namespace VDISPLAY_SUDOVDA { bool has_active_physical_display(); bool should_auto_enable_virtual_display(); }
 bool use_sunshine = true;
 namespace VDISPLAY {
+''' + next(line for line in (args.source_dir / 'platform/windows/virtual_display.h').read_text().splitlines()
+           if 'inline constexpr const char *SUDOVDA_VIRTUAL_DISPLAY_SELECTION' in line) + r'''
+  bool is_virtual_display_selection(const std::string &s) { return policy::is_virtual_display_selection(s, true); }
   bool is_virtual_display_output(const std::string &name) {
     return std::any_of(display_device::devices.begin(), display_device::devices.end(), [&](const auto &d) {
       return d.virtual_display && (boost::iequals(name, d.m_device_id) || boost::iequals(name, d.m_display_name));
@@ -209,6 +206,11 @@ namespace rtsp_stream {
     std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
     std::optional<std::string> output_name_override;
     bool virtual_display = false, virtual_display_failed = false;
+    bool virtual_display_recreated_on_demand = false, virtual_display_needs_resume_apply = false;
+    bool client_requests_virtual_display = false;
+    std::optional<bool> client_virtual_display_override;
+    struct metadata_t { bool virtual_screen = false; };
+    std::shared_ptr<metadata_t> app_metadata;
     bool virtual_display_preparation_override = false;
     std::string virtual_display_device_id;
   };
@@ -242,13 +244,15 @@ namespace actual_topology_policy {
 }
 rtsp_stream::launch_session_t launch_settings;
 std::optional<display_device::SingleDisplayConfiguration::DevicePreparation> last_request_preparation;
-bool prepare(bool has_app_output_override = false, bool request_virtual_display = false,
-             bool include_identity_log_fields = true) {
-  bool no_active_sessions = true;
+bool prepare(bool has_app_output_override = false, bool explicit_virtual_request = false,
+             [[maybe_unused]] bool include_identity_log_fields = true) {
+  [[maybe_unused]] bool no_active_sessions = true;
   auto launch_session = std::make_shared<rtsp_stream::launch_session_t>(launch_settings);
   if (has_app_output_override) launch_session->output_name_override = config::output;
-''' + apollo_request_transport + validation + fallback + r'''
+  launch_session->client_requests_virtual_display = explicit_virtual_request;
+''' + validation + fallback + r'''
   last_request_preparation = display_helper_integration::helpers::request_preparation(config::video, *launch_session);
+  if (display_device::query_count || headless_queries) throw std::runtime_error("preparation speculated from topology");
   return request_virtual_display;
 }
 int main() {
@@ -281,21 +285,21 @@ int main() {
       reset({physical, vdd}, "{physical}"); check("explicit physical", prepare(owned_override), false);
       reset({physical, vdd}, ""); check("primary in mixed topology", prepare(owned_override), false);
     }
-    reset({}, ""); check("empty headless topology", prepare(), true);
-    reset({inactive}, ""); check("inactive is not a primary", prepare(), true);
-    reset({secondary}, ""); check("secondary is not primary", prepare(), true);
-    reset({vdd}, "{missing}"); check("unrelated VDD does not validate a selection", prepare(), true);
-    reset({physical}, "{missing}"); check("missing configured target retains fallback", prepare(), true);
+    reset({}, ""); check("empty headless topology", prepare(), false);
+    reset({inactive}, ""); check("inactive is not a primary", prepare(), false);
+    reset({secondary}, ""); check("secondary is not primary", prepare(), false);
+    reset({vdd}, "{missing}"); check("unrelated VDD does not validate a selection", prepare(), false);
+    reset({physical}, "{missing}"); check("missing configured target waits for an actual capture result", prepare(), false);
     reset({physical}, "{missing}"); check("app owns invalid output with physical fallback", prepare(true), false);
-    reset({vdd}, "{missing}"); check("missing app target retains headless fallback", prepare(true), true);
+    reset({vdd}, "{missing}"); check("missing app target waits for an actual capture result", prepare(true), false);
     reset({inactive}, "{vdd}"); config::video.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_active;
     check("inactive configured output can activate", prepare(), false);
-    reset({inactive}, "{vdd}"); helper_available = false; check("inactive configured output without helper", prepare(), true);
-    reset({inactive}, "{vdd}"); helper_available = false; check("inactive app target without helper retains headless fallback", prepare(true), true);
+    reset({inactive}, "{vdd}"); helper_available = false; check("inactive configured output without helper", prepare(), false);
+    reset({inactive}, "{vdd}"); helper_available = false; check("inactive app target without helper waits for an actual capture result", prepare(true), false);
     reset({vdd}, "{vdd}"); physical_devices.clear(); check("later enumeration loses valid selected output", prepare(), false);
     reset({vdd}, "{vdd}"); fail_query = 2; physical_devices.clear(); check("single selected-output snapshot avoids second query", prepare(), false);
-    reset({vdd}, "{vdd}"); platf::automatic_adapter = false; check("selected output on wrong adapter retains fallback", prepare(), true);
-    reset({physical}, ""); platf::automatic_adapter = false; check("primary on wrong adapter retains fallback", prepare(), true);
+    reset({vdd}, "{vdd}"); platf::automatic_adapter = false; check("selected output on wrong adapter waits for an actual capture result", prepare(), false);
+    reset({physical}, ""); platf::automatic_adapter = false; check("primary on wrong adapter waits for an actual capture result", prepare(), false);
     reset({physical, vdd}, "{vdd}"); platf::automatic_adapter = false; platf::adapter_outputs = {vdd.m_display_name};
     check("virtual selection on configured adapter with physical on another", prepare(), false);
     reset({vdd}, "{vdd}"); platf::automatic_adapter = false; platf::adapter_query_available = false;
@@ -307,7 +311,14 @@ int main() {
     reset({}, ""); driver_installed = false; check("uninstalled driver is not enabled", prepare(), false);
     reset({vdd}, "{vdd}"); check("explicit virtual mode still wins", prepare(false, true), true);
     reset({vdd}, "{vdd}"); check("selection initially available", prepare(), false);
-    devices.clear(); physical_devices.clear(); check("selection revalidated next launch", prepare(), true);
+    devices.clear(); physical_devices.clear(); check("selection revalidated next launch", prepare(), false);
+
+    reset({}, ""); config::video.virtual_display_mode = config::video_t::virtual_display_mode_e::per_client;
+    check("configured virtual mode is explicit", prepare(), true);
+    reset({physical}, "{physical}"); config::video.virtual_display_mode = config::video_t::virtual_display_mode_e::per_client;
+    check("app physical pin overrides normal virtual mode", prepare(true), false);
+    reset({}, ""); launch_settings.virtual_display_mode_override = config::video_t::virtual_display_mode_e::disabled;
+    check("client virtual request wins over disabled normal mode", prepare(false, true), true);
 
     // U007: inactive physical selection with no active physical output. Test
     // default VerifyOnly, Disabled and every activating policy, inherited and
@@ -335,9 +346,10 @@ int main() {
         const auto request = last_request_preparation;
         const auto applied = request ? compute_new_topology(*request, false, "{physical}", {}, initial) : initial;
         const bool activated = has_helper && flatten_topology(applied).contains("{physical}");
-        check("inactive target has activation or headless fallback", fallback || activated, true);
+        check("inactive target has activation or headless fallback", fallback, false);
         const bool can_activate = request && *request != SingleDisplayConfiguration::DevicePreparation::VerifyOnly;
-        check("fallback respects effective request preparation", fallback, !(has_helper && can_activate));
+        check("fallback respects effective request preparation", fallback, false);
+        check("activating policy still activates physical target", activated, has_helper && can_activate);
       }
     }
   }

@@ -48,6 +48,7 @@ jobs:
         run: |
           python -m unittest discover -s scripts/tests -p test_numeric_release.py
           python -m unittest discover -s scripts/tests -p test_daily_release.py
+          python -m unittest discover -s scripts/tests -p test_nightly_release_id.py
           python -m unittest discover -s .github/scripts -p test_vhf_release_identity.py
       - name: Test nightly notes and immutable metadata
         run: python -m unittest discover -s scripts/tests -p test_nightly_notes.py
@@ -218,7 +219,8 @@ jobs:
             exit 1
           fi
           gh release create "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --verify-tag --title "Vibepollo $DAILY_TAG (Nightly)" --notes-file daily-notes.md --draft --prerelease --latest=false
-          created_release_id="$(gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json id,isDraft,tagName --jq 'select(.isDraft and .tagName == env.DAILY_TAG) | .id')"
+          created_release_json="$(gh release view "$DAILY_TAG" --repo "$GITHUB_REPOSITORY" --json databaseId,isDraft,tagName)"
+          created_release_id="$(jq -er --arg tag "$DAILY_TAG" 'select(.isDraft == true and .tagName == $tag) | .databaseId | select(type == "number" and . > 0 and . == floor)' <<< "$created_release_json")"
           test -n "$created_release_id"
           gh release upload "$DAILY_TAG" public-assets/* --repo "$GITHUB_REPOSITORY"
           gh api "repos/$GITHUB_REPOSITORY/releases/$created_release_id/assets?per_page=100" > uploaded-assets.json

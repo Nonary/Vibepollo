@@ -16,9 +16,9 @@ internal static class InstallSuccessRegression {
   static T Field<T>(InstallerWindow window, string name) {
     return (T)typeof(InstallerWindow).GetField(name, PrivateInstance).GetValue(window);
   }
-  static List<string> Failures(string path) {
+  static List<string> Failures(string path, bool sunshineSelected = true) {
     return (List<string>)typeof(InstallerRunner).GetMethod("CollectInstallComponentFailures", PrivateStatic)
-      .Invoke(null, new object[] { path, true });
+      .Invoke(null, new object[] { path, sunshineSelected });
   }
   static bool Reboot(string path) {
     return (bool)typeof(InstallerRunner).GetMethod("InstallLogIndicatesDriverRebootRequired", PrivateStatic)
@@ -37,7 +37,7 @@ internal static class InstallSuccessRegression {
       .Invoke(window, new object[] { action, "Install", "Installing fixture...", typeof(InstallerWindow).Namespace.Replace("Installer", "") + " installation completed." });
     Check(Field<TextBlock>(window, "_overlayTitleText").Text == title, name + ": final dialog title");
     var message = Field<TextBlock>(window, "_overlayMessageText").Text;
-    Check(message.Contains("Save logs") == (warning || !result.Succeeded), name + ": support report prompt");
+    Check((message.IndexOf("save logs", StringComparison.OrdinalIgnoreCase) >= 0) == (warning || !result.Succeeded), name + ": support report prompt");
     if (result.Succeeded && !warning) {
       Check(Field<TextBlock>(window, "_statusText").Foreground == Field<Brush>(window, "_statusSuccessBrush"), name + ": green success");
       Check(Field<TextBlock>(window, "_statusDetailText").Text.Contains("restart is required") == reboot, name + ": reboot detail");
@@ -85,6 +85,42 @@ internal static class InstallSuccessRegression {
       File.WriteAllText(path, marker);
       Check(Failures(path).Count > 0, marker + ": genuine component error retained");
     }
+    var displayWarning = Path.Combine(directory, "display-inventory-warning.log");
+    var mapperWarning = Path.Combine(directory, "optional-mapper-warning.log");
+    File.WriteAllText(mapperWarning, "[VibeshineVhfGamepad] VIRTUAL_MOUSE_MAPPER_WARNING: signed mapper requires active Windows test-signing policy. Base gamepad installation continues independently.");
+    var mapperFailures = string.Join("\n", Failures(mapperWarning));
+    Check(mapperFailures.Contains("mouse mapper") && mapperFailures.Contains("test-signing policy"), "Optional mapper warning must retain its component and policy detail");
+    Check(!mapperFailures.Contains("Virtual gamepad driver setup failed"), "Optional mapper warning must not claim the independently updated gamepad failed");
+    // The saved report has no driver prefix and a warning wrapped across an
+    // interleaved MSI action boundary. Sunshine then reports healthy retention.
+    File.WriteAllLines(displayWarning, new[] {
+      "MSI (s): Executing op: ActionStart(Name=InstallSudovda,,)",
+      "WixQuietExec64: WARNING: VIRTUAL_DISPLAY_DRIVER_WARNING: Optional driver update skipped; virtual",
+      "MSI (s): Executing op: ActionStart(Name=InstallVirtualDisplayDriver,,)",
+      "WixQuietExec64: display may be unavailable. Driver safety inventory timed out after 15 seconds; driver unchanged.",
+      "WixQuietExec64: Driver component 1.6.4.0 skipped: installed driver retained.",
+      "WixQuietExec64: Present equal/newer device reports healthy; no device changes required."
+    });
+    var displayFailures = string.Join("\n", Failures(displayWarning));
+    Check(displayFailures.Contains("SudoVDA"), "Fallback SudoVDA warning must name the actual component");
+    Check(displayFailures.Contains("timed out after 15 seconds"), "64-bit wrapped driver diagnostic must retain its cause");
+    Check(!displayFailures.Contains("Vibepollo virtual display driver setup"), "Healthy selected Sunshine driver must not inherit fallback warning");
+    File.WriteAllLines(displayWarning, new[] {
+      "MSI (s): Executing op: ActionStart(Name=InstallVirtualDisplayDriver,,)",
+      "WixQuietExec64: [SunshineVirtualDisplay] VIRTUAL_DISPLAY_DRIVER_WARNING: signature rejected"
+    });
+    displayFailures = string.Join("\n", Failures(displayWarning, false));
+    Check(displayFailures.Contains("Vibepollo virtual display driver") && displayFailures.Contains("signature rejected"),
+      "Actual Sunshine failure must retain its identity and detail regardless of selected fallback");
+    File.WriteAllText(displayWarning, "CustomAction InstallSudovda returned actual error code 1603");
+    Check(string.Join("\n", Failures(displayWarning)).Contains("SudoVDA"), "SudoVDA action failure must remain visible");
+    File.WriteAllLines(displayWarning, new[] {
+      "WixQuietExec64: [SudoVDA] VIRTUAL_DISPLAY_DRIVER_WARNING: fallback inventory unavailable",
+      "WixQuietExec64: [SunshineVirtualDisplay] VIRTUAL_DISPLAY_DRIVER_WARNING: selected package rejected"
+    });
+    var separateFailures = Failures(displayWarning);
+    Check(separateFailures.Count == 4 && separateFailures[1].Contains("selected package rejected")
+      && separateFailures[3].Contains("fallback inventory unavailable"), "Separate driver failures must retain separate diagnostics");
     Console.WriteLine("Production log classification and completion UI regressions passed; no installer, service, driver or trust actions executed.");
     return 0;
   }

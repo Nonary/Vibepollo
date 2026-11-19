@@ -266,9 +266,7 @@ test('Windows identifies unsupported saved providers without silently rewriting 
   expect(patches[0]).toEqual({ frame_limiter_provider: 'auto' });
 });
 
-test('legacy saved FEC zero preserves unrelated saves and can be corrected explicitly', async ({
-  page,
-}) => {
+test('saved FEC zero preserves unrelated saves and can be set explicitly', async ({ page }) => {
   const patches = await host(page, 'linux', { fec_percentage: 0, pyrowave: true });
   await page.goto('/v2/settings');
   await page.locator('#setting-pyrowave').uncheck();
@@ -276,44 +274,41 @@ test('legacy saved FEC zero preserves unrelated saves and can be corrected expli
   await expect.poll(() => patches.length).toBe(1);
   expect(patches[0]).toEqual({ pyrowave: false });
   await page.locator('#settings-group-everyday-everyday_encoding summary').click();
-  await expect(page.getByText(/The saved zero is ignored by the host/)).toBeVisible();
+  await expect(page.getByText(/The saved zero is ignored by the host/)).not.toBeVisible();
   await page.locator('#setting-fec_percentage').fill('1');
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
   await expect.poll(() => patches.length).toBe(2);
   expect(patches[1]).toEqual({ fec_percentage: 1 });
   await page.locator('#setting-fec_percentage').fill('0');
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
-  await expect
-    .poll(() =>
-      page
-        .locator('#setting-fec_percentage')
-        .evaluate((input: HTMLInputElement) => input.validity.rangeUnderflow),
-    )
-    .toBe(true);
-  expect(patches).toHaveLength(2);
+  await expect.poll(() => patches.length).toBe(3);
+  expect(patches[2]).toEqual({ fec_percentage: 0 });
 });
 
-test('standard FEC rejects zero while PyroWave critical FEC saves zero', async ({ page }) => {
+test('standard FEC accepts zero and retains the fork range independently of PyroWave FEC', async ({ page }) => {
   const patches = await host(page, 'linux', { pyrowave_critical_fec_percentage: 20 });
   await page.goto('/v2/settings');
   await page.locator('#settings-group-everyday-everyday_encoding summary').click();
+  for (const value of ['0', '100', '255']) {
+    await page.locator('#setting-fec_percentage').fill(value);
+    await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect.poll(() => patches.length).toBe(['0', '100', '255'].indexOf(value) + 1);
+    expect(patches.at(-1)).toEqual({ fec_percentage: Number(value) });
+  }
+  for (const value of ['-1', '256', '0.5']) {
+    await page.locator('#setting-fec_percentage').fill(value);
+    await page.getByRole('button', { name: 'Save changes', exact: true }).click();
+    await expect.poll(() => page.locator('#setting-fec_percentage')
+      .evaluate((input: HTMLInputElement) => input.checkValidity())).toBe(false);
+    expect(patches).toHaveLength(3);
+  }
   await page.locator('#setting-fec_percentage').fill('0');
-  await page.getByRole('button', { name: 'Save changes', exact: true }).click();
-  await expect
-    .poll(() =>
-      page
-        .locator('#setting-fec_percentage')
-        .evaluate((input: HTMLInputElement) => input.validity.rangeUnderflow),
-    )
-    .toBe(true);
-  expect(patches).toHaveLength(0);
-  await page.locator('#setting-fec_percentage').fill('1');
   await page.getByRole('button', { name: 'Video & quality', exact: true }).click();
-  await expect(page.locator('#setting-fec_percentage')).toHaveAttribute('min', '1');
+  await expect(page.locator('#setting-fec_percentage')).toHaveAttribute('min', '0');
   await page.locator('#setting-pyrowave_critical_fec_percentage').fill('0');
   await page.getByRole('button', { name: 'Save changes', exact: true }).click();
-  await expect.poll(() => patches.length).toBe(1);
-  expect(patches[0]).toEqual({ fec_percentage: 1, pyrowave_critical_fec_percentage: 0 });
+  await expect.poll(() => patches.length).toBe(4);
+  expect(patches[3]).toEqual({ fec_percentage: 0, pyrowave_critical_fec_percentage: 0 });
 });
 
 test('settings deep links open advanced encoders and back navigation preserves drafts', async ({

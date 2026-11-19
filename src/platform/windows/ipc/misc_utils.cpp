@@ -236,6 +236,30 @@ namespace platf::dxgi {
     return pids;
   }
 
+  std::optional<bool> query_screen_saver_running() {
+    // SPI_GETSCREENSAVERRUNNING describes the caller's window station. The
+    // service starts the host on winsta0\default in the active console session;
+    // reject Session 0/noninteractive or stale-console contexts instead of
+    // interpreting their unrelated FALSE result as saver dismissal.
+    DWORD session = 0;
+    if (!ProcessIdToSessionId(GetCurrentProcessId(), &session) || session == 0 || session != WTSGetActiveConsoleSessionId()) {
+      return std::nullopt;
+    }
+    wchar_t station_name[256] {};
+    DWORD needed = 0;
+    if (!GetUserObjectInformationW(GetProcessWindowStation(), UOI_NAME, station_name, sizeof(station_name), &needed) || _wcsicmp(station_name, L"WinSta0") != 0) {
+      return std::nullopt;
+    }
+    BOOL running = FALSE;
+    if (!SystemParametersInfoW(SPI_GETSCREENSAVERRUNNING, 0, &running, 0)) {
+      return std::nullopt;
+    }
+    if (session != WTSGetActiveConsoleSessionId()) {
+      return std::nullopt;
+    }
+    return running != FALSE;
+  }
+
   bool is_secure_desktop_active() {
     // Open the input desktop for the current session
     HDESK hDesk = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS | DESKTOP_SWITCHDESKTOP);

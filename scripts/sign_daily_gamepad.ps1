@@ -19,14 +19,18 @@ function Update-DailyGamepadManifest {
         trust = 'Manual OS security review required; no automatic certificate import'
     }
     $paths = @('driver/VibeshineVhfGamepad.cat', 'driver/VibeshineVhfGamepad.cer', 'driver/VibeshineVhfGamepad.dll', 'driver/VibeshineVhfGamepad.inf', 'tools/VibeshineVhfGamepadDeviceSetup.exe')
+    if ($null -ne $manifest.PSObject.Properties['features'] -and $manifest.features.mouse_mapper -eq 1) {
+        throw 'The nightly uses the UMDF-only producer; kernel mouse mapper payloads are not supported.'
+    }
     $manifest.files = @($paths | ForEach-Object { [ordered]@{path=$_; sha256=(Get-FileHash -LiteralPath (Join-Path $Root $_) -Algorithm SHA256).Hash.ToLowerInvariant()} })
     [IO.File]::WriteAllText($manifestPath, ($manifest | ConvertTo-Json -Depth 12), [Text.UTF8Encoding]::new($false))
 }
 
 if ($FunctionsOnly) { return }
-foreach ($argument in @($SourceRoot, $OutRoot, $PfxPath, $ExpectedSignerThumbprint, $env:DAILY_GAMEPAD_PFX_PASSWORD)) {
-    if ([string]::IsNullOrWhiteSpace($argument)) { throw 'SourceRoot, OutRoot, PfxPath, ExpectedSignerThumbprint and the signing password environment variable are required.' }
+foreach ($argument in @($SourceRoot, $OutRoot, $ExpectedSignerThumbprint)) {
+    if ([string]::IsNullOrWhiteSpace($argument)) { throw 'SourceRoot, OutRoot and ExpectedSignerThumbprint are required.' }
 }
+if ($PfxPath -and -not $env:DAILY_GAMEPAD_PFX_PASSWORD) { throw 'A PFX requires the signing password environment variable.' }
 $source = [IO.Path]::GetFullPath($SourceRoot)
 $output = [IO.Path]::GetFullPath($OutRoot)
 if ($source -eq $output -or (Test-Path -LiteralPath $output)) { throw 'Daily output must be a fresh directory independent of the verified producer.' }
@@ -34,6 +38,9 @@ $manifest = Get-Content -LiteralPath (Join-Path $source 'manifest.json') -Raw | 
 $producerLock = Get-Content -LiteralPath (Join-Path $source 'consumer-release-lock.json') -Raw | ConvertFrom-Json
 if ($manifest.signing.channel -cne 'msi-request-signing' -or $producerLock.signing_channel -cne 'msi-request-signing') { throw 'Only the prevalidated pinned producer signing-request package can enter daily signing.' }
 $expected = @('driver/VibeshineVhfGamepad.cat', 'driver/VibeshineVhfGamepad.dll', 'driver/VibeshineVhfGamepad.inf', 'tools/VibeshineVhfGamepadDeviceSetup.exe')
+if ($null -ne $manifest.PSObject.Properties['features'] -and $manifest.features.mouse_mapper -eq 1) {
+    throw 'The nightly uses the UMDF-only producer; kernel mouse mapper payloads are not supported.'
+}
 if ((@($manifest.files.path | Sort-Object) -join ',') -cne ($expected -join ',')) { throw 'Producer payload list is not exact.' }
 foreach ($entry in $manifest.files) {
     if ((Get-FileHash -LiteralPath (Join-Path $source $entry.path) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.sha256) { throw "Producer hash changed before signing: $($entry.path)" }
@@ -45,10 +52,15 @@ if (-not $SignToolPath) {
 }
 if (-not $SignToolPath) { throw 'Windows SDK x64 SignTool is required.' }
 if ($ExpectedSignerThumbprint -cnotmatch '^[0-9A-F]{40}$') { throw 'Expected signer identity must be explicitly pinned.' }
-$certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new(
-    [IO.File]::ReadAllBytes([IO.Path]::GetFullPath($PfxPath)),
-    $env:DAILY_GAMEPAD_PFX_PASSWORD,
-    [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+$certificate = if ($PfxPath) {
+    [Security.Cryptography.X509Certificates.X509Certificate2]::new(
+        [IO.File]::ReadAllBytes([IO.Path]::GetFullPath($PfxPath)), $env:DAILY_GAMEPAD_PFX_PASSWORD,
+        [Security.Cryptography.X509Certificates.X509KeyStorageFlags]::EphemeralKeySet)
+} else {
+    # Local validation uses the same signer pipeline with an explicitly pinned
+    # existing key; never select by subject or silently generate a replacement.
+    Get-Item -LiteralPath "Cert:\CurrentUser\My\$ExpectedSignerThumbprint" -ErrorAction Stop
+}
 try {
     if (-not $certificate.HasPrivateKey -or $certificate.Thumbprint -cne $ExpectedSignerThumbprint -or
         $certificate.NotBefore.ToUniversalTime() -gt [DateTime]::UtcNow -or
@@ -62,22 +74,31 @@ try {
         New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
         Copy-Item -LiteralPath (Join-Path $source $relative) -Destination $destination
     }
-    $pfx = [IO.Path]::GetFullPath($PfxPath)
+    function Sign-DailyFile([string]$RelativePath) {
+        $path = Join-Path $output $RelativePath
+        $keyArguments = if ($PfxPath) { @('/f', [IO.Path]::GetFullPath($PfxPath), '/p', $env:DAILY_GAMEPAD_PFX_PASSWORD) } else { @('/sha1', $ExpectedSignerThumbprint) }
+        & $SignToolPath sign /fd SHA256 @keyArguments $path
+        if ($LASTEXITCODE -ne 0) { throw "Daily signature failed: $RelativePath" }
+        $signature = Get-AuthenticodeSignature -LiteralPath $path
+        if ($null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -cne $certificate.Thumbprint -or $signature.Status -eq 'HashMismatch') { throw "Daily signature identity/integrity failed: $RelativePath" }
+    }
     $cer = Join-Path $output 'driver/VibeshineVhfGamepad.cer'
     [IO.File]::WriteAllBytes($cer, $certificate.Export([Security.Cryptography.X509Certificates.X509ContentType]::Cert))
     foreach ($relative in @('driver/VibeshineVhfGamepad.cat', 'tools/VibeshineVhfGamepadDeviceSetup.exe')) {
-        $path = Join-Path $output $relative
-        & $SignToolPath sign /fd SHA256 /f $pfx /p $env:DAILY_GAMEPAD_PFX_PASSWORD $path
-        if ($LASTEXITCODE -ne 0) { throw "Daily signature failed: $relative" }
-        $signature = Get-AuthenticodeSignature -LiteralPath $path
-        if ($null -eq $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -cne $certificate.Thumbprint -or $signature.Status -eq 'HashMismatch') { throw "Daily signature identity/integrity failed: $relative" }
+        Sign-DailyFile $relative
     }
     # Never rewrite catalog-bound INF/DLL: preserve the verified producer membership.
-    foreach ($relative in @('driver/VibeshineVhfGamepad.inf', 'driver/VibeshineVhfGamepad.dll')) {
+    $unchanged = @('driver/VibeshineVhfGamepad.inf', 'driver/VibeshineVhfGamepad.dll')
+    foreach ($relative in $unchanged) {
         if ((Get-FileHash (Join-Path $source $relative)).Hash -cne (Get-FileHash (Join-Path $output $relative)).Hash) { throw "Catalog-bound payload changed: $relative" }
     }
     Update-DailyGamepadManifest -Root $output -Thumbprint $certificate.Thumbprint -ProducerLock $producerLock
-    Write-Host "Daily VHF catalog/setup self-signed. Public certificate: $($certificate.Thumbprint). No trust store was changed."
+    # Reuse the installer's exact offline integrity/CMS/membership verifier.
+    . (Join-Path $PSScriptRoot '../src_assets/windows/drivers/vhf-gamepad/install.ps1') -FunctionsOnly
+    Initialize-LocalGamepadTrustValidation
+    [VhfLocalTrustValidation]::VerifyCatalog((Join-Path $output 'driver/VibeshineVhfGamepad.cat'), $certificate.Thumbprint, @((Join-Path $output 'driver/VibeshineVhfGamepad.inf'), (Join-Path $output 'driver/VibeshineVhfGamepad.dll')))
+    [VhfLocalTrustValidation]::VerifyTool((Join-Path $output 'tools/VibeshineVhfGamepadDeviceSetup.exe'), $certificate.Thumbprint)
+    Write-Host "Daily VHF package signatures and catalog membership verified. Public certificate: $($certificate.Thumbprint). No trust store or boot setting was changed."
  } finally {
     $certificate.Dispose()
 }

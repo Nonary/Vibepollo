@@ -28,7 +28,7 @@ endfunction()
 
 # The virtual-gamepad package is independently versioned and released from
 # Nonary/libvirtualgamepad. The application consumes its immutable archive; it
-# must never build the UMDF driver while assembling a consumer MSI.
+# must never build either driver while assembling a consumer MSI.
 #
 # The producer archive is intentionally unsigned. Production signing remains
 # downstream: the same consumer-MSI signing request that deep-signs the MSI
@@ -101,3 +101,6 @@ option(SUNSHINE_BUNDLE_VHF_GAMEPAD_DRIVER
 option(SUNSHINE_ALLOW_LOCAL_VHF_GAMEPAD_TEST_PACKAGE
        "Allow an explicitly supplied local self-signed VHF gamepad package for development packaging."
        OFF)
+
+# Mouse ordering is fenced in the user-mode host against the existing UMDF
+# HID collections. No custom kernel mouse mapper is required or packaged.

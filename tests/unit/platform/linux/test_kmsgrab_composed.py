@@ -30,11 +30,13 @@ init_end = source.index("\n", source.index("hdr_metadata_blob_id = card.prop_val
 init_lookup = source[init_start:init_end]
 refresh_start = source.index("      inline capture_e refresh(")
 refresh_end = source.index("        if (pending_exported_frame) {", refresh_start)
-refresh_prefix = source[refresh_start:refresh_end]
+refresh_prefix = (source[refresh_start:source.index("        // Sample the framebuffer", refresh_start)] +
+                  source[source.index("        // Recheck current connector state", refresh_start):refresh_end])
 
 program = r'''
 #include "src/platform/linux/kmsgrab_hdr.h"
 #include <algorithm>
+#include "src/platform/linux/capture_target.h"
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -74,7 +76,7 @@ void reset(std::vector<read_e> sequence) {
 }
 }
 namespace kms {
-inline std::mutex display_mutex;
+inline std::timed_mutex display_mutex;
 using prop_t=std::unique_ptr<drmModePropertyRes>;
 using obj_prop_t=std::unique_ptr<drmModeObjectProperties>;
 using prop_blob_t=std::unique_ptr<drmModePropertyBlobRes>;
@@ -126,6 +128,7 @@ prop_blob_t drmModeGetPropertyBlob(int fd, std::uint64_t id) {
   return blob;
 }
 struct card_t {
+  std::optional<std::vector<std::pair<prop_t,std::uint64_t>>> routed_connector_props(unsigned, unsigned) { return {}; }
   struct { int el=7; } fd;
   struct connector_t { int connection=DRM_MODE_CONNECTED; unsigned encoder_id=4; };
   struct encoder_t { unsigned crtc_id=7; };
@@ -134,6 +137,7 @@ struct card_t {
 '''
 for marker in (
     "      std::vector<std::pair<prop_t, std::uint64_t>> props(",
+    "      std::vector<std::pair<prop_t, std::uint64_t>> read_properties(",
     "      std::vector<std::pair<prop_t, std::uint64_t>> connector_props(",
     "      std::optional<std::uint64_t> prop_value_by_name(",
 ):
@@ -145,6 +149,7 @@ namespace platf::kms {
 struct display_vram_t : display_t {
   card_t card;
   std::optional<unsigned> connector_id=1;
+  bool qualified_connector=false;
   unsigned crtc_id=7;
   std::optional<std::uint64_t> hdr_metadata_blob_id;
   hdr::generation_t hdr_metadata_generation;
@@ -174,7 +179,8 @@ struct display_ram_t : display_vram_t {
 };
 }
 namespace platf {
-static std::vector<std::string> kms_display_names_unlocked(mem_type_e) { return {"DP-1"}; }
+std::shared_ptr<display_t> kms_display(mem_type_e, const std::string &, const ::video::config_t &, const capture_deadline_t & = {});
+static std::vector<std::string> kms_display_names_unlocked(mem_type_e, bool = false, const capture_deadline_t & = {}) { return {"DP-1"}; }
 '''
 program += function("  std::shared_ptr<display_t> kms_display(")
 program += r'''

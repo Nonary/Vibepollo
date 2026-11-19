@@ -7,6 +7,10 @@ import subprocess
 
 
 RELEASES = {
+    '93dc007a608b341aa998378221f8958f045ee7f2': (
+        'Nonary/libvirtualgamepad', 'v0.1.0-beta.11',
+        'a23716e933753b9eef8e87675c388cc326ff61c0ef943e1c1d99ba6e7e28992c',
+        '11/14/2026,0.1.0.96', '2'),
     "7b000a2b060b4daeb0b5c6aa7b77ae1d81857e7a": (
         "Nonary/libvirtualgamepad", "v0.1.0-beta.9",
         "59e89ab90c6e360e3e23bb4717b43339c4ec0050aedc52fe05e4f3ef306d62ee",

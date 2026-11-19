@@ -23,7 +23,9 @@ if not compiler:
     print("SKIP: C++ compiler unavailable")
     raise SystemExit(77)
 with tempfile.TemporaryDirectory(prefix="playnite-upgrade-") as temporary:
-    directory = Path(temporary)
+    # Use a plain canonical root; macOS's /var temporary path is a symlink,
+    # which the production migration guard correctly refuses to traverse.
+    directory = Path(temporary).resolve()
     sdk = directory / "sdk"
     sdk.mkdir()
     dotnet = sdk / ("dotnet.exe" if os.name == "nt" else "dotnet")

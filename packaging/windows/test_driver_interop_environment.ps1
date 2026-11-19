@@ -10,7 +10,7 @@ $paths = @(
     'packaging/windows/usbip_transport/install.ps1'
 )
 $definitions = @()
-$commands = @()
+$compilations = @()
 foreach ($path in $paths) {
     $tokens = $null; $errors = $null
     $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $RepositoryRoot $path), [ref]$tokens, [ref]$errors)
@@ -20,7 +20,15 @@ foreach ($path in $paths) {
     $definitions += $function.Extent.Text
     $command = $ast.Find({param($n) $n -is [Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Add-DriverInteropType'}, $true)
     if (!$command) { throw "Missing production interop compilation in $path" }
-    $commands += $command
+    if ($path -like '*/vhf-gamepad/install.ps1') {
+        # Keep the production reference initialization with its compile call.
+        # This initializer only compiles the wrapper; it invokes no native API.
+        $initializer = $ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -eq 'Initialize-LocalGamepadTrustValidation'}, $true)
+        if (!$initializer) { throw "Missing trust interop initializer in $path" }
+        $compilations += $initializer.Extent.Text + "`nInitialize-LocalGamepadTrustValidation"
+    } else {
+        $compilations += $command.Extent.Text
+    }
 }
 if ($definitions[0] -cne $definitions[1]) { throw 'Standalone installer compiler helpers have diverged.' }
 
@@ -75,8 +83,8 @@ try {
 
     foreach ($i in 0..1) {
         . ([scriptblock]::Create($definitions[$i]))
-        # Invoke just the actual compile expression, outside the installer body.
-        & ([scriptblock]::Create($commands[$i].Extent.Text))
+        # Invoke only production wrapper compilation, outside the installer body.
+        & ([scriptblock]::Create($compilations[$i]))
         Assert-EnvironmentUnchanged $large
         $failed = $false
         try { Add-DriverInteropType -TypeDefinition 'this is deliberately invalid C#' } catch {

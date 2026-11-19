@@ -281,3 +281,18 @@ is passed explicitly. Origin verification is impossible from a developer machine
 (the origin metadata must come from GitHub), so signing is a CI-only concern.
 `scripts/signpath_sign.ps1` remains available for manual/test signing but is
 **non-origin** and not a supported release path.
+
+## UMDF mouse input
+
+The bundled producer is the immutable beta.10 UMDF package. Relative input,
+buttons, wheels and primary-display absolute input use its inbox Mouhid
+collections. The host fences Raw Input receipts when switching collections or backends;
+same-collection movement stays asynchronous. Absolute positions outside the primary
+screen use Windows SendInput with a tagged desktop receipt. No custom kernel
+mouse mapper is packaged or required.
+
+Nightlies retain the existing pinned local-certificate workflow: sign the UMDF
+catalog and setup EXE, preserve catalog-bound INF/DLL bytes, then verify final
+signer identities and catalog membership. Stable builds retain the production
+MSI signing request. Recipient certificate trust still requires the existing
+explicit consent; the installer never changes Windows kernel signing policy.

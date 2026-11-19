@@ -17,6 +17,7 @@
 #include <mutex>
 #include <optional>
 #include <set>
+#include <shared_mutex>
 #include <string_view>
 #include <thread>
 #include <unordered_map>
@@ -79,7 +80,7 @@ enum class state_e { STOPPING };
 state_e state(session_t &) {return state_e::STOPPING;}
 void stop(session_t &) {}
 void graceful_stop(session_t &) {}
-constexpr int START_PACING_REJECTED=2;
+@PACING_RESULT@
 inline std::atomic_int running_sessions=0,teardown_sessions=0;
 void mark_client_disconnected(session_t &) {}
 bool uuid_match(session_t &,std::string_view){return false;}
@@ -90,12 +91,13 @@ struct shared_runtime_finalize_context_t {std::optional<std::array<std::uint8_t,
 bool finalize_shared_runtime_if_idle(std::string_view, const shared_runtime_finalize_context_t & = {}) {++finalizer_calls; if(has_shared_runtime_owner()) return false; if(armed.exchange(false) && physical) late_ordinary=true; return true;}
 void join(session_t &s,bool=false) {join_pause.wait(); std::lock_guard lock(nvhttp::lifecycle);s.audio_context_guard.reset();s.display_power_guard.reset(); --running; finalize_shared_runtime_if_idle("natural_join");}
 audio::config_t allocated_audio{};
-std::shared_ptr<session_t> alloc(const config_t &config,auto &launch) {allocated_audio=config.audio;auto s=std::make_shared<session_t>();s->audio_context_guard=std::move(launch.audio_context_guard);s->display_power_guard=launch.display_power_guard;return s;}
+int allocated_packetsize=0;
+std::shared_ptr<session_t> alloc(const config_t &config,auto &launch) {allocated_audio=config.audio;allocated_packetsize=config.packetsize;auto s=std::make_shared<session_t>();s->audio_context_guard=std::move(launch.audio_context_guard);s->display_power_guard=launch.display_power_guard;return s;}
 int start_result=0;bool start_exception=false;
 int start(session_t &,const std::string &) {if(start_exception)throw std::runtime_error("partial registration");if(start_result)return start_result;++running;armed=true;return 0;}
 }
 }
-namespace config { struct {int fec_percentage=0,packetsize=0;std::chrono::seconds ping_timeout{5};} stream; struct {bool limit_framerate=false;int max_bitrate=0;} video; constexpr int PACKETSIZE_MIN=100,PACKETSIZE_MAX=2000,PACKETSIZE_SMALL=500,PACKETSIZE_LARGE=1400; constexpr int ENCRYPTION_MODE_MANDATORY=1; void maybe_apply_deferred() {} struct Gate {~Gate(){}}; Gate acquire_apply_read_gate(){return {};}}
+namespace config { struct {int fec_percentage=0,packetsize=0;std::chrono::seconds ping_timeout{5};} stream; struct {bool limit_framerate=false;int max_bitrate=0;} video; @PACKET_CONSTANTS@ constexpr int ENCRYPTION_MODE_MANDATORY=1; void maybe_apply_deferred() {} std::shared_mutex apply_gate; std::shared_lock<std::shared_mutex> acquire_apply_read_gate(){return std::shared_lock(apply_gate);}}
 namespace config {struct {std::string format="opus";bool high_quality_audio=false;} audio;}
 namespace video {int active_hevc_mode=3,active_av1_mode=3,active_pyrowave_mode=2;}
 namespace net {int encryption_mode_for_address(int) {return 0;}}
@@ -113,6 +115,7 @@ auto expired_remote_input_owners(const std::vector<pending_owner_t> &v) {return 
 struct rates {int capture_framerate=60,encoding_framerate=60;};std::optional<rates> parse_requested_framerate(std::string_view){return rates{};}
 }
 struct launch_session_t {
+ bool capture_display_recovery=false;
  int guide_button=0;
  std::shared_ptr<launch_session_t> clone_for_startup() const;
  bool monitor_stream_published=false;
@@ -131,6 +134,8 @@ struct launch_session_t {
 bool effective_10bit_sdr_requested(const launch_session_t &){return false;}
 void apply_rtx_hdr_stream_policy(stream::monitor_t &){}
 bool activates_vulkan_hdr_layer_for_stream(const stream::monitor_t &){return false;}
+// HDR layer signaling is an external platform edge outside this composition.
+void set_vulkan_hdr_layer_streaming_active(bool){}
 struct OPTION_ITEM {char *option=nullptr,*content=nullptr;OPTION_ITEM *next=nullptr;};
 struct Request {int sequenceNumber=1;char *payload=nullptr;int payloadLength=0;OPTION_ITEM *options=nullptr;};using msg_t=std::shared_ptr<Request>;
 struct Address {operator int() const{return 0;} std::string to_string() const{return "local";}};
@@ -207,7 +212,7 @@ namespace nvhttp {
 @TERMINAL@
 }
 void reset() {
- stream::session::start_result=0;stream::session::start_exception=false;monitor_lost=0;
+ stream::session::start_result=0;stream::session::start_exception=false;monitor_lost=0;config::stream={};stream::session::allocated_packetsize=0;
  physical=false;terminal_entered=false;late_ordinary=false;armed=true;running=0;finalizer_calls=0;config_applies=0;
  audio::ac3_encoder=true;audio::eac3_encoder=true;config::audio={};stream::session::allocated_audio={};response_status=0;response_audio_codec.clear();
  join_pause.reset(false);expiry_pause.reset(false);parser_pause.reset(false);peer_pause.reset(false);
@@ -224,7 +229,8 @@ void blocked_cleanup(Pause &pause,const char *name,std::function<void()> cleanup
  check(waited && !before && physical && !late_ordinary,name);
 }
 int main() {
- launch_session_t metadata;metadata.audio_codec_offered="EAC3";metadata.guide_button=37;metadata.monitor_profile_uuid="exact-monitor-profile";auto copied=metadata.clone_for_startup();check(copied->guide_button==37,"actual startup snapshot preserves Guide metadata");check(copied->monitor_profile_uuid=="exact-monitor-profile","actual startup snapshot preserves Monitor profile metadata");
+ launch_session_t metadata;metadata.capture_display_recovery=true;metadata.audio_codec_offered="EAC3";metadata.guide_button=37;metadata.monitor_profile_uuid="exact-monitor-profile";auto copied=metadata.clone_for_startup();check(copied->guide_button==37,"actual startup snapshot preserves Guide metadata");check(copied->monitor_profile_uuid=="exact-monitor-profile","actual startup snapshot preserves Monitor profile metadata");
+ check(copied->capture_display_recovery,"actual startup clone preserves forced capture recovery");
  check(copied->audio_codec_offered=="EAC3","actual startup clone preserves the codec offer");
  reset();running=1;join_pause.reset(true);server._session_state->sessions.insert(std::make_shared<stream::session_t>());
  blocked_cleanup(join_pause,"actual natural clear drains removed owner before recovery",[]{server.clear(false);});
@@ -297,7 +303,9 @@ int main() {
    server.startup_pool.run();
    if(failure==99)check(server._launch_sessions.size()==1 && monitor_lost==0,"unknown partial startup retains monitor identity");
    else check(server._launch_sessions.empty() && monitor_lost==1 && hold.expired(),"known pre-control failure retires exact pending monitor and holds");
-   server.io_context.run();terminal();
+   server.io_context.run();
+   check(response_status==(failure==stream::session::START_PACING_REJECTED?400:500),"posted startup response preserves pacing rejection status");
+   terminal();
  }
  // A prior HDR game may have left the shared pending flag while a monitor
  // remained. Retiring the final monitor must clear it, preserving peers.
@@ -321,6 +329,18 @@ int main() {
    server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{owner,std::chrono::steady_clock::now()+1s});
    {std::lock_guard lock(nvhttp::lifecycle);server.retire_failed_monitor_start_locked(stale);}
    check(server._launch_sessions.size()==1 && monitor_lost==0,"stale or published monitor retirement preserves current registry owner");
+ }
+ // The real parser may lower, but never raise, a client packet size. Invalid
+ // overrides are ignored rather than changing an otherwise valid request.
+ for(const auto [override_size,expected]:std::array<std::pair<int,int>,5>{{{0,1200},{800,800},{1600,1200},{100,1200},{65536,1200}}}) {
+   reset();config::stream.packetsize=override_size;pending=std::make_shared<launch_session_t>();
+   server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
+   auto packet_payload=payload;packet_payload.replace(packet_payload.find("packetSize:2"),12,"packetSize:1200");
+   auto packet_request=std::make_shared<Request>();packet_request->payload=packet_payload.data();packet_request->payloadLength=packet_payload.size();
+   check(cmd_announce(&server,std::make_shared<socket_t>(),pending,std::move(packet_request)),"packet override ANNOUNCE is accepted");
+   server.startup_pool.run();server.io_context.run();
+   check(response_status==200 && stream::session::allocated_packetsize==expected,"packet override preserves validated downward-only negotiation");
+   terminal();
  }
  // All nonterminal map-removal paths retire the same shared resources while
  // socket aliases remain alive, so they cannot hide an owner from terminal.

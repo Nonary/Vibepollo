@@ -19,6 +19,7 @@ def function(marker):
 
 program = r'''
 #include "src/platform/linux/kmsgrab_hdr.h"
+#include "src/platform/linux/capture_target.h"
 #include <cassert>
 #include <algorithm>
 #include <cstdint>
@@ -76,7 +77,7 @@ struct card_t {
     return properties.front().second;
   }
 };
-inline std::mutex display_mutex;
+inline std::timed_mutex display_mutex;
 }
 }
 '''
@@ -109,7 +110,8 @@ struct display_ram_t : display_vram_t {
 };
 }
 namespace platf {
-static std::vector<std::string> kms_display_names_unlocked(mem_type_e) { return {"DP-2", "DP-1"}; }
+std::shared_ptr<display_t> kms_display(mem_type_e, const std::string &, const ::video::config_t &, const capture_deadline_t & = {});
+static std::vector<std::string> kms_display_names_unlocked(mem_type_e, bool = false, const capture_deadline_t & = {}) { return {"DP-2", "DP-1"}; }
 '''
 program += function('  std::shared_ptr<display_t> kms_display(')
 program += r'''

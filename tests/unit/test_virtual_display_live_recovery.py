@@ -21,6 +21,11 @@ target_presence = function('    MonitorTargetPresence monitor_target_presence(')
 target_presence = target_presence.replace('monitor_target_presence(', 'actual_monitor_target_presence(')
 reactivate_presence = function('    bool reactivate_owned_virtual_display(')
 reactivate_presence = reactivate_presence.replace('monitor_target_presence(', 'actual_monitor_target_presence(')
+monitor_loop = function('    void run_virtual_display_recovery_monitor(')
+monitor_loop = monitor_loop.replace('monitor_target_presence(', 'actual_monitor_target_presence(')
+monitor_loop = monitor_loop.replace('std::chrono::steady_clock::now()', 'monitor_time')
+monitor_timing = source[source.index('    constexpr auto RECOVERY_STABLE_REQUIREMENT'):
+                        source.index('    constexpr auto DRIVER_RECOVERY_WARMUP_DELAY')]
 gdi_name_check = function('    bool is_gdi_display_name(')
 presence_check = function('    bool is_virtual_display_present(')
 presence_check = presence_check.replace('is_virtual_display_present(', 'actual_is_virtual_display_present(')
@@ -184,8 +189,9 @@ struct Manager {
 Manager manager;Manager *man=&manager;
 }
 struct RecoveryMonitorState {
- struct Params {std::string client_name;};
+ struct Params {std::string client_name; unsigned max_attempts=3;};
  Params params;
+ bool confirmed_active_at_schedule=true;
  int guid_uuid=1;
  std::optional<std::wstring> current_display_name=L"DISPLAY15",current_monitor_device_path=L"monitor1";
  std::optional<std::string> current_device_id="virtual1",normalized_monitor_device_path="monitor1";
@@ -258,7 +264,40 @@ bool reactivate_owned_virtual_display(const std::string &id,const std::function<
 }
 }
 ''' + function('    std::optional<std::wstring> resolve_virtual_display_name_for_device_id(') + '\n' + monitor_path_for_id + '\n' + gdi_name_check + '\n' + presence_check + '\n' + ccd_presence + '\n' + driver_presence + '\n' + target_presence + '\n' + reactivate_presence + r'''
+std::chrono::steady_clock::time_point monitor_time{};
+int recreation_attempts=0;
+bool attempt_virtual_display_recovery(RecoveryMonitorState&,std::stop_token) {
+ ++recreation_attempts;
+ return false;
+}
+bool wait_for_monitor_stop(std::stop_token,std::chrono::steady_clock::duration delay) {
+ if(monitor_time.time_since_epoch()<25s) {
+  assert(helper_applies==0 && recreation_attempts==0 && resets==0);
+ }
+ monitor_time+=delay;
+ const auto elapsed=monitor_time.time_since_epoch();
+ enumerated_devices={{"virtual1","monitor1","DISPLAY15","",true}};
+ // Start with two inactive physical displays. Unplug one, then enable the other
+ // while the first is absent. Reconnect both alongside a virtual peer.
+ if(elapsed<12s || elapsed>=15s) {
+  enumerated_devices.emplace_back("physical-a","path-a",elapsed>=15s?"DISPLAY1":"","",false);
+ }
+ enumerated_devices.emplace_back("physical-b","path-b",elapsed>=13s?"DISPLAY2":"","",false);
+ if(elapsed>=15s) {
+  enumerated_devices.emplace_back("peer","peer-path","DISPLAY3","",true);
+ }
+ // Only losing the owned display's active path should reach reactivation.
+ if(elapsed>=25s) {
+  enumerated_devices.front().m_display_name.clear();
+ }
+ return helper_applies>0 || elapsed>=27s;
+}
+''' + monitor_timing + '\n' + monitor_loop + r'''
 int main() {
+ run_virtual_display_recovery_monitor(RecoveryMonitorState{},{});
+ assert(monitor_time.time_since_epoch()>=25s);
+ assert(helper_applies==1 && recreation_attempts==0 && resets==0);
+ helper_applies=0;
  assert(VDISPLAY::policy::readiness_has_dynamic_identity_hint(true,false,false,false,false,false));
  assert(VDISPLAY::policy::readiness_has_strong_identity_hint(true,false,false,false));
  assert(VDISPLAY::policy::readiness_rejects_weak_identity_candidate(true,true));

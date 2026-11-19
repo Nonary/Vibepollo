@@ -116,6 +116,11 @@ if (TARGET sunshine_display_helper)
 endif()
 install(FILES "${CMAKE_BINARY_DIR}/uninstall.exe" DESTINATION "." COMPONENT application)
 
+install(FILES
+    "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/driver-inventory.ps1"
+    "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/install-bundled-drivers.ps1"
+    DESTINATION "drivers" COMPONENT assets)
+
 # Drivers (SudoVDA virtual display)
 set(SUDOVDA_SOURCE_DIR "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/sudovda")
 set(SUDOVDA_DRIVER_FILES

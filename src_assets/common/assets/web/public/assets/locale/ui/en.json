@@ -1717,7 +1717,7 @@
           "label": "Video encoder"
         },
         "fec_percentage": {
-          "description": "Adds recovery packets to each video frame. The 20% default handles ordinary packet loss; higher values use more bandwidth.",
+          "description": "Adds recovery packets to each video frame. Set to 0 to disable standard FEC. The 20% default handles ordinary packet loss; higher values use more bandwidth.",
           "label": "Network recovery (FEC)"
         },
         "dd_use_sunshine_virtual_display_driver": {
@@ -2440,8 +2440,7 @@
         "recovery": "All display recovery settings →",
         "automation": "Host automation settings →"
       },
-      "game_library_links": "Game libraries",
-      "legacy_fec_zero": "The saved zero is ignored by the host. Choose 1–255% to set standard FEC."
+      "game_library_links": "Game libraries"
     },
     "api_tokens": {
       "active": {

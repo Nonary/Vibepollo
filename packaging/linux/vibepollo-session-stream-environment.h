@@ -37,6 +37,7 @@ struct vibepollo_stream_environment_field {
 static const struct vibepollo_stream_environment_field vibepollo_stream_environment_fields[] = {
   {"SUNSHINE_APP_ID", VIBEPOLLO_STREAM_UNSIGNED, 10},
   {"SUNSHINE_APP_NAME", VIBEPOLLO_STREAM_TEXT, 4096},
+  {"SUNSHINE_CLIENT_NAME", VIBEPOLLO_STREAM_TEXT, 1024},
   {"SUNSHINE_CLIENT_WIDTH", VIBEPOLLO_STREAM_UNSIGNED, 10},
   {"SUNSHINE_CLIENT_HEIGHT", VIBEPOLLO_STREAM_UNSIGNED, 10},
   {"SUNSHINE_CLIENT_FPS", VIBEPOLLO_STREAM_DECIMAL, 17},

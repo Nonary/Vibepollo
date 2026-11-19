@@ -89,6 +89,32 @@ int main(void) {
   identity_boundary_calls = 0;
   assert(execute_request(2, control, &identity, getgid()) == 126);
   assert(identity_boundary_calls == 1); // KWin actually reaches the inert edge.
+  // SDDM's compositor token is admitted only for its own greeter, and every
+  // parser must reject malformed/noncanonical tokens rather than widening it
+  // to a desktop user or the other login manager.
+  struct session_identity sddm = {0};
+  strcpy(sddm.backend, "kwin");
+  strcpy(sddm.role, "greeter");
+  strcpy(sddm.user, "sddm");
+  strcpy(sddm.compositor, "sddm-42-123");
+  assert(valid_backend_identity(&sddm));
+  assert(validate_xauthority(&sddm));
+  strcpy(sddm.role, "desktop");
+  assert(!valid_backend_identity(&sddm));
+  strcpy(sddm.role, "greeter");
+  strcpy(sddm.user, "plasmalogin");
+  assert(!valid_backend_identity(&sddm));
+  strcpy(sddm.user, "sddm");
+  strcpy(sddm.backend, "hyprland-kms");
+  assert(!valid_backend_identity(&sddm));
+  strcpy(sddm.backend, "kwin");
+  const char *invalid[] = {"sddm-0-123", "sddm-42-0", "sddm-042-123", "sddm-42-0123",
+    "sddm--42-123", "sddm-42-123-extra", "sddm-42", "other-42-123"};
+  for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); ++i) {
+    strcpy(sddm.compositor, invalid[i]);
+    assert(!valid_backend_identity(&sddm));
+  }
+  puts("PASS: SDDM broker identity is restricted to its exact greeter role and canonical PID/start token");
   puts("PASS: explicit Hyprland identity and broker operation boundary; X11 launches need the bound Xwayland display; KWin still requires Xauthority");
   return 0;
 }

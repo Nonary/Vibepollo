@@ -19,10 +19,11 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Driver-selection regression failed.' }
     & (Join-Path $PSScriptRoot 'test_gamepad_bundle_metadata.ps1') -RegressionExe $output -OutputDirectory $scratch
     [xml]$patch = Get-Content (Join-Path $repo 'packaging/windows/wix/patch_custom_actions.wxs') -Raw
-    foreach ($id in @('SetInstallSudovda', 'InstallSudovda', 'SetInstallVirtualDisplayDriver', 'InstallVirtualDisplayDriver')) {
+    foreach ($id in @('SetInstallBundledDrivers', 'InstallBundledDrivers')) {
         $action = $patch.SelectSingleNode("//InstallExecuteSequence/Custom[@Action='$id']")
-        if ($null -eq $action -or $action.InnerText -notmatch 'INSTALL_DISPLAY_DRIVERS\s*=\s*"1"') { throw "Display opt-out not enforced by $id" }
+        if ($null -eq $action -or $action.InnerText -ne 'NOT REMOVE') { throw "Shared driver action must be install/repair only: $id" }
     }
+    & (Join-Path $repo 'packaging/windows/test_shared_driver_inventory.ps1')
     foreach ($id in @('RestoreSavedDisplayDriverSelection', 'DefaultDisplayDriverSelection', 'RestoreSavedGamepadDriverSelection', 'DefaultGamepadDriverSelection')) {
         $action = $patch.SelectSingleNode("//InstallExecuteSequence/Custom[@Action='$id']")
         if ($null -eq $action -or -not $action.InnerText.Contains('=""')) { throw "Explicit MSI caller selection can be overridden by $id" }

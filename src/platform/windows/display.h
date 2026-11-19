@@ -4,6 +4,8 @@
  */
 #pragma once
 
+// Preserve Winsock before Windows/WinRT headers.
+// clang-format off
 // standard includes
 #include <atomic>
 #include <cstdint>
@@ -34,6 +36,7 @@
 namespace platf::game_activity {
   class refresh_target_t;
 }
+// clang-format on
 
 namespace platf::dxgi {
   namespace present_timing {
@@ -692,10 +695,14 @@ namespace platf::dxgi {
    */
   class temp_dxgi_vram_t: public display_ddup_vram_t {
   private:
+    std::string _wgc_display_name;
     std::chrono::steady_clock::time_point _last_check_time;
     static constexpr std::chrono::seconds CHECK_INTERVAL {2};  // Check every 2 seconds
 
   public:
+    explicit temp_dxgi_vram_t(const std::string &display_name):
+        _wgc_display_name(display_name) {}
+
     capture_e snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) override;
   };
 
@@ -705,6 +712,7 @@ namespace platf::dxgi {
    */
   class temp_dxgi_ram_t: public display_ddup_ram_t {
   private:
+    std::string _wgc_display_name;
     /**
      * @brief The last time a check for secure desktop status was performed.
      */
@@ -716,6 +724,9 @@ namespace platf::dxgi {
     static constexpr std::chrono::seconds CHECK_INTERVAL {2};
 
   public:
+    explicit temp_dxgi_ram_t(const std::string &display_name):
+        _wgc_display_name(display_name) {}
+
     /**
      * @brief Captures a snapshot of the display using DXGI duplication.
      * This method attempts to capture the current frame from the display, handling secure desktop scenarios.

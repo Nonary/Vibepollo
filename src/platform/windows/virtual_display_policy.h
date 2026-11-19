@@ -21,10 +21,10 @@ namespace VDISPLAY::policy {
     return !session_uses_virtual_display;
   }
 
-  // Encoder discovery never owns a monitor. It uses an existing physical
-  // output or waits until a requesting client creates its own display.
-  constexpr bool should_create_host_probe_display() noexcept {
-    return false;
+  // Only the bounded startup probe may borrow a temporary monitor. Polling
+  // capability endpoints and session probes must never create host displays.
+  constexpr bool should_create_host_probe_display(const bool startup_probe = false) noexcept {
+    return startup_probe;
   }
 
   constexpr bool should_prepare_display_for_new_session(const bool no_active_sessions) noexcept {

@@ -115,6 +115,10 @@ namespace platf::kms::selection {
     });
   }
 
+  inline std::string qualified_name(const monitor_t &monitor) {
+    return monitor.card_path + ':' + monitor.connector_name;
+  }
+
   inline std::vector<named_monitor_t> name_monitors(std::vector<monitor_t> monitors) {
     std::ranges::sort(monitors, {}, &monitor_t::monitor_index);
 
@@ -128,7 +132,7 @@ namespace platf::kms::selection {
     for (auto &monitor : monitors) {
       auto display_name = monitor.connector_name;
       if (connector_name_counts[monitor.connector_name] > 1) {
-        display_name = monitor.card_path + ':' + monitor.connector_name;
+        display_name = qualified_name(monitor);
       }
       named_monitors.emplace_back(named_monitor_t {std::move(monitor), std::move(display_name)});
     }
@@ -140,8 +144,17 @@ namespace platf::kms::selection {
     std::string_view display_name,
     std::span<const named_monitor_t> named_monitors
   ) {
-    // Prefer the exact public name, including the card qualifier used when two
-    // GPUs expose connectors with the same DRM name.
+    // A reserved target stays qualified even if the set of active cards changes.
+    if (const auto separator = display_name.find(':'); separator != std::string_view::npos) {
+      for (const auto &[monitor, name] : named_monitors) {
+        if (ascii_iequals(display_name.substr(0, separator), monitor.card_path) &&
+            ascii_iequals(display_name.substr(separator + 1), monitor.connector_name)) {
+          return monitor;
+        }
+      }
+      return std::nullopt;
+    }
+    // Prefer the public name when it is unambiguous.
     for (const auto &named_monitor : named_monitors) {
       if (ascii_iequals(display_name, named_monitor.display_name)) {
         return named_monitor.monitor;

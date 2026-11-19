@@ -54,9 +54,9 @@ namespace platf {
     void keyboard_mouse_consumer(std::uint16_t usage, bool pressed);
     void keyboard_mouse_button(std::uint8_t button, bool pressed);
     void keyboard_mouse_relative(int x, int y, int wheel, int pan);
-    // False means a healthy VHF device cannot represent this coordinate.
-    // A faulted device consumes the event until its removal is confirmed.
-    bool keyboard_mouse_absolute(std::uint16_t x, std::uint16_t y);
+    // Coordinates span the virtual desktop. UMDF primary-display input and
+    // off-primary Windows input use receipt fences; uncertain events are not replayed.
+    void keyboard_mouse_absolute(std::uint16_t x, std::uint16_t y);
 
     /**
      * @brief Creates a virtual controller in the driver.

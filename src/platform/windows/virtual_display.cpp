@@ -571,7 +571,7 @@ namespace VDISPLAY_SUNSHINE {
   uuid_util::uuid_t persistentVirtualDisplayUuid();
   bool has_active_physical_display();
   bool should_auto_enable_virtual_display();
-  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
+  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid, bool startup_probe);
   void cleanup_ensure_display(const ensure_display_result &result);
   bool has_retained_ensure_display();
   void cleanup_retained_ensure_display();
@@ -651,7 +651,7 @@ namespace VDISPLAY_SUDOVDA {
   uuid_util::uuid_t persistentVirtualDisplayUuid();
   bool has_active_physical_display();
   bool should_auto_enable_virtual_display();
-  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
+  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid, bool startup_probe);
   void cleanup_ensure_display(const ensure_display_result &result);
   bool has_retained_ensure_display();
   void cleanup_retained_ensure_display();
@@ -1004,11 +1004,11 @@ namespace VDISPLAY {
     return use_sunshine_driver() ? VDISPLAY_SUNSHINE::should_auto_enable_virtual_display() : VDISPLAY_SUDOVDA::should_auto_enable_virtual_display();
   }
 
-  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid) {
+  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid, const bool startup_probe) {
     const bool sunshine_backend = use_sunshine_driver();
     auto result = sunshine_backend ?
-                    VDISPLAY_SUNSHINE::ensure_display(required_adapter_luid) :
-                    VDISPLAY_SUDOVDA::ensure_display(required_adapter_luid);
+                    VDISPLAY_SUNSHINE::ensure_display(required_adapter_luid, startup_probe) :
+                    VDISPLAY_SUDOVDA::ensure_display(required_adapter_luid, startup_probe);
     result.backend = sunshine_backend ?
                        ensure_display_backend_e::sunshine :
                        ensure_display_backend_e::sudovda;

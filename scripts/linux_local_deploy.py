@@ -46,7 +46,9 @@ UNITS = (HOST, CONTROLLER, SOCKET, 'vibepollo-session-exec@.service',
          'vibeshine-drm-setup.service', 'vibeshine-vkms.service',
          'vibeshine-vkms-control.socket', 'vibeshine-vkms-control@.service')
 FIXED = {
-    'usr/bin/vibepollo', 'usr/bin/vibepollo-mangohud',
+    'usr/bin/vibepollo', 'usr/bin/vibepollo-mangohud', 'usr/bin/vibepollo-tray',
+    'usr/share/applications/vibepollo-tray.desktop',
+    'etc/xdg/autostart/vibepollo-tray.desktop',
     'usr/libexec/vibeshine/vibepollo-package-preflight',
     'usr/lib/libvibeshine-kwin-gpu.so',
     'usr/lib/modules-load.d/60-sunshine.conf',
@@ -69,6 +71,8 @@ FIXED.update(f'usr/lib/systemd/system/{name}' for name in UNITS)
 FIXED.update(f'usr/share/applications/io.github.Nonary.vibepollo{suffix}.desktop'
              for suffix in ('', '.kwin', '.terminal'))
 FIXED.add('usr/share/icons/hicolor/scalable/apps/apollo.svg')
+# Optional downloader remains compatible with older rollback packages.
+OPTIONAL_FIXED = {'usr/libexec/vibeshine/vibepollo-truehdr-runtime'}
 OPTIONAL = {f'usr/share/icons/hicolor/scalable/status/apollo-{state}.svg'
             for state in ('locked', 'pausing', 'playing', 'tray')}
 FIXED.update(f'usr/lib/systemd/user/{unit}.service.d/{dropin}.conf'
@@ -123,7 +127,7 @@ def safe_name(name):
 
 def allowed(name):
     return safe_name(name) and (
-        name in FIXED or name in OPTIONAL or (name.startswith('usr/bin/vibepollo-') and
+        name in FIXED or name in OPTIONAL or name in OPTIONAL_FIXED or (name.startswith('usr/bin/vibepollo-') and
                          VERSION.fullmatch(name.removeprefix('usr/bin/vibepollo-')) is not None) or
         name.startswith(('usr/share/vibepollo/', 'usr/lib/vibepollo/')) or
         re.fullmatch(r'usr/src/vibeshine-(?:drm|ds5)-[1-9][0-9]*\.[0-9]+\.[0-9]+/[^/]+', name) is not None

@@ -83,7 +83,11 @@ class InstallerShellTests(unittest.TestCase):
 class ArchiveTests(unittest.TestCase):
     def test_current_native_companion_and_package_preflight_paths(self):
         for path in ('usr/bin/vibepollo-mangohud',
+                     'usr/bin/vibepollo-tray',
+                     'usr/share/applications/vibepollo-tray.desktop',
+                     'etc/xdg/autostart/vibepollo-tray.desktop',
                      'usr/libexec/vibeshine/vibepollo-package-preflight',
+                     'usr/libexec/vibeshine/vibepollo-truehdr-runtime',
                      'usr/share/libalpm/hooks/00-vibepollo-quiesce.hook'):
             with self.subTest(path=path):
                 self.assertTrue(deploy.allowed(path))
@@ -119,6 +123,15 @@ class ArchiveTests(unittest.TestCase):
         self.assertIn('usr/libexec/vibeshine/vibepollo-display-power', members)
         self.assertIn('usr/libexec/vibeshine/vibepollo-display-observer', members)
         self.assertIn('usr/libexec/vibeshine/vibepollo-touch-map', members)
+
+    def test_optional_truehdr_downloader_is_accepted_without_breaking_older_packages(self):
+        helper = 'usr/libexec/vibeshine/vibepollo-truehdr-runtime'
+        entry = tarfile.TarInfo(helper)
+        entry.size = 4
+        with package(extra=[entry]) as archive:
+            self.assertIn(helper, deploy.inspect_archive(archive, VERSION))
+        with package() as archive:
+            self.assertNotIn(helper, deploy.inspect_archive(archive, VERSION))
 
     def test_missing_recovery_helper_fails_preflight(self):
         with package(omit=['usr/libexec/vibeshine/vibepollo-display-power']) as archive:

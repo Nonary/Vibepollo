@@ -180,7 +180,8 @@ int main(void) {
     "APOLLO_CLIENT_HDR=true", "APOLLO_CLIENT_GCMAP=65535",
     "APOLLO_CLIENT_HOST_AUDIO=false", "APOLLO_CLIENT_ENABLE_SOPS=true",
     "APOLLO_CLIENT_AUDIO_CONFIGURATION=7.1", "APOLLO_CLIENT_AUDIO_SURROUND_PARAMS=85301234567",
-    "PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE=1", "PROTON_SONY_WINDOWS_DEVICE_NAMES=0"
+    "PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE=1", "PROTON_SONY_WINDOWS_DEVICE_NAMES=0",
+    "SUNSHINE_CLIENT_NAME=Paired Client = $HOME; $(false)"
   };
   CHECK(sizeof(stream_environment) / sizeof(stream_environment[0]) == VIBEPOLLO_STREAM_ENVIRONMENT_FIELD_COUNT);
   CHECK(vibepollo_stream_environment_is_safe(VIBEPOLLO_STREAM_ENVIRONMENT_FIELD_COUNT, stream_environment));
@@ -205,7 +206,7 @@ int main(void) {
     "SUNSHINE_CLIENT_WIDTH", "=value", "PATH=/tmp/untrusted", "HOME=/tmp/untrusted",
     "LD_PRELOAD=/tmp/untrusted.so", "BASH_ENV=/tmp/untrusted", "SYSTEMD_UNIT_PATH=/tmp/untrusted",
     "XDG_RUNTIME_DIR=/tmp/untrusted", "ENABLE_HDR_WSI=1", "SUNSHINE_UNKNOWN=value",
-    "APOLLO_APP_NAME=bad\nname", "APOLLO_CLIENT_NAME=bad\tname", "APOLLO_CLIENT_UUID=bad\177id",
+    "SUNSHINE_CLIENT_NAME=bad\nname", "APOLLO_APP_NAME=bad\nname", "APOLLO_CLIENT_NAME=bad\tname", "APOLLO_CLIENT_UUID=bad\177id",
     "APOLLO_APP_STATUS=STOPPED", "APOLLO_CLIENT_HDR=1", "SUNSHINE_CLIENT_AUDIO_CONFIGURATION=9.1",
     "SUNSHINE_CLIENT_FPS=60.0000000", "SUNSHINE_CLIENT_FPS=0.000", "SUNSHINE_CLIENT_FPS=NaN",
     "SUNSHINE_CLIENT_FPS=60.", "SUNSHINE_CLIENT_FPS=.5", "SUNSHINE_CLIENT_FPS=+60",
@@ -259,6 +260,7 @@ int main(void) {
     "test \"$APOLLO_CLIENT_RENDER_WIDTH/$APOLLO_CLIENT_RENDER_HEIGHT/$APOLLO_CLIENT_FPS\" = 1920/1080/59940 && "
     "test \"$APOLLO_CLIENT_UUID\" = unknown && test \"$APOLLO_CLIENT_NAME\" = 'Steam Deck = OLED' && "
     "test \"$SUNSHINE_APP_NAME\" = 'Literal $HOME; $(false) name=ok' && test \"$APOLLO_APP_NAME\" = \"$SUNSHINE_APP_NAME\" && "
+    "test \"$SUNSHINE_CLIENT_NAME\" = 'Paired Client = $HOME; $(false)' && "
     "test \"$APOLLO_CLIENT_AUDIO_CONFIGURATION/$APOLLO_CLIENT_AUDIO_SURROUND_PARAMS\" = 7.1/85301234567 && "
     "test \"$SUNSHINE_CLIENT_HDR/$APOLLO_CLIENT_HDR\" = true/true && "
     "test \"$PROTON_KEEP_SONY_AUDIO_ENDPOINT_VISIBLE/$PROTON_SONY_WINDOWS_DEVICE_NAMES\" = 1/0 && "
@@ -370,6 +372,12 @@ int main(void) {
   char *elevated_request[] = {"broker", "app-elevated", "", "/usr/bin/true", NULL};
   char *metadata_request[] = {"broker", "app", "", "/usr/bin/true", "APOLLO_APP_STATUS=TERMINATING", NULL};
   CHECK(application_request_is_safe(5, metadata_request));
+  struct session_identity metadata_greeter = {0};
+  strcpy(metadata_greeter.role, "greeter");
+  CHECK(execute_request(5, metadata_request, &metadata_greeter, getgid()) == 126);
+  metadata_request[1] = "app-wayland-hdr";
+  CHECK(execute_request(5, metadata_request, &metadata_greeter, getgid()) == 126);
+  metadata_request[1] = "app";
   metadata_request[4] = "LD_PRELOAD=unsafe";
   CHECK(!application_request_is_safe(5, metadata_request));
   metadata_request[1] = "app-elevated";

@@ -6,6 +6,7 @@
 namespace shutdown_phase {
   enum class phase_e : unsigned char {
     early_exit_cleanup,
+    pyrowave_host_shutdown,
     waiting_for_shutdown_event,
     linux_private_display_preserve,
     termination_signal_monitor_stop,
@@ -42,6 +43,8 @@ namespace shutdown_phase {
     switch (phase) {
       case phase_e::early_exit_cleanup:
         return "early-exit-cleanup";
+      case phase_e::pyrowave_host_shutdown:
+        return "pyrowave-host-shutdown";
       case phase_e::waiting_for_shutdown_event:
         return "waiting-for-shutdown-event";
       case phase_e::linux_private_display_preserve:

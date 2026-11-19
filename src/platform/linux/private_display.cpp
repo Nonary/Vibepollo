@@ -6,6 +6,10 @@
 #include "private_display.h"
 #include "session_backend.h"
 #include "private_display_capacity.h"
+#include "private_display_capture_policy.h"
+#ifdef SUNSHINE_BUILD_DRM
+  #include "kmsgrab.h"
+#endif
 #include "display_restore_capture.h"
 
 #include "display_helper_process.h"
@@ -107,6 +111,7 @@ namespace platf::linux_private_display {
       bool snapshot_greeter_handoff {false};
       std::map<std::string, std::string> snapshot_physical_identities;
       std::map<std::string, std::string> reservations;
+      linux_private_display_capture::reserved_connector_t reserved_capture;
       std::map<std::string, double> retained_scales;
       std::set<std::string> newly_connected_reservations;
       // KDE's idle screen-off reconfigures every GPU. On NVIDIA it wedged GSP
@@ -410,7 +415,7 @@ namespace platf::linux_private_display {
       return !is_managed_output(name) || broker_set_connected(name, false);
     }
 
-    std::string connector_sysfs_path(const std::string &name) {
+    std::string connector_sysfs_path(const std::string &name, bool allow_unique_virtual = false) {
       std::error_code error;
       const std::filesystem::path drm_class {"/sys/class/drm"};
       const auto suffix = "-" + name;
@@ -437,10 +442,9 @@ namespace platf::linux_private_display {
       // deliberately recognizes only Vibepollo's Virtual-N pool, so querying it
       // for HDMI/DP connectors both produces a false error and prevents restore
       // verification from observing an already-active physical output.
-      if (matching_connectors.size() == 1 && !name.starts_with("Virtual-")) {
-        return matching_connectors.front().string();
-      }
-      return {};
+      if (error || (!allow_unique_virtual && name.starts_with("Virtual-"))) return {};
+      if (matching_connectors.size() == 1) return matching_connectors.front().string();
+      return linux_private_display_capture::unique_connected_connector(matching_connectors).string();
     }
 
     bool connector_is_connected(const std::string &name) {
@@ -863,12 +867,26 @@ namespace platf::linux_private_display {
       }, final);
     }
 
-    bool wait_for_capture_publication(const std::string &name) {
+    bool capture_output_available(const std::string &name, const std::optional<std::string> &kms_target,
+                                  std::chrono::steady_clock::time_point deadline) {
+#ifdef SUNSHINE_BUILD_DRM
+      if (kms_target) {
+        if (restore_context) deadline = std::min(deadline, restore_context->deadline);
+        const auto outputs = kms_capture_targets(mem_type_e::unknown, {deadline, [] {
+          return !process_shutdown_preserve_requested() && restore_allowed();
+        }});
+        return std::ranges::find(outputs, *kms_target) != outputs.end();
+      }
+#endif
+      const auto outputs = capture_output_names();
+      return std::ranges::find(outputs, name) != outputs.end();
+    }
+
+    bool wait_for_capture_publication(const std::string &name, const std::optional<std::string> &kms_target = std::nullopt) {
       const auto deadline = std::chrono::steady_clock::now() + output_verification_timeout;
       do {
         if (!restore_allowed()) return false;
-        const auto capture_outputs = capture_output_names();
-        if (std::find(capture_outputs.begin(), capture_outputs.end(), name) != capture_outputs.end()) {
+        if (capture_output_available(name, kms_target, deadline)) {
           return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1066,21 +1084,14 @@ namespace platf::linux_private_display {
       return true;
     }
 
-    void restore_after_failed_preparation() {
-      const auto delay = cleanup_policy::failed_preparation_restore_delay(
-        proc::proc.current_app_id() > 0,
-        config::video.dd.config_revert_on_disconnect,
-        config::video.dd.paused_virtual_display_timeout_secs,
-        config::video.dd.config_revert_delay);
-      if (delay) schedule_revert(*delay, "failed display preparation");
-    }
-
     std::optional<std::string> reserve_output(
       state_t &manager,
       const std::string &identity,
       const bool no_active_sessions,
       const bool reuse_active_reservation = true
     ) {
+      // Check ownership before a new client can claim a previously released name.
+      manager.reserved_capture.forget_if_released(manager.reservations);
       const auto connect = [&](const std::string &name) {
         const auto configuration = query_configuration();
         // Refresh idle preferences and persist ownership before hotplug.
@@ -1115,6 +1126,8 @@ namespace platf::linux_private_display {
             return std::nullopt;
           }
         }
+        // A failed observation cannot give a paused game a different connector.
+        if (manager.reserved_capture.bound_to(existing->second)) return std::nullopt;
         manager.reservations.erase(existing);
       }
 
@@ -1159,6 +1172,15 @@ namespace platf::linux_private_display {
       return std::nullopt;
     }
   }  // namespace
+
+  void restore_after_failed_preparation() {
+    const auto delay = cleanup_policy::failed_preparation_restore_delay(
+      proc::proc.current_app_id() > 0,
+      config::video.dd.config_revert_on_disconnect,
+      config::video.dd.paused_virtual_display_timeout_secs,
+      config::video.dd.config_revert_delay);
+    if (delay) schedule_revert(*delay, "failed display preparation");
+  }
 
   bool initialize() {
     auto target_mutation = display_target::leases().begin_mutation();
@@ -1296,6 +1318,7 @@ namespace platf::linux_private_display {
     auto target_mutation = display_target::leases().begin_mutation();
     if (!target_mutation) return {.requested = true, .error = "Exact target borrowers still hold display leases."};
     prepare_result_t result;
+    session.exclusive_private_capture.reset();
 
     if (!session.display_power_guard) {
       session.display_power_guard = display_power::acquire();
@@ -1332,6 +1355,9 @@ namespace platf::linux_private_display {
       std::lock_guard lock {manager.mutex};
       const bool shared = mode == config::video_t::virtual_display_mode_e::shared;
       const auto identity = reservation_identity(session, shared);
+      const auto previous = manager.reservations.find(identity);
+      const bool already_bound = previous != manager.reservations.end() && manager.reserved_capture.bound_to(previous->second);
+      result.reused_private_capture = already_bound;
       const auto output_name = reserve_output(manager, identity, no_active_sessions, shared);
       if (!output_name) {
         result.error = "No unreserved Linux private display could be connected";
@@ -1339,11 +1365,36 @@ namespace platf::linux_private_display {
         const auto configuration = query_configuration();
         const auto *output = configuration ? find_output(*configuration, *output_name) : nullptr;
         if (!output || !connected(*output)) {
-          manager.reservations.erase(identity);
-          manager.newly_connected_reservations.erase(identity);
-          // A failed query is not permission to unplug a potentially last-live
-          // output. Guarded restoration discovers this released connector.
           result.error = "The leased Linux private display was not published by KScreen";
+        }
+#ifdef SUNSHINE_BUILD_DRM
+        const auto layout = session.virtual_display_layout_override.value_or(config::video.virtual_display_layout);
+        if (result.error.empty() && (config::video.capture.empty() || config::video.capture == "kms") &&
+            linux_private_display_capture::exclusive_output(layout == config::video_t::virtual_display_layout_e::exclusive,
+                                                           *output_name, manager.reservations)) {
+          session.exclusive_private_capture = manager.reserved_capture.bind(*output_name, [](const std::string &name) {
+            return connector_sysfs_path(name, true);
+          });
+          if (!session.exclusive_private_capture) {
+            result.error = "Could not identify the DRM card for private streaming display '" + *output_name + "'.";
+          } else if (already_bound) {
+            const auto status = manager.reserved_capture.connection_status();
+            // A disconnected connector can keep its old CRTC until the compositor processes hotplug.
+            const bool available = status ? *status : capture_output_available(
+              *output_name, session.exclusive_private_capture, std::chrono::steady_clock::now() + output_verification_timeout);
+            if (!available) {
+              result.error = "Reserved private streaming display '" + *session.exclusive_private_capture + "' is unavailable.";
+            }
+          }
+        }
+#endif
+        if (!result.error.empty()) {
+          if (!already_bound) {
+            manager.reservations.erase(identity);
+            manager.newly_connected_reservations.erase(identity);
+          }
+          // Guarded restoration handles new acquisitions. A failed resume leaves
+          // a previously qualified reservation with its original owner.
           session.virtual_display_failed = true;
           return false;
         }
@@ -1351,8 +1402,7 @@ namespace platf::linux_private_display {
         result.output_name = *output_name;
         session.virtual_display = true;
         session.virtual_display_device_id = *output_name;
-        const auto capture_outputs = capture_output_names();
-        const bool capture_available = std::find(capture_outputs.begin(), capture_outputs.end(), *output_name) != capture_outputs.end();
+        const bool capture_available = capture_output_available(*output_name, session.exclusive_private_capture, std::chrono::steady_clock::now() + output_verification_timeout);
         session.virtual_display_recreated_on_demand =
           resume_policy::requires_apply(
             manager.newly_connected_reservations.contains(identity),
@@ -1383,6 +1433,22 @@ namespace platf::linux_private_display {
                       << " for client '" << session.client_name << "'.";
     }
     return result;
+  }
+
+  std::optional<std::string> capture_start_error(const rtsp_stream::launch_session_t &session) {
+#ifdef SUNSHINE_BUILD_DRM
+    if (const auto &target = session.exclusive_private_capture) {
+      const auto separator = target->find(':');
+      const auto entry = target->substr(0, separator) + '-' + session.virtual_display_device_id;
+      std::ifstream enabled {std::filesystem::path {"/sys/class/drm"} / entry / "enabled"};
+      std::string value;
+      if (enabled >> value && value == "enabled") return std::nullopt;
+
+      if (wait_for_capture_publication(session.virtual_display_device_id, target)) return std::nullopt;
+      return "Private streaming display '" + *target + "' is unavailable for capture.";
+    }
+#endif
+    return std::nullopt;
   }
 
   bool apply_session(rtsp_stream::launch_session_t &session) {
@@ -1578,7 +1644,7 @@ namespace platf::linux_private_display {
       // Keep the leased target: another client's display is not a substitute.
       diagnostic_policy::begin_fallback(diagnostic_trace);
       diagnostic_trace.fallback = diagnostic_policy::fallback_e::not_used;
-      if (!wait_for_capture_publication(session.virtual_display_device_id)) {
+      if (!wait_for_capture_publication(session.virtual_display_device_id, session.exclusive_private_capture)) {
         diagnostic_trace.fallback = diagnostic_policy::fallback_choice(false);
         BOOST_LOG(error) << "Linux private display: no usable current capture output on "
                          << session.virtual_display_device_id << '.';
@@ -1894,7 +1960,7 @@ namespace platf::linux_private_display {
       return true;
     }, require_hdr_stability);
 
-    if (!verified || !wait_for_capture_publication(session.virtual_display_device_id)) {
+    if (!verified || !wait_for_capture_publication(session.virtual_display_device_id, session.exclusive_private_capture)) {
       BOOST_LOG(error) << "Linux private display: timed out verifying mode/HDR/scale or capture state on "
                        << session.virtual_display_device_id << '.';
       return use_current_output();

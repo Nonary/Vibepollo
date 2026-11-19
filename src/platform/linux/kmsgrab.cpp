@@ -36,7 +36,7 @@
 #include "src/config.h"
 #include "src/drm_timing_trace.h"
 #include "src/logging.h"
-#include "src/platform/common.h"
+#include "kmsgrab.h"
 #include "src/round_robin.h"
 #include "src/utility.h"
 #include "src/video.h"
@@ -218,7 +218,7 @@ namespace platf {
     // Enumeration and capture initialization share connector maps and desktop
     // geometry. Keep the complete refresh/use transaction exclusive; a query
     // for another encoder type can otherwise replace or filter these maps.
-    static std::mutex display_mutex;
+    static std::timed_mutex display_mutex;
     static std::vector<card_descriptor_t> card_descriptors;
     static std::vector<selection::named_monitor_t> named_monitors;
 
@@ -668,14 +668,30 @@ namespace platf {
           return {};
         }
 
-        std::vector<std::pair<prop_t, std::uint64_t>> props;
-        props.reserve(obj_prop->count_props);
+        return read_properties(obj_prop->count_props, obj_prop->props, obj_prop->prop_values);
+      }
 
-        for (auto x = 0; x < obj_prop->count_props; ++x) {
-          props.emplace_back(drmModeGetProperty(fd.el, obj_prop->props[x]), obj_prop->prop_values[x]);
+      std::vector<std::pair<prop_t, std::uint64_t>> read_properties(std::size_t count, const std::uint32_t *ids, const std::uint64_t *values) {
+        std::vector<std::pair<prop_t, std::uint64_t>> properties;
+        properties.reserve(count);
+        for (std::size_t i = 0; i < count; ++i) {
+          properties.emplace_back(drmModeGetProperty(fd.el, ids[i]), values[i]);
         }
+        return properties;
+      }
 
-        return props;
+      std::optional<std::vector<std::pair<prop_t, std::uint64_t>>> routed_connector_props(std::uint32_t id, std::uint32_t crtc_id) {
+        const auto live = connector(id);
+        if (!live || live->connection != DRM_MODE_CONNECTED || !live->encoder_id) return std::nullopt;
+        // Read routing and HDR properties from the same connector snapshot.
+        auto properties = read_properties(live->count_props, live->props, live->prop_values);
+        if (const auto route = prop_value_by_name(properties, "CRTC_ID"sv)) {
+          if (*route != crtc_id) return std::nullopt;
+        } else {
+          const auto active_encoder = encoder(live->encoder_id);
+          if (!active_encoder || active_encoder->crtc_id != crtc_id) return std::nullopt;
+        }
+        return properties;
       }
 
       std::vector<std::pair<prop_t, std::uint64_t>> plane_props(std::uint32_t id) {
@@ -809,6 +825,7 @@ namespace platf {
         // legacy aliases, while every other value resolves through the stable
         // connector names produced by kms_display_names().
         auto numeric_alias = display_name.empty() ? std::optional<std::uint32_t> {0} : selection::parse_numeric_alias(display_name);
+        const bool card_qualified = display_name.find(':') != std::string::npos;
         std::optional<selection::monitor_t> selected_monitor;
         if (!numeric_alias) {
           selected_monitor = selection::resolve_named_monitor(display_name, named_monitors);
@@ -984,13 +1001,15 @@ namespace platf {
             crtc_id = plane->crtc_id;
             crtc_index = card.get_crtc_index_by_id(plane->crtc_id);
 
-            // Find the connector for this CRTC
+            // A CRTC can move to another connector after enumeration. Bind a
+            // card-qualified request to the connector actually driving it now.
+            qualified_connector = card_qualified;
             for (auto &connector : card.monitors()) {
               if (connector.crtc_id == crtc_id) {
                 // Mirrored connectors can share a CRTC. This constrained
                 // policy must inspect the explicitly named connector, rather
                 // than whichever connector was enumerated last for that CRTC.
-                if (linux_display::hyprland_kms_session() &&
+                if ((qualified_connector || linux_display::hyprland_kms_session()) &&
                     (!selected_monitor || !connector.connected ||
                      connector.name != selected_monitor->connector_name)) continue;
                 BOOST_LOG(info) << "Found connector ID ["sv << connector.connector_id << ']';
@@ -1001,6 +1020,8 @@ namespace platf {
                 hdr_metadata_blob_id = card.prop_value_by_name(connector_props, "HDR_OUTPUT_METADATA"sv);
               }
             }
+
+            if (qualified_connector && !connector_id) return -1;
 
             direct_import_required = card.requires_direct_import();
             this->card = std::move(card);
@@ -1341,6 +1362,21 @@ namespace platf {
 
       inline capture_e refresh(egl::owned_surface_t &surface, std::optional<std::chrono::steady_clock::time_point> &frame_timestamp) {
         auto *sd = &surface.sd;
+        // Sample the framebuffer before verifying its live connector. The
+        // presentation-event path already owns a frame from the requested CRTC.
+        fb_t fb;
+        if (!pending_exported_frame) {
+          plane_t plane = drmModeGetPlane(card.fd.el, plane_id);
+          frame_timestamp = std::chrono::steady_clock::now();
+          if (!plane || !plane->fb_id || (qualified_connector && plane->crtc_id != crtc_id)) {
+            return capture_e::reinit;
+          }
+          fb = card.fb(plane.get());
+          if (!fb) {
+            BOOST_LOG(warning) << "Couldn't get drm fb for plane ["sv << plane->fb_id << "]: "sv << strerror(errno);
+            return capture_e::timeout;
+          }
+        }
         // Recheck current connector state before delivering any frame. This
         // also rejects metadata changes that reuse the original blob ID.
         if (!sdr_capture_allowed()) {
@@ -1349,7 +1385,10 @@ namespace platf {
         }
         // Check for a change in HDR metadata
         if (connector_id) {
-          auto connector_props = card.connector_props(*connector_id);
+          auto observed = qualified_connector ? card.routed_connector_props(*connector_id, crtc_id) :
+                                               std::optional {card.connector_props(*connector_id)};
+          if (!observed) return capture_e::reinit;
+          const auto &connector_props = *observed;
           const auto current_hdr_metadata_blob_id = card.prop_value_by_name(connector_props, "HDR_OUTPUT_METADATA"sv);
           // This is a second fallible read after sdr_capture_allowed(). A
           // failed list read, missing standard HDR property, or missing
@@ -1395,24 +1434,8 @@ namespace platf {
           return capture_e::ok;
         }
 
-        plane_t plane = drmModeGetPlane(card.fd.el, plane_id);
-        frame_timestamp = std::chrono::steady_clock::now();
-
-        // A disconnected output temporarily has no plane framebuffer. End this
-        // capture generation instead of retrying and logging at the frame rate.
-        if (!plane || plane->fb_id == 0) {
-          return capture_e::reinit;
-        }
-
-        auto fb = card.fb(plane.get());
-        if (!fb) {
-          // This can happen if the display is being reconfigured while streaming
-          BOOST_LOG(warning) << "Couldn't get drm fb for plane ["sv << plane->fb_id << "]: "sv << strerror(errno);
-          return capture_e::timeout;
-        }
-
         if (!fb->handles[0]) {
-          BOOST_LOG(error) << "Couldn't get handle for DRM Framebuffer ["sv << plane->fb_id << "]: Probably not permitted"sv;
+          BOOST_LOG(error) << "Couldn't get handle for DRM Framebuffer ["sv << fb->fb_id << "]: Probably not permitted"sv;
           return capture_e::error;
         }
 
@@ -2120,6 +2143,7 @@ namespace platf {
       int crtc_index;
 
       std::optional<uint32_t> connector_id;
+      bool qualified_connector {false};
       std::optional<uint64_t> hdr_metadata_blob_id;
       hdr::generation_t hdr_metadata_generation;
       bool direct_import_required {false};
@@ -2462,15 +2486,17 @@ namespace platf {
 
   }  // namespace kms
 
-  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type);
+  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type, bool qualify_names = false, const capture_deadline_t &limits = {});
 
-  std::shared_ptr<display_t> kms_display(mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
-    std::lock_guard lock {kms::display_mutex};
+  std::shared_ptr<display_t> kms_display(mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config, const capture_deadline_t &limits) {
+    auto lock = limits.lock(kms::display_mutex);
+    if (!lock || !limits.active()) return nullptr;
     // Encoder probes can reach KMS without any prior output enumeration, and
     // previous queries may have filtered a different encoder's devices. Refresh
     // every target, including empty/numeric and physical names, before either
     // the direct-import or RAM fallback consumes the connector maps.
-    (void) kms_display_names_unlocked(hwdevice_type);
+    (void) kms_display_names_unlocked(hwdevice_type, false, limits);
+    if (!limits.active()) return nullptr;
 
     if (hwdevice_type == mem_type_e::vaapi || hwdevice_type == mem_type_e::cuda || hwdevice_type == mem_type_e::vulkan) {
       auto disp = std::make_shared<kms::display_vram_t>(hwdevice_type);
@@ -2480,7 +2506,7 @@ namespace platf {
           BOOST_LOG(error) << "Hyprland KMS capture requires verified SDR connector state"sv;
           return nullptr;
         }
-        return disp;
+        return limits.active() ? disp : nullptr;
       }
 
       // In the case of failure, attempt the old method for VAAPI
@@ -2488,11 +2514,11 @@ namespace platf {
 
     auto disp = std::make_shared<kms::display_ram_t>(hwdevice_type);
 
-    if (disp->init(display_name, config) || !disp->sdr_capture_allowed(true)) {
+    if (!limits.active() || disp->init(display_name, config) || !disp->sdr_capture_allowed(true)) {
       return nullptr;
     }
 
-    return disp;
+    return limits.active() ? disp : nullptr;
   }
 
   /**
@@ -2505,8 +2531,9 @@ namespace platf {
    *
    * This is an ugly hack :(
    */
-  void correlate_to_wayland(std::vector<kms::card_descriptor_t> &cds) {
-    auto monitors = wl::monitors();
+  void correlate_to_wayland(std::vector<kms::card_descriptor_t> &cds, const capture_deadline_t &limits) {
+    const auto deadline = std::min(limits.until, std::chrono::steady_clock::now() + 3s);
+    auto monitors = wl::monitors(nullptr, deadline, limits.allowed);
 
     BOOST_LOG(info) << "-------- Start of KMS monitor list --------"sv;
 
@@ -2581,7 +2608,7 @@ namespace platf {
   }
 
   // Called only while kms::display_mutex protects the shared enumeration state.
-  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type) {
+  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type, bool qualify_names, const capture_deadline_t &limits) {
     std::uint32_t count = 0;
 
     if (!fs::exists("/dev/dri")) {
@@ -2598,6 +2625,7 @@ namespace platf {
 
     fs::path card_dir {"/dev/dri"sv};
     for (auto &entry : fs::directory_iterator {card_dir}) {
+      if (!limits.active()) return {};
       auto file = entry.path().filename();
 
       auto filestring = file.generic_string();
@@ -2633,6 +2661,7 @@ namespace platf {
 
       auto end = std::end(card);
       for (auto plane = std::begin(card); plane != end; ++plane) {
+        if (!limits.active()) return {};
         // Skip unused planes
         if (!plane->fb_id) {
           continue;
@@ -2691,9 +2720,10 @@ namespace platf {
       });
     }
 
-    if (!wl::init()) {
-      correlate_to_wayland(cds);
-    }
+    // Card-qualified connector discovery needs DRM state only. Query Wayland
+    // geometry when actually opening a display or listing public outputs.
+    if (!qualify_names) correlate_to_wayland(cds, limits);
+    if (!limits.active()) return {};
 
     // Deduce the full virtual desktop size
     kms::env_width = 0;
@@ -2754,13 +2784,19 @@ namespace platf {
     std::vector<std::string> display_names;
     display_names.reserve(named_monitors.size());
     for (const auto &named_monitor : named_monitors) {
-      display_names.emplace_back(named_monitor.display_name);
+      display_names.emplace_back(qualify_names ? kms::selection::qualified_name(named_monitor.monitor) : named_monitor.display_name);
     }
 
     kms::card_descriptors = std::move(cds);
     kms::named_monitors = std::move(named_monitors);
 
     return display_names;
+  }
+
+  std::vector<std::string> kms_capture_targets(mem_type_e hwdevice_type, const capture_deadline_t &limits) {
+    auto lock = limits.lock(kms::display_mutex);
+    if (!lock || !limits.active()) return {};
+    return kms_display_names_unlocked(hwdevice_type, true, limits);
   }
 
   // A list of names of displays accepted as display_name.

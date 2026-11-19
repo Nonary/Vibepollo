@@ -6,17 +6,6 @@
 #include <cstdint>
 
 namespace platf::vhf_keyboard_mouse {
-  struct mouse_delivery_t {
-    std::uint8_t pending_buttons {}, pressed_buttons {};
-    bool absolute_pending {};
-    long absolute_x {}, absolute_y {};
-  };
-  inline constexpr std::uint16_t win32_fallback = 0xffff;
-  // This key was first pressed while VHF removal was uncertain and was never
-  // sent to either backend. Consume its matching release as well.
-  inline constexpr std::uint16_t suppressed_fallback = 0xfffe;
-  inline constexpr std::uint16_t consumer_route = 0x100;
-
   struct absolute_point {
     bool inside_primary;
     std::uint16_t x;
@@ -44,6 +33,12 @@ namespace platf::vhf_keyboard_mouse {
       static_cast<std::uint16_t>((px * 65535 + (primary_width - 1) / 2) / (primary_width - 1)),
       static_cast<std::uint16_t>((py * 65535 + (primary_height - 1) / 2) / (primary_height - 1))};
   }
+
+  inline constexpr std::uint16_t win32_fallback = 0xffff;
+  // This key was first pressed while VHF removal was uncertain and was never
+  // sent to either backend. Consume its matching release as well.
+  inline constexpr std::uint16_t suppressed_fallback = 0xfffe;
+  inline constexpr std::uint16_t consumer_route = 0x100;
 
   // usage is evaluated at press; subsequent repeats/releases use that same
   // route, even if the key's layout or client flags change while it is held.

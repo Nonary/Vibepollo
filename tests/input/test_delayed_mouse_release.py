@@ -127,6 +127,9 @@ struct gamepad_t {
   worker_t::task_id_t back_timeout_id = nullptr;
   platf::gamepad_state_t gamepad_state;
   bool guide_key_down = false;
+  bool synthetic_home_down = false;
+  worker_t::task_id_t home_release_id = nullptr;
+  std::uint64_t back_timeout_generation = 0, home_release_generation = 0;
   button_state_e back_button_state = button_state_e::NONE;
 };
 namespace util::endian {

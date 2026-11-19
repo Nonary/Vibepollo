@@ -85,15 +85,11 @@
       <!-- Post-install chores -->
       <Custom Action="SetResetAcls" After="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="ResetAcls" After="SetResetAcls">NOT REMOVE</Custom>
-      <Custom Action="SetInstallSudovda" After="ResetAcls">NOT REMOVE AND INSTALL_SUDOVDA = "1" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
-      <Custom Action="InstallSudovda" After="SetInstallSudovda">NOT REMOVE AND INSTALL_SUDOVDA = "1" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
-      <Custom Action="SetInstallVirtualDisplayDriver" After="InstallSudovda">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
-      <Custom Action="InstallVirtualDisplayDriver" After="SetInstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_DISPLAY_DRIVER &lt;&gt; "0" AND INSTALL_DISPLAY_DRIVERS = "1"</Custom>
-      <Custom Action="SetInstallVirtualGamepadDriver" After="InstallVirtualDisplayDriver">NOT REMOVE AND INSTALL_VIRTUAL_GAMEPAD_DRIVER &lt;&gt; "0"</Custom>
-      <Custom Action="InstallVirtualGamepadDriver" After="SetInstallVirtualGamepadDriver">NOT REMOVE AND INSTALL_VIRTUAL_GAMEPAD_DRIVER &lt;&gt; "0"</Custom>
+      <Custom Action="SetInstallBundledDrivers" After="ResetAcls">NOT REMOVE</Custom>
+      <Custom Action="InstallBundledDrivers" After="SetInstallBundledDrivers">NOT REMOVE</Custom>
       <!-- Explicit opt-in only; existing shared transports are left unchanged.
            There is intentionally no matching USB/IP uninstall action. -->
-      <Custom Action="SetInstallUsbIpTransport" After="InstallVirtualGamepadDriver">NOT REMOVE AND USBIP_TRANSPORT_BUNDLED = "1" AND INSTALL_USBIP_TRANSPORT = "1"</Custom>
+      <Custom Action="SetInstallUsbIpTransport" After="InstallBundledDrivers">NOT REMOVE AND USBIP_TRANSPORT_BUNDLED = "1" AND INSTALL_USBIP_TRANSPORT = "1"</Custom>
       <Custom Action="InstallUsbIpTransport" After="SetInstallUsbIpTransport">NOT REMOVE AND USBIP_TRANSPORT_BUNDLED = "1" AND INSTALL_USBIP_TRANSPORT = "1"</Custom>
       <!-- Vibepollo registers the Vulkan HDR layer on every install (SudoVDA needs it too,
            not just the virtual-display driver), so keep this gated only on NOT REMOVE. -->

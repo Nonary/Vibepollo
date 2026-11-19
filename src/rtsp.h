@@ -150,6 +150,7 @@ namespace rtsp_stream {
     // True only after the NVHTTP display-preparation path has resolved the
     // effective virtual/physical output request for this launch.
     bool virtual_display_request_resolved = false;
+    bool capture_display_recovery = false;  ///< Preserve forced recovery over an app output pin.
     std::optional<config::video_t::virtual_display_mode_e> virtual_display_mode_override;
     std::optional<config::video_t::virtual_display_layout_e> virtual_display_layout_override;
     std::optional<config::video_t::dd_t::config_option_e> dd_config_option_override;
@@ -162,6 +163,8 @@ namespace rtsp_stream {
     bool display_config_preapply_attempted = false;
     std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
     std::string virtual_display_device_id;
+    // A normal Linux game may capture only this reserved output until the user switches monitors.
+    std::optional<std::string> exclusive_private_capture;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
     std::optional<bool> virtual_display_hdr_enabled;
     bool virtual_display_recreated_on_demand = false;

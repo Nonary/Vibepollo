@@ -10,7 +10,9 @@ compiler = shutil.which(os.environ.get("CXX", "g++"))
 if not compiler:
     raise SystemExit(77)
 with tempfile.TemporaryDirectory(prefix="playnite-duplicate-") as temporary:
-    root = Path(temporary)
+    # macOS's temporary path can contain the /var symlink. Start from a plain
+    # canonical directory; the cases below introduce redirects deliberately.
+    root = Path(temporary).resolve()
     cpp = root / "migration.cpp"
     cpp.write_text(r'''
 #include "src/platform/windows/playnite_plugin_migration.h"

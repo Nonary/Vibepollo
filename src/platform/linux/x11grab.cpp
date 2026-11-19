@@ -405,6 +405,7 @@ namespace platf {
       if (streamedMonitor != -1) {
         BOOST_LOG(info) << "Configuring selected display ("sv << streamedMonitor << ") to stream"sv;
         screen_res_t screenr {x11::rr::GetScreenResources(xdisplay.get(), xwindow)};
+        if (!screenr) return -1;
         int output = screenr->noutput;
 
         output_info_t result;
@@ -426,9 +427,11 @@ namespace platf {
 
         if (result->crtc) {
           crtc_info_t crt_info {x11::rr::GetCrtcInfo(xdisplay.get(), screenr.get(), result->crtc)};
+          if (!crt_info) return -1;
           BOOST_LOG(info)
             << "Streaming display: "sv << result->name << " with res "sv << crt_info->width << 'x' << crt_info->height << " offset by "sv << crt_info->x << 'x' << crt_info->y;
 
+          captured_connector.assign(result->name, result->nameLen);
           width = crt_info->width;
           height = crt_info->height;
           offset_x = crt_info->x;
@@ -763,7 +766,7 @@ namespace platf {
     return x11_disp;
   }
 
-  std::vector<std::string> x11_display_names() {
+  std::vector<std::string> x11_display_names(bool connector_names) {
     if (load_x11() || load_xcb()) {
       BOOST_LOG(error) << "Couldn't init x11 libraries"sv;
 
@@ -779,22 +782,18 @@ namespace platf {
 
     auto xwindow = DefaultRootWindow(xdisplay.get());
     screen_res_t screenr {x11::rr::GetScreenResources(xdisplay.get(), xwindow)};
+    if (!screenr) return {};
     int output = screenr->noutput;
 
+    std::vector<std::string> names;
     int monitor = 0;
     for (int x = 0; x < output; ++x) {
       output_info_t out_info {x11::rr::GetOutputInfo(xdisplay.get(), screenr.get(), screenr->outputs[x])};
       if (out_info) {
         BOOST_LOG(info) << "Detected display: "sv << out_info->name << " (id: "sv << monitor << ")"sv << out_info->name << " connected: "sv << (out_info->connection == RR_Connected);
+        names.emplace_back(connector_names ? std::string(out_info->name, out_info->nameLen) : std::to_string(monitor));
         ++monitor;
       }
-    }
-
-    std::vector<std::string> names;
-    names.reserve(monitor);
-
-    for (auto x = 0; x < monitor; ++x) {
-      names.emplace_back(std::to_string(x));
     }
 
     return names;

@@ -257,7 +257,19 @@ static bool hyprland_kms_identity(const struct session_identity *identity) {
 }
 
 static bool valid_backend_identity(const struct session_identity *identity) {
-  if (!strcmp(identity->backend, "kwin")) return !identity->compositor[0];
+  if (!strcmp(identity->backend, "kwin")) {
+    if (!identity->compositor[0]) return true;
+    if (strcmp(identity->role, "greeter") || strcmp(identity->user, "sddm") ||
+        strncmp(identity->compositor, "sddm-", 5)) return false;
+    char numbers[64] = {0};
+    if (!copy_field(numbers, sizeof(numbers), identity->compositor + 5, false)) return false;
+    char *separator = strchr(numbers, '-');
+    if (!separator) return false;
+    *separator++ = 0;
+    unsigned long pid = 0, start = 0;
+    return numbers[0] >= '1' && numbers[0] <= '9' && separator[0] >= '1' && separator[0] <= '9' &&
+           parse_number(numbers, 1, INT_MAX, &pid) && parse_number(separator, 1, ULONG_MAX, &start);
+  }
   const size_t length = strlen(identity->compositor);
   if (!hyprland_kms_identity(identity) || length < 36 || identity->compositor[32] != '-' ||
       !strncmp(identity->compositor, "00000000000000000000000000000000", 32)) return false;

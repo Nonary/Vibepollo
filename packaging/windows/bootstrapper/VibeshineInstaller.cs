@@ -7883,6 +7883,52 @@ namespace VibepolloInstaller {
       return Path.Combine(Path.GetTempPath(), "vibeshine_" + phase + "_" + timestamp + ".log");
     }
 
+    private static string[] GetDisplayDriverLogLines(string[] lines, string driverAction, bool sunshineSelected) {
+      var result = new List<string>();
+      var currentAction = string.Empty;
+      var warningAction = string.Empty;
+      foreach (var line in lines) {
+        if (string.IsNullOrWhiteSpace(line)) {
+          continue;
+        }
+        const string actionPrefix = "ActionStart(Name=";
+        var actionIndex = line.IndexOf(actionPrefix, StringComparison.OrdinalIgnoreCase);
+        if (actionIndex >= 0) {
+          var nameStart = actionIndex + actionPrefix.Length;
+          var nameEnd = line.IndexOf(',', nameStart);
+          currentAction = nameEnd < 0 ? string.Empty : line.Substring(nameStart, nameEnd - nameStart);
+        }
+        var owner = currentAction;
+        var explicitDriver = false;
+        if (line.IndexOf("[SunshineVirtualDisplay]", StringComparison.OrdinalIgnoreCase) >= 0) {
+          owner = "InstallVirtualDisplayDriver";
+          explicitDriver = true;
+        } else if (line.IndexOf("[SudoVDA]", StringComparison.OrdinalIgnoreCase) >= 0) {
+          owner = "InstallSudovda";
+          explicitDriver = true;
+        }
+        var displayMarker = line.IndexOf("VIRTUAL_DISPLAY_DRIVER_WARNING", StringComparison.OrdinalIgnoreCase) >= 0
+          || line.IndexOf("VIRTUAL_DISPLAY_RESTART_REQUIRED", StringComparison.OrdinalIgnoreCase) >= 0;
+        if (displayMarker) {
+          // Older scripts emitted a shared marker without their driver prefix.
+          // Attribute it to the MSI action which actually produced the warning.
+          if (owner != "InstallVirtualDisplayDriver" && owner != "InstallSudovda") {
+            owner = sunshineSelected ? "InstallVirtualDisplayDriver" : "InstallSudovda";
+          }
+          warningAction = owner;
+        } else if (!explicitDriver && !string.IsNullOrEmpty(warningAction)
+                   && line.IndexOf("Driver safety inventory", StringComparison.OrdinalIgnoreCase) >= 0) {
+          // PowerShell can wrap this warning across an interleaved ActionStart
+          // record. Its continuation still belongs to the original warning.
+          owner = warningAction;
+        }
+        if (owner == driverAction || line.IndexOf("CustomAction " + driverAction + " returned actual error code", StringComparison.OrdinalIgnoreCase) >= 0) {
+          result.Add(line);
+        }
+      }
+      return result.ToArray();
+    }
+
     private static List<string> CollectInstallComponentFailures(string installLogPath, bool installVirtualDisplayDriver) {
       var failures = new List<string>();
       if (string.IsNullOrWhiteSpace(installLogPath) || !File.Exists(installLogPath)) {
@@ -7891,21 +7937,26 @@ namespace VibepolloInstaller {
 
       try {
         var lines = File.ReadAllLines(installLogPath);
-        if (installVirtualDisplayDriver || lines.Any(line => line != null && line.IndexOf("VIRTUAL_DISPLAY_DRIVER_WARNING", StringComparison.OrdinalIgnoreCase) >= 0)) {
-          var virtualDisplayDriverFailed = lines.Any(line =>
+        if (lines.Any(line => line.IndexOf("CustomAction InstallBundledDrivers returned actual error code", StringComparison.OrdinalIgnoreCase) >= 0)) {
+          failures.Add("Bundled driver setup did not complete. See the driver action details in the installation log.");
+        }
+        foreach (var displayAction in new[] { "InstallVirtualDisplayDriver", "InstallSudovda" }) {
+          var displayLines = GetDisplayDriverLogLines(lines, displayAction, installVirtualDisplayDriver);
+          var virtualDisplayDriverFailed = displayLines.Any(line =>
             !string.IsNullOrWhiteSpace(line)
-            && line.IndexOf("CustomAction InstallVirtualDisplayDriver returned actual error code", StringComparison.OrdinalIgnoreCase) >= 0);
-          var virtualDisplayDriverRestartRequired = lines.Any(line =>
+            && line.IndexOf("CustomAction " + displayAction + " returned actual error code", StringComparison.OrdinalIgnoreCase) >= 0);
+          var virtualDisplayDriverRestartRequired = displayLines.Any(line =>
             !string.IsNullOrWhiteSpace(line)
             && line.IndexOf("VIRTUAL_DISPLAY_RESTART_REQUIRED", StringComparison.OrdinalIgnoreCase) >= 0);
-          var virtualDisplayDriverWarning = lines.Any(line =>
+          var virtualDisplayDriverWarning = displayLines.Any(line =>
             !string.IsNullOrWhiteSpace(line)
             && line.IndexOf("VIRTUAL_DISPLAY_DRIVER_WARNING", StringComparison.OrdinalIgnoreCase) >= 0);
           if (virtualDisplayDriverFailed || virtualDisplayDriverRestartRequired || virtualDisplayDriverWarning) {
+            var displayName = displayAction == "InstallSudovda" ? "SudoVDA driver" : "Vibepollo virtual display driver";
             failures.Add(virtualDisplayDriverRestartRequired
-              ? "Virtual display driver installed, but Windows restart is required before virtual display can function."
-              : "Virtual display driver setup failed. Virtual display may be unavailable.");
-            var detail = ExtractDriverFailureDetail(lines, installVirtualDisplayDriver ? "[SunshineVirtualDisplay]" : "[SudoVDA]");
+              ? displayName + " installed, but Windows restart is required before virtual display can function."
+              : displayName + " setup did not complete.");
+            var detail = ExtractDriverFailureDetail(displayLines, displayAction == "InstallSudovda" ? "[SudoVDA]" : "[SunshineVirtualDisplay]");
             if (!string.IsNullOrWhiteSpace(detail)) {
               failures.Add("Driver detail: " + detail);
             }
@@ -7932,6 +7983,14 @@ namespace VibepolloInstaller {
           if (!string.IsNullOrWhiteSpace(detail)) {
             failures.Add("Gamepad driver detail: " + detail);
           }
+        }
+
+        var mapperWarning = lines.FirstOrDefault(line => !string.IsNullOrWhiteSpace(line)
+          && line.IndexOf("VIRTUAL_MOUSE_MAPPER_WARNING:", StringComparison.OrdinalIgnoreCase) >= 0);
+        if (mapperWarning != null) {
+          var marker = "VIRTUAL_MOUSE_MAPPER_WARNING:";
+          failures.Add("Ordered virtual mouse mapper unavailable. Base gamepad setup was handled independently.");
+          failures.Add("Mouse mapper detail: " + mapperWarning.Substring(mapperWarning.IndexOf(marker, StringComparison.OrdinalIgnoreCase) + marker.Length).Trim());
         }
 
         var usbIpTransportFailed = lines.Any(line =>
@@ -8026,7 +8085,11 @@ namespace VibepolloInstaller {
           continue;
         }
 
-        var isWixOutput = line.IndexOf("WixQuietExec:", StringComparison.OrdinalIgnoreCase) >= 0;
+        var wixOutputIndex = line.IndexOf("WixQuietExec:", StringComparison.OrdinalIgnoreCase);
+        if (wixOutputIndex < 0) {
+          wixOutputIndex = line.IndexOf("WixQuietExec64:", StringComparison.OrdinalIgnoreCase);
+        }
+        var isWixOutput = wixOutputIndex >= 0;
         if (!isWixOutput) {
           continue;
         }
@@ -8041,6 +8104,9 @@ namespace VibepolloInstaller {
 
         var looksRelevant =
           line.IndexOf(driverMarker, StringComparison.OrdinalIgnoreCase) >= 0
+          || ((driverMarker == "[SunshineVirtualDisplay]" || driverMarker == "[SudoVDA]")
+              && (line.IndexOf("VIRTUAL_DISPLAY_DRIVER_WARNING", StringComparison.OrdinalIgnoreCase) >= 0
+                  || line.IndexOf("Driver safety inventory", StringComparison.OrdinalIgnoreCase) >= 0))
           || line.IndexOf("Failed to", StringComparison.OrdinalIgnoreCase) >= 0
           || line.IndexOf("Unable to", StringComparison.OrdinalIgnoreCase) >= 0
           || line.IndexOf("Required driver artifact", StringComparison.OrdinalIgnoreCase) >= 0
@@ -8050,7 +8116,7 @@ namespace VibepolloInstaller {
           continue;
         }
 
-        return line.Replace("WixQuietExec:", string.Empty).Trim();
+        return line.Substring(line.IndexOf(':', wixOutputIndex) + 1).Trim();
       }
 
       return string.Empty;

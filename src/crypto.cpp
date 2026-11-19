@@ -11,6 +11,7 @@
 
 namespace crypto {
   using asn1_string_t = util::safe_ptr<ASN1_STRING, ASN1_STRING_free>;
+  using x509_name_t = util::safe_ptr<X509_NAME, X509_NAME_free>;
 
   cert_chain_t::cert_chain_t():
       _certs {},
@@ -411,11 +412,13 @@ namespace crypto {
       return {};
     }
 
-#if OPENSSL_VERSION_MAJOR >= 4
-    return {(const char *) ASN1_STRING_get0_data(asn1), ASN1_STRING_get_length(asn1)};
+    // The size_t accessor was introduced in 4.1, where the int accessor is deprecated.
+#if OPENSSL_VERSION_NUMBER >= 0x40100000L
+    const auto length = ASN1_STRING_get_length(asn1);
 #else
-    return {(const char *) ASN1_STRING_get0_data(asn1), (std::size_t) ASN1_STRING_length(asn1)};
+    const auto length = ASN1_STRING_length(asn1);
 #endif
+    return {reinterpret_cast<const char *>(ASN1_STRING_get0_data(asn1)), static_cast<std::size_t>(length)};
   }
 
   std::string_view signature(const x509_t &x) {
@@ -489,13 +492,14 @@ namespace crypto {
 
     X509_set_pubkey(x509.get(), pkey.get());
 
-    // OpenSSL 4 returns the certificate's subject name as const, so build the name and set it.
-    util::safe_ptr<X509_NAME, X509_NAME_free> name {X509_NAME_new()};
-    X509_NAME_add_entry_by_txt(name.get(), "CN", MBSTRING_ASC, (const std::uint8_t *) cn.data(), (int) cn.size(), -1, 0);
-
-    X509_set_subject_name(x509.get(), name.get());
-    X509_set_issuer_name(x509.get(), name.get());
-    X509_sign(x509.get(), pkey.get(), EVP_sha256());
+    x509_name_t name {X509_NAME_new()};
+    if (!name ||
+        X509_NAME_add_entry_by_txt(name.get(), "CN", MBSTRING_ASC, (const std::uint8_t *) cn.data(), (int) cn.size(), -1, 0) != 1 ||
+        X509_set_subject_name(x509.get(), name.get()) != 1 ||
+        X509_set_issuer_name(x509.get(), name.get()) != 1 ||
+        X509_sign(x509.get(), pkey.get(), EVP_sha256()) <= 0) {
+      return {};
+    }
 
     return {pem(x509), pem(pkey)};
   }

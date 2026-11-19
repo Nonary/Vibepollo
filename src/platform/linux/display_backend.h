@@ -19,6 +19,10 @@ namespace platf::linux_display {
     bool owns_output {false};
     std::string output_name;
     std::string error;
+    // A failed attempt must preserve a private connector acquired by an earlier request.
+    bool reused_private_capture {false};
+
+    void rollback(bool resuming_game) const;
   };
 
   struct capabilities_t {

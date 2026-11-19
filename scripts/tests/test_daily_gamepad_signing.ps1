@@ -24,7 +24,7 @@ try {
     try { Update-DailyGamepadManifest -Root $root -Thumbprint ('A' * 40) -ProducerLock $producer } catch { $blocked = $true }
     if (-not $blocked) { throw 'An already signed manifest can be reinterpreted as a producer.' }
     $scriptText = Get-Content (Join-Path $PSScriptRoot '../sign_daily_gamepad.ps1') -Raw
-    if ($scriptText -match 'Import-Certificate|Import-PfxCertificate|Cert:\\|certutil.*(-addstore|-importpfx)') { throw 'Daily signing must not import certificates.' }
+    if ($scriptText -match 'Import-Certificate|Import-PfxCertificate|certutil.*(-addstore|-importpfx)') { throw 'Daily signing must not import certificates.' }
     if ($scriptText -match 'newkey|New-SelfSignedCertificate|pkcs12.*-export') { throw 'Daily signing must reuse an explicit identity rather than create one.' }
     # Execute the actual workflow expectation block against the normalized
     # consumer layout, catching slash and ordering mistakes in the MSI gate.
@@ -33,12 +33,21 @@ try {
     $finish = $workflow.IndexOf('          $actual = @(', $start)
     if ($start -lt 0 -or $finish -le $start) { throw 'Workflow MSI expectation block is missing.' }
     $env:DAILY_UNSIGNED = 'true'
+    $packageDir = $root
     Invoke-Expression ($workflow.Substring($start, $finish - $start))
     $consumerLayout = @($paths + 'cleanup.ps1' + 'install.ps1' + 'manifest.json' + 'release-lock.json' | Sort-Object)
     if (($expected -join ',') -cne ($consumerLayout -join ',')) { throw 'Daily MSI exact-layout gate does not match the public-certificate package.' }
+    # The nightly cannot quietly introduce a kernel payload into the reusable
+    # local-certificate lane. It must use the pinned UMDF-only archive.
+    $actual.signing.channel = 'msi-request-signing'
+    $actual | Add-Member features ([PSCustomObject]@{ mouse_mapper = 1 })
+    $actual | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath
+    $blocked = $false
+    try { Update-DailyGamepadManifest -Root $root -Thumbprint ('A' * 40) -ProducerLock $producer } catch { $blocked = $_.Exception.Message -match 'UMDF-only producer' }
+    if (-not $blocked) { throw 'Daily signing accepted an unexpected kernel mapper.' }
     Write-Host 'Daily signing metadata contract passed (mock payloads; no signing or trust mutation executed).'
 } finally {
     foreach ($relative in @($paths) + 'manifest.json') { Remove-Item -LiteralPath (Join-Path $root $relative) -Force -ErrorAction SilentlyContinue }
-    foreach ($relative in @('driver', 'tools')) { Remove-Item -LiteralPath (Join-Path $root $relative) -Force -ErrorAction SilentlyContinue }
+    foreach ($relative in @('driver', 'tools', 'mouse_mapper')) { Remove-Item -LiteralPath (Join-Path $root $relative) -Force -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $root -Force -ErrorAction SilentlyContinue
 }

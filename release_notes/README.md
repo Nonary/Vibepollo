@@ -25,6 +25,8 @@ skips instead of publishing generic generated notes.
 
 The release workflow composes the public GitHub Release body automatically.
 It includes every version-scoped entry in the same `major.minor.patch` release
-line through the tagged version, so a release page is self-contained without
-manually repeating prior line items. The Web UI changelog continues to show
+line through the tagged version, along with the preceding stable patch line in
+the same major and minor version. Prereleases include only their own entry.
+This keeps the release page self-contained without manually repeating prior
+line items. The Web UI changelog continues to show
 each tag's individual file only.

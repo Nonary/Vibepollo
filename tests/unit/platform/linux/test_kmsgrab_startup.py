@@ -27,6 +27,7 @@ PRELUDE = r'''
 #include "src/platform/linux/kmsgrab_hdr.h"
 #include "src/platform/linux/session_backend.h"
 #include <algorithm>
+#include "src/platform/linux/capture_target.h"
 #include <cassert>
 #include <chrono>
 #include <cstdlib>
@@ -97,7 +98,7 @@ namespace platf {
   std::unique_ptr<encode_device_t> make_amf_encode_device(pix_fmt_e p){return make_avcodec_encode_device(p);}
  };
  namespace kms {
-  std::mutex display_mutex;
+  std::timed_mutex display_mutex;
   using prop_t=std::unique_ptr<drmModePropertyRes>;
   using obj_prop_t=std::unique_ptr<drmModeObjectProperties>;
   struct prop_blob_t {
@@ -145,7 +146,8 @@ namespace platf {
    }
   };
  }
- static std::vector<std::string>kms_display_names_unlocked(mem_type_e){return {"DP-1"};}
+ std::shared_ptr<display_t> kms_display(mem_type_e, const std::string &, const ::video::config_t &, const capture_deadline_t & = {});
+static std::vector<std::string>kms_display_names_unlocked(mem_type_e, bool = false, const capture_deadline_t & = {}){return {"DP-1"};}
 @@FACTORY@@
 }
 namespace video {
@@ -234,6 +236,7 @@ def main():
     end=kms.index('\n',kms.index('hdr_metadata_blob_id = card.prop_value_by_name',start))
     properties='\n'.join(function(kms,marker)for marker in (
         '      std::vector<std::pair<prop_t, std::uint64_t>> props(',
+        '      std::vector<std::pair<prop_t, std::uint64_t>> read_properties(',
         '      std::vector<std::pair<prop_t, std::uint64_t>> connector_props(',
         '      std::optional<std::uint64_t> prop_value_by_name(',
     ))

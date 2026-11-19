@@ -140,6 +140,9 @@ function Get-DriverInstallSafetyInventory {
         [int]$TimeoutSeconds = 15
     )
 
+    if (Get-Command Get-SharedDriverInventory -ErrorAction SilentlyContinue) {
+        return Get-SharedDriverInventory -InfName $InfName -HardwareId $HardwareId
+    }
     $requestJson = ConvertTo-Json -InputObject ([pscustomobject]@{ InfName = $InfName; HardwareId = $HardwareId }) -Compress
     $requestBase64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($requestJson))
     $queryScript = @'
@@ -541,7 +544,9 @@ function Invoke-DriverProcess {
         [int]$TimeoutSeconds = 300
     )
 
+    if ('VibeshineDriverInventory' -as [type]) { [VibeshineDriverInventory]::Invalidate() }
     $process = Start-Process -FilePath $FilePath -ArgumentList (ConvertTo-ProcessArgumentString -ArgumentList $ArgumentList) -WorkingDirectory $scriptDir -PassThru -WindowStyle Hidden
+    try {
     if (-not $process.WaitForExit($TimeoutSeconds * 1000)) {
         try {
             $process.Kill()
@@ -555,6 +560,10 @@ function Invoke-DriverProcess {
     }
     if ($process.ExitCode -eq 3010) {
         $script:rebootRequired = $true
+    }
+    } finally {
+        if ('VibeshineDriverInventory' -as [type]) { [VibeshineDriverInventory]::Invalidate() }
+        $process.Dispose()
     }
 }
 
@@ -663,6 +672,7 @@ function Invoke-DriverHealthProcess {
         [int]$TimeoutSeconds = 120
     )
 
+    if ('VibeshineDriverInventory' -as [type]) { [VibeshineDriverInventory]::Invalidate() }
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $FilePath
     $startInfo.Arguments = ConvertTo-ProcessArgumentString -ArgumentList $ArgumentList
@@ -702,6 +712,7 @@ function Invoke-DriverHealthProcess {
             Output = (($output | ForEach-Object { [string]$_ }) -join "`n")
         }
     } finally {
+        if ('VibeshineDriverInventory' -as [type]) { [VibeshineDriverInventory]::Invalidate() }
         $process.Dispose()
     }
 }
@@ -1155,6 +1166,10 @@ function Get-RetainedSunshineInventory {
         [ValidateSet('Health', 'Packages')][string]$Kind,
         [int]$TimeoutSeconds = 15
     )
+    if (Get-Command Get-SharedDriverInventory -ErrorAction SilentlyContinue) {
+        $inventory = Get-SharedDriverInventory -InfName 'SunshineVirtualDisplayDriver.inf' -HardwareId $hardwareId
+        return [pscustomobject]@{ Nodes=@($inventory.Devices); SignedDrivers=@($inventory.Devices); Packages=@($inventory.Packages) }
+    }
     # Retained-device checks run after the initial safety gate, including after
     # repair. Keep every CIM/DISM inventory behind the same bounded child edge.
     $request = [pscustomobject]@{ Kind = $Kind; HardwareId = $hardwareId }
@@ -1829,6 +1844,8 @@ function Install-SunshineVirtualDisplayDriver {
     Invoke-InstallerHealthCheck
 }
 
+$sharedInventoryPath = Join-Path $PSScriptRoot '../driver-inventory.ps1'
+if (Test-Path -LiteralPath $sharedInventoryPath) { . $sharedInventoryPath }
 if ($RegisterVulkanLayerOnly -and $UnregisterVulkanLayerOnly) {
     throw '[SunshineVirtualDisplay] RegisterVulkanLayerOnly and UnregisterVulkanLayerOnly cannot be used together.'
 }

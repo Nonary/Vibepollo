@@ -8,6 +8,7 @@ case links the actual topology coordinator. This is portable source composition,
 not native capture, Windows API, or physical-display proof.
 """
 import argparse
+import re
 from pathlib import Path
 import subprocess
 p = argparse.ArgumentParser()
@@ -23,7 +24,12 @@ audio_header=(root/'src/audio.h').read_text(); audio_source=(root/'src/audio.cpp
 def body(s, signature, indent):
     start=s.index(signature); end=s.index('\n'+indent+'}',start)+len('\n'+indent+'}')
     return s[start:end]
+def constants(header, names):
+    source=(root/header).read_text()
+    return '\n'.join(re.search(r'constexpr int '+name+r'\s*=\s*-?\d+;', source).group() for name in names)
 fragments={
+'PACKET_CONSTANTS':constants('src/config.h',('PACKETSIZE_MIN','PACKETSIZE_MAX','PACKETSIZE_SMALL','PACKETSIZE_LARGE')),
+'PACING_RESULT':constants('src/stream.h',('START_PACING_REJECTED',)),
 'CLAIM_STARTUP':body(rtsp,'    bool claim_launch_startup(','    '),
 'RELEASE_CLAIM':body(rtsp,'    void release_launch_startup_claim(','    '),
 'AUDIO_PARAMS':body(audio_header,'  struct stream_params_t {','  ')+';',

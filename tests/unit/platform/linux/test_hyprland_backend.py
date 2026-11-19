@@ -65,7 +65,7 @@ std::vector<std::string> outputs={"/dev/dri/card0:Virtual-1", "DP-1", "Reserved-
 std::vector<std::string> display_names() { return outputs; }
 namespace linux_private_display {
 int mutations=0;
-struct prepared { bool active; std::string output_name, error; };
+struct prepared { bool active; std::string output_name, error; bool reused_private_capture=false; };
 prepared prepare_session(rtsp_stream::launch_session_t&, bool, bool) { ++mutations; return {true,"Virtual-1",{}}; }
 bool is_kernel_output(const std::string& name) { return name=="Virtual-1"; }
 bool capable() { return true; } bool ready() { return true; } bool hdr_capable() { return true; }
@@ -76,6 +76,7 @@ bool revert() { ++mutations; return true; }
 bool reset_persistence() { ++mutations; return true; }
 void schedule_revert(std::chrono::milliseconds,std::string) { ++mutations; }
 void cancel_scheduled_revert() { ++mutations; }
+void restore_after_failed_preparation() { ++mutations; }
 }
 }
 '''
@@ -102,6 +103,8 @@ int main() {
  session.output_name_override="DP-1";
  auto result=backend.prepare_session(session,true,true);
  assert(result.error.empty() && !result.owns_output && result.output_name=="DP-1");
+ result.rollback(true); result.rollback(false);
+ assert(linux_private_display::mutations==0);
  assert(session.output_name_override=="DP-1" && session.virtual_display_device_id.empty());
  assert(!session.virtual_display_ready_since && !session.virtual_display_hdr_enabled);
  assert(!session.virtual_display_needs_resume_apply);

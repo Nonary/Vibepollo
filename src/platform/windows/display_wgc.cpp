@@ -3,6 +3,8 @@
  * @brief Windows Game Capture (WGC) IPC display implementation with shared session helper and DXGI fallback.
  */
 
+// Preserve Winsock before Windows/WinRT headers.
+// clang-format off
 // standard includes
 #include <algorithm>
 #include <atomic>
@@ -25,16 +27,19 @@
 #include "src/platform/windows/present_timing.h"
 #include "src/platform/windows/virtual_display.h"
 #include "src/platform/windows/wgc_capture_policy.h"
+#include "src/platform/windows/wgc_screensaver_recovery.h"
 #include "src/utility.h"
 
 // platform includes
 #include <winrt/base.h>
+// clang-format on
 
 namespace platf::dxgi {
   namespace {
     struct wgc_dxgi_fallback_state_t {
       bool secure_desktop_active;
       bool recent_desktop_switch;
+      bool screen_saver_running;
     };
 
     std::atomic<uint64_t> g_wgc_snapshot_copies {0};
@@ -58,13 +63,50 @@ namespace platf::dxgi {
       std::optional<LUID> previous_;
     };
 
-    std::optional<wgc_dxgi_fallback_state_t> get_wgc_dxgi_fallback_state() {
-      wgc_dxgi_fallback_state_t state {
-        .secure_desktop_active = platf::dxgi::is_secure_desktop_active(),
-        .recent_desktop_switch = recent_wgc_desktop_switch_grace_active()
+    wgc_screensaver::recovery_t &screensaver_recovery_for(const std::string &display_name) {
+      // captureThread/captureThreadSync create and sample their backends on the
+      // same producer thread, including after reinit. Keep the episode latch
+      // there rather than on display_t (which reinit destroys), or globally
+      // (which would let an encoder probe/another target consume its recovery).
+      struct producer_state_t {
+        std::string output;
+        wgc_screensaver::recovery_t recovery;
       };
 
-      if (!state.secure_desktop_active && !state.recent_desktop_switch) {
+      thread_local producer_state_t state;
+      if (state.output != display_name) {
+        state.output = display_name;
+        state.recovery = {};
+      }
+      return state.recovery;
+    }
+
+    wgc_screensaver::recovery_t &poll_screensaver(const std::string &display_name, bool startup = false) {
+      auto &recovery = screensaver_recovery_for(display_name);
+      const auto now = std::chrono::steady_clock::now();
+      if (startup || recovery.probe_due(now)) {
+        recovery.observe(query_screen_saver_running(), now, startup);
+      }
+      return recovery;
+    }
+
+    bool screensaver_requires_wgc_reinit(const std::string &display_name) {
+      if (poll_screensaver(display_name).restart_wgc(std::chrono::steady_clock::now())) {
+        BOOST_LOG(info) << "Capture restart request: source=wgc reason=screensaver-recovery";
+        return true;
+      }
+      return false;
+    }
+
+    std::optional<wgc_dxgi_fallback_state_t> get_wgc_dxgi_fallback_state(const std::string &display_name) {
+      auto &recovery = poll_screensaver(display_name, true);
+      wgc_dxgi_fallback_state_t state {
+        .secure_desktop_active = platf::dxgi::is_secure_desktop_active(),
+        .recent_desktop_switch = recent_wgc_desktop_switch_grace_active(),
+        .screen_saver_running = recovery.prefer_dxgi(std::chrono::steady_clock::now())
+      };
+
+      if (!state.secure_desktop_active && !state.recent_desktop_switch && !state.screen_saver_running) {
         return std::nullopt;
       }
 
@@ -77,6 +119,8 @@ namespace platf::dxgi {
                          << "using DXGI fallback for WGC capture (" << path_name << ")";
       } else if (state.secure_desktop_active) {
         BOOST_LOG(debug) << "Secure desktop detected, using DXGI fallback for WGC capture (" << path_name << ")";
+      } else if (state.screen_saver_running && !state.recent_desktop_switch) {
+        BOOST_LOG(info) << "Screen saver is running; using temporary DXGI fallback for WGC capture (" << path_name << ")";
       } else {
         BOOST_LOG(debug) << "Recent desktop switch grace window active, using DXGI fallback for WGC capture ("
                          << path_name << ")";
@@ -303,6 +347,9 @@ namespace platf::dxgi {
 
     timeout = effective_wgc_timeout(timeout, _config.framerate);
 
+    if (screensaver_requires_wgc_reinit(_display_name)) {
+      return capture_e::reinit;
+    }
     auto capture_status = _ipc_session->wait_for_frame(timeout);
     if (capture_status != capture_e::ok) {
       if (capture_status == capture_e::timeout) {
@@ -568,22 +615,29 @@ namespace platf::dxgi {
     const std::string &display_name,
     const std::optional<LUID> &required_adapter_luid
   ) {
-    if (auto fallback_state = get_wgc_dxgi_fallback_state()) {
+    auto &recovery = screensaver_recovery_for(display_name);
+    if (auto fallback_state = get_wgc_dxgi_fallback_state(display_name)) {
       log_wgc_dxgi_fallback_reason("VRAM", *fallback_state);
+      recovery.starting_dxgi();
       adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
-      auto disp = std::make_shared<temp_dxgi_vram_t>();
+      auto disp = std::make_shared<temp_dxgi_vram_t>(display_name);
       if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
-    } else {
-      // Secure desktop not active, use WGC IPC
-      BOOST_LOG(debug) << "Using WGC IPC implementation (VRAM)";
-      auto disp = std::make_shared<display_wgc_ipc_vram_t>();
-      if (!disp->init(config, display_name, required_adapter_luid)) {
-        return disp;
+      recovery.dxgi_failed();
+      // Preserve secure/grace fallback admission. A saver-only failure gets one
+      // fresh WGC attempt rather than retrying the same broken DXGI episode.
+      if (fallback_state->secure_desktop_active || fallback_state->recent_desktop_switch) {
+        return nullptr;
       }
+      BOOST_LOG(warning) << "Screen saver DXGI initialization failed; retrying WGC capture";
     }
-
+    recovery.starting_wgc();
+    BOOST_LOG(debug) << "Using WGC IPC implementation (VRAM)";
+    auto disp = std::make_shared<display_wgc_ipc_vram_t>();
+    if (!disp->init(config, display_name, required_adapter_luid)) {
+      return disp;
+    }
     return nullptr;
   }
 
@@ -679,6 +733,9 @@ namespace platf::dxgi {
     winrt::com_ptr<ID3D11Texture2D> gpu_tex;
     uint64_t frame_qpc = 0;
     timeout = effective_wgc_timeout(timeout, _config.framerate);
+    if (screensaver_requires_wgc_reinit(_display_name)) {
+      return capture_e::reinit;
+    }
     auto status = _ipc_session->acquire(timeout, gpu_tex, frame_qpc);
 
     if (status != capture_e::ok) {
@@ -822,53 +879,68 @@ namespace platf::dxgi {
     const std::string &display_name,
     const std::optional<LUID> &required_adapter_luid
   ) {
-    if (auto fallback_state = get_wgc_dxgi_fallback_state()) {
+    auto &recovery = screensaver_recovery_for(display_name);
+    if (auto fallback_state = get_wgc_dxgi_fallback_state(display_name)) {
       log_wgc_dxgi_fallback_reason("RAM", *fallback_state);
+      recovery.starting_dxgi();
       adapter_luid_override_guard guard(get_last_wgc_adapter_luid());
-      auto disp = std::make_shared<temp_dxgi_ram_t>();
+      auto disp = std::make_shared<temp_dxgi_ram_t>(display_name);
       if (!disp->init(config, display_name, required_adapter_luid)) {
         return disp;
       }
-    } else {
-      // Secure desktop not active, use WGC IPC
-      BOOST_LOG(debug) << "Using WGC IPC implementation (RAM)";
-      auto disp = std::make_shared<display_wgc_ipc_ram_t>();
-      if (!disp->init(config, display_name, required_adapter_luid)) {
-        return disp;
+      recovery.dxgi_failed();
+      // Preserve secure/grace fallback admission. A saver-only failure gets one
+      // fresh WGC attempt rather than retrying the same broken DXGI episode.
+      if (fallback_state->secure_desktop_active || fallback_state->recent_desktop_switch) {
+        return nullptr;
       }
+      BOOST_LOG(warning) << "Screen saver DXGI initialization failed; retrying WGC capture";
     }
-
+    recovery.starting_wgc();
+    BOOST_LOG(debug) << "Using WGC IPC implementation (RAM)";
+    auto disp = std::make_shared<display_wgc_ipc_ram_t>();
+    if (!disp->init(config, display_name, required_adapter_luid)) {
+      return disp;
+    }
     return nullptr;
   }
 
   capture_e temp_dxgi_vram_t::snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) {
-    // Check periodically if secure desktop is still active
+    auto &recovery = poll_screensaver(_wgc_display_name);
     if (auto now = std::chrono::steady_clock::now(); now - _last_check_time >= CHECK_INTERVAL) {
       _last_check_time = now;
-      const bool secure_desktop_active = platf::dxgi::is_secure_desktop_active();
-      if (!secure_desktop_active && !recent_wgc_desktop_switch_grace_active()) {
+      if (!is_secure_desktop_active() && !recent_wgc_desktop_switch_grace_active() && !recovery.hold_dxgi(now)) {
         BOOST_LOG(debug) << "DXGI Capture is no longer necessary, swapping back to WGC!";
         return capture_e::reinit;
       }
     }
 
-    // Call parent DXGI duplication implementation
-    return display_ddup_vram_t::snapshot(pull_free_image_cb, img_out, timeout, cursor_visible);
+    const auto status = display_ddup_vram_t::snapshot(pull_free_image_cb, img_out, timeout, cursor_visible);
+    if (recovery.saver_dxgi() && (status == capture_e::error || status == capture_e::reinit) && !is_secure_desktop_active() && !recent_wgc_desktop_switch_grace_active()) {
+      recovery.dxgi_failed();
+      BOOST_LOG(warning) << "Screen saver DXGI capture failed; retrying WGC capture";
+      return capture_e::reinit;
+    }
+    return status;
   }
 
   capture_e temp_dxgi_ram_t::snapshot(const pull_free_image_cb_t &pull_free_image_cb, std::shared_ptr<platf::img_t> &img_out, std::chrono::milliseconds timeout, bool cursor_visible) {
-    // Check periodically if secure desktop is still active
+    auto &recovery = poll_screensaver(_wgc_display_name);
     if (auto now = std::chrono::steady_clock::now(); now - _last_check_time >= CHECK_INTERVAL) {
       _last_check_time = now;
-      const bool secure_desktop_active = platf::dxgi::is_secure_desktop_active();
-      if (!secure_desktop_active && !recent_wgc_desktop_switch_grace_active()) {
+      if (!is_secure_desktop_active() && !recent_wgc_desktop_switch_grace_active() && !recovery.hold_dxgi(now)) {
         BOOST_LOG(debug) << "DXGI Capture is no longer necessary, swapping back to WGC!";
         return capture_e::reinit;
       }
     }
 
-    // Call parent DXGI duplication implementation
-    return display_ddup_ram_t::snapshot(pull_free_image_cb, img_out, timeout, cursor_visible);
+    const auto status = display_ddup_ram_t::snapshot(pull_free_image_cb, img_out, timeout, cursor_visible);
+    if (recovery.saver_dxgi() && (status == capture_e::error || status == capture_e::reinit) && !is_secure_desktop_active() && !recent_wgc_desktop_switch_grace_active()) {
+      recovery.dxgi_failed();
+      BOOST_LOG(warning) << "Screen saver DXGI capture failed; retrying WGC capture";
+      return capture_e::reinit;
+    }
+    return status;
   }
 
 }  // namespace platf::dxgi

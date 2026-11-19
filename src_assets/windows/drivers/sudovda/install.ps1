@@ -97,6 +97,9 @@ function Get-DriverInstallSafetyInventory {
         [int]$TimeoutSeconds = 15
     )
 
+    if (Get-Command Get-SharedDriverInventory -ErrorAction SilentlyContinue) {
+        return Get-SharedDriverInventory -InfName $InfName -HardwareId $HardwareId
+    }
     $requestJson = ConvertTo-Json -InputObject ([pscustomobject]@{ InfName = $InfName; HardwareId = $HardwareId }) -Compress
     $requestBase64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($requestJson))
     $queryScript = @'
@@ -498,6 +501,7 @@ function Invoke-Process {
         [switch]$BoundedTimeoutDiagnostics
     )
 
+    if ('VibeshineDriverInventory' -as [type]) { [VibeshineDriverInventory]::Invalidate() }
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
     $startInfo.FileName = $FilePath
     $startInfo.Arguments = ConvertTo-ProcessArgumentString -ArgumentList $ArgumentList
@@ -568,6 +572,7 @@ function Invoke-Process {
         }
     }
     finally {
+        if ('VibeshineDriverInventory' -as [type]) { [VibeshineDriverInventory]::Invalidate() }
         if ($process) {
             $process.Dispose()
         }
@@ -973,6 +978,8 @@ function Invoke-SudoVdaUninstall {
     }
 }
 
+$sharedInventoryPath = Join-Path $PSScriptRoot '../driver-inventory.ps1'
+if (Test-Path -LiteralPath $sharedInventoryPath) { . $sharedInventoryPath }
 if ($Uninstall) {
     Invoke-SudoVdaUninstall
     Write-Host '[SudoVDA] Driver uninstall complete.'

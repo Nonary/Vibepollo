@@ -1442,6 +1442,12 @@ An explicit request fails with a client-visible error when the producer cannot c
         <td>Description</td>
         <td colspan="2">
             Select which display Sunshine should prepare before streaming. When set to one of the virtual options, Sunshine will manage a virtual display instead of relying on your physical monitor.
+            On Windows, a video session that fails actual capture initialization because its display is unavailable
+            retries with a dedicated exclusive virtual display, including when this setting is <code>disabled</code>.
+            This recovery overrides an unavailable physical-output selection for that session. Missing or unknown
+            topology alone does not create a display. Temporary encoder-probe displays are limited to startup;
+            later discovery and capability requests do not create them. Encoder, access, and IPC failures do not
+            authorize automatic display creation.
         </td>
     </tr>
     <tr>
@@ -2448,23 +2454,23 @@ These settings are host-wide and are not application runtime overrides.
     <tr>
         <td>Description</td>
         <td colspan="2">
-            Sunshine tries to save bandwidth when content on screen is static or a low framerate. Because many clients expect a constant stream of video frames, a certain amount of duplicate frames are sent when this happens. This setting controls the lowest effective framerate a stream can reach.
+            Sunshine tries to save bandwidth when content on screen is static or a low framerate. Because many clients expect a constant stream of video frames, a certain amount of duplicate frames are sent when this happens. This setting controls idle-frame timing, not a guaranteed delivered framerate. Leaving it unset uses 20 FPS. The configuration API returns saved keys only; an absent key does not mean zero.
         </td>
     </tr>
     <tr>
         <td>Default</td>
         <td colspan="2">@code{}
-            0
+            20
             @endcode</td>
     </tr>
     <tr>
-        <td rowspan="3">Choices</td>
+        <td rowspan="2">Choices</td>
         <td>0</td>
-        <td>Use half the stream's FPS as the minimum target.</td>
+        <td>Use the capture/encoder path fallback. Asynchronous encoders, including PyroWave, use one negotiated frame interval as the capture wait budget. macOS ScreenCaptureKit instead uses one fifth of the stream's FPS, with a minimum of 10 FPS, for its keepalive timing.</td>
     </tr>
     <tr>
-        <td>1-1000</td>
-        <td>Specify your own value. The real minimum may differ from this value.</td>
+        <td>Greater than 0, up to 1000</td>
+        <td>Specify the idle-frame timing target in FPS (positive values up to 1000, including fractions). PyroWave caps this target at the negotiated frame rate; its default of 20 gives a 50 ms capture wait at stream rates of 20 FPS or higher. Actual frame delivery depends on capture and encoding, so the effective minimum may differ.</td>
     </tr>
 </table>
 
@@ -3150,6 +3156,7 @@ PyroWave is unchanged. Example: `pacing_group_demand_limit = true`.
         <td>Description</td>
         <td colspan="2">
             Percentage of error correcting packets per data packet in each video frame.
+            Set to <code>0</code> to disable standard forward error correction.
             PyroWave ignores this setting; its parity is controlled by `pyrowave_critical_fec_percentage`.
             @warning{Higher values can correct for more network packet loss,
             but at the cost of increasing bandwidth usage.}
@@ -3163,7 +3170,7 @@ PyroWave is unchanged. Example: `pacing_group_demand_limit = true`.
     </tr>
     <tr>
         <td>Range</td>
-        <td colspan="2">1-255</td>
+        <td colspan="2">0-255</td>
     </tr>
     <tr>
         <td>Example</td>
@@ -5504,7 +5511,7 @@ Uses NVIDIA intra refresh instead of full keyframes when supported.
 
 ### nvenc_temporal_aq
 
-Enables NVIDIA temporal adaptive quantization when supported.
+Enables NVIDIA temporal adaptive quantization when the encoder reports hardware support. Disabled by default.
 
 ### pacing_max_bitrate_kbps
 
@@ -5576,3 +5583,7 @@ Allow enabled paired streaming clients to request hardware metrics v1 during the
 ### hardware_metrics_interval
 
 Minimum time between completed client hardware samples in milliseconds. Default: `1000`; range: `500`–`10000`. Samples are collected on request and shared between clients. Enabling the setting alone does not poll hardware.
+
+### packetsize
+
+Optional maximum negotiated video packet size in bytes. `0` (default) disables the override; valid nonzero values are `200` through `65535`. It only lowers the packet size requested by the client, never raises it. Use a smaller value for low-MTU routes where fragmentation is a problem. Smaller packets increase header and FEC overhead, so reduce the requested bitrate if necessary.

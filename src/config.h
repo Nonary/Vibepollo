@@ -260,7 +260,7 @@ namespace config {
     } dd;
 
     int max_bitrate;  // Maximum bitrate, sets ceiling in kbps for bitrate requested from client
-    double minimum_fps_target;  ///< Lowest framerate that will be used when streaming. Range 0-1000, 0 = half of client's requested framerate.
+    double minimum_fps_target;  ///< Idle-frame timing target in FPS. Default 20, range 0-1000; 0 uses the capture/encoder path fallback (see configuration docs).
     bool wgc_pacing_smoothing;  ///< Smooth WGC delivered frame cadence under low-latency (Reflex) source caps by snapping the pacing-group re-anchor back onto the prior grid instead of the jittery arrival phase. Disable for byte-for-byte legacy pacing.
     std::string fallback_mode;
     bool ignore_encoder_probe_failure;
@@ -288,7 +288,7 @@ namespace config {
 
     std::string file_apps;
 
-    int fec_percentage;
+    int fec_percentage;  ///< Standard FEC percentage (0-255); 0 disables FEC.
     int video_max_batch_size_kb;
     bool pacing_batch_demand_limit;  ///< Experimental per-call demand-based video batch sizing (default off).
     bool pacing_group_demand_limit;  ///< Experimental per-frame demand pacing and batch bound (default off).
@@ -603,13 +603,17 @@ namespace config {
 
   void set_runtime_output_name_override(std::optional<std::string> output_name);
   std::optional<std::string> runtime_output_name_override();
+  /** Connector claimed by the exclusive Linux game that owns the current output override. */
+  std::optional<std::string> exclusive_private_capture_output();
   std::string get_active_output_name();
 
   // A recovery worker can publish a temporary virtual-output override.  The
   // lease makes rollback conditional so an older recovery cannot erase an
   // override installed by a newer session.
   using runtime_output_override_lease_t = std::uint64_t;
-  runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name);
+  runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name, std::optional<std::string> exclusive_private_capture = std::nullopt);
+  // Only a retained private selection can be replaced on physical resume.
+  runtime_output_override_lease_t replace_retained_private_capture(std::optional<std::string> physical_output);
   bool clear_runtime_output_name_override_if_lease(runtime_output_override_lease_t lease);
 
 #ifdef _WIN32

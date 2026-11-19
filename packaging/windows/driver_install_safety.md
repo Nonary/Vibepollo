@@ -18,6 +18,53 @@ USB/IP uses the pinned original Microsoft-signed package and retains existing sh
 
 Run `powershell -NoProfile -File packaging/windows/test_driver_install_safety.ps1` before daily publication. It includes the numeric version/signature matrix, mocked exact-certificate consent/import/staging/rollback tests, compiled bootstrapper consent tests, and read-only native crypto tests against existing signed public fixtures and modified copies. These tests never import certificates, execute a driver installer or generate keys. Publication additionally compares extracted MSI script hashes with this source.
 
+The current nightly pins the immutable beta.10 UMDF-only package. The existing
+reusable local certificate signs its catalog and setup tool, with unchanged
+catalog-bound INF/DLL bytes and independent final integrity/member verification.
+No custom kernel mouse mapper is packaged. Mouse ordering is handled in the
+user-mode host by bounded Raw Input receipts, waiting only on collection/backend
+transitions or a full receipt queue. Same-collection movement remains asynchronous.
+Absolute input outside the primary display uses tagged Windows input receipts.
+Absolute receipts account for Windows coalescing: a later position retires only
+preceding reports on that exact ordered HID collection. Repeated/nearby outstanding
+positions are fenced to prevent ambiguous A/B/A acknowledgements. Windows fallback
+uses process-wide nonzero 32-bit tags because mouse packet extra-information can
+truncate a pointer-sized tag. Missing receipts fail closed and never replay an
+uncertain event. Debug pacing summaries report relative/absolute/Windows counts,
+maximum submission and barrier times, and coalesced receipts once per 1024 reports.
+
+The installer never changes Secure Boot, test-signing, or code-integrity policy.
+
+Historical optional mapper packages remain subject to their full independent
+validation; they do not grant kernel-loading approval through certificate trust.
+The ordered mouse mapper is independent of the base controller path. Its hash,
+signature, policy, compatibility, or staging failure emits
+`VIRTUAL_MOUSE_MAPPER_WARNING` and leaves its existing driver intact; the separately
+validated base gamepad may still update. Base package validation/trust failures
+continue to stop that update before existing device removal. A newer base or
+mapper package is never downgraded. Mapper warnings are displayed separately
+from base gamepad failures.
+
+MSI runs the selected driver scripts in isolated runspaces inside one PowerShell
+process. `driver-inventory.ps1` owns a complete in-memory snapshot shared by those
+runspaces, never an untrusted disk cache. SetupAPI resolves published third-party
+OEM INFs to their original names and Driver Store locations; PnP metadata is
+enumerated only for ROOT and HID devices, then matched to exact hardware IDs.
+The normal path needs no DISM inventory, WMI provider, localized PnP output parser,
+or additional PowerShell inventory process. Failed/incomplete snapshots are never
+cached; collection has a 15-second deadline. State-changing process boundaries
+invalidate snapshots before and after commands, including failure/timeout paths.
+The coordinator refreshes after mutations, and every new install/repair process
+starts fresh. Standalone scripts retain their previous bounded display-query
+fallback when distributed without the shared helper.
+
+`DRIVER_QUERY` records report native collection times and counts;
+`DRIVER_QUERY_SUMMARY` includes cache hits, invalidations, and targeted device-set
+counts. `DRIVER_OPERATION` records separate component and package-validation
+durations. `test_shared_driver_inventory.ps1` exercises actual read-only discovery,
+cross-runspace reuse, failed-mutation invalidation, opt-out, and child failure/exit
+isolation. Mutating command boundaries in these tests are mocked.
+
 The initial Sunshine and SudoVDA inventories retain a 15-second fast-path budget.
 A confirmed child-process timeout now permits one fresh, complete read-only
 snapshot with a 60-second recovery budget. No retry occurs for provider errors,
@@ -98,3 +145,11 @@ Inventory contract references: [Driver Store](https://learn.microsoft.com/en-us/
 [Catalog files and digital signatures](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/catalog-files),
 [INF Version section](https://learn.microsoft.com/en-us/windows-hardware/drivers/install/inf-version-section),
 and [Get-WindowsDriver](https://learn.microsoft.com/en-us/powershell/module/dism/get-windowsdriver).
+
+Manual mouse qualification (Windows, administrator, with the application stopped):
+build target `probe_vhf_mouse_receipts_windows`, then run it with `--run`. It is
+excluded from normal builds and CTest. It measures relative, absolute, repeated,
+reversing and Windows-fallback input, including collection crossings with a clipped
+cursor. It sends no clicks/keys, deletes its HID child before restoring cursor state,
+and never installs a driver or changes trust/boot policy. The automated
+`regression_vhf_mouse_receipt_windows` uses synthetic packets and injects no input.

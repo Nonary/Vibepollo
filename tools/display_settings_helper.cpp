@@ -65,6 +65,7 @@
   #include "src/platform/windows/display_restore_policy.h"
   #include "tools/display_helper_paths.h"
   #include "tools/display_helper_ipc.h"
+  #include "tools/display_helper_shell_refresh_worker.h"
   #include "src/platform/windows/legacy_restore_event_policy.h"
   #include "src/platform/windows/recovery_status.h"
 
@@ -136,10 +137,12 @@ namespace {
   // and other shell-controlled UI elements pick up DPI/metrics changes that
   // can occur after monitor topology/primary swaps. Avoids wrong-sized icons
   // without restarting Explorer.
-  inline void refresh_shell_after_display_change() {
+  inline void refresh_shell_after_display_change(std::stop_token stop = {}) {
     // 1) Ask the shell to refresh associations/images and flush notifications.
     //    SHCNF_FLUSHNOWAIT avoids blocking if the shell is busy.
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST | SHCNF_FLUSHNOWAIT, nullptr, nullptr);
+
+    if (stop.stop_requested()) return;
 
     // 2) Force a reload of system icons. This does not change user settings
     //    but prompts Explorer to re-query default icons and sizes.
@@ -156,8 +159,11 @@ namespace {
     //    refresh icon metrics and shell state.
     static const wchar_t kShellState[] = L"ShellState";
     static const wchar_t kIconMetrics[] = L"IconMetrics";
+    if (stop.stop_requested()) return;
     broadcast(WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(kShellState));
+    if (stop.stop_requested()) return;
     broadcast(WM_SETTINGCHANGE, 0, reinterpret_cast<LPARAM>(kIconMetrics));
+    if (stop.stop_requested()) return;
 
     // 4) Broadcast a display change with current depth and resolution to nudge
     //    windows that cache DPI-dependent icon resources.
@@ -2667,7 +2673,8 @@ namespace {
     std::jthread delayed_reapply_thread;  // Best-effort re-apply timer
     std::mutex delayed_reapply_mutex;
     std::jthread hdr_blank_thread;  // Async HDR workaround thread (one-shot)
-    std::jthread post_apply_thread;  // Async post-apply tasks (shell refresh, re-apply, HDR blank)
+    std::jthread post_apply_thread;  // Async post-apply tasks
+    display_helper::shell_refresh_worker shell_refresh {refresh_shell_after_display_change};
     std::filesystem::path golden_path;  // file to store golden snapshot
     std::filesystem::path golden_status_path;  // restore health marker for golden snapshot
     std::filesystem::path session_current_path;  // file to store current session baseline snapshot (first apply)
@@ -2763,6 +2770,12 @@ namespace {
     std::atomic<uint64_t> command_worker_epoch {0};
     std::mutex async_join_mutex;  // Guards async joiners used to avoid blocking the command loop
     std::vector<std::jthread> async_join_threads;
+
+    ~ServiceState() {
+      // The delayed producer can request a shell refresh after apply returns.
+      // Join it while shell_refresh and the rest of this state are still alive.
+      cancel_delayed_reapply();
+    }
 
     static long long steady_now_ms() {
       return std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -3751,6 +3764,7 @@ namespace {
         return false;
       }
       (void) controller.apply_snapshot(golden, require_layout_match ? &golden_layouts : nullptr);
+      shell_refresh.request();
       display_device::DisplaySettingsSnapshot cur;
       const bool got_stable = read_stable_snapshot(cur, 2000ms, 150ms, st);
       if (should_cancel()) {
@@ -3787,6 +3801,7 @@ namespace {
         return true;
       }
       (void) controller.apply_snapshot(golden, require_layout_match ? &golden_layouts : nullptr);
+      shell_refresh.request();
       display_device::DisplaySettingsSnapshot cur2;
       const bool got_stable2 = read_stable_snapshot(cur2, 2000ms, 150ms, st);
       if (should_cancel()) {
@@ -3922,6 +3937,7 @@ namespace {
         return false;
       }
       (void) controller.apply_snapshot(base, require_layout_match ? &base_layouts : nullptr);
+      shell_refresh.request();
       display_device::DisplaySettingsSnapshot cur;
       const bool got_stable = read_stable_snapshot(cur, 2000ms, 150ms, st);
       if (should_cancel()) {
@@ -3953,6 +3969,7 @@ namespace {
           return true;
         }
         (void) controller.apply_snapshot(base, require_layout_match ? &base_layouts : nullptr);
+        shell_refresh.request();
         display_device::DisplaySettingsSnapshot cur2;
         const bool got_stable2 = read_stable_snapshot(cur2, 2000ms, 150ms, st);
         if (should_cancel()) {
@@ -4433,10 +4450,6 @@ namespace {
       auto run_restore_cleanup = [&](const char *context) {
         bool allow_cleanup = !cancelled();
         if (allow_cleanup) {
-          refresh_shell_after_display_change();
-          allow_cleanup = !cancelled();
-        }
-        if (allow_cleanup) {
           delete_restore_scheduled_task();
         } else {
           BOOST_LOG(debug) << "Restore cleanup skipped"
@@ -4501,6 +4514,9 @@ namespace {
       }
 
       if (initial_success) {
+        // A confirmed restore needs a refresh even if a newer request cancels
+        // cleanup. It must follow any older in-flight shell notification.
+        self->shell_refresh.request();
         if (cancelled()) {
           self->event_pump.stop();
           self->event_pump_running.store(false, std::memory_order_release);
@@ -4651,6 +4667,7 @@ namespace {
         }
 
         (void) self->finish_restore_stage_reconciliation(guard_generation, !success);
+        if (success) self->shell_refresh.request();
         if (cancelled()) {
           break;
         }
@@ -4767,7 +4784,7 @@ namespace {
         const auto cfg = effective_last_cfg();
         if (cfg && controller.apply(*cfg)) {
           retry_apply_on_topology.store(false, std::memory_order_release);
-          refresh_shell_after_display_change();
+          shell_refresh.request();
         }
         return;
       }
@@ -4900,11 +4917,11 @@ namespace {
       return cfg;
     }
 
-    void best_effort_apply_last_cfg() {
+    void best_effort_apply_last_cfg(bool refresh_shell = true) {
       try {
         if (const auto cfg = effective_last_cfg()) {
           (void) controller.apply(*cfg);
-          refresh_shell_after_display_change();
+          if (refresh_shell) shell_refresh.request();
         }
       } catch (...) {}
     }
@@ -4933,6 +4950,8 @@ namespace {
 
     void cancel_post_apply_tasks() {
       stop_and_join(post_apply_thread, "post-apply");
+      // A queued cosmetic refresh samples the then-current topology. Keep it:
+      // it may be needed to correct an older in-flight notification.
     }
 
     bool run_initial_apply_adjuncts(
@@ -4976,7 +4995,6 @@ namespace {
             return false;
           }
           retry_apply_on_topology.store(false, std::memory_order_release);
-          refresh_shell_after_display_change();
           if (cancelled()) {
             return false;
           }
@@ -5752,7 +5770,7 @@ namespace {
     return false;
   }
 
-  bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg) {
+  bool handle_apply(ServiceState &state, std::span<const uint8_t> payload, std::string &error_msg, bool &refresh_shell) {
     // Cancel any ongoing restore activity since a new APPLY supersedes it
     state.stop_restore_polling();
     state.supersede_recovery_status();
@@ -5942,7 +5960,8 @@ namespace {
         return false;
       }
 
-      // Capture admission includes the blank, geometry and refresh adjuncts.
+      refresh_shell = true;
+      // Capture admission includes the blank, geometry and refresh-rate adjuncts.
       // A late reapply must not turn a manually selected SDR source back to HDR.
       if (!state.run_initial_apply_adjuncts(
             false, std::nullopt, wa_hdr_toggle, requested_virtual_layout,
@@ -5959,7 +5978,7 @@ namespace {
           break;
         }
         if (attempt < kMaxSyncVerifyAttempts && std::chrono::steady_clock::now() < apply_deadline) {
-          state.best_effort_apply_last_cfg();
+          state.best_effort_apply_last_cfg(false);
         }
       }
       if (!verified_sync) {
@@ -6179,7 +6198,8 @@ namespace {
   ) {
     if (type == MsgType::Apply) {
       std::string error_msg;
-      bool success = handle_apply(state, payload, error_msg);
+      bool refresh_shell = false;
+      bool success = handle_apply(state, payload, error_msg, refresh_shell);
       std::vector<uint8_t> result_payload;
       result_payload.push_back(success ? 1u : 0u);
       if (!error_msg.empty()) {
@@ -6187,6 +6207,7 @@ namespace {
         result_payload.insert(result_payload.end(), begin, begin + error_msg.size());
       }
       send_framed_content(async_pipe, MsgType::ApplyResult, result_payload);
+      if (refresh_shell) state.shell_refresh.request();
     } else if (type == MsgType::Revert) {
       handle_revert(state, running, payload);
     } else if (type == MsgType::Stop) {
