@@ -678,8 +678,19 @@ namespace nvhttp {
       topology_failed,
     };
 
+    void rollback_new_linux_display_identity(const std::string &owner_uuid, std::uint64_t token, bool retain_existing_display) {
+      auto &coordinator = remote_display_topology::instance();
+      // The token may be new to RTSP while a paused WebRTC game still owns the display.
+      // Applying an empty composition would also restore the desktop and release that display.
+      if (!coordinator.rollback_normal_game_identity(owner_uuid, token) || retain_existing_display) return;
+      const auto protected_clients = coordinator.protected_remote_monitor_client_ids();
+      if (coordinator.reapply_composed_topology() && std::find(protected_clients.begin(), protected_clients.end(), owner_uuid) == protected_clients.end()) {
+        (void) platf::linux_private_display::remote_remove_owned_display(owner_uuid);
+      }
+    }
+
     linux_normal_identity_result_e reserve_linux_normal_display_identity(
-      const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session
+      const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session, bool retain_existing_display = false
     ) {
       const auto &owner_uuid = launch_session->normal_vdd_owner_uuid.empty() ?
                                  launch_session->client_uuid : launch_session->normal_vdd_owner_uuid;
@@ -704,7 +715,7 @@ namespace nvhttp {
       if (!reservation.accepted) {
         // prepare_session() already leased the connector. No coordinator token
         // exists for the usual rollback guard to retire this rejected owner.
-        if (!platf::linux_private_display::remote_remove_owned_display(owner_uuid)) {
+        if (!retain_existing_display && !platf::linux_private_display::remote_remove_owned_display(owner_uuid)) {
           BOOST_LOG(error) << "Linux private display: failed to release the capacity-rejected client output.";
         }
         launch_session->normal_vdd_capacity_rejected = true;
@@ -740,15 +751,7 @@ namespace nvhttp {
       }
       if (reapply_topology && !remote_display_topology::instance().reapply_composed_topology()) {
         if (reservation.newly_reserved) {
-          const bool can_retire = remote_display_topology::instance().rollback_normal_game_identity(
-            owner_uuid,
-            reservation.token
-          );
-          const auto protected_clients = remote_display_topology::instance().protected_remote_monitor_client_ids();
-          const bool topology_restored = can_retire && remote_display_topology::instance().reapply_composed_topology();
-          if (topology_restored && std::find(protected_clients.begin(), protected_clients.end(), owner_uuid) == protected_clients.end()) {
-            (void) platf::linux_private_display::remote_remove_owned_display(owner_uuid);
-          }
+          rollback_new_linux_display_identity(owner_uuid, reservation.token, retain_existing_display);
         }
         launch_session->normal_vdd_identity_token = 0;
         launch_session->normal_vdd_identity_newly_reserved = false;
@@ -758,13 +761,7 @@ namespace nvhttp {
       if (!platf::linux_private_display::publish_current_session_state(*launch_session)) {
         BOOST_LOG(error) << "Linux private display: composed output did not publish verified session state.";
         if (reservation.newly_reserved) {
-          const bool can_retire = remote_display_topology::instance().rollback_normal_game_identity(
-            owner_uuid,
-            reservation.token
-          );
-          if (can_retire && remote_display_topology::instance().reapply_composed_topology()) {
-            (void) platf::linux_private_display::remote_remove_owned_display(owner_uuid);
-          }
+          rollback_new_linux_display_identity(owner_uuid, reservation.token, retain_existing_display);
         }
         launch_session->normal_vdd_identity_token = 0;
         launch_session->normal_vdd_identity_newly_reserved = false;
@@ -775,22 +772,14 @@ namespace nvhttp {
     }
 
     void rollback_linux_normal_display_identity(
-      const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session
+      const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session, bool retain_existing_display = false
     ) {
       const auto &owner_uuid = launch_session->normal_vdd_owner_uuid.empty() ?
                                  launch_session->client_uuid : launch_session->normal_vdd_owner_uuid;
       if (!launch_session->normal_vdd_identity_newly_reserved) {
         return;
       }
-      const bool can_retire = remote_display_topology::instance().rollback_normal_game_identity(
-        owner_uuid,
-        launch_session->normal_vdd_identity_token
-      );
-      const auto protected_clients = remote_display_topology::instance().protected_remote_monitor_client_ids();
-      const bool topology_restored = can_retire && remote_display_topology::instance().reapply_composed_topology();
-      if (topology_restored && std::find(protected_clients.begin(), protected_clients.end(), owner_uuid) == protected_clients.end()) {
-        (void) platf::linux_private_display::remote_remove_owned_display(owner_uuid);
-      }
+      rollback_new_linux_display_identity(owner_uuid, launch_session->normal_vdd_identity_token, retain_existing_display);
     }
 
     void register_remote_monitor_runtime() {
@@ -6641,18 +6630,18 @@ launch_session->exact_target_hold.reset();
     auto virtual_display_teardown_guard = util::fail_guard([&]() {
       stream::session::cleanup_reservation_t cleanup_reservation;
       if (!has_stream_session_activity() && launch_session->virtual_display) {
-        if (remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
-          BOOST_LOG(info) << "Resume aborted before session start; restoring Linux private display state.";
-          (void) platf::linux_display::backend().revert();
+        if (prepared.reused_private_capture || remote_display_topology::instance().generic_virtual_display_cleanup_allowed()) {
+          BOOST_LOG(info) << "Resume aborted before session start; applying Linux private display cleanup policy.";
+          prepared.rollback(true);
         } else {
           BOOST_LOG(info) << "Resume aborted while another managed display identity remains; preserving its composed topology.";
         }
       }
     });
     auto normal_vdd_identity_guard = util::fail_guard([&] {
-      rollback_linux_normal_display_identity(launch_session);
+      rollback_linux_normal_display_identity(launch_session, prepared.reused_private_capture);
     });
-    const auto normal_identity = reserve_linux_normal_display_identity(launch_session);
+    const auto normal_identity = reserve_linux_normal_display_identity(launch_session, prepared.reused_private_capture);
     if (normal_identity == linux_normal_identity_result_e::capacity_rejected ||
         normal_identity == linux_normal_identity_result_e::topology_failed) {
       const bool capacity_rejected = normal_identity == linux_normal_identity_result_e::capacity_rejected;

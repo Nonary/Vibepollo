@@ -12,6 +12,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace platf::linux_private_display_capture {
@@ -35,25 +36,40 @@ namespace platf::linux_private_display_capture {
   class reserved_connector_t {
   public:
     void forget_if_released(const std::map<std::string, std::string> &reservations) {
-      if (target_ && std::ranges::none_of(reservations, [&](const auto &entry) { return entry.second == output_; })) {
-        target_.reset();
+      if (!path_.empty() && std::ranges::none_of(reservations, [&](const auto &entry) { return entry.second == output_; })) {
+        path_.clear();
       }
+    }
+
+    [[nodiscard]] bool bound_to(const std::string &output) const {
+      return !path_.empty() && output_ == output;
+    }
+
+    [[nodiscard]] std::optional<bool> connection_status() const {
+      std::ifstream status {path_ / "status"};
+      std::string value;
+      if (status >> value) {
+        if (value == "connected") return true;
+        if (value == "disconnected") return false;
+      }
+      return std::nullopt;
     }
 
     template<class Lookup>
     [[nodiscard]] std::optional<std::string> bind(const std::string &output, Lookup lookup) {
-      if (target_ && output_ == output) return target_;
-      const std::filesystem::path path = lookup(output);
-      if (path.empty()) return std::nullopt;
-      const auto entry = path.filename().string();
-      output_ = output;
-      target_ = entry.substr(0, entry.find('-')) + ':' + output;
-      return target_;
+      if (!bound_to(output)) {
+        std::filesystem::path selected = lookup(output);
+        if (selected.empty()) return std::nullopt;
+        path_ = std::move(selected);
+        output_ = output;
+      }
+      const auto entry = path_.filename().string();
+      return entry.substr(0, entry.find('-')) + ':' + output;
     }
 
   private:
     std::string output_;
-    std::optional<std::string> target_;
+    std::filesystem::path path_;
   };
 
   // Portal labels can be inferred from geometry. Keep their public order, but

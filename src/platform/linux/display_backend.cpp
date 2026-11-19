@@ -93,7 +93,7 @@ namespace platf::linux_display {
     public:
       prepared_display_t prepare_session(rtsp_stream::launch_session_t &session, bool no_active_sessions, bool allow_display_changes) const override {
         auto prepared = linux_private_display::prepare_session(session, no_active_sessions, allow_display_changes);
-        return {prepared.active, std::move(prepared.output_name), std::move(prepared.error)};
+        return {prepared.active, std::move(prepared.output_name), std::move(prepared.error), prepared.reused_private_capture};
       }
 
       capabilities_t capabilities() const override {
@@ -122,6 +122,15 @@ namespace platf::linux_display {
 #ifdef SUNSHINE_BUILD_GAMESCOPE
   const backend_t &gamescope_backend();
 #endif
+
+  void prepared_display_t::rollback(bool resuming_game) const {
+    if (!owns_output) return;
+    if (resuming_game && reused_private_capture) {
+      linux_private_display::restore_after_failed_preparation();
+    } else {
+      (void) backend().revert();
+    }
+  }
 
   const backend_t &backend() {
     if (hyprland_kms_session()) {
