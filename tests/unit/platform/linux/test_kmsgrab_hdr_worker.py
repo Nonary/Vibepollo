@@ -27,6 +27,7 @@ PRELUDE = r'''
 #include "src/platform/linux/kmsgrab_hdr.h"
 #include "src/platform/linux/session_backend.h"
 #include "src/capture_recovery.h"
+#include "src/video_policy.h"
 #include "src/input_geometry_policy.h"
 #include <algorithm>
 #include <cassert>
@@ -50,6 +51,9 @@ namespace probe {
   bool initial_phase, fail_initial, fail_selected, fail_current;
   unsigned eotf=2, cll=900;
   std::string scenario;
+  unsigned enumerations = 0;
+  std::vector<std::string> opened_outputs;
+  std::optional<int> switch_request;
   unsigned frames_per_generation = 8, wanted_frames = 24, forced_restarts = 2;
   std::optional<uint64_t> current_id = 10;
   unsigned luminance = 1000, connector_id=91;
@@ -97,8 +101,17 @@ namespace safe {
     }
     void raise(const T &) { ++probe::deliveries; if (probe::on_frame) probe::on_frame(); }
   };
+  template<class T> struct event_t {
+    uint64_t generation() const { return 0; }
+    std::optional<T> view_if_newer(uint64_t&) { return std::exchange(probe::switch_request, std::nullopt); }
+  };
   struct signal_t { void raise(bool) { probe::reinitializing=true; if (probe::on_reinit) probe::on_reinit(); } void reset() { probe::reinitializing=false; } };
   class mail_raw_t { public: template<class T> class event_t {}; };
+}
+namespace config {
+  std::optional<std::string> exclusive_private_capture_output() {
+    return probe::scenario.starts_with("private-") ? std::optional<std::string>{"Virtual-1"} : std::nullopt;
+  }
 }
 namespace input { struct touch_port_t {}; }
 namespace platf {
@@ -109,6 +122,7 @@ namespace platf {
   void set_thread_name(const char *) {} void adjust_thread_priority(thread_priority_e) {}
   enum class pix_fmt_e { any };
   using mem_type_e = int; struct adapter_id_t {};
+  std::vector<std::string> display_names(int);
   using push_captured_image_cb_t = std::function<bool(std::shared_ptr<img_t>&&, bool)>;
   using pull_free_image_cb_t = std::function<bool(std::shared_ptr<img_t>&)>;
 }
@@ -259,24 +273,36 @@ namespace video {
     if (hdr) { ++probe::selected_hdr; assert(device->hdr_metadata_valid); }
     else ++probe::selected_sdr;
   }
-  namespace policy {
-    enum class capture_selection_e { process_preferred, exact_output };
-    bool should_log_display_retry(size_t) { return false; }
-    bool may_apply_process_display_preference(capture_selection_e) { return false; }
-    std::optional<std::string> select_manual_display_output(capture_selection_e,int,const std::vector<std::string>&) { return {}; }
-    std::optional<int> resolve_display_output(const std::string&, const std::vector<std::string>&) { return {}; }
-  }
   auto await_capture_config(auto&,auto&,auto) { return std::optional<config_t>(test_config); }
   auto capture_config_for_consumers(auto&,auto) { return std::optional<config_t>(test_config); }
   bool same_capture_pacing(auto&,auto&,auto) { return true; }
   bool same_capture_demand(auto&,auto&,auto) { return true; }
-  template<class... T> void refresh_displays(int, std::vector<std::string> &names, int &index, T&&...) { names={"Virtual-1"}; index=0; }
+  template<class... T> void refresh_displays(int, std::vector<std::string> &names, int &index, T&&...) { names=probe::scenario.starts_with("private-") ? platf::display_names(0) : std::vector<std::string>{"Virtual-1"}; index=0; }
   bool ensure_virtual_display_ready(auto&,int,bool) { return true; }
   void wait_before_display_retry(size_t&) { test_queue->stop(); }
   auto make_black_display(const config_t&) { return std::shared_ptr<platf::display_t>{}; }
 }
 namespace platf {
-  std::shared_ptr<display_t> display(int,const std::string&,const video::config_t&, const std::optional<adapter_id_t>& = std::nullopt) {
+  std::vector<std::string> display_names(int) {
+    const auto attempt = ++probe::enumerations;
+    if (probe::scenario == "private-shortcut") {
+      if (attempt == 1) probe::switch_request = 7;  // An absent monitor does not authorize HDMI.
+      if (attempt == 2) probe::switch_request = 0;  // The user selected the available HDMI monitor.
+      return {"HDMI-A-1"};
+    }
+    if (probe::scenario == "private-missing" || probe::scenario == "private-cancel" ||
+        (probe::scenario == "private-reconnect" && attempt == 1) ||
+        (probe::scenario == "private-reinit" && attempt == 2)) {
+      if (probe::scenario == "private-cancel") video::test_queue->stop();
+      return {"HDMI-A-1"};
+    }
+    if (probe::scenario == "private-manual" && attempt >= 2) return {"HDMI-A-1"};
+    if (probe::scenario == "private-manual") return {"Virtual-1", "HDMI-A-1"};
+    return {"HDMI-A-1", "Virtual-1"};
+  }
+  std::shared_ptr<display_t> display(int,const std::string& name,const video::config_t&, const std::optional<adapter_id_t>& = std::nullopt) {
+    probe::opened_outputs.push_back(name);
+    if (probe::scenario == "private-open-retry" && probe::opened_outputs.size() == 1) return {};
     if (++probe::generations > 8) { video::test_queue->stop(); return {}; }
     if (probe::generations == 2 && probe::scenario == "new-identity") { probe::connector_id=92; probe::luminance=1500; }
     if (probe::generations == 2 && probe::scenario == "recycled-identity") { probe::connector_id=91; probe::luminance=1600; }
@@ -296,14 +322,16 @@ namespace sync_util {
   };
 }
 namespace mail {
-  struct event_t { uint64_t generation(){return 0;} std::optional<int> view_if_newer(uint64_t&){return {};} };
+  using event_t = safe::event_t<int>;
   struct man_t { template<class T> auto event(int) { return std::make_shared<event_t>(); } };
   auto man=std::make_shared<man_t>(); int switch_display{};
 }
 namespace proc { struct proc_t { std::string display_name; }; inline proc_t proc; }
 namespace video {
+@@PRIVATE_CAPTURE@@
 @@CAPTURE_THREAD@@
   using encode_e = platf::capture_e;
+@@SYNC_OPEN_FIXTURE@@
   struct sync_context_t { config_t config; safe::mail_raw_t::event_t<input::touch_port_t> touch_port_events; };
   struct sync_lifetime_t { sync_lifetime_t() { ++probe::sync_live_sessions; } ~sync_lifetime_t() { --probe::sync_live_sessions; } };
   struct sync_session_t { std::shared_ptr<platf::display_t> display; std::shared_ptr<sync_lifetime_t> lifetime; };
@@ -340,7 +368,10 @@ int main(int argc,char **argv) {
   probe::sync_mode=argc > 2;
   probe::forced_restarts=0;
   unsigned expected_generations=1, expected_hdr=1, expected_sdr=0;
-  if (probe::scenario == "initial-faults") {
+  if (probe::scenario == "private-reinit" || probe::scenario == "private-manual") {
+    probe::forced_restarts = 1;
+    expected_generations = expected_hdr = 2;
+  } else if (probe::scenario == "initial-faults") {
     probe::fail_initial=true;
     probe::forced_restarts=2;
     expected_generations=expected_hdr=3;
@@ -373,6 +404,7 @@ int main(int argc,char **argv) {
     }
   };
   probe::on_frame=[] {
+    if (probe::scenario == "private-manual" && probe::frames == 4) probe::switch_request = 1;
     if (probe::scenario.starts_with("nonpq-churn-")) {
       // Keep the same numeric ID while its unused SDR metadata changes.
       ++probe::cll; ++probe::luminance;
@@ -401,9 +433,11 @@ int main(int argc,char **argv) {
   };
   sync_util::sync_t<std::weak_ptr<platf::display_t>> display;
   safe::signal_t reinit;
+  const auto started = std::chrono::steady_clock::now();
   if (probe::sync_mode) {
+    @@SYNC_OPEN_STATE@@
     while (video::test_queue->running()) {
-      auto disp=platf::display(0,"Virtual-1",video::test_config);
+      auto disp = @@SYNC_OPEN_CALL@@;
       if (!disp) break;
       auto status=video::run_sync_recovery(disp,video::encoder_t{});
       if (status != platf::capture_e::reinit) break;
@@ -416,6 +450,24 @@ int main(int argc,char **argv) {
   std::cout << (probe::sync_mode ? "sync " : "async ") << probe::scenario << ": generations=" << probe::generations << " frames=" << probe::frames
             << " restarts=" << probe::restarts << " handoffs=" << probe::metadata_commits << " init_reads=" << probe::init_reads
             << " hdr=" << probe::selected_hdr << " sdr=" << probe::selected_sdr << '\n';
+  if (probe::scenario.starts_with("private-")) {
+    if (probe::scenario == "private-missing" || probe::scenario == "private-cancel") {
+      const auto elapsed = std::chrono::steady_clock::now() - started;
+      const bool timed_out = probe::scenario == "private-missing";
+      return !probe::opened_outputs.empty() || probe::frames != 0 || (!probe::sync_mode && images->running()) ||
+             (timed_out ? (elapsed < 2900ms || elapsed > 6s) : elapsed > 1s);
+    }
+    std::vector<std::string> expected {"Virtual-1"};
+    if (probe::scenario == "private-open-retry" || probe::scenario == "private-reinit") expected.push_back("Virtual-1");
+    if (probe::scenario == "private-manual") expected.push_back("HDMI-A-1");
+    if (probe::scenario == "private-shortcut") {
+      expected = {"HDMI-A-1"};
+      if (probe::enumerations != 2) return 10;
+    }
+    if (probe::opened_outputs != expected) return 7;
+    if (probe::scenario == "private-healthy" && probe::enumerations != 1) return 8;
+    if (probe::scenario == "private-reconnect" && probe::enumerations != 2) return 9;
+  }
   if(probe::scenario.starts_with("hyprland-second-")) {
     return probe::frames!=0 || probe::deliveries!=0 || probe::generations!=(probe::sync_mode?2u:3u) || probe::selected_hdr!=0 || probe::selected_sdr!=1 || probe::metadata_commits!=0;
   }
@@ -474,7 +526,35 @@ def main():
     sync_start = sync_function.index('      auto status = disp->capture(')
     sync_recovery = sync_function[sync_start:sync_function.rindex('    return encode_e::ok;')]
     sync_recovery = sync_recovery[:sync_recovery.rfind('    }')]
+    # Use the production synchronous selection and retry branch, retaining its worker state across reopen.
+    sync_open, sync_state, sync_call = '', '', 'platf::display(0,"Virtual-1",video::test_config)'
+    if '  struct private_capture_t {' in video:
+        branch = function(sync_function, '      if (private_capture.output) {')
+        sync_state = 'video::private_capture_t private_capture {video::capture_source_e::active_output};'
+        sync_call = 'video::open_sync_display(private_capture)'
+        sync_open = r'''
+  std::shared_ptr<platf::display_t> open_sync_display(private_capture_t &private_capture) {
+    const encoder_t encoder;
+    struct session_t { config_t config; } session {test_config};
+    std::vector<session_t *> synced_session_ctxs {&session};
+    auto switch_display_event = mail::man->event<int>(mail::switch_display);
+    std::uint64_t switch_display_generation = 0;
+    std::optional<std::string> pending_switch_output;
+    std::size_t display_retry_failures = 0;
+    std::vector<std::string> display_names;
+    int display_p = -1;
+    std::shared_ptr<platf::display_t> disp;
+    while (test_queue->running()) {
+''' + branch + r'''
+      return platf::display(0, "Virtual-1", test_config);
+    }
+    return disp;
+  }
+'''
     replacements = {
+        '@@SYNC_OPEN_FIXTURE@@': sync_open,
+        '@@SYNC_OPEN_STATE@@': sync_state,
+        '@@SYNC_OPEN_CALL@@': sync_call,
         '@@COLOR_TYPES@@': function(types, '  enum class colorspace_e {') + ';\n' + function(types, '  struct sunshine_colorspace_t {') + ';',
         '@@COLOR_FUNCTIONS@@': function(color, '  bool colorspace_is_hdr(') + '\n' + function(color, '  sunshine_colorspace_t colorspace_from_client_config('),
         '@@KMS_MEMBERS@@': members,
@@ -486,6 +566,7 @@ def main():
         '@@KMS_FIXED_CAPTURE@@': function(kms, '      capture_e capture_fixed_rate('),
         '@@MAKE_ENCODE_DEVICE@@': function(video, '  std::unique_ptr<platf::encode_device_t> make_encode_device(', last=True),
         '@@RESET_DISPLAY@@': function(video, '  void reset_display('),
+        '@@PRIVATE_CAPTURE@@': function(video, '  struct private_capture_t {') + ';' if '  struct private_capture_t {' in video else '',
         '@@CAPTURE_THREAD@@': function(video, '  void captureThread('),
         '@@SYNC_RECOVERY@@': sync_recovery,
     }
@@ -498,7 +579,7 @@ def main():
         cpp, binary = output / 'worker.cpp', output / 'worker'
         cpp.write_text(program)
         flags = shlex.split(subprocess.check_output(['pkg-config', '--cflags', '--libs', 'libdrm'], text=True))
-        command = [args.compiler, '-std=c++23', '-pthread', '-I', str(root), str(cpp), *flags, '-o', str(binary)]
+        command = [args.compiler, '-std=c++23', '-pthread', '-I', str(root), str(cpp), str(root / 'src/video_policy.cpp'), *flags, '-o', str(binary)]
         if args.sanitizers:
             command[1:1] = ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer']
         compiled = subprocess.run(command, capture_output=True, text=True)
@@ -510,8 +591,11 @@ def main():
         results = []
         nonpq = ['nonpq-churn-0', 'nonpq-churn-1', 'nonpq-churn-3', 'nonpq-hdr-transitions']
         scenarios = nonpq if args.nonpq_controls else ['persistent-selected-faults'] if args.persistent_selected_faults else ['initial-faults', 'selected-recovery', 'persistent-selected-faults', 'unreadable-recovery', 'equivalent-churn', 'replacement-aba', 'initial-aba', 'changed-during-drain', 'new-identity', 'recycled-identity', 'sdr', *nonpq, 'hyprland-sdr', 'hyprland-second-pq', 'hyprland-second-gamma', 'hyprland-second-hlg', 'hyprland-second-unknown']
+        if not args.nonpq_controls and not args.persistent_selected_faults:
+            scenarios += ['private-healthy', 'private-missing', 'private-open-retry', 'private-reconnect',
+                          'private-reinit', 'private-manual', 'private-shortcut', 'private-cancel']
         for scenario in scenarios:
-            for mode in [[], ["sync"]]:
+            for mode in ([[]] if scenario == 'private-manual' else [[], ["sync"]]):
                 result = subprocess.run([str(binary), scenario, *mode], capture_output=True, text=True, timeout=10, env=os.environ.copy())
                 results.append(result.stdout + result.stderr)
                 failed |= result.returncode != 0

@@ -28,8 +28,13 @@ namespace video::policy {
     const int requested_index,
     const std::span<const std::string> display_names
   ) {
-    if (selection != capture_selection_e::process_preferred ||
-        requested_index < 0 || display_names.empty()) {
+    if (requested_index < 0 || display_names.empty()) return std::nullopt;
+    if (selection == capture_selection_e::exclusive_private) {
+      // A shortcut for an absent monitor must not authorize a different desktop.
+      if (static_cast<std::size_t>(requested_index) >= display_names.size()) return std::nullopt;
+      return display_names[requested_index];
+    }
+    if (selection != capture_selection_e::process_preferred) {
       return std::nullopt;
     }
 

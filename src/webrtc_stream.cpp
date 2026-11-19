@@ -3514,7 +3514,7 @@ namespace webrtc_stream {
         );
         if (!prepared_display.output_name.empty()) {
           pending_output_override_lease =
-            config::set_runtime_output_name_override_with_lease(prepared_display.output_name);
+            config::set_runtime_output_name_override_with_lease(prepared_display.output_name, launch_session->exclusive_private_capture);
         }
         if (prepared_display.owns_output) {
           linux_private_display_prepared = true;
@@ -3546,6 +3546,12 @@ namespace webrtc_stream {
           BOOST_LOG(debug) << "WebRTC encoder probe skipped (matching selected-GPU cache).";
         }
 #else
+#ifdef __linux__
+        if (auto capture_error = platf::linux_private_display::capture_start_error(*launch_session)) {
+          BOOST_LOG(error) << *capture_error;
+          return capture_error;
+        }
+#endif
         if (video::probe_encoders()) {
           return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
         }

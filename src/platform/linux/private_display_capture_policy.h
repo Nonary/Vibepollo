@@ -4,7 +4,20 @@
  */
 #pragma once
 
+#include <algorithm>
+#include <map>
+#include <string>
+#include <string_view>
+
 namespace platf::linux_private_display_capture {
+  /** Several clients can share one connector. An independently reserved peer needs a composed desktop. */
+  [[nodiscard]] inline bool exclusive_output(
+    bool requested, std::string_view output, const std::map<std::string, std::string> &reservations
+  ) {
+    return requested && !reservations.empty() &&
+           std::ranges::all_of(reservations, [&](const auto &entry) { return entry.second == output; });
+  }
+
   /** An explicit KMS backend must survive a temporarily dormant scanout. */
   [[nodiscard]] constexpr bool enable_kms(bool explicitly_requested, bool outputs_available) noexcept {
     return explicitly_requested || outputs_available;

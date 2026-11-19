@@ -8,6 +8,17 @@
 
 namespace policy = platf::linux_private_display_capture;
 
+TEST(PrivateDisplayCapturePolicy, ExclusiveCaptureRequiresTheReservedOutputAndAllowsMirrors) {
+  const std::map<std::string, std::string> mirrors {{"owner", "Virtual-1"}, {"mirror", "Virtual-1"}};
+  EXPECT_TRUE(policy::exclusive_output(true, "Virtual-1", mirrors));
+  EXPECT_FALSE(policy::exclusive_output(false, "Virtual-1", mirrors));
+  EXPECT_FALSE(policy::exclusive_output(true, "Virtual-2", mirrors));
+  EXPECT_FALSE(policy::exclusive_output(true, "Virtual-1", {}));
+  auto peers = mirrors;
+  peers.emplace("remote-monitor", "Virtual-2");
+  EXPECT_FALSE(policy::exclusive_output(true, "Virtual-1", peers));
+}
+
 TEST(PrivateDisplayCapturePolicy, ExplicitKmsSurvivesDormantStartupAndRecovery) {
   EXPECT_TRUE(policy::enable_kms(true, false));
   EXPECT_TRUE(policy::enable_kms(true, true));

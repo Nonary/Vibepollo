@@ -68,7 +68,7 @@ namespace video::policy {
     return false;
   }
 
-  enum class capture_selection_e : std::uint8_t { process_preferred, exact_output, synthetic_black };
+  enum class capture_selection_e : std::uint8_t { process_preferred, exact_output, synthetic_black, exclusive_private };
 
   [[nodiscard]] bool may_apply_process_display_preference(capture_selection_e selection);
 

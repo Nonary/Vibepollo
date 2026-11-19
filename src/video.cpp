@@ -3132,6 +3132,58 @@ namespace video {
     refresh_displays(dev_type, display_names, current_display_index, empty_str, std::nullopt);
   }
 
+  // The normal game keeps its shared capture worker. Only an explicit monitor
+  // switch can replace its reserved connector with a different desktop.
+  struct private_capture_t {
+    explicit private_capture_t(capture_source_e source):
+        output(source == capture_source_e::active_output ? config::exclusive_private_capture_output() : std::nullopt) {}
+
+    const std::optional<std::string> output;
+    std::optional<std::string> manual_output;
+    std::chrono::steady_clock::time_point retry_deadline {};
+
+    std::shared_ptr<platf::display_t> open(
+      platf::mem_type_e dev_type, const config_t &config,
+      std::vector<std::string> &names, int &index,
+      safe::event_t<int> &switch_event, std::uint64_t &generation,
+      std::optional<std::string> &pending_switch
+    ) {
+      names = platf::display_names(dev_type);
+      if (pending_switch) {
+        manual_output = std::exchange(pending_switch, std::nullopt);
+      }
+      if (auto requested = switch_event.view_if_newer(generation)) {
+        if (auto selected = policy::select_manual_display_output(policy::capture_selection_e::exclusive_private, *requested, names)) {
+          manual_output = std::move(selected);
+        }
+      }
+      const auto manual_index = manual_output ? policy::resolve_display_output(*manual_output, names) : std::nullopt;
+      index = manual_index ? *manual_index : policy::resolve_display_output(*output, names).value_or(-1);
+      if (index < 0) return nullptr;
+
+      auto display = platf::display(dev_type, names[index], config);
+      if (display) {
+        display->recovery_capture_instance = capture_recovery::observations().begin_capture();
+        BOOST_LOG(info) << "Capture worker opened output '" << names[index] << "' for private display '" << *output << "'.";
+      }
+      return display;
+    }
+
+    bool wait_for_retry(std::size_t &failures) {
+      const auto now = std::chrono::steady_clock::now();
+      if (failures == 0) {
+        retry_deadline = now + 3s;
+        BOOST_LOG(warning) << "Waiting for capture of private display '" << *output << "'.";
+      }
+      if (now >= retry_deadline) {
+        BOOST_LOG(error) << "Cannot capture private display '" << *output << "'. Ending capture after waiting for its connector.";
+        return false;
+      }
+      std::this_thread::sleep_until(std::min(retry_deadline, now + policy::display_retry_delay(failures++)));
+      return true;
+    }
+  };
+
   void captureThread(
     std::shared_ptr<safe::queue_t<capture_ctx_t>> capture_ctx_queue,
     sync_util::sync_t<std::weak_ptr<platf::display_t>> &display_wp,
@@ -3162,7 +3214,9 @@ namespace video {
       return;
     }
     capture_ctxs.emplace_back(std::move(*initial_capture_ctx));
+    private_capture_t private_capture {capture_ctxs.front().config.capture_source};
     const auto manual_switch_selection =
+      private_capture.output ? policy::capture_selection_e::exclusive_private :
       capture_ctxs.front().config.capture_source == capture_source_e::active_output ?
         video::policy::capture_selection_e::process_preferred :
         video::policy::capture_selection_e::exact_output;
@@ -3203,6 +3257,12 @@ namespace video {
       }
 
       if (capture_config.capture_target_valid && !capture_config.capture_target_valid()) return;
+      if (private_capture.output) {
+        disp = private_capture.open(encoder.platform_formats->dev_type, capture_config, display_names, display_p,
+                                    *switch_display_event, switch_display_generation, pending_switch_output);
+        if (disp || !private_capture.wait_for_retry(display_retry_failures)) break;
+        continue;
+      }
       const auto exact_output = capture_config.capture_source == capture_source_e::exact_output;
       const auto required_output = exact_output ? capture_config.capture_output : std::nullopt;
       const bool log_display_retry = policy::should_log_display_retry(display_retry_failures);
@@ -3606,6 +3666,16 @@ namespace video {
 
               // Refresh display names since a display removal might have caused the reinitialization
               if (capture_ctxs.front().config.capture_target_valid && !capture_ctxs.front().config.capture_target_valid()) return;
+              if (private_capture.output) {
+                disp = private_capture.open(encoder.platform_formats->dev_type, producer_config, display_names, display_p,
+                                            *switch_display_event, switch_display_generation, pending_switch_output);
+                if (disp) {
+                  proc::proc.display_name = display_names[display_p];
+                  break;
+                }
+                if (!private_capture.wait_for_retry(display_retry_failures)) break;
+                continue;
+              }
               const auto exact_output = capture_ctxs.front().config.capture_source == capture_source_e::exact_output;
               const auto required_output = exact_output ? capture_ctxs.front().config.capture_output : std::nullopt;
               refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, proc::proc.display_name, required_output, exact_output, policy::should_log_display_retry(display_retry_failures));
@@ -6050,7 +6120,8 @@ namespace video {
     std::vector<std::string> &display_names,
     int &display_p,
     std::uint64_t &switch_display_generation,
-    std::optional<std::string> &pending_switch_output
+    std::optional<std::string> &pending_switch_output,
+    private_capture_t &private_capture
   ) {
     const auto *enc_ptr = chosen_encoder;
     if (!enc_ptr) {
@@ -6072,6 +6143,7 @@ namespace video {
       synced_session_ctxs.emplace_back(std::make_unique<sync_session_ctx_t>(std::move(*ctx)));
     }
     const auto manual_switch_selection =
+      private_capture.output ? policy::capture_selection_e::exclusive_private :
       synced_session_ctxs.front()->config.capture_source == capture_source_e::active_output ?
         video::policy::capture_selection_e::process_preferred :
         video::policy::capture_selection_e::exact_output;
@@ -6097,6 +6169,12 @@ namespace video {
       }
       // Refresh display names since a display removal might have caused the reinitialization
       if (synced_session_ctxs.front()->config.capture_target_valid && !synced_session_ctxs.front()->config.capture_target_valid()) return encode_e::error;
+      if (private_capture.output) {
+        disp = private_capture.open(encoder.platform_formats->dev_type, synced_session_ctxs.front()->config, display_names, display_p,
+                                    *switch_display_event, switch_display_generation, pending_switch_output);
+        if (disp || !private_capture.wait_for_retry(display_retry_failures)) break;
+        continue;
+      }
       const auto exact_output = synced_session_ctxs.front()->config.capture_source == capture_source_e::exact_output;
       const auto required_output = exact_output ? synced_session_ctxs.front()->config.capture_output : std::nullopt;
       refresh_displays(encoder.platform_formats->dev_type, display_names, display_p, required_output, exact_output, policy::should_log_display_retry(display_retry_failures));
@@ -6414,13 +6492,15 @@ namespace video {
     auto switch_display_event = mail::man->event<int>(mail::switch_display);
     std::uint64_t switch_display_generation {switch_display_event->generation()};
     std::optional<std::string> pending_switch_output;
+    private_capture_t private_capture {capture_source_e::active_output};
     while (encode_run_sync(
              synced_session_ctxs,
              ctx,
              display_names,
              display_p,
              switch_display_generation,
-             pending_switch_output
+             pending_switch_output,
+             private_capture
            ) == encode_e::reinit) {}
   }
 

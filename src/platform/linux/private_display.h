@@ -43,6 +43,9 @@ namespace platf::linux_private_display {
     bool allow_display_changes
   );
 
+  /** Report a private connector lost between display setup and stream admission. */
+  std::optional<std::string> capture_start_error(const rtsp_stream::launch_session_t &session);
+
   /** Apply resolution, refresh, HDR, scale, primary-output, and layout policy. */
   bool apply_session(rtsp_stream::launch_session_t &session);
   /** Publish verified current HDR/readiness state after a composed apply. */
