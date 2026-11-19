@@ -111,6 +111,9 @@ namespace platf::linux_private_display {
       bool snapshot_greeter_handoff {false};
       std::map<std::string, std::string> snapshot_physical_identities;
       std::map<std::string, std::string> reservations;
+#ifdef SUNSHINE_BUILD_DRM
+      linux_private_display_capture::reserved_connector_t reserved_capture;
+#endif
       std::map<std::string, double> retained_scales;
       std::set<std::string> newly_connected_reservations;
       // KDE's idle screen-off reconfigures every GPU. On NVIDIA it wedged GSP
@@ -1098,6 +1101,10 @@ namespace platf::linux_private_display {
       const bool no_active_sessions,
       const bool reuse_active_reservation = true
     ) {
+#ifdef SUNSHINE_BUILD_DRM
+      // Check ownership before a new client can claim a previously released name.
+      manager.reserved_capture.forget_if_released(manager.reservations);
+#endif
       const auto connect = [&](const std::string &name) {
         const auto configuration = query_configuration();
         // Refresh idle preferences and persist ownership before hotplug.
@@ -1364,14 +1371,11 @@ namespace platf::linux_private_display {
         if (result.error.empty() && (config::video.capture.empty() || config::video.capture == "kms") &&
             linux_private_display_capture::exclusive_output(layout == config::video_t::virtual_display_layout_e::exclusive,
                                                            *output_name, manager.reservations)) {
-          // Pin the card while the reservation owns the connector, even when another GPU
-          // could later publish a connector with the same name.
-          const auto path = connector_sysfs_path(*output_name, true);
-          if (path.empty()) {
+          session.exclusive_private_capture = manager.reserved_capture.bind(*output_name, [](const std::string &name) {
+            return connector_sysfs_path(name, true);
+          });
+          if (!session.exclusive_private_capture) {
             result.error = "Could not identify the DRM card for private streaming display '" + *output_name + "'.";
-          } else {
-            const auto entry = std::filesystem::path {path}.filename().string();
-            session.exclusive_private_capture = entry.substr(0, entry.find('-')) + ':' + *output_name;
           }
         }
 #endif

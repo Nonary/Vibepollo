@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <fstream>
 #include <map>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -28,6 +29,32 @@ namespace platf::linux_private_display_capture {
     }
     return selected;
   }
+
+  // KScreen reservations use names shared by multiple GPUs. An exclusive stream
+  // keeps the DRM card it first reserved until the last owner releases that name.
+  class reserved_connector_t {
+  public:
+    void forget_if_released(const std::map<std::string, std::string> &reservations) {
+      if (target_ && std::ranges::none_of(reservations, [&](const auto &entry) { return entry.second == output_; })) {
+        target_.reset();
+      }
+    }
+
+    template<class Lookup>
+    [[nodiscard]] std::optional<std::string> bind(const std::string &output, Lookup lookup) {
+      if (target_ && output_ == output) return target_;
+      const std::filesystem::path path = lookup(output);
+      if (path.empty()) return std::nullopt;
+      const auto entry = path.filename().string();
+      output_ = output;
+      target_ = entry.substr(0, entry.find('-')) + ':' + output;
+      return target_;
+    }
+
+  private:
+    std::string output_;
+    std::optional<std::string> target_;
+  };
 
   // Portal labels can be inferred from geometry. Keep their public order, but
   // open only a unique DRM connector, never a stream guessed from its bounds.
