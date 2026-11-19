@@ -2633,6 +2633,7 @@ namespace config {
     std::shared_mutex g_apply_gate;  // writers=apply; readers=session start/resume
     std::shared_mutex g_output_override_mutex;
     std::optional<std::string> g_runtime_output_name_override;
+    bool g_exclusive_private_capture = false;
     std::uint64_t g_next_runtime_output_override_lease {0};
     std::uint64_t g_runtime_output_override_lease {0};
 #ifdef _WIN32
@@ -3078,7 +3079,7 @@ namespace config {
     }
 #endif
 
-    std::uint64_t set_runtime_output_name_override_impl(std::optional<std::string> output_name) {
+    std::uint64_t set_runtime_output_name_override_impl(std::optional<std::string> output_name, bool exclusive_private_capture = false) {
 #ifdef _WIN32
       bool should_schedule_deferred_reapply = false;
 #endif
@@ -3089,6 +3090,7 @@ namespace config {
       // therefore clear only the exact override it published, even if a
       // newer session selects the same device id.
       lease = ++g_next_runtime_output_override_lease;
+      g_exclusive_private_capture = exclusive_private_capture;
       if (!output_name) {
         g_runtime_output_name_override.reset();
         g_runtime_output_override_lease = 0;
@@ -3248,8 +3250,8 @@ namespace config {
     (void) set_runtime_output_name_override_impl(std::move(output_name));
   }
 
-  runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name) {
-    return set_runtime_output_name_override_impl(std::move(output_name));
+  runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name, bool exclusive_private_capture) {
+    return set_runtime_output_name_override_impl(std::move(output_name), exclusive_private_capture);
   }
 
   bool clear_runtime_output_name_override_if_lease(runtime_output_override_lease_t lease) {
@@ -3260,6 +3262,7 @@ namespace config {
     std::unique_lock<std::shared_mutex> lock(g_output_override_mutex);
     bool cleared = false;
     if (g_runtime_output_override_lease == lease) {
+      g_exclusive_private_capture = false;
       g_runtime_output_name_override.reset();
       g_runtime_output_override_lease = 0;
       cleared = true;
@@ -3301,6 +3304,11 @@ namespace config {
     }
   }
 #endif
+
+  std::optional<std::string> exclusive_private_capture_output() {
+    std::shared_lock<std::shared_mutex> lock(g_output_override_mutex);
+    return g_exclusive_private_capture ? g_runtime_output_name_override : std::nullopt;
+  }
 
   std::optional<std::string> runtime_output_name_override() {
     std::shared_lock<std::shared_mutex> lock(g_output_override_mutex);

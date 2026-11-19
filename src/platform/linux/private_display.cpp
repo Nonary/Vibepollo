@@ -6,6 +6,7 @@
 #include "private_display.h"
 #include "session_backend.h"
 #include "private_display_capacity.h"
+#include "private_display_capture_policy.h"
 #include "display_restore_capture.h"
 
 #include "display_helper_process.h"
@@ -876,6 +877,13 @@ namespace platf::linux_private_display {
       return false;
     }
 
+    bool exclusive_layout(const rtsp_stream::launch_session_t &session, const state_t &manager) {
+      const auto layout = session.virtual_display_layout_override.value_or(config::video.virtual_display_layout);
+      return linux_private_display_capture::exclusive_output(
+        layout == config::video_t::virtual_display_layout_e::exclusive, session.virtual_display_device_id, manager.reservations
+      );
+    }
+
     std::string reservation_identity(const rtsp_stream::launch_session_t &session, const bool shared) {
       if (shared) {
         return "shared";
@@ -1296,6 +1304,7 @@ namespace platf::linux_private_display {
     auto target_mutation = display_target::leases().begin_mutation();
     if (!target_mutation) return {.requested = true, .error = "Exact target borrowers still hold display leases."};
     prepare_result_t result;
+    session.exclusive_private_capture = false;
 
     if (!session.display_power_guard) {
       session.display_power_guard = display_power::acquire();
@@ -1351,6 +1360,11 @@ namespace platf::linux_private_display {
         result.output_name = *output_name;
         session.virtual_display = true;
         session.virtual_display_device_id = *output_name;
+#ifdef SUNSHINE_BUILD_DRM
+        // Automatic private display capture routes to KMS; explicit compositor backends keep their own selection.
+        session.exclusive_private_capture = (config::video.capture.empty() || config::video.capture == "kms") &&
+                                            exclusive_layout(session, manager);
+#endif
         const auto capture_outputs = capture_output_names();
         const bool capture_available = std::find(capture_outputs.begin(), capture_outputs.end(), *output_name) != capture_outputs.end();
         session.virtual_display_recreated_on_demand =
@@ -1383,6 +1397,21 @@ namespace platf::linux_private_display {
                       << " for client '" << session.client_name << "'.";
     }
     return result;
+  }
+
+  std::optional<std::string> capture_start_error(const rtsp_stream::launch_session_t &session) {
+    if (!session.exclusive_private_capture) return std::nullopt;
+    const auto &name = session.virtual_display_device_id;
+    // A still-enabled DRM connector takes the normal fast path. Capture checks
+    // the named output again when opening it, including after stream admission.
+    const auto path = connector_sysfs_path(name);
+    if (!path.empty()) {
+      std::ifstream enabled {std::filesystem::path {path} / "enabled"};
+      std::string value;
+      if (enabled >> value && value == "enabled") return std::nullopt;
+    }
+    if (wait_for_capture_publication(name)) return std::nullopt;
+    return "Private streaming display '" + name + "' is unavailable for capture.";
   }
 
   bool apply_session(rtsp_stream::launch_session_t &session) {

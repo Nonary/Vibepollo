@@ -51,6 +51,15 @@ TEST(CapturePolicy, ExactOutputRejectsManualSwitchAndActiveOutputKeepsStableIden
   EXPECT_FALSE(video::policy::resolve_display_output(*selected, std::array<std::string, 1> {"Display-A"}));
 }
 
+TEST(CapturePolicy, PrivateMonitorShortcutRequiresAnEnumeratedIndex) {
+  using selection = video::policy::capture_selection_e;
+  const std::array<std::string, 1> displays {"HDMI-A-1"};
+  EXPECT_FALSE(video::policy::select_manual_display_output(selection::exclusive_private, -1, displays));
+  EXPECT_FALSE(video::policy::select_manual_display_output(selection::exclusive_private, 1, displays));
+  EXPECT_EQ(video::policy::select_manual_display_output(selection::exclusive_private, 0, displays), "HDMI-A-1");
+  EXPECT_EQ(video::policy::select_manual_display_output(selection::process_preferred, 1, displays), "HDMI-A-1");
+}
+
 TEST(CapturePolicy, QueueOverflowRejectsAndSignalsWithoutDiscardingPriorSession) {
   using namespace std::chrono_literals;
 
