@@ -334,6 +334,71 @@ const KeyCodeMap kKeyCodesMap[] = {
     }
   }
 
+  /**
+   * @brief The flags a key carries by itself on a real keyboard, apart from held modifiers.
+   * @details Function, arrow, and navigation keys set the secondary-function flag, and arrows
+   *          and the keypad set the numeric-pad flag. System shortcuts match on them: Control-F2
+   *          (focus the menu bar), Control-F3 (focus the Dock), and Control-Up (Mission Control)
+   *          are stored with the function flag and don't fire without it.
+   */
+  CGEventFlags intrinsic_key_flags(const int key) {
+    switch (key) {
+      case kVK_LeftArrow:
+      case kVK_RightArrow:
+      case kVK_UpArrow:
+      case kVK_DownArrow:
+        return kCGEventFlagMaskSecondaryFn | kCGEventFlagMaskNumericPad;
+      case kVK_F1:
+      case kVK_F2:
+      case kVK_F3:
+      case kVK_F4:
+      case kVK_F5:
+      case kVK_F6:
+      case kVK_F7:
+      case kVK_F8:
+      case kVK_F9:
+      case kVK_F10:
+      case kVK_F11:
+      case kVK_F12:
+      case kVK_F13:
+      case kVK_F14:
+      case kVK_F15:
+      case kVK_F16:
+      case kVK_F17:
+      case kVK_F18:
+      case kVK_F19:
+      case kVK_F20:
+      case kVK_Home:
+      case kVK_End:
+      case kVK_PageUp:
+      case kVK_PageDown:
+      case kVK_ForwardDelete:
+      case kVK_Help:
+        return kCGEventFlagMaskSecondaryFn;
+      case kVK_ANSI_Keypad0:
+      case kVK_ANSI_Keypad1:
+      case kVK_ANSI_Keypad2:
+      case kVK_ANSI_Keypad3:
+      case kVK_ANSI_Keypad4:
+      case kVK_ANSI_Keypad5:
+      case kVK_ANSI_Keypad6:
+      case kVK_ANSI_Keypad7:
+      case kVK_ANSI_Keypad8:
+      case kVK_ANSI_Keypad9:
+      case kVK_ANSI_KeypadDecimal:
+      case kVK_ANSI_KeypadMultiply:
+      case kVK_ANSI_KeypadPlus:
+      case kVK_ANSI_KeypadClear:
+      case kVK_ANSI_KeypadDivide:
+      case kVK_ANSI_KeypadEnter:
+      case kVK_ANSI_KeypadMinus:
+      case kVK_ANSI_KeypadEquals:
+        return kCGEventFlagMaskNumericPad;
+      default:
+        return 0;
+    }
+  }
+
   void keyboard_update(input_t &input, uint16_t modcode, bool release, uint8_t flags) {
     auto key = keysym(modcode);
 
@@ -374,7 +439,7 @@ const KeyCodeMap kKeyCodesMap[] = {
       CGEventSetType(event, release ? kCGEventKeyUp : kCGEventKeyDown);
     }
 
-    CGEventSetFlags(event, macos_input->kb_flags);
+    CGEventSetFlags(event, macos_input->kb_flags | intrinsic_key_flags(key));
     CGEventPost(kCGSessionEventTap, event);
     CFRelease(event);
   }
