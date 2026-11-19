@@ -59,6 +59,9 @@ extern "C" {
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
   #include "platform/linux/cuda.h"
 #endif
+#ifdef SUNSHINE_BUILD_DRM
+  #include "platform/linux/kmsgrab.h"
+#endif
 #ifdef __linux__
   #include "platform/linux/rtx_hdr_runtime.h"
 #endif
@@ -3148,7 +3151,10 @@ namespace video {
       safe::event_t<int> &switch_event, std::uint64_t &generation,
       std::optional<std::string> &pending_switch
     ) {
-      names = platf::display_names(dev_type);
+#ifdef SUNSHINE_BUILD_DRM
+      // Automatic capture may advertise a compositor or NvFBC monitor list.
+      // Enumerate and open through the same KMS backend that owns this reservation.
+      names = platf::kms_capture_targets(dev_type);
       if (pending_switch) {
         manual_output = std::exchange(pending_switch, std::nullopt);
       }
@@ -3161,12 +3167,15 @@ namespace video {
       index = manual_index ? *manual_index : policy::resolve_display_output(*output, names).value_or(-1);
       if (index < 0) return nullptr;
 
-      auto display = platf::display(dev_type, names[index], config);
+      auto display = platf::kms_display(dev_type, names[index], config);
       if (display) {
         display->recovery_capture_instance = capture_recovery::observations().begin_capture();
         BOOST_LOG(info) << "Capture worker opened output '" << names[index] << "' for private display '" << *output << "'.";
       }
       return display;
+#else
+      return nullptr;
+#endif
     }
 
     bool wait_for_retry(std::size_t &failures) {

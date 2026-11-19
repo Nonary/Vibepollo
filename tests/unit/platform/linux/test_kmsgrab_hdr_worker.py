@@ -110,7 +110,7 @@ namespace safe {
 }
 namespace config {
   std::optional<std::string> exclusive_private_capture_output() {
-    return probe::scenario.starts_with("private-") ? std::optional<std::string>{"Virtual-1"} : std::nullopt;
+    return probe::scenario.starts_with("private-") ? std::optional<std::string>{"card2:Virtual-1"} : std::nullopt;
   }
 }
 namespace input { struct touch_port_t {}; }
@@ -283,24 +283,32 @@ namespace video {
   auto make_black_display(const config_t&) { return std::shared_ptr<platf::display_t>{}; }
 }
 namespace platf {
-  std::vector<std::string> display_names(int) {
+  std::vector<std::string> kms_capture_targets(int) {
     const auto attempt = ++probe::enumerations;
+    if (probe::scenario == "private-other-card" && attempt == 1) return {"card0:Virtual-1"};
     if (probe::scenario == "private-shortcut") {
       if (attempt == 1) probe::switch_request = 7;  // An absent monitor does not authorize HDMI.
       if (attempt == 2) probe::switch_request = 0;  // The user selected the available HDMI monitor.
-      return {"HDMI-A-1"};
+      return {"card0:HDMI-A-1"};
     }
     if (probe::scenario == "private-missing" || probe::scenario == "private-cancel" ||
         (probe::scenario == "private-reconnect" && attempt == 1) ||
         (probe::scenario == "private-reinit" && attempt == 2)) {
       if (probe::scenario == "private-cancel") video::test_queue->stop();
-      return {"HDMI-A-1"};
+      return {"card0:HDMI-A-1"};
     }
-    if (probe::scenario == "private-manual" && attempt >= 2) return {"HDMI-A-1"};
-    if (probe::scenario == "private-manual") return {"Virtual-1", "HDMI-A-1"};
-    return {"HDMI-A-1", "Virtual-1"};
+    if (probe::scenario == "private-manual" && attempt >= 2) return {"card0:HDMI-A-1"};
+    if (probe::scenario == "private-manual") return {"card2:Virtual-1", "card0:HDMI-A-1"};
+    return {"card0:HDMI-A-1", "card2:Virtual-1"};
   }
-  std::shared_ptr<display_t> display(int,const std::string& name,const video::config_t&, const std::optional<adapter_id_t>& = std::nullopt) {
+  std::vector<std::string> display_names(int) {
+    if (probe::scenario == "private-backend") return {"0", "1"};
+    const auto targets = kms_capture_targets(0);
+    std::vector<std::string> names;
+    for (const auto &target : targets) names.push_back(target.substr(target.find(':') + 1));
+    return names;
+  }
+  std::shared_ptr<display_t> make_test_display(const std::string &name) {
     probe::opened_outputs.push_back(name);
     if (probe::scenario == "private-open-retry" && probe::opened_outputs.size() == 1) return {};
     if (++probe::generations > 8) { video::test_queue->stop(); return {}; }
@@ -309,6 +317,13 @@ namespace platf {
     auto result=std::make_shared<kms::display_probe_t>();
     if(!result->sdr_capture_allowed(true)) return {};
     return result;
+  }
+  std::shared_ptr<display_t> display(int,const std::string& name,const video::config_t&, const std::optional<adapter_id_t>& = std::nullopt) {
+    assert(probe::scenario != "private-backend");
+    return make_test_display(name);
+  }
+  std::shared_ptr<display_t> kms_display(int,const std::string& name,const video::config_t&) {
+    return make_test_display(name);
   }
 }
 namespace video {
@@ -457,16 +472,16 @@ int main(int argc,char **argv) {
       return !probe::opened_outputs.empty() || probe::frames != 0 || (!probe::sync_mode && images->running()) ||
              (timed_out ? (elapsed < 2900ms || elapsed > 6s) : elapsed > 1s);
     }
-    std::vector<std::string> expected {"Virtual-1"};
-    if (probe::scenario == "private-open-retry" || probe::scenario == "private-reinit") expected.push_back("Virtual-1");
-    if (probe::scenario == "private-manual") expected.push_back("HDMI-A-1");
+    std::vector<std::string> expected {"card2:Virtual-1"};
+    if (probe::scenario == "private-open-retry" || probe::scenario == "private-reinit") expected.push_back("card2:Virtual-1");
+    if (probe::scenario == "private-manual") expected.push_back("card0:HDMI-A-1");
     if (probe::scenario == "private-shortcut") {
-      expected = {"HDMI-A-1"};
+      expected = {"card0:HDMI-A-1"};
       if (probe::enumerations != 2) return 10;
     }
     if (probe::opened_outputs != expected) return 7;
     if (probe::scenario == "private-healthy" && probe::enumerations != 1) return 8;
-    if (probe::scenario == "private-reconnect" && probe::enumerations != 2) return 9;
+    if ((probe::scenario == "private-reconnect" || probe::scenario == "private-other-card") && probe::enumerations != 2) return 9;
   }
   if(probe::scenario.starts_with("hyprland-second-")) {
     return probe::frames!=0 || probe::deliveries!=0 || probe::generations!=(probe::sync_mode?2u:3u) || probe::selected_hdr!=0 || probe::selected_sdr!=1 || probe::metadata_commits!=0;
@@ -579,7 +594,7 @@ def main():
         cpp, binary = output / 'worker.cpp', output / 'worker'
         cpp.write_text(program)
         flags = shlex.split(subprocess.check_output(['pkg-config', '--cflags', '--libs', 'libdrm'], text=True))
-        command = [args.compiler, '-std=c++23', '-pthread', '-I', str(root), str(cpp), str(root / 'src/video_policy.cpp'), *flags, '-o', str(binary)]
+        command = [args.compiler, '-std=c++23', '-DSUNSHINE_BUILD_DRM', '-pthread', '-I', str(root), str(cpp), str(root / 'src/video_policy.cpp'), *flags, '-o', str(binary)]
         if args.sanitizers:
             command[1:1] = ['-O1', '-g', '-fsanitize=address,undefined', '-fno-omit-frame-pointer']
         compiled = subprocess.run(command, capture_output=True, text=True)
@@ -593,7 +608,7 @@ def main():
         scenarios = nonpq if args.nonpq_controls else ['persistent-selected-faults'] if args.persistent_selected_faults else ['initial-faults', 'selected-recovery', 'persistent-selected-faults', 'unreadable-recovery', 'equivalent-churn', 'replacement-aba', 'initial-aba', 'changed-during-drain', 'new-identity', 'recycled-identity', 'sdr', *nonpq, 'hyprland-sdr', 'hyprland-second-pq', 'hyprland-second-gamma', 'hyprland-second-hlg', 'hyprland-second-unknown']
         if not args.nonpq_controls and not args.persistent_selected_faults:
             scenarios += ['private-healthy', 'private-missing', 'private-open-retry', 'private-reconnect',
-                          'private-reinit', 'private-manual', 'private-shortcut', 'private-cancel']
+                          'private-reinit', 'private-manual', 'private-shortcut', 'private-cancel', 'private-backend', 'private-other-card']
         for scenario in scenarios:
             for mode in ([[]] if scenario == 'private-manual' else [[], ["sync"]]):
                 result = subprocess.run([str(binary), scenario, *mode], capture_output=True, text=True, timeout=10, env=os.environ.copy())

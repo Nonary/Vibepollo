@@ -164,7 +164,7 @@ namespace rtsp_stream {
     std::array<std::uint8_t, 16> virtual_display_guid_bytes {};
     std::string virtual_display_device_id;
     // A normal Linux game may capture only this reserved output until the user switches monitors.
-    bool exclusive_private_capture = false;
+    std::optional<std::string> exclusive_private_capture;
     std::optional<std::chrono::steady_clock::time_point> virtual_display_ready_since;
     std::optional<bool> virtual_display_hdr_enabled;
     bool virtual_display_recreated_on_demand = false;

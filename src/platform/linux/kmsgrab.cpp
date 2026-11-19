@@ -36,7 +36,7 @@
 #include "src/config.h"
 #include "src/drm_timing_trace.h"
 #include "src/logging.h"
-#include "src/platform/common.h"
+#include "kmsgrab.h"
 #include "src/round_robin.h"
 #include "src/utility.h"
 #include "src/video.h"
@@ -2462,7 +2462,7 @@ namespace platf {
 
   }  // namespace kms
 
-  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type);
+  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type, bool qualify_names = false);
 
   std::shared_ptr<display_t> kms_display(mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
     std::lock_guard lock {kms::display_mutex};
@@ -2581,7 +2581,7 @@ namespace platf {
   }
 
   // Called only while kms::display_mutex protects the shared enumeration state.
-  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type) {
+  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type, bool qualify_names) {
     std::uint32_t count = 0;
 
     if (!fs::exists("/dev/dri")) {
@@ -2754,13 +2754,18 @@ namespace platf {
     std::vector<std::string> display_names;
     display_names.reserve(named_monitors.size());
     for (const auto &named_monitor : named_monitors) {
-      display_names.emplace_back(named_monitor.display_name);
+      display_names.emplace_back(qualify_names ? kms::selection::qualified_name(named_monitor.monitor) : named_monitor.display_name);
     }
 
     kms::card_descriptors = std::move(cds);
     kms::named_monitors = std::move(named_monitors);
 
     return display_names;
+  }
+
+  std::vector<std::string> kms_capture_targets(mem_type_e hwdevice_type) {
+    std::lock_guard lock {kms::display_mutex};
+    return kms_display_names_unlocked(hwdevice_type, true);
   }
 
   // A list of names of displays accepted as display_name.

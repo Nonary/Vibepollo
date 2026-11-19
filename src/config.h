@@ -611,7 +611,7 @@ namespace config {
   // lease makes rollback conditional so an older recovery cannot erase an
   // override installed by a newer session.
   using runtime_output_override_lease_t = std::uint64_t;
-  runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name, bool exclusive_private_capture = false);
+  runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name, std::optional<std::string> exclusive_private_capture = std::nullopt);
   bool clear_runtime_output_name_override_if_lease(runtime_output_override_lease_t lease);
 
 #ifdef _WIN32
