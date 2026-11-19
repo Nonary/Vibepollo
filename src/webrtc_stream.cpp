@@ -3429,11 +3429,9 @@ namespace webrtc_stream {
         }
       });
 #ifdef __linux__
-      bool linux_private_display_prepared = false;
+      platf::linux_display::prepared_display_t prepared_display;
       auto linux_private_display_guard = util::fail_guard([&]() {
-        if (linux_private_display_prepared) {
-          (void) platf::linux_display::backend().revert();
-        }
+        prepared_display.rollback(current_app_id > 0 && current_app_id == effective_app_id);
       });
 #endif
 
@@ -3507,7 +3505,7 @@ namespace webrtc_stream {
           }
         }
 #elif defined(__linux__)
-        const auto prepared_display = platf::linux_display::backend().prepare_session(
+        prepared_display = platf::linux_display::backend().prepare_session(
           *launch_session,
           !capture_already_active,
           allow_display_changes
@@ -3516,11 +3514,10 @@ namespace webrtc_stream {
           pending_output_override_lease =
             config::set_runtime_output_name_override_with_lease(prepared_display.output_name, launch_session->exclusive_private_capture);
         }
-        if (prepared_display.owns_output) {
-          linux_private_display_prepared = true;
-        } else if (!prepared_display.error.empty()) {
+        if (!prepared_display.error.empty()) {
           return prepared_display.error;
-        } else if (!capture_already_active && prepared_display.output_name.empty()) {
+        }
+        if (!prepared_display.owns_output && !capture_already_active && prepared_display.output_name.empty()) {
           if (const auto lease = config::replace_retained_private_capture(launch_session->output_name_override)) {
             pending_output_override_lease = lease;
           }

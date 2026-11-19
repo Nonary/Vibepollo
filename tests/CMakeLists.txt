@@ -1060,6 +1060,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_x11_monitor_hotplug.py"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_linux_x11_monitor_hotplug PROPERTIES LABELS "component" TIMEOUT 30)
+        add_test(NAME test_component_linux_private_capture_reservation
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_private_capture_reservation.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_linux_private_capture_reservation PROPERTIES LABELS "component" TIMEOUT 30)
         add_test(NAME test_component_linux_private_capture_resume
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/platform/linux/test_private_capture_resume.py"

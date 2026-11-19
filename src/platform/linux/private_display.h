@@ -23,6 +23,7 @@ namespace platf::linux_private_display {
     bool active {false};
     std::string output_name;
     std::string error;
+    bool reused_private_capture {false};
   };
 
   /**
@@ -42,6 +43,9 @@ namespace platf::linux_private_display {
     bool no_active_sessions,
     bool allow_display_changes
   );
+
+  /** Rearm the configured cleanup for a paused game whose display preparation failed. */
+  void restore_after_failed_preparation();
 
   /** Report a private connector lost between display setup and stream admission. */
   std::optional<std::string> capture_start_error(const rtsp_stream::launch_session_t &session);

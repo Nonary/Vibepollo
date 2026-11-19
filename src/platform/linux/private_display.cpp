@@ -111,9 +111,7 @@ namespace platf::linux_private_display {
       bool snapshot_greeter_handoff {false};
       std::map<std::string, std::string> snapshot_physical_identities;
       std::map<std::string, std::string> reservations;
-#ifdef SUNSHINE_BUILD_DRM
       linux_private_display_capture::reserved_connector_t reserved_capture;
-#endif
       std::map<std::string, double> retained_scales;
       std::set<std::string> newly_connected_reservations;
       // KDE's idle screen-off reconfigures every GPU. On NVIDIA it wedged GSP
@@ -1086,25 +1084,14 @@ namespace platf::linux_private_display {
       return true;
     }
 
-    void restore_after_failed_preparation() {
-      const auto delay = cleanup_policy::failed_preparation_restore_delay(
-        proc::proc.current_app_id() > 0,
-        config::video.dd.config_revert_on_disconnect,
-        config::video.dd.paused_virtual_display_timeout_secs,
-        config::video.dd.config_revert_delay);
-      if (delay) schedule_revert(*delay, "failed display preparation");
-    }
-
     std::optional<std::string> reserve_output(
       state_t &manager,
       const std::string &identity,
       const bool no_active_sessions,
       const bool reuse_active_reservation = true
     ) {
-#ifdef SUNSHINE_BUILD_DRM
       // Check ownership before a new client can claim a previously released name.
       manager.reserved_capture.forget_if_released(manager.reservations);
-#endif
       const auto connect = [&](const std::string &name) {
         const auto configuration = query_configuration();
         // Refresh idle preferences and persist ownership before hotplug.
@@ -1139,6 +1126,8 @@ namespace platf::linux_private_display {
             return std::nullopt;
           }
         }
+        // A failed observation cannot give a paused game a different connector.
+        if (manager.reserved_capture.bound_to(existing->second)) return std::nullopt;
         manager.reservations.erase(existing);
       }
 
@@ -1183,6 +1172,15 @@ namespace platf::linux_private_display {
       return std::nullopt;
     }
   }  // namespace
+
+  void restore_after_failed_preparation() {
+    const auto delay = cleanup_policy::failed_preparation_restore_delay(
+      proc::proc.current_app_id() > 0,
+      config::video.dd.config_revert_on_disconnect,
+      config::video.dd.paused_virtual_display_timeout_secs,
+      config::video.dd.config_revert_delay);
+    if (delay) schedule_revert(*delay, "failed display preparation");
+  }
 
   bool initialize() {
     auto target_mutation = display_target::leases().begin_mutation();
@@ -1357,6 +1355,9 @@ namespace platf::linux_private_display {
       std::lock_guard lock {manager.mutex};
       const bool shared = mode == config::video_t::virtual_display_mode_e::shared;
       const auto identity = reservation_identity(session, shared);
+      const auto previous = manager.reservations.find(identity);
+      const bool already_bound = previous != manager.reservations.end() && manager.reserved_capture.bound_to(previous->second);
+      result.reused_private_capture = already_bound;
       const auto output_name = reserve_output(manager, identity, no_active_sessions, shared);
       if (!output_name) {
         result.error = "No unreserved Linux private display could be connected";
@@ -1376,14 +1377,24 @@ namespace platf::linux_private_display {
           });
           if (!session.exclusive_private_capture) {
             result.error = "Could not identify the DRM card for private streaming display '" + *output_name + "'.";
+          } else if (already_bound) {
+            const auto status = manager.reserved_capture.connection_status();
+            // A disconnected connector can keep its old CRTC until the compositor processes hotplug.
+            const bool available = status ? *status : capture_output_available(
+              *output_name, session.exclusive_private_capture, std::chrono::steady_clock::now() + output_verification_timeout);
+            if (!available) {
+              result.error = "Reserved private streaming display '" + *session.exclusive_private_capture + "' is unavailable.";
+            }
           }
         }
 #endif
         if (!result.error.empty()) {
-          manager.reservations.erase(identity);
-          manager.newly_connected_reservations.erase(identity);
-          // A failed query is not permission to unplug a potentially last-live
-          // output. Guarded restoration discovers this released connector.
+          if (!already_bound) {
+            manager.reservations.erase(identity);
+            manager.newly_connected_reservations.erase(identity);
+          }
+          // Guarded restoration handles new acquisitions. A failed resume leaves
+          // a previously qualified reservation with its original owner.
           session.virtual_display_failed = true;
           return false;
         }
