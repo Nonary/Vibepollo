@@ -183,7 +183,7 @@ namespace wl {
      */
     int init(const char *display_name = nullptr);
 
-    int init_until(std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed);
+    int init_until(std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed, const char *display_name = nullptr);
 
     // Roundtrip with Wayland connection
     void roundtrip();
@@ -204,8 +204,9 @@ namespace wl {
     display_internal_t display_internal;
   };
 
-  std::vector<std::unique_ptr<monitor_t>> monitors(const char *display_name = nullptr);
-  int init();
+  std::vector<std::unique_ptr<monitor_t>> monitors(const char *display_name = nullptr,
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(),
+    const std::function<bool()> &allowed = {});
 }  // namespace wl
 #else
 
@@ -230,12 +231,11 @@ namespace wl {
     platf::touch_port_t viewport;
   };
 
-  inline std::vector<std::unique_ptr<monitor_t>> monitors(const char *display_name = nullptr) {
+  inline std::vector<std::unique_ptr<monitor_t>> monitors(const char *display_name = nullptr,
+    std::chrono::steady_clock::time_point deadline = std::chrono::steady_clock::time_point::max(),
+    const std::function<bool()> &allowed = {}) {
     return {};
   }
 
-  inline int init() {
-    return -1;
-  }
 }  // namespace wl
 #endif

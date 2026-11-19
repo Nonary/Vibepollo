@@ -35,6 +35,7 @@ refresh_prefix = source[refresh_start:refresh_end]
 program = r'''
 #include "src/platform/linux/kmsgrab_hdr.h"
 #include <algorithm>
+#include "src/platform/linux/capture_target.h"
 #include <cassert>
 #include <chrono>
 #include <cstdint>
@@ -74,7 +75,7 @@ void reset(std::vector<read_e> sequence) {
 }
 }
 namespace kms {
-inline std::mutex display_mutex;
+inline std::timed_mutex display_mutex;
 using prop_t=std::unique_ptr<drmModePropertyRes>;
 using obj_prop_t=std::unique_ptr<drmModeObjectProperties>;
 using prop_blob_t=std::unique_ptr<drmModePropertyBlobRes>;
@@ -174,7 +175,8 @@ struct display_ram_t : display_vram_t {
 };
 }
 namespace platf {
-static std::vector<std::string> kms_display_names_unlocked(mem_type_e) { return {"DP-1"}; }
+std::shared_ptr<display_t> kms_display(mem_type_e, const std::string &, const ::video::config_t &, const capture_deadline_t & = {});
+static std::vector<std::string> kms_display_names_unlocked(mem_type_e, bool = false, const capture_deadline_t & = {}) { return {"DP-1"}; }
 '''
 program += function("  std::shared_ptr<display_t> kms_display(")
 program += r'''

@@ -615,6 +615,8 @@ namespace config {
   // override installed by a newer session.
   using runtime_output_override_lease_t = std::uint64_t;
   runtime_output_override_lease_t set_runtime_output_name_override_with_lease(std::string output_name, std::optional<std::string> exclusive_private_capture = std::nullopt);
+  // Only a retained private selection can be replaced on physical resume.
+  runtime_output_override_lease_t replace_retained_private_capture(std::optional<std::string> physical_output);
   bool clear_runtime_output_name_override_if_lease(runtime_output_override_lease_t lease);
 
 #ifdef _WIN32

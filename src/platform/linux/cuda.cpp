@@ -1328,6 +1328,7 @@ namespace cuda {
 
           capture_params.eTrackingType = NVFBC_TRACKING_OUTPUT;
           capture_params.dwOutputId = output.dwId;
+          captured_connector = output.name;
         } else {
           capture_params.eTrackingType = NVFBC_TRACKING_SCREEN;
 
@@ -1563,7 +1564,7 @@ namespace platf {
     return display;
   }
 
-  std::vector<std::string> nvfbc_display_names() {
+  std::vector<std::string> nvfbc_display_names(bool connector_names) {
     if (cuda::init() || cuda::nvfbc::init()) {
       return {};
     }
@@ -1595,7 +1596,7 @@ namespace platf {
       BOOST_LOG(debug) << "  Name: "sv << output.name;
       BOOST_LOG(info) << "  Resolution: "sv << output.trackedBox.w << 'x' << output.trackedBox.h;
       BOOST_LOG(info) << "  Offset: "sv << output.trackedBox.x << 'x' << output.trackedBox.y;
-      display_names.emplace_back(std::to_string(x));
+      display_names.emplace_back(connector_names ? std::string(output.name) : std::to_string(x));
     }
 
     return display_names;

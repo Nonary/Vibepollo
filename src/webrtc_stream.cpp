@@ -3504,6 +3504,10 @@ namespace webrtc_stream {
           linux_private_display_prepared = true;
         } else if (!prepared_display.error.empty()) {
           return prepared_display.error;
+        } else if (!capture_already_active && prepared_display.output_name.empty()) {
+          if (const auto lease = config::replace_retained_private_capture(launch_session->output_name_override)) {
+            pending_output_override_lease = lease;
+          }
         }
         if (webrtc_capture.stream_start_params) {
           webrtc_capture.stream_start_params->uses_virtual_display = launch_session->virtual_display;

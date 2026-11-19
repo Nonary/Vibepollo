@@ -25,6 +25,7 @@ def function(source, marker, last=False):
 
 PRELUDE = r'''
 #include "src/platform/linux/kmsgrab_hdr.h"
+#include "src/platform/linux/capture_target.h"
 #include "src/platform/linux/session_backend.h"
 #include "src/capture_recovery.h"
 #include "src/video_policy.h"
@@ -51,7 +52,7 @@ namespace probe {
   bool initial_phase, fail_initial, fail_selected, fail_current;
   unsigned eotf=2, cll=900;
   std::string scenario;
-  unsigned enumerations = 0;
+  unsigned enumerations = 0, wrong_frames = 0;
   std::vector<std::string> opened_outputs;
   std::optional<int> switch_request;
   unsigned frames_per_generation = 8, wanted_frames = 24, forced_restarts = 2;
@@ -88,6 +89,7 @@ namespace safe {
   template<class T> struct queue_t {
     bool active = true; std::deque<T> items;
     bool running() const { return active; }
+    bool peek() const { return !items.empty(); }
     void stop() { active = false; }
     auto &unsafe() { return items; }
     std::optional<T> pop() { if (probe::on_pop) probe::on_pop(); if (items.empty()) return {}; auto t=std::move(items.front()); items.pop_front(); return t; }
@@ -148,6 +150,7 @@ namespace platf {
   };
   struct display_t {
     std::uint64_t recovery_capture_instance = 0;
+    std::string captured_connector;
     virtual ~display_t() = default;
     virtual bool is_hdr() = 0;
     virtual bool get_hdr_metadata(SS_HDR_METADATA&) = 0;
@@ -219,6 +222,7 @@ namespace platf {
         }
         if (!pull(out)) return capture_e::interrupted;
         ++delivered; ++probe::frames;
+        if (captured_connector == "DP-3") ++probe::wrong_frames;
         return capture_e::ok;
       }
 @@KMS_FIXED_CAPTURE@@
@@ -283,8 +287,13 @@ namespace video {
   auto make_black_display(const config_t&) { return std::shared_ptr<platf::display_t>{}; }
 }
 namespace platf {
-  std::vector<std::string> kms_capture_targets(int) {
+  std::vector<std::string> kms_capture_targets(int, const capture_deadline_t &limits = {}) {
     const auto attempt = ++probe::enumerations;
+    if (probe::scenario == "private-slow-discovery" && attempt == 1) {
+      assert(limits.until != capture_deadline_t::clock::time_point::max());
+      std::this_thread::sleep_until(limits.until);
+      return {"card2:Virtual-1"};
+    }
     if (probe::scenario == "private-other-card" && attempt == 1) return {"card0:Virtual-1"};
     if (probe::scenario == "private-shortcut") {
       if (attempt == 1) probe::switch_request = 7;  // An absent monitor does not authorize HDMI.
@@ -308,14 +317,14 @@ namespace platf {
     for (const auto &target : targets) names.push_back(target.substr(target.find(':') + 1));
     return names;
   }
-  std::vector<std::string> display_switch_targets(int, bool &uses_kms) {
+  std::vector<std::string> display_switch_targets(int, display_switch_source_e &source, const capture_deadline_t &) {
     assert(probe::scenario != "private-backend");
     if (probe::scenario.starts_with("private-public-")) {
-      uses_kms = false;
+      source = probe::scenario == "private-public-indexed" ? display_switch_source_e::indexed : display_switch_source_e::named;
       // KWin's F1 selects Virtual-1, where the KMS list puts HDMI first.
       return {"Virtual-1", "HDMI-A-1"};
     }
-    uses_kms = true;
+    source = display_switch_source_e::kms;
     if (probe::scenario == "private-shortcut") return {"card0:HDMI-A-1"};
     return {"card2:Virtual-1", "card0:HDMI-A-1"};
   }
@@ -327,6 +336,9 @@ namespace platf {
     if (probe::generations == 2 && probe::scenario == "new-identity") { probe::connector_id=92; probe::luminance=1500; }
     if (probe::generations == 2 && probe::scenario == "recycled-identity") { probe::connector_id=91; probe::luminance=1600; }
     auto result=std::make_shared<kms::display_probe_t>();
+    result->captured_connector = name;
+    if (name == "HDMI-A-1" && probe::scenario == "private-public-wrong") result->captured_connector = "DP-3";
+    if (name == "1" && probe::scenario == "private-public-indexed") result->captured_connector = "HDMI-A-1";
     if(!result->sdr_capture_allowed(true)) return {};
     return result;
   }
@@ -334,7 +346,7 @@ namespace platf {
     assert(probe::scenario != "private-backend");
     return make_test_display(name);
   }
-  std::shared_ptr<display_t> kms_display(int,const std::string& name,const video::config_t&) {
+  std::shared_ptr<display_t> kms_display(int,const std::string& name,const video::config_t&, const capture_deadline_t & = {}) {
     return make_test_display(name);
   }
 }
@@ -433,7 +445,7 @@ int main(int argc,char **argv) {
   probe::on_frame=[] {
     if (probe::scenario == "private-manual" && probe::frames == 4) probe::switch_request = 1;
     if (probe::scenario == "private-public-reserved" && probe::frames == 4) probe::switch_request = 0;
-    if ((probe::scenario == "private-public-physical" || probe::scenario == "private-public-open-failed") && probe::frames == 4) probe::switch_request = 1;
+    if (probe::scenario.starts_with("private-public-") && probe::scenario != "private-public-reserved" && probe::frames == 4) probe::switch_request = 1;
     if (probe::scenario.starts_with("nonpq-churn-")) {
       // Keep the same numeric ID while its unused SDR metadata changes.
       ++probe::cll; ++probe::luminance;
@@ -480,9 +492,9 @@ int main(int argc,char **argv) {
             << " restarts=" << probe::restarts << " handoffs=" << probe::metadata_commits << " init_reads=" << probe::init_reads
             << " hdr=" << probe::selected_hdr << " sdr=" << probe::selected_sdr << '\n';
   if (probe::scenario.starts_with("private-")) {
-    if (probe::scenario == "private-missing" || probe::scenario == "private-cancel") {
+    if (probe::scenario == "private-missing" || probe::scenario == "private-cancel" || probe::scenario == "private-slow-discovery") {
       const auto elapsed = std::chrono::steady_clock::now() - started;
-      const bool timed_out = probe::scenario == "private-missing";
+      const bool timed_out = probe::scenario != "private-cancel";
       return !probe::opened_outputs.empty() || probe::frames != 0 || (!probe::sync_mode && images->running()) ||
              (timed_out ? (elapsed < 2900ms || elapsed > 6s) : elapsed > 1s);
     }
@@ -492,6 +504,12 @@ int main(int argc,char **argv) {
     if (probe::scenario == "private-public-reserved") expected.push_back("card2:Virtual-1");
     if (probe::scenario == "private-public-physical" || probe::scenario == "private-public-open-failed") expected.push_back("HDMI-A-1");
     if (probe::scenario == "private-public-open-failed") expected.push_back("card2:Virtual-1");
+    if (probe::scenario == "private-public-wrong") {
+      expected.insert(expected.end(), {"HDMI-A-1", "card2:Virtual-1"});
+      // The mismatched display was created, but it must never reach the encoder.
+      if (probe::wrong_frames) return 12;
+    }
+    if (probe::scenario == "private-public-indexed") expected.push_back("1");
     if (probe::scenario == "private-shortcut") {
       expected = {"card0:HDMI-A-1"};
       if (probe::enumerations != 2) return 10;
@@ -503,7 +521,7 @@ int main(int argc,char **argv) {
   if(probe::scenario.starts_with("hyprland-second-")) {
     return probe::frames!=0 || probe::deliveries!=0 || probe::generations!=(probe::sync_mode?2u:3u) || probe::selected_hdr!=0 || probe::selected_sdr!=1 || probe::metadata_commits!=0;
   }
-  if (probe::frames != 24 || probe::deliveries != 24 || probe::generations != expected_generations ||
+  if (probe::frames != 24 || probe::deliveries != 24 || probe::generations != expected_generations + (probe::scenario == "private-public-wrong") ||
       probe::selected_hdr != expected_hdr || probe::selected_sdr != expected_sdr ||
       probe::metadata_commits != expected_hdr + expected_sdr - expected_generations ||
       probe::restarts != (probe::sync_mode ? expected_generations - 1 : expected_hdr + expected_sdr - 1)) return 1;
@@ -562,7 +580,7 @@ def main():
     sync_open, sync_state, sync_call = '', '', 'platf::display(0,"Virtual-1",video::test_config)'
     if '  struct private_capture_t {' in video:
         branch = function(sync_function, '      if (private_capture.output) {')
-        sync_state = 'video::private_capture_t private_capture {video::capture_source_e::active_output};'
+        sync_state = 'video::private_capture_t private_capture {video::capture_source_e::active_output, [] { return video::test_queue->running(); }};'
         sync_call = 'video::open_sync_display(private_capture)'
         sync_open = r'''
   std::shared_ptr<platf::display_t> open_sync_display(private_capture_t &private_capture) {
@@ -626,7 +644,8 @@ def main():
         if not args.nonpq_controls and not args.persistent_selected_faults:
             scenarios += ['private-healthy', 'private-missing', 'private-open-retry', 'private-reconnect',
                           'private-reinit', 'private-manual', 'private-shortcut', 'private-cancel', 'private-backend', 'private-other-card',
-                          'private-public-reserved', 'private-public-physical', 'private-public-open-failed']
+                          'private-public-reserved', 'private-public-physical', 'private-public-open-failed',
+                          'private-public-wrong', 'private-public-indexed', 'private-slow-discovery']
         for scenario in scenarios:
             for mode in [[], ["sync"]]:
                 result = subprocess.run([str(binary), scenario, *mode], capture_output=True, text=True, timeout=10, env=os.environ.copy())
