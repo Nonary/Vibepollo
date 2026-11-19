@@ -4336,6 +4336,8 @@ namespace nvhttp {
 
       tree.put("root.<xmlattr>.status_code", 200);
       tree.put("root.hostname", config::nvhttp.sunshine_name);
+      // Lets a client offer controls that fit the host, such as its system shortcuts.
+      tree.put("root.HostPlatform", SUNSHINE_PLATFORM);
 
       tree.put("root.appversion", VERSION);
       tree.put("root.GfeVersion", GFE_VERSION);
