@@ -121,8 +121,8 @@ jobs:
         # Native container Git does not retain checkout's temporary HOME/config.
         # Trust only this verified checkout for this invocation, never all repos.
         run: |
-          git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --depth 1 -- third-party/libvirtualdisplay third-party/libvirtualgamepad
-          test -s third-party/libvirtualdisplay/linux/vibeshine-drm/Makefile
+          git -c safe.directory="$GITHUB_WORKSPACE" submodule update --init --depth 1 -- third-party/libvirtualdisplay-linux third-party/libvirtualgamepad
+          test -s third-party/libvirtualdisplay-linux/linux/vibeshine-drm/Makefile
           test -s third-party/libvirtualgamepad/linux/vibeshine-ds5/Makefile
           test -s third-party/libvirtualgamepad/linux/vibeshine-ds5/dkms.conf.in
 
@@ -165,7 +165,7 @@ jobs:
           }
 
           module_build_dir="${RUNNER_TEMP}/vibeshine-drm-${kernel_release}"
-          cp -a third-party/libvirtualdisplay/linux/vibeshine-drm "${module_build_dir}"
+          cp -a third-party/libvirtualdisplay-linux/linux/vibeshine-drm "${module_build_dir}"
           write_drm_version_header "${module_build_dir}" "0.0.0"
           # The exact pinned helper was audited: it only compiles modules and
           # selects LLVM when required by the kernel; no signing or installation.
@@ -198,7 +198,7 @@ jobs:
 
           dkms_ci_version=0.0.1
           dkms_source="/usr/src/vibeshine-drm-${dkms_ci_version}"
-          cp -a third-party/libvirtualdisplay/linux/vibeshine-drm "${dkms_source}"
+          cp -a third-party/libvirtualdisplay-linux/linux/vibeshine-drm "${dkms_source}"
           write_drm_version_header "${dkms_source}" "${dkms_ci_version}"
           sed "s/@PROJECT_VERSION_NUMERIC@/${dkms_ci_version}/g" \
             "${dkms_source}/dkms.conf.in" >"${dkms_source}/dkms.conf"

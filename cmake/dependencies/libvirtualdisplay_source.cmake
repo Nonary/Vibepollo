@@ -8,9 +8,16 @@ option(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE
         OFF)
 
 set(SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR "" CACHE PATH "Path to libvirtualdisplay source")
+# Windows must track the reviewed producer of its prebuilt driver. Linux
+# can carry KWin changes while that Windows source and payload stay paired.
+set(_libvirtualdisplay_submodule "third-party/libvirtualdisplay")
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(_libvirtualdisplay_submodule "third-party/libvirtualdisplay-linux")
+endif()
+
 if(NOT SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR)
-    if(EXISTS "${CMAKE_SOURCE_DIR}/third-party/libvirtualdisplay/CMakeLists.txt")
-        set(SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR "${CMAKE_SOURCE_DIR}/third-party/libvirtualdisplay")
+    if(EXISTS "${CMAKE_SOURCE_DIR}/${_libvirtualdisplay_submodule}/CMakeLists.txt")
+        set(SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR "${CMAKE_SOURCE_DIR}/${_libvirtualdisplay_submodule}")
     elseif(EXISTS "${CMAKE_SOURCE_DIR}/../libvirtualdisplay/CMakeLists.txt")
         set(SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR "${CMAKE_SOURCE_DIR}/../libvirtualdisplay")
     endif()
@@ -18,7 +25,8 @@ endif()
 
 if(NOT SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR OR
         NOT EXISTS "${SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR}/CMakeLists.txt")
-    message(FATAL_ERROR "libvirtualdisplay source not found. Set SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR.")
+    message(FATAL_ERROR
+            "libvirtualdisplay source not found. Initialize ${_libvirtualdisplay_submodule} or set SUNSHINE_LIBVIRTUALDISPLAY_SOURCE_DIR.")
 endif()
 
 if(SUNSHINE_ENABLE_FRAME_PUSH_CAPTURE)
