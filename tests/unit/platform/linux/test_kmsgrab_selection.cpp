@@ -412,6 +412,19 @@ TEST(KmsgrabSelection, UsesStableConnectorNamesAndLegacyMonitorOrdinals) {
   EXPECT_EQ(*numeric_alias, monitors[1].monitor.monitor_index);
 }
 
+TEST(KmsgrabSelection, ReservedCardDoesNotFollowAnIdenticallyNamedConnector) {
+  const auto reserved = selection::qualified_name({"card2", "Virtual-1", 40, 0});
+  const auto other_card = selection::name_monitors({{"card0", "Virtual-1", 12, 0}});
+  ASSERT_EQ(other_card.front().display_name, "Virtual-1");
+  EXPECT_FALSE(selection::resolve_named_monitor(reserved, other_card));
+
+  const auto returned = selection::name_monitors({{"card2", "Virtual-1", 67, 1}});
+  const auto found = selection::resolve_named_monitor(reserved, returned);
+  ASSERT_TRUE(found);
+  EXPECT_EQ(found->card_path, "card2");
+  EXPECT_EQ(found->crtc_id, 67u);
+}
+
 TEST(KmsgrabSelection, QualifiesCrossGpuCollisionsAndRejectsAmbiguousRawName) {
   const auto monitors = selection::name_monitors({
     {"card0", "HDMI-A-1", 10, 0},
