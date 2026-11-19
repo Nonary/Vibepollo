@@ -322,6 +322,7 @@ namespace platf {
   std::shared_ptr<display_t> make_test_display(const std::string &name) {
     probe::opened_outputs.push_back(name);
     if (probe::scenario == "private-open-retry" && probe::opened_outputs.size() == 1) return {};
+    if (probe::scenario == "private-public-open-failed" && name == "HDMI-A-1") return {};
     if (++probe::generations > 8) { video::test_queue->stop(); return {}; }
     if (probe::generations == 2 && probe::scenario == "new-identity") { probe::connector_id=92; probe::luminance=1500; }
     if (probe::generations == 2 && probe::scenario == "recycled-identity") { probe::connector_id=91; probe::luminance=1600; }
@@ -432,7 +433,7 @@ int main(int argc,char **argv) {
   probe::on_frame=[] {
     if (probe::scenario == "private-manual" && probe::frames == 4) probe::switch_request = 1;
     if (probe::scenario == "private-public-reserved" && probe::frames == 4) probe::switch_request = 0;
-    if (probe::scenario == "private-public-physical" && probe::frames == 4) probe::switch_request = 1;
+    if ((probe::scenario == "private-public-physical" || probe::scenario == "private-public-open-failed") && probe::frames == 4) probe::switch_request = 1;
     if (probe::scenario.starts_with("nonpq-churn-")) {
       // Keep the same numeric ID while its unused SDR metadata changes.
       ++probe::cll; ++probe::luminance;
@@ -489,7 +490,8 @@ int main(int argc,char **argv) {
     if (probe::scenario == "private-open-retry" || probe::scenario == "private-reinit") expected.push_back("card2:Virtual-1");
     if (probe::scenario == "private-manual") expected.push_back("card0:HDMI-A-1");
     if (probe::scenario == "private-public-reserved") expected.push_back("card2:Virtual-1");
-    if (probe::scenario == "private-public-physical") expected.push_back("HDMI-A-1");
+    if (probe::scenario == "private-public-physical" || probe::scenario == "private-public-open-failed") expected.push_back("HDMI-A-1");
+    if (probe::scenario == "private-public-open-failed") expected.push_back("card2:Virtual-1");
     if (probe::scenario == "private-shortcut") {
       expected = {"card0:HDMI-A-1"};
       if (probe::enumerations != 2) return 10;
@@ -624,7 +626,7 @@ def main():
         if not args.nonpq_controls and not args.persistent_selected_faults:
             scenarios += ['private-healthy', 'private-missing', 'private-open-retry', 'private-reconnect',
                           'private-reinit', 'private-manual', 'private-shortcut', 'private-cancel', 'private-backend', 'private-other-card',
-                          'private-public-reserved', 'private-public-physical']
+                          'private-public-reserved', 'private-public-physical', 'private-public-open-failed']
         for scenario in scenarios:
             for mode in [[], ["sync"]]:
                 result = subprocess.run([str(binary), scenario, *mode], capture_output=True, text=True, timeout=10, env=os.environ.copy())

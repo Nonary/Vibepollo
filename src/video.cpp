@@ -3192,6 +3192,13 @@ namespace video {
       if (index < 0) return nullptr;
 
       auto display = open_with_kms ? platf::kms_display(dev_type, names[index], config) : platf::display(dev_type, names[index], config);
+      if (!display && selected) {
+        BOOST_LOG(warning) << "Cannot open selected monitor '" << names[index] << "'. Returning to private display '" << *output << "'.";
+        manual_output.reset();
+        if (!open_with_kms) names = platf::kms_capture_targets(dev_type);
+        index = policy::resolve_display_output(*output, names).value_or(-1);
+        if (index >= 0) display = platf::kms_display(dev_type, names[index], config);
+      }
       if (display) {
         display->recovery_capture_instance = capture_recovery::observations().begin_capture();
         BOOST_LOG(info) << "Capture worker opened output '" << names[index] << "' for private display '" << *output << "'.";
