@@ -354,12 +354,12 @@ int main() {
  for(const auto &test:std::array<AudioCase,8>{{
    {"AC3","AC3","AC3",2,true,false,200},
    {"EAC3","EAC3","EAC3",6,true,true,200},
-   {"AC3","","Opus",2,true,false,200},
-   {"EAC3","AC3","Opus",6,true,false,200},
+   {"AC3","","opus",2,true,false,200},
+   {"EAC3","AC3","opus",6,true,false,200},
    {"AC3","AC3","",2,false,false,400},
    {"EAC3","EAC3","",6,false,false,400},
    {"AC3","AC3","",8,true,false,400},
-   {"","EAC3","Opus",2,true,false,200},
+   {"","EAC3","opus",2,true,false,200},
  }}) {
    reset();audio::ac3_encoder=test.encoder;audio::eac3_encoder=test.encoder;config::audio.high_quality_audio=test.quality;
    pending=std::make_shared<launch_session_t>();pending->audio_codec_offered=test.offered;
@@ -373,7 +373,7 @@ int main() {
    server.startup_pool.run();server.io_context.run();
    check(response_status==test.status && response_audio_codec==test.expected,"actual ANNOUNCE response reports the negotiated codec or rejection");
    if(admitted) {
-     const auto &selected=stream::session::allocated_audio;const bool dolby=std::string_view(test.expected)!="Opus";
+     const auto &selected=stream::session::allocated_audio;const bool dolby=std::string_view(test.expected)!="opus";
      check(selected.use_ac3==(std::string_view(test.expected)=="AC3") && selected.use_eac3==(std::string_view(test.expected)=="EAC3") &&
            selected.high_quality_dolby==(dolby && test.quality) && selected.packetDuration==(dolby?32:5) &&
            (!dolby || (selected.flags[audio::config_t::HIGH_QUALITY] && !selected.flags[audio::config_t::CUSTOM_SURROUND_PARAMS])),
