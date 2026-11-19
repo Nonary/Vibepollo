@@ -170,6 +170,11 @@ struct run_t {
     auto switch_display_event = std::make_shared<safe::event_t<int>>();
     std::uint64_t switch_display_generation = 0;
     std::optional<std::string> pending_switch_output;
+    struct {
+      std::optional<std::string> select_switch(int, video::policy::capture_selection_e selection, int requested, const std::vector<std::string> &names) {
+        return video::policy::select_manual_display_output(selection, requested, names);
+      }
+    } private_capture;
     const auto manual_switch_selection = video::policy::capture_selection_e::process_preferred;
 ''' + callback + r'''
     auto img = std::make_shared<platf::img_t>(platf::img_t {platf::generations});

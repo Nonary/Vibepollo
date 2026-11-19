@@ -3134,31 +3134,64 @@ namespace video {
 
     const std::optional<std::string> output;
     std::optional<std::string> manual_output;
+    bool manual_uses_kms = false;
     std::chrono::steady_clock::time_point retry_deadline {};
+
+    std::optional<std::string> select_switch(
+      platf::mem_type_e dev_type, policy::capture_selection_e selection,
+      int requested, const std::vector<std::string> &current_names
+    ) {
+#ifdef SUNSHINE_BUILD_DRM
+      if (output && requested >= 0) {
+        // F-keys refer to the normal backend's published order. Only an explicit
+        // request may consult it while the game owns a private KMS connector.
+        bool uses_kms;
+        const auto names = platf::display_switch_targets(dev_type, uses_kms);
+        auto chosen = policy::select_manual_display_output(selection, requested, names);
+        if (chosen) {
+          manual_uses_kms = uses_kms;
+          if (*chosen == *output || (!uses_kms && *chosen == output->substr(output->find(':') + 1))) {
+            manual_output.reset();
+          } else {
+            manual_output = chosen;
+          }
+        }
+        return chosen;
+      }
+#endif
+      return policy::select_manual_display_output(selection, requested, current_names);
+    }
 
     std::shared_ptr<platf::display_t> open(
       platf::mem_type_e dev_type, const config_t &config,
       std::vector<std::string> &names, int &index,
-      safe::event_t<int> &switch_event, std::uint64_t &generation,
-      std::optional<std::string> &pending_switch
+      safe::event_t<int> &switch_event, std::uint64_t &generation
     ) {
 #ifdef SUNSHINE_BUILD_DRM
-      // Automatic capture may advertise a compositor or NvFBC monitor list.
-      // Enumerate and open through the same KMS backend that owns this reservation.
       names = platf::kms_capture_targets(dev_type);
-      if (pending_switch) {
-        manual_output = std::exchange(pending_switch, std::nullopt);
-      }
       if (auto requested = switch_event.view_if_newer(generation)) {
-        if (auto selected = policy::select_manual_display_output(policy::capture_selection_e::exclusive_private, *requested, names)) {
-          manual_output = std::move(selected);
-        }
+        select_switch(dev_type, policy::capture_selection_e::exclusive_private, *requested, names);
       }
-      const auto manual_index = manual_output ? policy::resolve_display_output(*manual_output, names) : std::nullopt;
-      index = manual_index ? *manual_index : policy::resolve_display_output(*output, names).value_or(-1);
+      bool open_with_kms = true;
+      std::optional<int> selected;
+      if (manual_output) {
+        if (manual_uses_kms) {
+          selected = policy::resolve_display_output(*manual_output, names);
+        } else {
+          bool uses_kms;
+          auto public_names = platf::display_switch_targets(dev_type, uses_kms);
+          if (!uses_kms) selected = policy::resolve_display_output(*manual_output, public_names);
+          if (selected) {
+            open_with_kms = false;
+            names = std::move(public_names);
+          }
+        }
+        if (!selected) manual_output.reset();
+      }
+      index = selected ? *selected : policy::resolve_display_output(*output, names).value_or(-1);
       if (index < 0) return nullptr;
 
-      auto display = platf::kms_display(dev_type, names[index], config);
+      auto display = open_with_kms ? platf::kms_display(dev_type, names[index], config) : platf::display(dev_type, names[index], config);
       if (display) {
         display->recovery_capture_instance = capture_recovery::observations().begin_capture();
         BOOST_LOG(info) << "Capture worker opened output '" << names[index] << "' for private display '" << *output << "'.";
@@ -3259,7 +3292,7 @@ namespace video {
       if (capture_config.capture_target_valid && !capture_config.capture_target_valid()) return;
       if (private_capture.output) {
         disp = private_capture.open(encoder.platform_formats->dev_type, capture_config, display_names, display_p,
-                                    *switch_display_event, switch_display_generation, pending_switch_output);
+                                    *switch_display_event, switch_display_generation);
         if (disp || !private_capture.wait_for_retry(display_retry_failures)) break;
         continue;
       }
@@ -3528,10 +3561,8 @@ namespace video {
         }
 
         if (auto requested = switch_display_event->view_if_newer(switch_display_generation)) {
-          pending_switch_output = video::policy::select_manual_display_output(
-            manual_switch_selection,
-            *requested,
-            display_names
+          pending_switch_output = private_capture.select_switch(
+            encoder.platform_formats->dev_type, manual_switch_selection, *requested, display_names
           );
           if (*requested < 0 || pending_switch_output) {
             artificial_reinit = true;
@@ -3668,7 +3699,7 @@ namespace video {
               if (capture_ctxs.front().config.capture_target_valid && !capture_ctxs.front().config.capture_target_valid()) return;
               if (private_capture.output) {
                 disp = private_capture.open(encoder.platform_formats->dev_type, producer_config, display_names, display_p,
-                                            *switch_display_event, switch_display_generation, pending_switch_output);
+                                            *switch_display_event, switch_display_generation);
                 if (disp) {
                   proc::proc.display_name = display_names[display_p];
                   break;
@@ -6171,7 +6202,7 @@ namespace video {
       if (synced_session_ctxs.front()->config.capture_target_valid && !synced_session_ctxs.front()->config.capture_target_valid()) return encode_e::error;
       if (private_capture.output) {
         disp = private_capture.open(encoder.platform_formats->dev_type, synced_session_ctxs.front()->config, display_names, display_p,
-                                    *switch_display_event, switch_display_generation, pending_switch_output);
+                                    *switch_display_event, switch_display_generation);
         if (disp || !private_capture.wait_for_retry(display_retry_failures)) break;
         continue;
       }
@@ -6401,10 +6432,8 @@ namespace video {
         })
 
         if (auto requested = switch_display_event->view_if_newer(switch_display_generation)) {
-          pending_switch_output = video::policy::select_manual_display_output(
-            manual_switch_selection,
-            *requested,
-            display_names
+          pending_switch_output = private_capture.select_switch(
+            encoder.platform_formats->dev_type, manual_switch_selection, *requested, display_names
           );
           if (*requested < 0 || pending_switch_output) {
             ec = platf::capture_e::reinit;

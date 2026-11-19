@@ -308,6 +308,17 @@ namespace platf {
     for (const auto &target : targets) names.push_back(target.substr(target.find(':') + 1));
     return names;
   }
+  std::vector<std::string> display_switch_targets(int, bool &uses_kms) {
+    assert(probe::scenario != "private-backend");
+    if (probe::scenario.starts_with("private-public-")) {
+      uses_kms = false;
+      // KWin's F1 selects Virtual-1, where the KMS list puts HDMI first.
+      return {"Virtual-1", "HDMI-A-1"};
+    }
+    uses_kms = true;
+    if (probe::scenario == "private-shortcut") return {"card0:HDMI-A-1"};
+    return {"card2:Virtual-1", "card0:HDMI-A-1"};
+  }
   std::shared_ptr<display_t> make_test_display(const std::string &name) {
     probe::opened_outputs.push_back(name);
     if (probe::scenario == "private-open-retry" && probe::opened_outputs.size() == 1) return {};
@@ -383,7 +394,7 @@ int main(int argc,char **argv) {
   probe::sync_mode=argc > 2;
   probe::forced_restarts=0;
   unsigned expected_generations=1, expected_hdr=1, expected_sdr=0;
-  if (probe::scenario == "private-reinit" || probe::scenario == "private-manual") {
+  if (probe::scenario == "private-reinit" || probe::scenario == "private-manual" || probe::scenario.starts_with("private-public-")) {
     probe::forced_restarts = 1;
     expected_generations = expected_hdr = 2;
   } else if (probe::scenario == "initial-faults") {
@@ -420,6 +431,8 @@ int main(int argc,char **argv) {
   };
   probe::on_frame=[] {
     if (probe::scenario == "private-manual" && probe::frames == 4) probe::switch_request = 1;
+    if (probe::scenario == "private-public-reserved" && probe::frames == 4) probe::switch_request = 0;
+    if (probe::scenario == "private-public-physical" && probe::frames == 4) probe::switch_request = 1;
     if (probe::scenario.starts_with("nonpq-churn-")) {
       // Keep the same numeric ID while its unused SDR metadata changes.
       ++probe::cll; ++probe::luminance;
@@ -475,6 +488,8 @@ int main(int argc,char **argv) {
     std::vector<std::string> expected {"card2:Virtual-1"};
     if (probe::scenario == "private-open-retry" || probe::scenario == "private-reinit") expected.push_back("card2:Virtual-1");
     if (probe::scenario == "private-manual") expected.push_back("card0:HDMI-A-1");
+    if (probe::scenario == "private-public-reserved") expected.push_back("card2:Virtual-1");
+    if (probe::scenario == "private-public-physical") expected.push_back("HDMI-A-1");
     if (probe::scenario == "private-shortcut") {
       expected = {"card0:HDMI-A-1"};
       if (probe::enumerations != 2) return 10;
@@ -608,9 +623,10 @@ def main():
         scenarios = nonpq if args.nonpq_controls else ['persistent-selected-faults'] if args.persistent_selected_faults else ['initial-faults', 'selected-recovery', 'persistent-selected-faults', 'unreadable-recovery', 'equivalent-churn', 'replacement-aba', 'initial-aba', 'changed-during-drain', 'new-identity', 'recycled-identity', 'sdr', *nonpq, 'hyprland-sdr', 'hyprland-second-pq', 'hyprland-second-gamma', 'hyprland-second-hlg', 'hyprland-second-unknown']
         if not args.nonpq_controls and not args.persistent_selected_faults:
             scenarios += ['private-healthy', 'private-missing', 'private-open-retry', 'private-reconnect',
-                          'private-reinit', 'private-manual', 'private-shortcut', 'private-cancel', 'private-backend', 'private-other-card']
+                          'private-reinit', 'private-manual', 'private-shortcut', 'private-cancel', 'private-backend', 'private-other-card',
+                          'private-public-reserved', 'private-public-physical']
         for scenario in scenarios:
-            for mode in ([[]] if scenario == 'private-manual' else [[], ["sync"]]):
+            for mode in [[], ["sync"]]:
                 result = subprocess.run([str(binary), scenario, *mode], capture_output=True, text=True, timeout=10, env=os.environ.copy())
                 results.append(result.stdout + result.stderr)
                 failed |= result.returncode != 0
