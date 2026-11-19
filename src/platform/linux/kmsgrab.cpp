@@ -218,7 +218,7 @@ namespace platf {
     // Enumeration and capture initialization share connector maps and desktop
     // geometry. Keep the complete refresh/use transaction exclusive; a query
     // for another encoder type can otherwise replace or filter these maps.
-    static std::mutex display_mutex;
+    static std::timed_mutex display_mutex;
     static std::vector<card_descriptor_t> card_descriptors;
     static std::vector<selection::named_monitor_t> named_monitors;
 
@@ -2462,15 +2462,17 @@ namespace platf {
 
   }  // namespace kms
 
-  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type, bool qualify_names = false);
+  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type, bool qualify_names = false, const capture_deadline_t &limits = {});
 
-  std::shared_ptr<display_t> kms_display(mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config) {
-    std::lock_guard lock {kms::display_mutex};
+  std::shared_ptr<display_t> kms_display(mem_type_e hwdevice_type, const std::string &display_name, const ::video::config_t &config, const capture_deadline_t &limits) {
+    auto lock = limits.lock(kms::display_mutex);
+    if (!lock || !limits.active()) return nullptr;
     // Encoder probes can reach KMS without any prior output enumeration, and
     // previous queries may have filtered a different encoder's devices. Refresh
     // every target, including empty/numeric and physical names, before either
     // the direct-import or RAM fallback consumes the connector maps.
-    (void) kms_display_names_unlocked(hwdevice_type);
+    (void) kms_display_names_unlocked(hwdevice_type, false, limits);
+    if (!limits.active()) return nullptr;
 
     if (hwdevice_type == mem_type_e::vaapi || hwdevice_type == mem_type_e::cuda || hwdevice_type == mem_type_e::vulkan) {
       auto disp = std::make_shared<kms::display_vram_t>(hwdevice_type);
@@ -2480,7 +2482,7 @@ namespace platf {
           BOOST_LOG(error) << "Hyprland KMS capture requires verified SDR connector state"sv;
           return nullptr;
         }
-        return disp;
+        return limits.active() ? disp : nullptr;
       }
 
       // In the case of failure, attempt the old method for VAAPI
@@ -2488,11 +2490,11 @@ namespace platf {
 
     auto disp = std::make_shared<kms::display_ram_t>(hwdevice_type);
 
-    if (disp->init(display_name, config) || !disp->sdr_capture_allowed(true)) {
+    if (!limits.active() || disp->init(display_name, config) || !disp->sdr_capture_allowed(true)) {
       return nullptr;
     }
 
-    return disp;
+    return limits.active() ? disp : nullptr;
   }
 
   /**
@@ -2505,8 +2507,9 @@ namespace platf {
    *
    * This is an ugly hack :(
    */
-  void correlate_to_wayland(std::vector<kms::card_descriptor_t> &cds) {
-    auto monitors = wl::monitors();
+  void correlate_to_wayland(std::vector<kms::card_descriptor_t> &cds, const capture_deadline_t &limits) {
+    const auto deadline = std::min(limits.until, std::chrono::steady_clock::now() + 3s);
+    auto monitors = wl::monitors(nullptr, deadline, limits.allowed);
 
     BOOST_LOG(info) << "-------- Start of KMS monitor list --------"sv;
 
@@ -2581,7 +2584,7 @@ namespace platf {
   }
 
   // Called only while kms::display_mutex protects the shared enumeration state.
-  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type, bool qualify_names) {
+  static std::vector<std::string> kms_display_names_unlocked(mem_type_e hwdevice_type, bool qualify_names, const capture_deadline_t &limits) {
     std::uint32_t count = 0;
 
     if (!fs::exists("/dev/dri")) {
@@ -2598,6 +2601,7 @@ namespace platf {
 
     fs::path card_dir {"/dev/dri"sv};
     for (auto &entry : fs::directory_iterator {card_dir}) {
+      if (!limits.active()) return {};
       auto file = entry.path().filename();
 
       auto filestring = file.generic_string();
@@ -2633,6 +2637,7 @@ namespace platf {
 
       auto end = std::end(card);
       for (auto plane = std::begin(card); plane != end; ++plane) {
+        if (!limits.active()) return {};
         // Skip unused planes
         if (!plane->fb_id) {
           continue;
@@ -2691,9 +2696,10 @@ namespace platf {
       });
     }
 
-    if (!wl::init()) {
-      correlate_to_wayland(cds);
-    }
+    // Card-qualified connector discovery needs DRM state only. Query Wayland
+    // geometry when actually opening a display or listing public outputs.
+    if (!qualify_names) correlate_to_wayland(cds, limits);
+    if (!limits.active()) return {};
 
     // Deduce the full virtual desktop size
     kms::env_width = 0;
@@ -2763,9 +2769,10 @@ namespace platf {
     return display_names;
   }
 
-  std::vector<std::string> kms_capture_targets(mem_type_e hwdevice_type) {
-    std::lock_guard lock {kms::display_mutex};
-    return kms_display_names_unlocked(hwdevice_type, true);
+  std::vector<std::string> kms_capture_targets(mem_type_e hwdevice_type, const capture_deadline_t &limits) {
+    auto lock = limits.lock(kms::display_mutex);
+    if (!lock || !limits.active()) return {};
+    return kms_display_names_unlocked(hwdevice_type, true, limits);
   }
 
   // A list of names of displays accepted as display_name.

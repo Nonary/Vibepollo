@@ -5,11 +5,51 @@
 #pragma once
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <map>
+#include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace platf::linux_private_display_capture {
+  // Duplicate connector names occur across GPUs even for unplugged ports.
+  // An unreadable status leaves the identity ambiguous.
+  inline std::filesystem::path unique_connected_connector(std::span<const std::filesystem::path> candidates) {
+    std::filesystem::path selected;
+    for (const auto &path : candidates) {
+      std::ifstream status {path / "status"};
+      std::string state;
+      if (!(status >> state)) return {};
+      if (state == "disconnected") continue;
+      if (state != "connected" || !selected.empty()) return {};
+      selected = path;
+    }
+    return selected;
+  }
+
+  // Portal labels can be inferred from geometry. Keep their public order, but
+  // open only a unique DRM connector, never a stream guessed from its bounds.
+  inline std::vector<std::string> qualify_portal_switch_targets(
+    std::vector<std::string> labels, std::span<const std::string> kms_targets
+  ) {
+    for (auto &label : labels) {
+      const std::string suffix = ':' + label;
+      const std::string *match = nullptr;
+      for (const auto &target : kms_targets) {
+        if (!target.ends_with(suffix)) continue;
+        if (match) {
+          match = nullptr;
+          break;
+        }
+        match = &target;
+      }
+      label = match ? *match : "";
+    }
+    return labels;
+  }
+
   /** Several clients can share one connector. An independently reserved peer needs a composed desktop. */
   [[nodiscard]] inline bool exclusive_output(
     bool requested, std::string_view output, const std::map<std::string, std::string> &reservations

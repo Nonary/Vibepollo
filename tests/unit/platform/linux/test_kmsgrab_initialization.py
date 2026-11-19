@@ -34,6 +34,7 @@ policy = (root / "src/platform/linux/private_display_capture_policy.h").read_tex
 program = policy.replace("#pragma once", "") + r'''
 #include <algorithm>
 #include <atomic>
+#include "src/platform/linux/capture_target.h"
 #include <cassert>
 #include <bitset>
 #include <chrono>
@@ -88,7 +89,7 @@ backend_t& backend() { static backend_t b; return b; }
 }
 namespace kms {
   // The same mutex used by the compiled production entry points.
-  std::mutex display_mutex;
+  std::timed_mutex display_mutex;
   struct display_vram_t : display_t {
     mem_type_e type;
     explicit display_vram_t(mem_type_e value) : type(value) {}
@@ -119,7 +120,8 @@ namespace kms {
 }
 // DRM enumeration and capture classes are inert boundaries. Both public
 // entry points and the backend routing/initialization below are production.
-static std::vector<std::string> kms_display_names_unlocked(mem_type_e type) {
+std::shared_ptr<display_t> kms_display(mem_type_e, const std::string &, const ::video::config_t &, const capture_deadline_t & = {});
+static std::vector<std::string> kms_display_names_unlocked(mem_type_e type, bool = false, const capture_deadline_t & = {}) {
   if (fake::enumeration_throws) throw 1;
   ++fake::enumerations;
   fake::last_type=type;
@@ -212,6 +214,10 @@ int main() {
   fake::pause_init=true;
   auto initializing=std::async(std::launch::async, [&] { return capture(); });
   while (!fake::init_started) std::this_thread::yield();
+  // A stalled initialization must not keep a recovering private worker waiting.
+  const auto bounded_start = std::chrono::steady_clock::now();
+  assert(!kms_display(mem_type_e::system, "Virtual-1", config, {bounded_start + 40ms, {}}));
+  assert(std::chrono::steady_clock::now() - bounded_start < 1s);
   std::promise<void> query_attempted;
   auto querying=std::async(std::launch::async, [&] {
     query_attempted.set_value();
@@ -241,5 +247,5 @@ with tempfile.TemporaryDirectory(prefix="kmsgrab-initialization-") as work:
     work = pathlib.Path(work)
     cpp, binary = work / "fixture.cpp", work / "fixture"
     cpp.write_text(program)
-    subprocess.run([compiler, "-std=c++23", "-O0", "-pthread", str(cpp), "-o", str(binary)], check=True, timeout=20)
+    subprocess.run([compiler, "-std=c++23", "-O0", "-pthread", "-I", str(root), str(cpp), "-o", str(binary)], check=True, timeout=20)
     subprocess.run([str(binary)], check=True, timeout=10)

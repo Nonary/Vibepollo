@@ -58,6 +58,7 @@
 #include "src/platform/common_services.h"
 #include "src/boost_process_shim.h"
 #include "src/config.h"
+#include "capture_target.h"
 #include "src/entry_handler.h"
 #include "src/logging.h"
 #ifdef SUNSHINE_BUILD_DRM
@@ -1281,7 +1282,7 @@ namespace platf {
 #endif
 
 #ifdef SUNSHINE_BUILD_CUDA
-  std::vector<std::string> nvfbc_display_names();
+  std::vector<std::string> nvfbc_display_names(bool connector_names = false);
   std::shared_ptr<display_t> nvfbc_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
 
   bool verify_nvfbc() {
@@ -1301,7 +1302,6 @@ namespace platf {
 
 #ifdef SUNSHINE_BUILD_DRM
   std::vector<std::string> kms_display_names(mem_type_e hwdevice_type);
-  std::shared_ptr<display_t> kms_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
 
   bool verify_kms() {
     return !kms_display_names(mem_type_e::unknown).empty();
@@ -1309,7 +1309,7 @@ namespace platf {
 #endif
 
 #ifdef SUNSHINE_BUILD_X11
-  std::vector<std::string> x11_display_names();
+  std::vector<std::string> x11_display_names(bool connector_names = false);
   std::shared_ptr<display_t> x11_display(mem_type_e hwdevice_type, const std::string &display_name, const video::config_t &config);
 
   bool verify_x11() {
@@ -1347,7 +1347,9 @@ namespace platf {
 #endif
   }
 
-  static std::vector<std::string> selected_display_names(mem_type_e hwdevice_type, bool *switch_uses_kms) {
+  static std::vector<std::string> selected_display_names(
+    mem_type_e hwdevice_type, display_switch_source_e *switch_source, const capture_deadline_t &limits = {}
+  ) {
 #ifdef SUNSHINE_BUILD_GAMESCOPE
     if (sources[source::GAMESCOPE]) {
       // Preserve the session's logical target even if Gamescope discovery now
@@ -1358,35 +1360,47 @@ namespace platf {
 #ifdef SUNSHINE_BUILD_CUDA
     // display using NvFBC only supports mem_type_e::cuda
     if (sources[source::NVFBC] && hwdevice_type == mem_type_e::cuda) {
-      return nvfbc_display_names();
+      if (switch_source) *switch_source = display_switch_source_e::indexed;
+      return nvfbc_display_names(switch_source != nullptr);
     }
 #endif
 #ifdef SUNSHINE_BUILD_WAYLAND
     if (sources[source::WAYLAND]) {
+      if (switch_source) return wl_display_names_for_restore(limits.until, limits.allowed);
       return wl_display_names();
     }
 #endif
 #ifdef SUNSHINE_BUILD_DRM
     if (sources[source::KMS]) {
-      if (switch_uses_kms) {
-        *switch_uses_kms = true;
-        return kms_capture_targets(hwdevice_type);
+      if (switch_source) {
+        *switch_source = display_switch_source_e::kms;
+        return kms_capture_targets(hwdevice_type, limits);
       }
       return kms_display_names(hwdevice_type);
     }
 #endif
 #ifdef SUNSHINE_BUILD_X11
     if (sources[source::X11]) {
-      return x11_display_names();
+      if (switch_source) *switch_source = display_switch_source_e::indexed;
+      return x11_display_names(switch_source != nullptr);
     }
 #endif
 #ifdef SUNSHINE_BUILD_PORTAL
     if (sources[source::PORTAL]) {
+  #ifdef SUNSHINE_BUILD_DRM
+      if (switch_source) {
+        *switch_source = display_switch_source_e::kms;
+        auto labels = portal_display_names();
+        if (!limits.active()) return {};
+        return linux_private_display_capture::qualify_portal_switch_targets(std::move(labels), kms_capture_targets(hwdevice_type, limits));
+      }
+  #endif
       return portal_display_names();
     }
 #endif
 #ifdef SUNSHINE_BUILD_KWIN
     if (sources[source::KWIN]) {
+      if (switch_source) return kwin_display_names_for_restore(limits.until, limits.allowed);
       return kwin_display_names();
     }
 #endif
@@ -1397,9 +1411,9 @@ namespace platf {
     return selected_display_names(hwdevice_type, nullptr);
   }
 
-  std::vector<std::string> display_switch_targets(mem_type_e hwdevice_type, bool &uses_kms) {
-    uses_kms = false;
-    return selected_display_names(hwdevice_type, &uses_kms);
+  std::vector<std::string> display_switch_targets(mem_type_e hwdevice_type, display_switch_source_e &source, const capture_deadline_t &limits) {
+    source = display_switch_source_e::named;
+    return selected_display_names(hwdevice_type, &source, limits);
   }
 
   std::vector<std::string> display_names_for_restore(
@@ -1488,7 +1502,8 @@ namespace platf {
       return result;
     };
 #ifdef SUNSHINE_BUILD_DRM
-    if (auto result = try_backend("KMS", [&] { return kms_display_names(hwdevice_type); }, kms_display)) {
+    if (auto result = try_backend("KMS", [&] { return kms_display_names(hwdevice_type); },
+                                  [](auto type, const auto &name, const auto &format) { return kms_display(type, name, format); })) {
       return result;
     }
 #endif
@@ -1496,7 +1511,7 @@ namespace platf {
     // Verified Gamescope discovery imports its Xwayland DISPLAY at startup.
     // X11 supplies the ordinary SDR path on rootless SteamOS installations.
     if (!hdr_required && std::getenv("DISPLAY")) {
-      if (auto result = try_backend("X11", x11_display_names, x11_display)) {
+      if (auto result = try_backend("X11", [] { return x11_display_names(); }, x11_display)) {
         return result;
       }
     }

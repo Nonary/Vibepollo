@@ -441,10 +441,9 @@ namespace platf::linux_private_display {
       // deliberately recognizes only Vibepollo's Virtual-N pool, so querying it
       // for HDMI/DP connectors both produces a false error and prevents restore
       // verification from observing an already-active physical output.
-      if (matching_connectors.size() == 1 && (allow_unique_virtual || !name.starts_with("Virtual-"))) {
-        return matching_connectors.front().string();
-      }
-      return {};
+      if (error || (!allow_unique_virtual && name.starts_with("Virtual-"))) return {};
+      if (matching_connectors.size() == 1) return matching_connectors.front().string();
+      return linux_private_display_capture::unique_connected_connector(matching_connectors).string();
     }
 
     bool connector_is_connected(const std::string &name) {
@@ -867,10 +866,14 @@ namespace platf::linux_private_display {
       }, final);
     }
 
-    bool capture_output_available(const std::string &name, const std::optional<std::string> &kms_target) {
+    bool capture_output_available(const std::string &name, const std::optional<std::string> &kms_target,
+                                  std::chrono::steady_clock::time_point deadline) {
 #ifdef SUNSHINE_BUILD_DRM
       if (kms_target) {
-        const auto outputs = kms_capture_targets(mem_type_e::unknown);
+        if (restore_context) deadline = std::min(deadline, restore_context->deadline);
+        const auto outputs = kms_capture_targets(mem_type_e::unknown, {deadline, [] {
+          return !process_shutdown_preserve_requested() && restore_allowed();
+        }});
         return std::ranges::find(outputs, *kms_target) != outputs.end();
       }
 #endif
@@ -882,7 +885,7 @@ namespace platf::linux_private_display {
       const auto deadline = std::chrono::steady_clock::now() + output_verification_timeout;
       do {
         if (!restore_allowed()) return false;
-        if (capture_output_available(name, kms_target)) {
+        if (capture_output_available(name, kms_target, deadline)) {
           return true;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -1384,7 +1387,7 @@ namespace platf::linux_private_display {
         result.output_name = *output_name;
         session.virtual_display = true;
         session.virtual_display_device_id = *output_name;
-        const bool capture_available = capture_output_available(*output_name, session.exclusive_private_capture);
+        const bool capture_available = capture_output_available(*output_name, session.exclusive_private_capture, std::chrono::steady_clock::now() + output_verification_timeout);
         session.virtual_display_recreated_on_demand =
           resume_policy::requires_apply(
             manager.newly_connected_reservations.contains(identity),

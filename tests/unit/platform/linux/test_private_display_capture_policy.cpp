@@ -6,6 +6,9 @@
 
 #include <src/platform/linux/private_display_capture_policy.h>
 
+#include <cstdlib>
+#include <vector>
+
 namespace policy = platf::linux_private_display_capture;
 
 TEST(PrivateDisplayCapturePolicy, ExclusiveCaptureRequiresTheReservedOutputAndAllowsMirrors) {
@@ -50,4 +53,34 @@ TEST(PrivateDisplayCapturePolicy, RetainsKmsCapabilityForAutomaticPrivatePool) {
   EXPECT_TRUE(policy::use_dummy_compositor_names(true, false));
   EXPECT_FALSE(policy::use_dummy_compositor_names(false, true));
   EXPECT_FALSE(policy::use_dummy_compositor_names(false, false));
+}
+
+TEST(PrivateDisplayCapturePolicy, FindsOnlyTheUniquelyConnectedPortAcrossGpus) {
+  char scratch[] = "/tmp/private-capture-connector-XXXXXX";
+  ASSERT_NE(mkdtemp(scratch), nullptr);
+  const std::filesystem::path root {scratch};
+  const auto first = root / "card0-DP-1";
+  const auto second = root / "card1-DP-1";
+  std::filesystem::create_directories(first);
+  std::filesystem::create_directories(second);
+  const std::vector candidates {first, second};
+  std::ofstream(first / "status") << "connected";
+  EXPECT_TRUE(policy::unique_connected_connector(candidates).empty());
+  std::ofstream(second / "status") << "disconnected";
+  EXPECT_EQ(policy::unique_connected_connector(candidates), first);
+  std::ofstream(second / "status") << "connected";
+  EXPECT_TRUE(policy::unique_connected_connector(candidates).empty());
+  std::ofstream(first / "status") << "disconnected";
+  EXPECT_EQ(policy::unique_connected_connector(candidates), second);
+  std::ofstream(first / "status") << "unknown";
+  EXPECT_TRUE(policy::unique_connected_connector(candidates).empty());
+  std::filesystem::remove_all(root);
+}
+
+TEST(PrivateDisplayCapturePolicy, PortalShortcutOrderKeepsOnlyProvableDrmTargets) {
+  const std::vector<std::string> active {"card1:Virtual-1", "card0:DP-1", "card2:DP-1", "card0:HDMI-A-1"};
+  const auto targets = policy::qualify_portal_switch_targets(
+    {"HDMI-A-1", "position-0x0-resolution-1920x1080", "DP-1", "Virtual-1", "init"}, active);
+  const std::vector<std::string> expected {"card0:HDMI-A-1", "", "", "card1:Virtual-1", ""};
+  EXPECT_EQ(targets, expected);
 }

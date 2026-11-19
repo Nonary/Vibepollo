@@ -12,9 +12,9 @@
 #include <unistd.h>
 
 namespace platf::wayland_observation {
-  inline wl_display *connect_until(std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed) {
+  inline wl_display *connect_until(std::chrono::steady_clock::time_point deadline, const std::function<bool()> &allowed, const char *name = nullptr) {
     if (!wayland::observation_allowed(deadline, allowed)) return nullptr;
-    const char *name = std::getenv("WAYLAND_DISPLAY");
+    if (!name) name = std::getenv("WAYLAND_DISPLAY");
     if (!name || !*name) {
       errno = ENOENT;
       return nullptr;

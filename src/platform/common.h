@@ -915,6 +915,10 @@ namespace platf {
     int width, height;
     int logical_width, logical_height;
     std::string input_output_name;
+#ifdef __linux__
+    // Connector actually opened, used to verify explicit switches before delivering frames.
+    std::string captured_connector;
+#endif
 
   protected:
     // collect capture timing data (at loglevel debug)

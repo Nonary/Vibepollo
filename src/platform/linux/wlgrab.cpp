@@ -69,7 +69,8 @@ namespace wl {
       }
       display.roundtrip();
 
-      auto monitor = interface.monitors[0].get();
+      if (interface.monitors.empty()) return -1;
+      auto monitor = interface.monitors.front().get();
 
       if (!display_name.empty()) {
         // Match by xdg_output name first (stable across hotplug, e.g.
@@ -91,6 +92,7 @@ namespace wl {
         }
       }
 
+      captured_connector = monitor->name;
       output = monitor->output;
 
       offset_x = monitor->viewport.offset_x;
