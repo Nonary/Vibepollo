@@ -814,7 +814,8 @@ namespace platf::playnite {
         // When the plugin brackets snapshots with start/complete markers, reconciling per batch
         // would treat a partially accumulated library as the whole library and purge apps whose
         // games simply haven't arrived yet; wait for SnapshotComplete instead.
-        if (config::playnite.auto_sync && !defer_sync_to_snapshot_complete) {
+        if (platf::playnite::sync::policy::library_snapshot_syncs_apps(config::playnite.enabled, config::playnite.auto_sync) &&
+            !defer_sync_to_snapshot_complete) {
           sync_stats = sync_apps_metadata();
           attempted_sync = true;
         }
@@ -825,10 +826,12 @@ namespace platf::playnite {
              << " total=" << (before + added);
         if (attempted_sync) {
           line << " auto_sync " << sync_summary(sync_stats);
-        } else if (defer_sync_to_snapshot_complete) {
-          line << " auto_sync deferred";
-        } else {
+        } else if (!config::playnite.enabled) {
+          line << " auto_sync skipped (integration disabled)";
+        } else if (!config::playnite.auto_sync) {
           line << " auto_sync disabled";
+        } else {
+          line << " auto_sync deferred";
         }
         BOOST_LOG(debug) << line.str();
         {
@@ -860,7 +863,7 @@ namespace platf::playnite {
         snapshot_cv_.notify_all();
         SyncStats sync_stats;
         bool attempted_sync = false;
-        if (config::playnite.auto_sync) {
+        if (platf::playnite::sync::policy::library_snapshot_syncs_apps(config::playnite.enabled, config::playnite.auto_sync)) {
           sync_stats = sync_apps_metadata();
           attempted_sync = true;
         }
@@ -868,6 +871,8 @@ namespace platf::playnite {
         line << "Playnite: library snapshot complete games=" << total;
         if (attempted_sync) {
           line << " auto_sync " << sync_summary(sync_stats);
+        } else if (!config::playnite.enabled) {
+          line << " auto_sync skipped (integration disabled)";
         } else {
           line << " auto_sync disabled";
         }

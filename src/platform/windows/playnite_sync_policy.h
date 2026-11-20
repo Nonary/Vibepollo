@@ -66,5 +66,12 @@ namespace platf::playnite::sync {
   void add_missing_auto_entries(nlohmann::json &root, const std::vector<Game> &selected, const std::unordered_set<std::string> &matched_ids, const std::unordered_map<std::string, int> &source_flags, bool &changed, MetadataUpdater metadata_updater = nullptr);
   void autosync_reconcile(nlohmann::json &root, const std::vector<Game> &all_games, int recentN, int recent_age_days, int delete_after_days, bool require_replacement, bool sync_all_installed, const std::vector<std::string> &categories, const std::vector<std::string> &include_plugins, const std::vector<std::string> &exclude_categories, const std::vector<std::string> &exclude_ids, const std::vector<std::string> &exclude_plugins, bool remove_uninstalled, bool &changed, std::size_t &matched_out, bool manage_membership = true, MetadataUpdater metadata_updater = nullptr);
 
+  // Library snapshots also arrive while the integration is disabled: the web
+  // UI's game pickers and launches of Playnite apps start the plugin
+  // connection on demand. Applying them to apps.json needs both switches.
+  inline bool library_snapshot_syncs_apps(bool integration_enabled, bool auto_sync) {
+    return integration_enabled && auto_sync;
+  }
+
   }  // namespace policy
 }  // namespace platf::playnite::sync
