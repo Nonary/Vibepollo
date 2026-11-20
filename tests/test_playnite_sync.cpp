@@ -141,3 +141,13 @@ TEST(PlayniteSync_MonitorProfiles, PreservesMarkedRowsAcrossMatchingDedupeAndPur
     }
   }
 }
+
+TEST(PlayniteSync_Policy, LibrarySnapshotsSyncAppsOnlyWhileIntegrationEnabled) {
+  using platf::playnite::sync::policy::library_snapshot_syncs_apps;
+  EXPECT_TRUE(library_snapshot_syncs_apps(true, true));
+  // A disabled integration still receives snapshots when the web UI or a
+  // Playnite app launch connects to the plugin; they must not touch apps.json.
+  EXPECT_FALSE(library_snapshot_syncs_apps(false, true));
+  EXPECT_FALSE(library_snapshot_syncs_apps(true, false));
+  EXPECT_FALSE(library_snapshot_syncs_apps(false, false));
+}
