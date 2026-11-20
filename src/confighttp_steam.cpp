@@ -57,24 +57,21 @@ namespace confighttp {
     }
     try {
       const auto provider_available = platf::steam::available();
-      auto found = platf::steam::discover();
-      const auto all_importable = platf::steam::sync::policy::filter_games(found, {}, config::steam.include_tools);
-      const auto selected = platf::steam::sync::policy::select_games(
-        found,
+      // Count from the same catalog the sync imports from. Plain discover()
+      // carries no play history on Windows, so recent mode would select nothing.
+      const auto counts = platf::steam::sync::policy::status_counts(
+        platf::steam::discover_catalog(),
         config::steam.sync_all_installed,
         config::steam.recent_games,
         config::steam.recent_max_age_days,
         config::steam.exclude_games_meta,
         config::steam.include_tools
       );
-      const auto selected_importable = platf::steam::sync::policy::filter_games(selected, {}, config::steam.include_tools);
-      const auto filtered = platf::steam::sync::policy::filter_games(selected, config::steam.exclude_games_meta, config::steam.include_tools);
-      const auto all_filtered = platf::steam::sync::policy::filter_games(found, config::steam.exclude_games_meta, config::steam.include_tools);
       nlohmann::json exclusions = nlohmann::json::array();
       for (const auto &entry : config::steam.exclude_games_meta) {
         exclusions.push_back({{"id", entry.id}, {"name", entry.name}});
       }
-      nlohmann::json out {{"status", true}, {"provider", "steam"}, {"enabled", config::steam.enabled}, {"forced", false}, {"available", provider_available}, {"game_count", found.size()}, {"importable_game_count", filtered.size()}, {"tool_game_count", found.size() - all_importable.size()}, {"excluded_game_count", all_importable.size() - all_filtered.size()}, {"selected_game_count", selected_importable.size()}, {"exclude_games", std::move(exclusions)}, {"auto_sync", config::steam.auto_sync}, {"sync_all_installed", config::steam.sync_all_installed}, {"recent_games", config::steam.recent_games}, {"recent_max_age_days", config::steam.recent_max_age_days}, {"autosync_remove_uninstalled", config::steam.autosync_remove_uninstalled}, {"include_tools", config::steam.include_tools}};
+      nlohmann::json out {{"status", true}, {"provider", "steam"}, {"enabled", config::steam.enabled}, {"forced", false}, {"available", provider_available}, {"game_count", counts.game_count}, {"importable_game_count", counts.selected_game_count}, {"tool_game_count", counts.tool_game_count}, {"excluded_game_count", counts.excluded_game_count}, {"selected_game_count", counts.selected_game_count}, {"exclude_games", std::move(exclusions)}, {"auto_sync", config::steam.auto_sync}, {"sync_all_installed", config::steam.sync_all_installed}, {"recent_games", config::steam.recent_games}, {"recent_max_age_days", config::steam.recent_max_age_days}, {"autosync_remove_uninstalled", config::steam.autosync_remove_uninstalled}, {"include_tools", config::steam.include_tools}};
 #if defined(__linux__)
       out["forced"] = true;
       out["playnite_available"] = false;
