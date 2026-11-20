@@ -74,7 +74,8 @@ namespace display_helper_integration::request_policy {
     // explicitly selected HDR profile remains valid for that physical target.
     result.apply_hdr_profile_to_physical = input.hdr_profile_selected && !input.virtual_display;
 
-    if (input.virtual_display && input.target_device_id.empty()) {
+    if (input.virtual_display &&
+        (input.target_device_id.empty() || input.configuration_option == ConfigurationOption::Disabled)) {
       result.dispatch = false;
       return result;
     }
@@ -84,12 +85,6 @@ namespace display_helper_integration::request_policy {
         input.configuration_option == ConfigurationOption::Disabled) {
       result.dispatch = false;
       return result;
-    }
-
-    if (input.virtual_display &&
-        input.configuration_option == ConfigurationOption::Disabled &&
-        is_extended(input.layout)) {
-      result.dispatch = false;
     }
 
     const bool verify_extended = input.virtual_display && is_extended(input.layout) &&

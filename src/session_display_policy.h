@@ -109,7 +109,7 @@ namespace proc::display_policy {
    * @param client Authenticated client's generic preparation.
    * @param client_virtual Whether the client explicitly requests a virtual target/layout.
    * @param session_virtual Whether the assembled session explicitly requests one.
-   * @return Ephemeral preparation and whether a higher virtual choice may lift VerifyOnly.
+   * @return Ephemeral preparation and whether an explicit virtual choice may apply its layout.
    * @note An application's explicit virtual choice also lifts its own VerifyOnly;
    *       a client preparation still takes precedence over an application choice.
    */
@@ -125,7 +125,9 @@ namespace proc::display_policy {
     const int virtual_level = client_virtual ? 2 : session_virtual ? 1 : 0;
     const bool virtual_choice_wins = virtual_level > preparation_level ||
                                      (virtual_level == 1 && preparation_level == 1);
-    if (explicit_preparation.value_or(inherited) == preparation_e::verify_only && virtual_choice_wins) {
+    const auto option = explicit_preparation.value_or(inherited);
+    if (virtual_choice_wins && (option == preparation_e::verify_only ||
+                                (!explicit_preparation && option == preparation_e::disabled))) {
       return {explicit_preparation, true};
     }
     return {explicit_preparation, false};
@@ -136,13 +138,24 @@ namespace proc::display_policy {
    * @param inherited Effective global preparation.
    * @param session Resolved session policy and current target state.
    * @param virtual_display_intended Whether this is the initial virtual creation request.
-   * @return Effective preparation, preserving physical fallback and true VerifyOnly.
+   * @param honor_windows_layout Whether an inherited VerifyOnly permits the Windows layout.
+   * @return Effective preparation, preserving physical fallback and explicit preparation.
    */
   template <class Session>
-  preparation_e effective_preparation(const preparation_e inherited, const Session &session, const bool virtual_display_intended = false) {
+  preparation_e effective_preparation(
+    const preparation_e inherited,
+    const Session &session,
+    const bool virtual_display_intended = false,
+    const bool honor_windows_layout = false
+  ) {
     const auto option = session.dd_config_option_override.value_or(inherited);
-    if ((session.virtual_display || virtual_display_intended) && session.virtual_display_preparation_override &&
-        option == preparation_e::verify_only) {
+    if (!session.virtual_display && !virtual_display_intended) {
+      return option;
+    }
+    const bool inherited_windows_preparation = honor_windows_layout && !session.dd_config_option_override;
+    if ((option == preparation_e::verify_only &&
+         (session.virtual_display_preparation_override || inherited_windows_preparation)) ||
+        (option == preparation_e::disabled && inherited_windows_preparation && session.virtual_display_preparation_override)) {
       // The virtual layout chooses EnsureActive/Primary/OnlyDisplay downstream.
       return preparation_e::ensure_active;
     }

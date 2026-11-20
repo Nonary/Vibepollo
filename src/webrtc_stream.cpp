@@ -245,9 +245,10 @@ namespace webrtc_stream {
         config::video.output_name == VDISPLAY::SUDOVDA_VIRTUAL_DISPLAY_SELECTION;
       const bool client_requests_virtual = session->client_requests_virtual_display;
       const bool metadata_requests_virtual = session->app_metadata && session->app_metadata->virtual_screen;
-      bool request_virtual_display =
+      bool request_virtual_display = session->display_preparation_client_virtual_override.value_or(
         session->virtual_display || config_requests_virtual || client_requests_virtual || metadata_requests_virtual ||
-        forced_sudavda_virtual_display;
+        forced_sudavda_virtual_display
+      );
       const auto requested_virtual_display_mode =
         session->virtual_display_mode_override.value_or(config::video.virtual_display_mode);
       const bool shared_virtual_display_mode =
@@ -300,6 +301,11 @@ namespace webrtc_stream {
         request_virtual_display = true;
         app_output_override.reset();
         has_app_output_override = false;
+      }
+      // A new app launch must retain the paired client's physical route.
+      // Frame generation and the caller's real capture-failure recovery can still select a virtual display.
+      if (!request_virtual_display && session->display_preparation_client_virtual_override == false) {
+        session->virtual_display_request_resolved = true;
       }
       auto apply_framegen_refresh_policy = [&](bool uses_virtual_display) {
         const auto framegen_policy = make_framegen_policy(uses_virtual_display);
@@ -675,9 +681,11 @@ namespace webrtc_stream {
             recovery_session->virtual_display_hdr_enabled = result.hdr_enabled;
             if (recovery_session->virtual_display) {
               constexpr int kMaxApplyAttempts = 5;
+              const auto preparation = proc::display_policy::effective_preparation(config::video.dd.configuration_option, *recovery_session, false, true);
+              const bool configure_display = preparation != config::video_t::dd_t::config_option_e::disabled;
               bool applied = false;
 
-              for (int attempt = 1; attempt <= kMaxApplyAttempts; ++attempt) {
+              for (int attempt = 1; configure_display && attempt <= kMaxApplyAttempts; ++attempt) {
                 if (cancelled()) {
                   return {};
                 }
@@ -730,7 +738,7 @@ namespace webrtc_stream {
                 return {};
               }
               BOOST_LOG(info) << "Virtual display recovery: requested WebRTC capture reinit to pick up recreated display"
-                              << (applied ? "." : " (apply did not succeed).");
+                              << (!configure_display || applied ? "." : " (apply did not succeed).");
             }
             std::function<void()> rollback_output_override;
             if (recovery_output_override_lease) {
@@ -3035,8 +3043,10 @@ namespace webrtc_stream {
 #endif
       }
       launch_session->client_name = requested_name.empty() ? launch_session->device_name : requested_name;
-      launch_session->client_requests_virtual_display =
-        !requested_uuid.empty() && nvhttp::get_client_always_use_virtual_display(requested_uuid);
+      if (!requested_uuid.empty()) {
+        nvhttp::apply_client_display_routing(*launch_session, requested_uuid);
+        launch_session->display_preparation_client_virtual_override = proc::display_policy::virtual_display_override(*launch_session);
+      }
       launch_session->width = options.width.value_or(kDefaultWidth);
       launch_session->height = options.height.value_or(kDefaultHeight);
       launch_session->fps = options.fps.value_or(kDefaultFps);
@@ -3099,11 +3109,11 @@ namespace webrtc_stream {
             rtsp_stream::launch_session_t::app_metadata_t metadata;
             metadata.id = app_ctx->id;
             metadata.name = app_ctx->name;
-            metadata.virtual_screen = app_ctx->virtual_screen;
+            metadata.virtual_screen = app_ctx->virtual_screen || app_ctx->virtual_display;
             metadata.has_command = !app_ctx->cmd.empty();
             metadata.has_playnite = !app_ctx->playnite_id.empty();
             metadata.playnite_fullscreen = app_ctx->playnite_fullscreen;
-            launch_session->virtual_display = app_ctx->virtual_screen;
+            launch_session->virtual_display = app_ctx->virtual_screen || app_ctx->virtual_display;
             if (!launch_session->virtual_display_mode_override && app_ctx->virtual_display_mode_override) {
               launch_session->virtual_display_mode_override = app_ctx->virtual_display_mode_override;
             }
@@ -3116,8 +3126,12 @@ namespace webrtc_stream {
                 launch_session->dd_config_option_override = proc::display_policy::preparation_override(app_ctx->config_overrides);
               }
             }
-            if (app_ctx->output_name_override) {
+            if (!launch_session->output_name_override &&
+                !launch_session->display_preparation_client_virtual_override.value_or(false) && app_ctx->output_name_override) {
               launch_session->output_name_override = *app_ctx->output_name_override;
+            }
+            if (app_ctx->uuid == VIRTUAL_DISPLAY_UUID) {
+              launch_session->display_preparation_client_virtual_override = true;
             }
             launch_session->app_metadata = std::move(metadata);
             proc::display_policy::apply_builtin_virtual_display(*launch_session, app_ctx->uuid, config::video);
@@ -3127,12 +3141,13 @@ namespace webrtc_stream {
       }
 
       // Resolve display preparation after client and application fields.
+      const auto client_virtual = launch_session->display_preparation_client_virtual_override;
       const auto display_preparation = proc::display_policy::resolve_preparation(
         config::video.dd.configuration_option,
         launch_session->dd_config_option_override,
         options.client_uuid ? proc::display_policy::preparation_override(nvhttp::get_client_config_overrides(*options.client_uuid)) : std::nullopt,
-        false,
-        proc::display_policy::virtual_display_override(*launch_session).value_or(false)
+        client_virtual.value_or(false),
+        client_virtual.value_or(proc::display_policy::virtual_display_override(*launch_session).value_or(false))
       );
       launch_session->dd_config_option_override = display_preparation.option;
       launch_session->virtual_display_preparation_override = display_preparation.virtual_override;

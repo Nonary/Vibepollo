@@ -1596,9 +1596,11 @@ relative monitor arrangement. Per-client directions can be saved under
 **Devices → Arrange client displays**. The editor supports left, right, above, below,
 alignment and gap, plus **Preserve / manual**. A saved direction or explicit
 manual rule takes precedence over isolated positioning for that client.
-`dd_configuration_option = verify_only` verifies the existing extended target
-and preserves topology and positions; use an automatic preparation option to
-apply a saved direction. Shared displays use the application layout.
+
+With inherited Windows display preparation, the virtual layout can apply
+a saved direction even when the global setting is Verify Only. An explicit
+paired-client Verify Only override on an extended target preserves the existing
+topology and positions. Shared displays use the application layout.
 
 ### virtual_display_max_clients
 
@@ -1795,11 +1797,11 @@ this option to replace the running app immediately. The default is `true`.
     <tr>
         <td rowspan="5">Choices</td>
         <td>disabled</td>
-        <td>Perform no additional configuration (disables all `dd_` configuration options).</td>
+        <td>Skip display automation. On Windows, an explicit virtual display choice can still apply its layout when this setting is inherited.</td>
     </tr>
     <tr>
         <td>verify_only</td>
-        <td>Verify that display is active only (this is a mandatory step without any extra steps to verify display state).</td>
+        <td>Verify that the display is active. Windows virtual displays can still apply their layout when this setting is inherited.</td>
     </tr>
     <tr>
         <td>ensure_active</td>
@@ -1817,11 +1819,13 @@ this option to replace the running app immediately. The default is `true`.
 
 Display preparation follows Client → Application → Global precedence. A client's
 `dd_configuration_option` override wins over the application's dedicated or generic
-preparation setting. A virtual-display selection or layout at a higher level can
-use its normal virtual layout preparation despite inherited `verify_only`.
-An explicit `verify_only` at the same or a higher level remains authoritative.
-These overrides are temporary for the session. If virtual-display creation falls
-back to a physical output, the virtual-only promotion is not applied.
+preparation setting. On Windows, the selected virtual layout can activate or
+promote the virtual display when it inherits the global Verify Only setting.
+An explicit virtual choice can also apply its layout when global automation is
+disabled. A paired-client Verify Only override still takes precedence over an
+app layout, and a per-client or per-app Disabled override still disables display
+preparation. These overrides apply only to the session. A physical fallback
+keeps its own display preparation.
 
 ### dd_resolution_option
 

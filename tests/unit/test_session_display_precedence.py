@@ -45,7 +45,19 @@ def through_metadata(text, start, end):
     return text[start:end] + '\n'
 
 app_fields = through_metadata(launch, app_start, app_end)
-web_start = webrtc.index('            launch_session->virtual_display = app_ctx->virtual_screen;')
+web_start = webrtc.index('            launch_session->virtual_display = app_ctx->virtual_screen')
+web_client_start = webrtc.index('      if (!requested_uuid.empty()) {\n        nvhttp::apply_client_display_routing')
+web_client_fields = webrtc[web_client_start:webrtc.index('      launch_session->width =', web_client_start)]
+web_target_start = webrtc.index('      bool config_requests_virtual =')
+web_target_fields = webrtc[web_target_start:webrtc.index('      const auto requested_virtual_display_mode', web_target_start)]
+virtual_display_header = (source / 'platform/windows/virtual_display.h').read_text()
+sudovda_selection = next(line for line in virtual_display_header.splitlines()
+                         if 'SUDOVDA_VIRTUAL_DISPLAY_SELECTION = ' in line)
+web_physical_resolution = production_function(
+    webrtc, 'if (!request_virtual_display && session->display_preparation_client_virtual_override == false)')
+assert webrtc.index(web_physical_resolution) < webrtc.index('proc::proc.execute(*app_iter, launch_session)')
+process = (source / 'process.cpp').read_text()
+assert 'if (!launch_session->virtual_display_request_resolved)' in process
 web_end = webrtc.index('            launch_session->app_metadata = std::move(metadata);', web_start)
 web_fields = through_metadata(webrtc, web_start, web_end)
 web_finalizer = ''
@@ -93,6 +105,7 @@ struct launch_session_t {
  bool virtual_display = false, client_requests_virtual_display = false;
  bool requested_resolution_only = false;
  bool virtual_display_preparation_override = false;
+ bool virtual_display_request_resolved = false;
  std::optional<bool> display_preparation_client_virtual_override;
  std::string virtual_display_device_id;
  std::optional<bool> client_virtual_display_override;
@@ -133,6 +146,13 @@ auto parse_virtual_display_layout_override(const std::string &v) -> std::optiona
 namespace nvhttp {
 std::unordered_map<std::string, std::string> client_overrides;
 auto get_client_config_overrides(const std::string &) { return client_overrides; }
+Client paired_display;
+void apply_client_display_routing(rtsp_stream::launch_session_t &session, const std::string &) {
+ session.client_requests_virtual_display = paired_display.always_use_virtual_display;
+ if (!paired_display.output_name_override.empty()) session.output_name_override = paired_display.output_name_override;
+ session.virtual_display_mode_override = parse_virtual_display_mode_override(paired_display.virtual_display_mode_override);
+ session.virtual_display_layout_override = parse_virtual_display_layout_override(paired_display.virtual_display_layout_override);
+}
 }
 struct SessionOptions { std::optional<std::string> client_uuid; };
 namespace util { int from_view(const std::string &v) { return std::stoi(v); } }
@@ -161,11 +181,22 @@ auto assemble_webrtc(Client client, App app) {
  rtsp_stream::launch_session_t::app_metadata_t metadata {app.virtual_screen || app.virtual_display};
  auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
  auto app_ctx = std::make_shared<App>(app);
- SessionOptions options {"paired-client"};
+ const std::string requested_uuid = "paired-client";
+ SessionOptions options {requested_uuid};
  nvhttp::client_overrides = client.config_overrides;
- (void) options;
-""" + web_fields + web_finalizer + r"""
+ nvhttp::paired_display = client;
+""" + web_client_fields + web_fields + web_finalizer + r"""
  return launch_session;
+}
+namespace VDISPLAY {
+""" + sudovda_selection + r"""
+}
+bool web_requests_virtual(const std::shared_ptr<rtsp_stream::launch_session_t> &session) {
+""" + web_target_fields + r"""
+ return request_virtual_display;
+}
+void finish_web_display_route(const std::shared_ptr<rtsp_stream::launch_session_t> &session, bool request_virtual_display) {
+""" + web_physical_resolution + r"""
 }
 auto linux_preparation(const rtsp_stream::launch_session_t &session) {
 """ + linux_fields + r"""
@@ -188,32 +219,33 @@ int main() {
  config::video.dd.configuration_option = Prep::verify_only;
  config::video.virtual_display_layout = Layout::extended;
  int failed = 0, count = 0;
- auto check = [&](const char *name, Client client, App app, Prep expected, std::unordered_map<std::string, std::string> args = {}, bool virtual_target = true) {
+ auto check = [&](const char *name, Client client, App app, Prep expected, std::unordered_map<std::string, std::string> args = {}, bool virtual_target = true, std::optional<Prep> windows_expected = std::nullopt) {
+   const auto expected_windows = windows_expected.value_or(expected);
    auto session = assemble(client, app, args);
    session->virtual_display = virtual_target;
    display_helper_integration::helpers::SessionDisplayConfigurationHelper helper(config::video, *session);
    ++count;
-   if (helper.effective_video_config_.dd.configuration_option != expected) { std::cerr << "FAIL RTSP " << name << "\n"; ++failed; }
+   if (helper.effective_video_config_.dd.configuration_option != expected_windows) { std::cerr << "FAIL RTSP " << name << "\n"; ++failed; }
    ++count;
    if (linux_preparation(*session) != expected) { std::cerr << "FAIL Linux RTSP " << name << "\n"; ++failed; }
    auto resumed = assemble_resume(client, app, args);
    resumed->virtual_display = virtual_target;
    display_helper_integration::helpers::SessionDisplayConfigurationHelper resume_helper(config::video, *resumed);
    count += 2;
-   if (resume_helper.effective_video_config_.dd.configuration_option != expected) { std::cerr << "FAIL resume " << name << "\n"; ++failed; }
+   if (resume_helper.effective_video_config_.dd.configuration_option != expected_windows) { std::cerr << "FAIL resume " << name << "\n"; ++failed; }
    if (linux_preparation(*resumed) != expected) { std::cerr << "FAIL Linux resume " << name << "\n"; ++failed; }
-   if (client.output_name_override.empty() && client.virtual_display_mode_override.empty() &&
-       client.virtual_display_layout_override.empty() && !client.always_use_virtual_display && !app.virtual_display && args.empty()) {
+   if (args.empty()) {
      auto web_session = assemble_webrtc(client, app);
      web_session->virtual_display = virtual_target;
      display_helper_integration::helpers::SessionDisplayConfigurationHelper web_helper(config::video, *web_session);
      ++count;
-     if (web_helper.effective_video_config_.dd.configuration_option != expected) { std::cerr << "FAIL WebRTC " << name << "\n"; ++failed; }
+     if (web_helper.effective_video_config_.dd.configuration_option != expected_windows) { std::cerr << "FAIL WebRTC " << name << "\n"; ++failed; }
      ++count;
      if (linux_preparation(*web_session) != expected) { std::cerr << "FAIL Linux WebRTC " << name << "\n"; ++failed; }
    }
  };
- check("true inherited VerifyOnly", {}, {}, Prep::verify_only);
+ check("physical inherited VerifyOnly", {}, {}, Prep::verify_only, {}, false);
+ check("automatic Windows virtual layout uses inherited VerifyOnly", {}, {}, Prep::verify_only, {}, true, Prep::ensure_active);
  ++count;
  if (assemble({}, {}, {})->requested_resolution_only) { std::cerr << "FAIL RTSP requested-resolution-only defaults false\n"; ++failed; }
  Client requested_resolution_client; requested_resolution_client.requested_resolution_only = true;
@@ -244,10 +276,10 @@ int main() {
  app = {}; app.virtual_screen = true; app.dd_config_option_override = Prep::verify_only;
  check("app virtual choice beats app VerifyOnly", {}, app, Prep::ensure_active);
  client = {}; client.output_name_override = "physical";
- check("physical target keeps VerifyOnly", client, {}, Prep::verify_only);
+ check("physical target keeps VerifyOnly", client, {}, Prep::verify_only, {}, false);
  client = {}; client.virtual_display_mode_override = "disabled";
- check("disabled mode keeps VerifyOnly", client, {}, Prep::verify_only);
- check("explicit client disable keeps VerifyOnly", {}, {}, Prep::verify_only, {{"virtualDisplay", "0"}});
+ check("disabled mode keeps VerifyOnly", client, {}, Prep::verify_only, {}, false);
+ check("explicit client disable keeps VerifyOnly", {}, {}, Prep::verify_only, {{"virtualDisplay", "0"}}, false);
  app = {}; app.config_overrides["dd_configuration_option"] = "ensure_active";
  client = {}; client.config_overrides["dd_configuration_option"] = "verify_only";
  check("client generic beats app generic", client, app, Prep::verify_only);
@@ -265,7 +297,27 @@ int main() {
  app = {}; app.output_name_override = "sunshine:virtual_display";
  check("virtual failure retains physical VerifyOnly", {}, app, Prep::verify_only, {}, false);
  client = {}; client.virtual_display_mode_override = "disabled";
- check("client disabled beats lower app virtual target", client, app, Prep::verify_only);
+ check("client disabled beats lower app virtual target", client, app, Prep::verify_only, {}, false);
+ auto web_physical = assemble_webrtc(client, app);
+ const bool requests_virtual = web_requests_virtual(web_physical);
+ finish_web_display_route(web_physical, requests_virtual);
+ ++count;
+ if (requests_virtual || !web_physical->virtual_display_request_resolved) {
+   std::cerr << "FAIL WebRTC paired-client disabled mode must suppress the app virtual screen through execution\n"; ++failed;
+ }
+ auto framegen_virtual = assemble_webrtc(client, app);
+ finish_web_display_route(framegen_virtual, true);
+ ++count;
+ if (framegen_virtual->virtual_display_request_resolved) {
+   std::cerr << "FAIL WebRTC framegen virtual recovery must not mark the physical route authoritative\n"; ++failed;
+ }
+ client = {}; client.virtual_display_layout_override = "extended_primary";
+ app = {}; app.output_name_override = "physical";
+ const auto web_client_layout = assemble_webrtc(client, app);
+ ++count;
+ if (!web_requests_virtual(web_client_layout) || web_client_layout->output_name_override) {
+   std::cerr << "FAIL WebRTC paired-client virtual layout must take precedence over the app physical selection\n"; ++failed;
+ }
  client = {}; client.output_name_override = "physical";
  app = {}; app.virtual_display_layout_override = Layout::extended_primary;
  check("client physical beats lower app virtual layout", client, app, Prep::verify_only, {}, false);
@@ -300,6 +352,10 @@ int main() {
  client = {}; client.output_name_override = "physical";
  client.virtual_display_mode_override = "disabled";
  check("explicit Virtual Display applet prepares its virtual target", client, app, Prep::ensure_active);
+ ++count;
+ if (!web_requests_virtual(assemble_webrtc(client, app))) {
+   std::cerr << "FAIL WebRTC built-in applet must request a virtual display\n"; ++failed;
+ }
  for (const auto &s : {assemble(client, app, {}), assemble_resume(client, app, {}), assemble_webrtc(client, app)}) {
    ++count;
    if (!s->virtual_display || s->output_name_override != "sunshine:virtual_display" ||
@@ -328,6 +384,15 @@ int main() {
    }
  }
  if (config::video.dd.configuration_option != Prep::verify_only) return 2;
+ config::video.dd.configuration_option = Prep::disabled;
+ check("implicit virtual layout leaves disabled preparation alone", {}, {}, Prep::disabled);
+ app = {}; app.virtual_display_layout_override = Layout::extended_primary;
+ check("explicit Windows app layout applies when global preparation is disabled", {}, app, Prep::disabled, {}, true, Prep::ensure_active);
+ client = {}; client.virtual_display_layout_override = "extended_primary";
+ check("explicit Windows client layout applies when global preparation is disabled", client, {}, Prep::disabled, {}, true, Prep::ensure_active);
+ check("failed virtual creation preserves disabled physical fallback", client, {}, Prep::disabled, {}, false);
+ client.config_overrides["dd_configuration_option"] = "disabled";
+ check("an explicit client disable still wins", client, app, Prep::disabled);
  std::cout << count << " display precedence cases, " << failed << " failures\n";
  return failed ? 1 : 0;
 }
