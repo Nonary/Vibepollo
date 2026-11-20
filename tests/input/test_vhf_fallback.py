@@ -147,18 +147,19 @@ int main(){
        "auto: the Steam type without the Steam extensions does not reach for the Steam Controller profile");
  // The advertised controller-touch capability must agree with the profile the selection can
  // yield: plain vhf gives a Steam/PlayStation client a pad-bearing profile whatever the
- // motion/touchpad preferences say, so the flag stays on; only Xbox/Switch selections drop it.
+ // motion/touchpad preferences say, so the flag stays on; only Xbox selections drop it.
+ // Clients gate controller motion on the same flag, so the Switch Pro (gyro, no touchpad) keeps it.
  config::input.motion_as_ds4=false;config::input.touchpad_as_ds4=false;
- for(const char* setting:{"vhf","auto","vhf_ds4","vhf_ds5","vhf_steam","ds4","ds5"}){
+ for(const char* setting:{"vhf","auto","vhf_ds4","vhf_ds5","vhf_steam","ds4","ds5","vhf_switch"}){
   config::input.gamepad=setting;
   check((get_capabilities()&platform_caps::controller_touch)!=0,"controller touch advertised for a selection that can yield a touchpad");
  }
  config::input.gamepad="vhf";
  check(vhf_desired_profile(STEAM)==vhf_profile_e::steam_controller&&vhf_desired_profile({LI_CTYPE_PS})==vhf_profile_e::dualsense,
        "plain vhf without the ds4 preferences still selects the client's pad-bearing profile");
- for(const char* setting:{"vhf_xbox","vhf_xbox_one","vhf_switch","x360"}){
+ for(const char* setting:{"vhf_xbox","vhf_xbox_one","x360"}){
   config::input.gamepad=setting;
-  check((get_capabilities()&platform_caps::controller_touch)==0,"controller touch not advertised for a selection without a touchpad");
+  check((get_capabilities()&platform_caps::controller_touch)==0,"controller touch not advertised for a selection without a touchpad or motion");
  }
  std::cout<<checks<<" checks; "<<errors<<" failures\n";return errors?1:0;
 }

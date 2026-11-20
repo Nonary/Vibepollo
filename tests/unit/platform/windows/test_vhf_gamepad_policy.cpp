@@ -167,11 +167,19 @@ namespace {
   }
 
   TEST_F(VhfGamepadPolicyTest, FixedTouchlessProfilesDoNotAdvertiseControllerTouch) {
-    for (const auto setting : {"x360", "vhf_xbox", "vhf_xbox_one", "vhf_switch"}) {
+    for (const auto setting : {"x360", "vhf_xbox", "vhf_xbox_one"}) {
       SCOPED_TRACE(setting);
       EXPECT_FALSE(platf::vhf_gamepad::supports_controller_touch(setting, false));
       EXPECT_TRUE(platf::vhf_gamepad::supports_controller_touch(setting, true));
     }
+  }
+
+  TEST_F(VhfGamepadPolicyTest, SwitchProAdvertisesControllerExtensionsForMotion) {
+    // Moonlight clients gate controller motion on the same feature flag as controller touch
+    // (LiSendControllerMotionEvent returns LI_ERR_UNSUPPORTED without it). The Switch Pro
+    // profile has a gyro and an accelerometer, so withholding the flag would leave its IMU
+    // at the driver's resting values even though the host asks the client for motion.
+    EXPECT_TRUE(platf::vhf_gamepad::supports_controller_touch("vhf_switch", false));
   }
 
   TEST_F(VhfGamepadPolicyTest, ExplicitPlaystationProfilesAdvertiseControllerTouch) {
