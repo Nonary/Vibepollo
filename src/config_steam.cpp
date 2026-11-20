@@ -4,6 +4,7 @@
 #ifndef SUNSHINE_TESTS
   #include "confighttp.h"
   #include "file_handler.h"
+  #include "logging.h"
   #include "platform/common.h"
   #include "steam_artwork.h"
   #include "steam_auto_sync.h"
@@ -161,6 +162,7 @@ namespace config {
         return;
       }
       auto root = nlohmann::json::parse(text);
+      const auto before = root;
       auto catalog = platf::steam::discover_catalog();
       auto games = platf::steam::sync::policy::select_games(
         catalog,
@@ -172,10 +174,22 @@ namespace config {
       );
       platf::steam::artwork::prepare(games, platf::appdata());
       const bool remove_missing = !steam.sync_all_installed || steam.autosync_remove_uninstalled;
+      const auto mode = platf::steam::sync::policy::describe_mode(steam.sync_all_installed, steam.recent_games, steam.recent_max_age_days);
       if (platf::steam::sync::policy::reconcile(root, games, remove_missing, steam.exclude_games_meta, steam.include_tools, steam.sync_all_installed ? "installed" : "recent")) {
-        confighttp::refresh_client_apps_cache(root);
+        if (confighttp::refresh_client_apps_cache(root)) {
+          BOOST_LOG(info) << "Steam sync after settings change (" << mode << "): "
+                          << platf::steam::sync::policy::describe_changes(before, root);
+        } else {
+          BOOST_LOG(warning) << "Steam sync after settings change could not save applications";
+        }
+      } else {
+        BOOST_LOG(debug) << "Steam sync after settings change (" << mode << "): "
+                         << platf::steam::sync::policy::describe_changes(before, root);
       }
+    } catch (const std::exception &error) {
+      BOOST_LOG(warning) << "Steam sync after settings change failed: " << error.what();
     } catch (...) {
+      BOOST_LOG(warning) << "Steam sync after settings change failed with an unknown error";
     }
 #endif
   }
