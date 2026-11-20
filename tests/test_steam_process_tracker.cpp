@@ -305,3 +305,30 @@ TEST(SteamProcessTracker, LinuxSnapshotIncludesCurrentUserProcess) {
   EXPECT_TRUE(processes->complete);
 }
 #endif
+
+TEST(SteamProcessTracker, LaunchPollEndsTheAppWhenTheTrackedGameExits) {
+  using lifecycle::launch_poll_action;
+  lifecycle::association_result associated;
+  associated.outcome = lifecycle::association_outcome::associated;
+  lifecycle::association_result gone;
+  gone.outcome = lifecycle::association_outcome::untrackable;
+  gone.reason = "no new processes";
+  lifecycle::association_result snapshot_failed;
+  snapshot_failed.reason = "post-launch process snapshot is unavailable";
+
+  // Regression: an exit seen after the launch window must end the app, not
+  // fall into the "never tracked" detach path that keeps the stream open.
+  EXPECT_EQ(lifecycle::decide_launch_poll(true, gone, false), launch_poll_action::game_exited);
+  EXPECT_EQ(lifecycle::decide_launch_poll(true, gone, true), launch_poll_action::game_exited);
+
+  EXPECT_EQ(lifecycle::decide_launch_poll(false, associated, true), launch_poll_action::game_running);
+  EXPECT_EQ(lifecycle::decide_launch_poll(true, associated, false), launch_poll_action::game_running);
+  // A skipped poll or a failed snapshot keeps an associated game running.
+  EXPECT_EQ(lifecycle::decide_launch_poll(true, std::nullopt, false), launch_poll_action::game_running);
+  EXPECT_EQ(lifecycle::decide_launch_poll(true, snapshot_failed, false), launch_poll_action::game_running);
+
+  EXPECT_EQ(lifecycle::decide_launch_poll(false, gone, true), launch_poll_action::keep_waiting);
+  EXPECT_EQ(lifecycle::decide_launch_poll(false, std::nullopt, true), launch_poll_action::keep_waiting);
+  EXPECT_EQ(lifecycle::decide_launch_poll(false, gone, false), launch_poll_action::detach);
+  EXPECT_EQ(lifecycle::decide_launch_poll(false, snapshot_failed, false), launch_poll_action::detach);
+}
