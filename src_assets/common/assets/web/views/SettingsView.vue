@@ -509,6 +509,9 @@ function visibilityMatches(condition?: SettingsVisibility): boolean {
   if (condition.notEquals !== undefined) {
     return !valuesMatch(values[condition.key], condition.notEquals);
   }
+  if (condition.oneOf !== undefined) {
+    return condition.oneOf.some((expected) => valuesMatch(values[condition.key], expected));
+  }
   return true;
 }
 

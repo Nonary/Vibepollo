@@ -220,3 +220,10 @@ test('Guide key binding defaults off, validates integer ranges and is editable p
     for (const value of [-1, max + 1, 0.5, NaN]) assert.ok(settingError(field, value));
   }
 });
+
+test('high quality audio is shown only for the Dolby audio formats it affects', () => {
+  assert.deepEqual(settingsFields.get('high_quality_audio')?.visibleWhen, {
+    key: 'audio_format',
+    oneOf: ['ac3', 'eac3'],
+  });
+});

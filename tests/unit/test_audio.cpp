@@ -127,6 +127,98 @@ TEST(AudioStreamPolicy, SelectsChannelAndQualityVariant) {
   EXPECT_EQ(stream_index(3, true), 0);
 }
 
+TEST(AudioPcmPayload, WritesLittleEndianInt16InInterleavedOrder) {
+  // 4660 = 0x1234 and -4660 = 0xEDCC, as exact fractions of 32768
+  const std::vector<float> samples {4660.0f / 32768, -4660.0f / 32768, 0.0f};
+
+  EXPECT_EQ(pcm_payload(samples), (std::vector<std::uint8_t> {0x34, 0x12, 0xCC, 0xED, 0x00, 0x00}));
+}
+
+TEST(AudioPcmPayload, RoundsToNearestWithHalvesAwayFromZero) {
+  // 1.4, 1.5, -1.5, -0.4 and 0.5 steps of 1/32768
+  const std::vector<float> samples {1.4f / 32768, 1.5f / 32768, -1.5f / 32768, -0.4f / 32768, 0.5f / 32768};
+
+  // 1, 2, -2, 0, 1
+  EXPECT_EQ(pcm_payload(samples), (std::vector<std::uint8_t> {0x01, 0x00, 0x02, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x01, 0x00}));
+}
+
+TEST(AudioPcmPayload, ClampsFullScaleAndBeyondToInt16Range) {
+  const std::vector<float> samples {1.0f, -1.0f, 1.5f, -1.5f, 1e10f, -1e10f, 32767.0f / 32768, -32767.0f / 32768};
+
+  // 32767, -32768, 32767, -32768, 32767, -32768, 32767, -32767
+  EXPECT_EQ(pcm_payload(samples), (std::vector<std::uint8_t> {0xFF, 0x7F, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x80, 0xFF, 0x7F, 0x00, 0x80, 0xFF, 0x7F, 0x01, 0x80}));
+}
+
+TEST(AudioPcmPayload, FiveMillisecondsFillStereo51And71Packets) {
+  // 5 ms at 48 kHz is 240 samples per channel
+  EXPECT_EQ(pcm_payload(std::vector<float>(240 * 2)).size(), 960u);
+  EXPECT_EQ(pcm_payload(std::vector<float>(240 * 6)).size(), 2880u);
+  EXPECT_EQ(pcm_payload(std::vector<float>(240 * 8)).size(), 3840u);
+}
+
+TEST(AudioPcmDatagramBudget, LargestFittingPacketDurationFollowsChannelLayout) {
+  for (const bool encrypted : {false, true}) {
+    EXPECT_EQ(pcm_max_packet_duration(2, encrypted), 5);
+    EXPECT_EQ(pcm_max_packet_duration(4, encrypted), 3);
+    EXPECT_EQ(pcm_max_packet_duration(6, encrypted), 2);
+    EXPECT_EQ(pcm_max_packet_duration(8, encrypted), 1);
+  }
+}
+
+TEST(AudioPcmDatagramBudget, LargestFittingDurationKeepsDataAndParityWithinBudget) {
+  struct expected_t {
+    int channels;
+    std::size_t data, parity, encrypted_data, encrypted_parity;
+  };
+
+  // Payload is 96 B per channel per ms; data adds a 12 B RTP header, parity also a 12 B FEC header,
+  // and encryption pads the payload to the next whole 16 B block (a full block when already aligned).
+  for (const auto &test : {
+         expected_t {2, 972, 984, 988, 1000},  // 5 ms, 960 B payload
+         expected_t {4, 1164, 1176, 1180, 1192},  // 3 ms, 1152 B payload
+         expected_t {6, 1164, 1176, 1180, 1192},  // 2 ms, 1152 B payload
+         expected_t {8, 780, 792, 796, 808},  // 1 ms, 768 B payload
+       }) {
+    const auto plain = pcm_datagrams(test.channels, pcm_max_packet_duration(test.channels, false), false);
+    const auto encrypted = pcm_datagrams(test.channels, pcm_max_packet_duration(test.channels, true), true);
+
+    EXPECT_EQ(plain.data, test.data) << test.channels;
+    EXPECT_EQ(plain.parity, test.parity) << test.channels;
+    EXPECT_EQ(encrypted.data, test.encrypted_data) << test.channels;
+    EXPECT_EQ(encrypted.parity, test.encrypted_parity) << test.channels;
+    for (const auto &datagrams : {plain, encrypted}) {
+      EXPECT_LE(datagrams.data, DATAGRAM_BUDGET) << test.channels;
+      EXPECT_LE(datagrams.parity, DATAGRAM_BUDGET) << test.channels;
+    }
+  }
+}
+
+TEST(AudioPcmDatagramBudget, NextMillisecondUpDoesNotFit) {
+  for (const bool encrypted : {false, true}) {
+    EXPECT_TRUE(pcm_packet_duration_fits(2, 5, encrypted));
+    EXPECT_FALSE(pcm_packet_duration_fits(2, 6, encrypted)) << "stereo is capped at 5 ms";
+    EXPECT_TRUE(pcm_packet_duration_fits(4, 3, encrypted));
+    EXPECT_FALSE(pcm_packet_duration_fits(4, 4, encrypted));
+    EXPECT_TRUE(pcm_packet_duration_fits(6, 2, encrypted));
+    EXPECT_FALSE(pcm_packet_duration_fits(6, 3, encrypted));
+    EXPECT_TRUE(pcm_packet_duration_fits(8, 1, encrypted));
+    EXPECT_FALSE(pcm_packet_duration_fits(8, 2, encrypted));
+  }
+}
+
+TEST(AudioPcmDatagramBudget, FiveMillisecondsDoesNotFitSurround) {
+  for (const bool encrypted : {false, true}) {
+    EXPECT_FALSE(pcm_packet_duration_fits(6, 5, encrypted));
+    EXPECT_FALSE(pcm_packet_duration_fits(8, 5, encrypted));
+  }
+}
+
+TEST(AudioPcmDatagramBudget, DurationsOutsideOneToFiveMillisecondsNeverFit) {
+  EXPECT_FALSE(pcm_packet_duration_fits(2, 0, false));
+  EXPECT_FALSE(pcm_packet_duration_fits(2, -1, false));
+  EXPECT_TRUE(pcm_packet_duration_fits(2, 1, false));
+}
+
 TEST(AudioStreamPolicy, AppliesCustomSurroundLayoutWithoutMutatingDefault) {
   const stream_layout_t base {6, 4, 2, {0, 1, 4, 5, 2, 3, 0, 0}};
   const stream_layout_t custom {6, 6, 0, {0, 1, 4, 5, 2, 3, 0, 0}};
