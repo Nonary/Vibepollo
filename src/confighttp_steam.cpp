@@ -4,6 +4,7 @@
 #include "config_steam.h"
 #include "confighttp.h"
 #include "file_handler.h"
+#include "logging.h"
 #include "platform/common.h"
 #include "steam_artwork.h"
 #include "steam_integration.h"
@@ -146,11 +147,16 @@ namespace confighttp {
       platf::steam::artwork::prepare(found, platf::appdata());
       std::lock_guard apps_lock {apps_file_mutex()};
       auto root = nlohmann::json::parse(file_handler::read_file(config::stream.file_apps.c_str()));
+      const auto before = root;
       const bool changed = platf::steam::sync::policy::reconcile(root, found, !config::steam.sync_all_installed || config::steam.autosync_remove_uninstalled, config::steam.exclude_games_meta, config::steam.include_tools, config::steam.sync_all_installed ? "installed" : "recent");
       if (changed && !refresh_client_apps_cache(root)) {
+        BOOST_LOG(warning) << "Steam rescan could not save applications";
         bad_request(response, request, "Unable to save applications");
         return;
       }
+      BOOST_LOG(info) << "Steam rescan ("
+                      << platf::steam::sync::policy::describe_mode(config::steam.sync_all_installed, config::steam.recent_games, config::steam.recent_max_age_days)
+                      << "): " << platf::steam::sync::policy::describe_changes(before, root);
       const auto filtered = platf::steam::sync::policy::filter_games(found, config::steam.exclude_games_meta, config::steam.include_tools);
       send_response(response, nlohmann::json {{"status", true}, {"changed", changed}, {"game_count", found.size()}, {"importable_game_count", filtered.size()}});
     } catch (const std::exception &error) {

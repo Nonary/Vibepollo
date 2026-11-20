@@ -95,6 +95,7 @@ namespace platf::steam::autosync {
                   const auto text = file_handler::read_file(config::stream.file_apps.c_str());
                   if (!text.empty()) {
                     auto root = nlohmann::json::parse(text);
+                    const auto before = root;
                     const auto changed = platf::steam::sync::policy::reconcile(
                       root,
                       games,
@@ -103,9 +104,20 @@ namespace platf::steam::autosync {
                       settings.include_tools,
                       settings.sync_all_installed ? "installed" : "recent"
                     );
+                    const auto mode = platf::steam::sync::policy::describe_mode(
+                      settings.sync_all_installed,
+                      settings.recent_games,
+                      settings.recent_max_age_days
+                    );
                     if (changed && !confighttp::refresh_client_apps_cache(root)) {
                       BOOST_LOG(warning) << "Steam auto-sync could not save applications";
                     } else {
+                      const auto summary = platf::steam::sync::policy::describe_changes(before, root);
+                      if (changed) {
+                        BOOST_LOG(info) << "Steam auto-sync (" << mode << "): " << summary;
+                      } else {
+                        BOOST_LOG(debug) << "Steam auto-sync (" << mode << "): " << summary;
+                      }
                       previous_fingerprint = fingerprint;
                       have_fingerprint = true;
                       next_artwork_retry = std::chrono::steady_clock::now() + std::chrono::minutes {5};
