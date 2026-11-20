@@ -42,6 +42,7 @@ namespace {
 
   policy::Input virtual_display_input() {
     policy::Input input;
+    input.configuration_option = policy::ConfigurationOption::EnsureActive;
     input.virtual_display = true;
     input.target_device_id = "{virtual-device}";
     return input;
@@ -106,9 +107,15 @@ TEST(DisplayHelperRequestPolicy, SkipsPhysicalOutputWhenDisplayConfigurationDisa
   EXPECT_FALSE(policy::evaluate(input).dispatch);
 }
 
-TEST(DisplayHelperRequestPolicy, AppliesExclusiveVirtualDisplayWhenDisplayConfigurationDisabled) {
+TEST(DisplayHelperRequestPolicy, ExclusiveVirtualDisplayRequiresEnabledEffectivePreparation) {
   auto input = virtual_display_input();
   input.configuration_option = policy::ConfigurationOption::Disabled;
+  const auto disabled = policy::evaluate(input);
+  EXPECT_FALSE(disabled.dispatch);
+  EXPECT_FALSE(disabled.device_preparation.has_value());
+  EXPECT_TRUE(disabled.topology.empty());
+
+  input.configuration_option = policy::ConfigurationOption::VerifyOnly;
   const auto result = policy::evaluate(input);
   ASSERT_TRUE(result.dispatch);
   ASSERT_TRUE(result.device_preparation.has_value());
@@ -233,7 +240,9 @@ TEST(DisplayHelperRequestPolicy, ExtendedVirtualDisplayWithoutSnapshotDoesNotPin
        }) {
     auto input = virtual_display_input();
     input.layout = layout;
-    EXPECT_TRUE(policy::evaluate(input).topology.empty());
+    const auto result = policy::evaluate(input);
+    ASSERT_TRUE(result.dispatch);
+    EXPECT_TRUE(result.topology.empty());
   }
 }
 
