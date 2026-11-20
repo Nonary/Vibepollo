@@ -106,8 +106,21 @@ export const useSystemStore = defineStore('system', () => {
     return result;
   }
 
-  async function refreshHost(): Promise<void> {
-    if (loadingHost.value || needsLogin.value || needsSetup.value) return;
+  let hostRefresh: Promise<void> | null = null;
+
+  // Callers that await this need the host state it fetches, so a call made
+  // while a refresh is already running waits for that refresh instead of
+  // returning before the metadata has arrived.
+  function refreshHost(): Promise<void> {
+    if (hostRefresh) return hostRefresh;
+    if (needsLogin.value || needsSetup.value) return Promise.resolve();
+    hostRefresh = fetchHost().finally(() => {
+      hostRefresh = null;
+    });
+    return hostRefresh;
+  }
+
+  async function fetchHost(): Promise<void> {
     loadingHost.value = true;
     try {
       const [metadataResult, sessionResult] = await Promise.allSettled([
