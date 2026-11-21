@@ -9,6 +9,7 @@ extern "C" {
 }
 
 // standard includes
+#include <algorithm>
 #include <atomic>
 #include <bitset>
 #include <chrono>
@@ -2458,6 +2459,15 @@ namespace input {
     );
     input->persist_gamepads = persist_gamepads;
     start_input_geometry_refresh(input);
+
+#ifdef _WIN32
+    task_pool.push([]() {
+      if (platf_input && host_keys.empty() &&
+          std::ranges::none_of(mouse_press_owner, [](const auto *owner) { return owner != nullptr; })) {
+        platf::recover_vhf_keyboard_mouse(platf_input);
+      }
+    });
+#endif
 
     // Workaround to ensure new frames will be captured when a client connects
     task_pool.pushDelayed([]() {

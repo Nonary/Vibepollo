@@ -75,6 +75,8 @@ struct fixture {
   std::deque<DWORD> statuses;
   std::vector<event> events, accepted, delivered;
   bool accept_uncertain=false, observer_start=true, observer_bind=true, receipt=true;
+  bool default_desktop=true;
+  int observer_starts=0, observer_stops=0;
   int waits=0, arms=0;
 };
 fixture boundary;
@@ -116,8 +118,7 @@ constexpr int VK_LWIN=0x5b,VK_RWIN=0x5c,VK_RMENU=0xa5,VK_RCONTROL=0xa3,VK_INSERT
 constexpr int VK_HOME=0x24,VK_END=0x23,VK_PRIOR=0x21,VK_NEXT=0x22,VK_UP=0x26,VK_DOWN=0x28;
 constexpr int VK_LEFT=0x25,VK_RIGHT=0x27,VK_DIVIDE=0x6f,VK_APPS=0x5d,VK_PAUSE=0x13;
 constexpr int SS_KBE_FLAG_NON_NORMALIZED=1, MAPVK_VK_TO_VSC=0,MAPVK_VK_TO_VSC_EX=1;
-// Deliberately provide no cursor-position, async-button or display-metric
-// observers. Production routing must compile without reading desktop state.
+// Cursor position and async-button state are unavailable to the route.
 unsigned MapVirtualKeyW(unsigned key,unsigned) {return key==0x41?0x1e:0;}
 unsigned MapVirtualKey(unsigned key,unsigned) {return MapVirtualKeyW(key,0);}
 struct INPUT { int type=0; struct {int dwFlags=0,dx=0,dy=0,mouseData=0;} mi; struct {int wScan=0,wVk=0,dwFlags=0;} ki; };
@@ -131,7 +132,19 @@ int GetSystemMetrics(int metric) {return metrics[metric];}
 namespace platf::vhf_keyboard_mouse {
   struct mouse_receipt {
     struct expectation {bool absolute=false,motion=false; LONG x=0,y=0; USHORT buttons=0; SHORT wheel=0,pan=0;};
-    bool start(){return lvg::boundary.observer_start;} bool bind(){return lvg::boundary.observer_bind;}
+    static bool input_desktop_is_default(){return lvg::boundary.default_desktop;}
+    bool running=false;
+    bool start(bool default_desktop_only=false){
+      ++lvg::boundary.observer_starts;
+      if (running || (default_desktop_only && !input_desktop_is_default())) return false;
+      running=lvg::boundary.observer_start;
+      return running;
+    }
+    void stop(){
+      if (running) ++lvg::boundary.observer_stops;
+      running=queued=absolute=injected=false;
+    }
+    bool bind(){return running && lvg::boundary.observer_bind;}
     bool queued=false; bool absolute=false, injected=false;
     struct statistics {std::uint64_t operations=0,barriers=0,blocked_microseconds=0,max_blocked_microseconds=0,coalesced=0;std::size_t peak_pending=0;};
     statistics stats(){return {};}
@@ -152,7 +165,7 @@ namespace platf {
     struct impl_t;
     std::unique_ptr<impl_t> impl;
     vhf_gamepad_t(); ~vhf_gamepad_t();
-    bool probe(){return true;} bool open_keyboard_mouse(); bool keyboard_mouse_fallback_safe();
+    bool probe(){return true;} bool open_keyboard_mouse(bool reconnect=false); bool keyboard_mouse_fallback_safe();
     bool keyboard_mouse_fallback(const std::function<void()> &);
     void keyboard_mouse_key(std::uint16_t,bool); bool keyboard_mouse_consumer_supported() const;
     void keyboard_mouse_consumer(std::uint16_t,bool); void keyboard_mouse_button(std::uint8_t,bool);
@@ -229,7 +242,8 @@ int main() {
 
   // Explicit SendInput bypasses the VHF keyboard/mouse endpoint.
   boundary={};injected.clear();config::input.keyboard_mouse_backend="sendinput";
-  auto ordinary=input(); assert(boundary.connects==0); keyboard_update(ordinary,0x41,false,0);
+  auto ordinary=input(); recover_vhf_keyboard_mouse(ordinary);
+  assert(boundary.connects==0); keyboard_update(ordinary,0x41,false,0);
   assert(boundary.events.empty() && injected.size()==1 && injected[0].type==INPUT_KEYBOARD);
 
   // A missing/old driver falls back before accepting an event and closes only
@@ -476,6 +490,70 @@ int main() {
   move_mouse(lost_receipt,1,0);
   assert(injected.size()==1 && boundary.events.size()==1);
 
+  // Resume may recreate a lost device only after confirmed removal, on a
+  // normal input desktop. Stop the old observer before binding new handles.
+  // A controller that shares the connection remains attached.
+  boundary={};
+  injected.clear();
+  auto resumed=input();
+  resumed->vhf->impl->active_count=1;
+  boundary.receipt=false;
+  boundary.abort_status=ERROR_ACCESS_DENIED;
+  move_mouse(resumed,5,0);
+  abs_mouse(resumed,target_touch_port,100,100);
+  recover_vhf_keyboard_mouse(resumed);
+  assert(boundary.opens==1 && boundary.events.size()==1 && injected.empty());
+
+  boundary.abort_status=ERROR_SUCCESS;
+  resumed->vhf->impl->keyboard_mouse_retry_at={};
+  move_mouse(resumed,7,0);
+  assert(boundary.aborts==2 && injected.size()==1 && injected.front().mi.dx==7);
+
+  boundary.default_desktop=false;
+  recover_vhf_keyboard_mouse(resumed);
+  assert(boundary.opens==1 && boundary.observer_stops==0);
+  boundary.default_desktop=true;
+  resumed->vhf->impl->recovery.request();
+  recover_vhf_keyboard_mouse(resumed);
+  assert(boundary.opens==1);
+  resumed->vhf->impl->recovery.reset();
+  boundary.receipt=true;
+
+  recover_vhf_keyboard_mouse(resumed);
+  recover_vhf_keyboard_mouse(resumed); // healthy reattachments do not recreate the device
+  assert(resumed->vhf_keyboard_mouse && !resumed->vhf->impl->keyboard_mouse_faulted);
+  assert(boundary.opens==2 && boundary.connects==1 && boundary.closes==0);
+  assert(boundary.observer_starts==2 && boundary.observer_stops==1);
+  assert(boundary.events.size()==1 && injected.size()==1); // no replay on reopen
+  button_mouse(resumed,3,false);
+  button_mouse(resumed,3,true);
+  assert(boundary.events.size()==3 && boundary.events.back().type==3);
+  assert(boundary.events.back().value==2 && boundary.events.back().pressed==0 && injected.size()==1);
+
+  // Replacing the device can itself fail. If removal of the replacement
+  // cannot be proved, neither backend should accept new events yet.
+  boundary.receipt=false;
+  abs_mouse(resumed,target_touch_port,200,200);
+  assert(resumed->vhf->impl->keyboard_mouse_faulted);
+  move_mouse(resumed,8,0);
+  assert(injected.size()==2);
+  boundary.observer_bind=false;
+  boundary.abort_status=ERROR_ACCESS_DENIED;
+  recover_vhf_keyboard_mouse(resumed);
+  move_mouse(resumed,9,0);
+  assert(!resumed->vhf->impl->keyboard_mouse_teardown_confirmed);
+  assert(boundary.opens==3 && boundary.closes==0 && boundary.events.size()==3 && injected.size()==2);
+
+  boundary.abort_status=ERROR_SUCCESS;
+  resumed->vhf->impl->keyboard_mouse_retry_at={};
+  move_mouse(resumed,10,0);
+  assert(injected.size()==3 && injected.back().mi.dx==10);
+  boundary.receipt=true;
+  boundary.observer_bind=true;
+  recover_vhf_keyboard_mouse(resumed);
+  move_mouse(resumed,11,0);
+  assert(boundary.opens==4 && boundary.closes==0 && boundary.events.back().x==11 && injected.size()==3);
+
   // Off-primary absolute moves use the existing Windows path while still
   // holding the same mouse receipt/lifetime fence as adjacent HID buttons.
   boundary={};injected.clear();metrics[SM_XVIRTUALSCREEN]=-65536;metrics[SM_CXVIRTUALSCREEN]=131072;
@@ -492,7 +570,7 @@ def main():
     submit = block(vhf_source, 'template<class Request>\n    bool submit_keyboard_mouse_locked(')
     prefix = PREFIX.replace('SUBMIT_METHOD', submit)
     vhf_methods = '\n'.join(block(vhf_source, marker) for marker in (
-        'bool vhf_gamepad_t::open_keyboard_mouse()',
+        'bool vhf_gamepad_t::open_keyboard_mouse(',
         'bool vhf_gamepad_t::keyboard_mouse_fallback_safe()',
         'bool vhf_gamepad_t::keyboard_mouse_fallback(',
         'void vhf_gamepad_t::keyboard_mouse_key(',
@@ -505,6 +583,7 @@ def main():
     input_methods = '\n'.join(block(input_source, marker) for marker in (
         'input_t input()',
         'static bool use_vhf_keyboard_mouse(',
+        'void recover_vhf_keyboard_mouse(',
         'void abs_mouse(',
         'void move_mouse(',
         'void button_mouse(',

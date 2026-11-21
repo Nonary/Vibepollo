@@ -1140,6 +1140,8 @@ namespace platf {
   void scroll(input_t &input, int distance);
   void hscroll(input_t &input, int distance);
 #ifdef _WIN32
+  // Called on the serialized input worker at a client connection, with no held keys or buttons.
+  void recover_vhf_keyboard_mouse(input_t &input);
   // The active Windows HID backend accepts only whole wheel detents.
   bool mouse_requires_scroll_ticks(input_t &input);
   // HID keyboard keys use the Windows keyboard stack's own repeat handling.

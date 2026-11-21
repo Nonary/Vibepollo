@@ -80,6 +80,7 @@ namespace platf::vhf_keyboard_mouse {
       asynchronous_stream(receipt);
       coalesced_absolute(receipt);
       observer_scope(receipt);
+      observer_restart(receipt);
     }
 
     static void asynchronous_stream(mouse_receipt &receipt) {
@@ -175,6 +176,38 @@ namespace platf::vhf_keyboard_mouse {
       mouse_receipt::mouse_hook(HC_ACTION, WM_MOUSEMOVE, reinterpret_cast<LPARAM>(&event));
       assert(receipt.wait());
       mouse_receipt::observer = nullptr;
+    }
+
+    static void observer_restart(mouse_receipt &receipt) {
+      // Simulate a retiring observer publishing state on its way out. Stop
+      // must join before clearing that state for the replacement observer.
+      receipt.worker = std::thread([&] {
+        std::lock_guard lock(receipt.mutex);
+        receipt.hook = reinterpret_cast<HHOOK>(1);
+        receipt.relative_device = reinterpret_cast<HANDLE>(2);
+        receipt.absolute_device = reinterpret_cast<HANDLE>(3);
+        receipt.pending.push_back({.injected = 42});
+        receipt.initialized = true;
+        receipt.removed = true;
+      });
+      receipt.stop();
+      assert(!receipt.worker.joinable());
+      assert(!receipt.window && !receipt.hook && !receipt.initialized);
+      assert(!receipt.relative_device && !receipt.absolute_device && !receipt.removed);
+      assert(receipt.wait() && receipt.pending.empty() && receipt.stats().operations == 0);
+
+      // A receipt for the old device cannot satisfy the new observer.
+      receipt.relative_device = reinterpret_cast<HANDLE>(4);
+      assert(receipt.arm({.motion = true, .x = 1}));
+      RAWINPUT input {};
+      input.header.dwType = RIM_TYPEMOUSE;
+      input.header.hDevice = reinterpret_cast<HANDLE>(2);
+      input.data.mouse.lLastX = 1;
+      receipt.observe(input);
+      assert(receipt.pending.size() == 1);
+      input.header.hDevice = receipt.relative_device;
+      receipt.observe(input);
+      assert(receipt.wait());
     }
   };
 }

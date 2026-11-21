@@ -962,10 +962,18 @@ namespace platf {
     return impl->driver_available;
   }
 
-  bool vhf_gamepad_t::open_keyboard_mouse() {
+  bool vhf_gamepad_t::open_keyboard_mouse(bool reconnect) {
     std::unique_lock lock {impl->lifetime};
-    if (impl->keyboard_mouse_owned) return true;
-    if (impl->keyboard_mouse_faulted || impl->recovery.pending()) return false;
+    if (reconnect && impl->keyboard_mouse_faulted) {
+      // Keep input on the guarded path until the old child is known to be gone.
+      if (impl->keyboard_mouse_owned || !impl->keyboard_mouse_teardown_confirmed) return true;
+      if (impl->recovery.pending() || !vhf_keyboard_mouse::mouse_receipt::input_desktop_is_default()) return false;
+      impl->mouse_receipt.stop();
+    }
+    else {
+      if (impl->keyboard_mouse_owned) return true;
+      if (reconnect || impl->keyboard_mouse_faulted || impl->recovery.pending()) return false;
+    }
     const bool already_connected = impl->client.connected();
     DWORD status = already_connected ? ERROR_SUCCESS : impl->client.connect();
     lvg::km::query_response km_info {};
@@ -980,7 +988,7 @@ namespace platf {
     }
     const bool open_attempted = status == ERROR_SUCCESS;
     if (open_attempted) status = impl->client.open_keyboard_mouse();
-    if (status == ERROR_SUCCESS && (!impl->mouse_receipt.start() || !impl->mouse_receipt.bind())) {
+    if (status == ERROR_SUCCESS && (!impl->mouse_receipt.start(reconnect) || !impl->mouse_receipt.bind())) {
       BOOST_LOG(warning) << "VHF mouse receipt observer could not bind the owned input collections"sv;
       status = ERROR_NOT_READY;
     }
@@ -988,7 +996,15 @@ namespace platf {
       // A failed open response does not prove the driver did not create the
       // neutral child. Try to remove it before closing our new handle; closing
       // that handle also triggers driver file cleanup if the abort failed.
-      if (open_attempted) std::ignore = impl->client.abort_keyboard_mouse();
+      const bool removed = !open_attempted || impl->client.abort_keyboard_mouse() == ERROR_SUCCESS;
+      impl->mouse_receipt.stop();
+      if (reconnect && !removed) {
+        impl->keyboard_mouse_teardown_confirmed = false;
+        impl->keyboard_mouse_recovery_needs_probe = false;
+        impl->keyboard_mouse_retry_at = std::chrono::steady_clock::now() + 1s;
+        BOOST_LOG(warning) << "VHF keyboard/mouse could not be restored; waiting for child removal before fallback"sv;
+        return true;
+      }
       if (config::input.keyboard_mouse_backend == "auto"sv) {
         BOOST_LOG(info) << "Automatic keyboard/mouse input selected Windows SendInput; VHF is unavailable ["sv
                         << util::hex(status).to_string_view() << ']';
@@ -1000,11 +1016,13 @@ namespace platf {
       return false;
     }
     impl->keyboard_mouse_owned = true;
+    impl->keyboard_mouse_faulted = false;
     impl->mouse_buttons = 0;
     impl->keyboard_mouse_teardown_confirmed = false;
+    impl->keyboard_mouse_recovery_needs_probe = false;
     impl->absolute_generation = km_info.absolute_target_generation;
     impl->keyboard_mouse_consumer = (km_info.capabilities & lvg::km::consumer) != 0;
-    BOOST_LOG(info) << "VHF keyboard/mouse input enabled"sv;
+    BOOST_LOG(info) << (reconnect ? "VHF keyboard/mouse input restored on reconnect"sv : "VHF keyboard/mouse input enabled"sv);
     return true;
   }
 
