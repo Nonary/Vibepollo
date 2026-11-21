@@ -1,0 +1,272 @@
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cstdlib>
+#include <format>
+#include <functional>
+#include <iostream>
+#include <latch>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <sstream>
+#include <stop_token>
+#include <thread>
+#include <tuple>
+#include <utility>
+#include <vector>
+
+#include "wgc_capture_policy.h"
+
+using DWORD = unsigned;
+using HRESULT = long;
+constexpr HRESULT S_OK = 0, WAIT_TIMEOUT = 258, WAIT_ABANDONED = 128, E_FAIL = -1;
+bool FAILED(HRESULT hr) { return hr < 0; }
+
+std::ostringstream log_output;
+#define BOOST_LOG(level) log_output
+
+constexpr int THREAD_PRIORITY_HIGHEST = 2, AVRT_PRIORITY_HIGH = 1;
+using HANDLE = void *;
+struct safe_mmcss_handle {
+  safe_mmcss_handle(std::nullptr_t) {}
+  void reset(HANDLE) {}
+  HANDLE get() const { return nullptr; }
+};
+int GetCurrentThread() { return 0; }
+void SetThreadPriority(int, int) {}
+void *AvSetMmThreadCharacteristicsW(const wchar_t *, DWORD *) { return nullptr; }
+void AvSetMmThreadPriority(HANDLE, int) {}
+int GetLastError() { return 0; }
+
+namespace winrt {
+  template<class T>
+  using com_ptr = std::shared_ptr<T>;
+  struct hresult_error {
+    int code() const { return -1; }
+    std::string message() const { return {}; }
+  };
+  std::string to_string(std::string message) { return message; }
+}
+
+namespace util {
+  template<class F>
+  struct fail_guard {
+    F action;
+    bool enabled = true;
+    ~fail_guard() { if (enabled) action(); }
+    void disable() { enabled = false; }
+  };
+}
+
+void require(bool condition) {
+  if (!condition) std::abort();
+}
+
+struct ID3D11Texture2D { int marker = 0; };
+
+struct KeyedMutex {
+  bool helper_owns = false;
+  unsigned waited = 0;
+  std::function<HRESULT(unsigned)> on_wait;
+  std::function<void(unsigned)> on_release;
+  HRESULT AcquireSync(int key, DWORD milliseconds) {
+    require(key == 0 && !helper_owns);
+    if (milliseconds == 0 && on_wait) return WAIT_TIMEOUT;
+    const auto result = on_wait ? on_wait(++waited) : S_OK;
+    helper_owns = result == S_OK;
+    return result;
+  }
+  HRESULT ReleaseSync(int key) {
+    require(key == 0 && helper_owns);
+    helper_owns = false;
+    if (on_release) on_release(waited);
+    return S_OK;
+  }
+};
+
+struct ResourceManager {
+  KeyedMutex mutex;
+  auto get_keyed_mutex() { return &mutex; }
+  std::shared_ptr<ID3D11Texture2D> texture = std::make_shared<ID3D11Texture2D>();
+  const auto &get_shared_texture() { return texture; }
+
+  using Frame = std::tuple<int, uint64_t, uint64_t>;
+  uint64_t frame_id = 0, frame_qpc = 0;
+  std::vector<Frame> observed;
+  void publish_frame_metadata(uint64_t qpc) {
+    require(mutex.helper_owns);
+    ++frame_id;
+    frame_qpc = qpc;
+  }
+  void signal_frame_ready() {
+    require(!mutex.helper_owns);
+    observed.emplace_back(texture->marker, frame_id, frame_qpc);
+  }
+};
+
+struct Context {
+  unsigned copies = 0;
+  void CopyResource(ID3D11Texture2D *destination, ID3D11Texture2D *source) {
+    ++copies;
+    destination->marker = source->marker;
+  }
+};
+
+// The replay invokes callback work synchronously from the fake GPU wait.
+// Once the production worker would sleep for input, stop this idle replay.
+struct IdleWait {
+  bool &stop;
+  template<class P>
+  void wait(std::unique_lock<std::mutex> &, P ready) {
+    if (!ready()) stop = true;
+  }
+  void notify_all() {}
+};
+
+struct Manager {
+  struct Dependencies {
+    ResourceManager resource_manager;
+    std::shared_ptr<Context> d3d_context = std::make_shared<Context>();
+  };
+  std::optional<Dependencies> _deps {std::in_place};
+  bool _delivery_stop = false;
+  IdleWait _delivery_cv {_delivery_stop};
+  std::atomic<bool> _shutting_down {false};
+  std::mutex _delivery_mutex, _d3d_context_mutex;
+
+  std::atomic<uint64_t> _delivery_replaced_frames {0}, _scratch_dropped_frames {0};
+  std::atomic<uint64_t> _published_frames {0}, _direct_published_frames {0};
+  std::atomic<uint64_t> _slow_mutex_waits {0}, _slow_context_waits {0};
+  std::atomic<uint64_t> _slow_shared_mutex_holds {0}, _slow_copy_submissions {0};
+
+  // PRODUCTION_METHODS
+
+  std::array<scratch_texture_t, 3> _scratch_textures;
+  std::optional<delivery_frame_t> _pending_delivery_frame;
+
+  static uint64_t capture_qpc(int marker) { return marker * 1000 + 123; }
+
+  void capture(int marker) {
+    const auto source = std::make_shared<ID3D11Texture2D>(ID3D11Texture2D {marker});
+    const auto qpc = capture_qpc(marker);
+    if (try_publish_directly(source, qpc)) return;
+    const auto index = reserve_scratch_texture();
+    require(index.has_value());
+    auto &scratch = _scratch_textures[*index].texture;
+    if (!scratch) scratch = std::make_shared<ID3D11Texture2D>();
+    {
+      std::lock_guard lock(_d3d_context_mutex);
+      _deps->d3d_context->CopyResource(scratch.get(), source.get());
+    }
+    require(enqueue_scratch_texture(*index, qpc));
+  }
+
+  void run() {
+    delivery_thread_proc(std::stop_token {});
+    require(!_deps->resource_manager.mutex.helper_owns);
+  }
+
+  auto &ipc() { return _deps->resource_manager; }
+};
+
+int failures = 0;
+void check(bool ok, const char *name) {
+  std::cout << (ok ? "PASS " : "FAIL ") << name << '\n';
+  if (!ok) ++failures;
+}
+
+bool delivered_only(Manager &m, int marker) {
+  return m.ipc().observed == std::vector<ResourceManager::Frame> {
+    {marker, 1, Manager::capture_qpc(marker)},
+  };
+}
+
+int main() {
+  {
+    Manager m;
+    m.capture(17);
+    m.run();
+    check(delivered_only(m, 17) && m._deps->d3d_context->copies == 1,
+          "uncontended capture publishes immediately with one copy");
+  }
+  {
+    Manager m;
+    m.capture(40);
+    m.ipc().mutex.on_wait = [](unsigned attempt) { return attempt == 1 ? WAIT_TIMEOUT : S_OK; };
+    m.capture(41);
+    m.run();
+    const std::vector<ResourceManager::Frame> expected {
+      {40, 1, Manager::capture_qpc(40)},
+      {41, 2, Manager::capture_qpc(41)},
+    };
+    check(m.ipc().mutex.waited == 2 && m.ipc().observed == expected,
+          "final visual update survives ownership timeout and idle");
+  }
+  {
+    Manager m;
+    m.ipc().mutex.on_wait = [&](unsigned attempt) {
+      if (attempt < 4) m.capture(100 + static_cast<int>(attempt));
+      return attempt <= 4 ? WAIT_TIMEOUT : S_OK;
+    };
+    m.capture(100);
+    m.run();
+    check(m.ipc().mutex.waited == 5 && delivered_only(m, 103),
+          "sustained fresh capture and repeated timeouts preserve only latest pixels and QPC");
+  }
+  {
+    Manager m;
+    m.ipc().mutex.on_wait = [&](unsigned attempt) {
+      if (attempt == 1) m.capture(202);
+      return S_OK;
+    };
+    m.capture(201);
+    m.run();
+    check(m.ipc().mutex.waited == 1 && delivered_only(m, 202),
+          "acquiring ownership publishes the newest already committed scratch frame");
+  }
+  {
+    Manager m;
+    m.ipc().mutex.on_wait = [&](unsigned) {
+      m._shutting_down = true;
+      m._delivery_stop = true;
+      return S_OK;
+    };
+    m.capture(301);
+    m.run();
+    check(m.ipc().observed.empty(), "shutdown during acquisition never publishes pending pixels");
+  }
+  {
+    Manager m;
+    std::latch begin_copy {1}, copying {1}, keyed_released {1};
+    std::jthread callback([&]() {
+      begin_copy.wait();
+      std::lock_guard lock(m._d3d_context_mutex);
+      copying.count_down();
+      keyed_released.wait();
+    });
+    m.ipc().mutex.on_wait = [&](unsigned attempt) {
+      if (attempt == 1) {
+        begin_copy.count_down();
+        copying.wait();
+      }
+      return S_OK;
+    };
+    m.ipc().mutex.on_release = [&](unsigned attempt) {
+      if (attempt == 1) keyed_released.count_down();
+    };
+    m.capture(351);
+    m.run();
+    check(m.ipc().mutex.waited == 2 && delivered_only(m, 351),
+          "busy helper context hands shared ownership back before waiting");
+  }
+  {
+    Manager m;
+    m.ipc().mutex.on_wait = [](unsigned) { return E_FAIL; };
+    m.capture(401);
+    m.run();
+    check(m.ipc().mutex.waited == 1 && m.ipc().observed.empty(),
+          "permanent acquisition failure does not spin or signal");
+  }
+  return failures ? 1 : 0;
+}

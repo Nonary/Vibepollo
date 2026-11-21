@@ -328,13 +328,9 @@ namespace platf::dxgi::wgc_policy {
     return vrr_low_latency ? low_latency_initial_buffer_size : adaptive_max_buffer_size;
   }
 
-  /**
-   * A new WGC frame may skip the scratch handoff and go straight into the
-   * shared texture only when no older frame is queued or mid-delivery;
-   * otherwise it would be published ahead of that older frame.
-   */
-  constexpr bool may_publish_directly(const bool stopping, const bool frame_pending, const bool frame_delivering) noexcept {
-    return !stopping && !frame_pending && !frame_delivering;
+  // A queued frame keeps priority until delivery owns the shared texture.
+  constexpr bool may_publish_directly(const bool stopping, const bool frame_pending) noexcept {
+    return !stopping && !frame_pending;
   }
 
   /**
