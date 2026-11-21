@@ -793,20 +793,112 @@ TEST_F(AuxiliaryRecovery, BothSnapshotsAreBoundToInspection) {
   EXPECT_FALSE(fs::exists(output));
 }
 
-TEST_F(AuxiliaryRecovery, RejectsNonzeroMissingOrUninspectableCopies) {
+TEST_F(AuxiliaryRecovery, RejectsUsableOrUninspectableCopies) {
   for (const auto &path : {input, fs::path(input.string() + ".bak")}) {
-    for (const auto &bytes : {std::string("{\"root\":{\"session_tokens\":[]}}"), std::string("{broken"), std::string(" \n"), std::string("\0x", 2)}) {
-      write(path, bytes);
-      EXPECT_EQ(inspect(), 2);
-      EXPECT_FALSE(fs::exists(output));
-    }
-    fs::remove(path);
+    write(path, R"({"root":{"session_tokens":[]}})");
     EXPECT_EQ(inspect(), 2);
+    EXPECT_FALSE(fs::exists(output));
+    fs::remove(path);
     fs::create_directory(path);
     EXPECT_EQ(inspect(), 2);
     fs::remove(path);
     write(path, std::string(512, '\0'));
   }
+}
+
+TEST_F(AuxiliaryRecovery, ResetPreservesNonzeroTruncatedSnapshots) {
+  const auto primary = std::string("{\"root\":{\"display_helper_engine\":");
+  const auto backup = std::string("\0x", 2);
+  write(input, primary);
+  write(input.string() + ".bak", backup);
+  const auto inspected = auxiliary_token();
+  write(input.string() + ".bak", "{truncated");
+  ASSERT_EQ(reset(inspected), 2);
+  EXPECT_FALSE(fs::exists(output));
+  write(input.string() + ".bak", backup);
+  ASSERT_EQ(reset(inspected), 0) << stderr_stream.str();
+  EXPECT_EQ(read(input), primary);
+  EXPECT_EQ(read(input.string() + ".bak"), backup);
+  EXPECT_EQ(read(output / "primary.original.json"), primary);
+  EXPECT_EQ(read(output / "backup.original.json"), backup);
+  EXPECT_EQ(read(output / "vibeshine_state.reset.json"), statefile::policy::auxiliary_reset_json);
+}
+
+TEST_F(AuxiliaryRecovery, BackupRecoveryPreservesMetadataWithoutRestoringTokens) {
+  const auto backup = input.string() + ".bak";
+  const auto snapshot = R"({"root":{"display_helper_engine":"v2","api_tokens":[{"hash":"older-api-token"}],"session_tokens":[{"hash":"older-session-token"}],"unknown":"unrecognized"}})";
+  // An uninspectable primary must not be opened or replaced in backup mode.
+  ASSERT_TRUE(fs::remove(input));
+  ASSERT_TRUE(fs::create_directory(input));
+  write(input / "sentinel", "preserved");
+  write(backup, snapshot);
+  ASSERT_EQ(dispatch({"sunshine", "--auxiliary-recovery", "inspect-backup", backup}), 0) << stderr_stream.str();
+  const std::string token = json::parse(stdout_stream.str()).at("snapshot_token");
+  const auto restore = [&](const std::string &acceptance) {
+    return dispatch({"sunshine", "--auxiliary-recovery", "prepare-restore", backup, "--expect-snapshot", token,
+                     acceptance, "--confirm-separate-auxiliary-state", "--output", output.string()});
+  };
+  EXPECT_EQ(restore("--accept-token-and-metadata-loss"), 2);
+  write(backup, R"({"root":{"display_helper_engine":"v1"}})");
+  EXPECT_EQ(restore("--accept-token-loss"), 2);
+  EXPECT_FALSE(fs::exists(output));
+  write(backup, snapshot);
+  ASSERT_EQ(restore("--accept-token-loss"), 0) << stderr_stream.str();
+  EXPECT_EQ(read(input / "sentinel"), "preserved");
+  EXPECT_EQ(read(backup), snapshot);
+  EXPECT_FALSE(fs::exists(output / "primary.original.json"));
+  EXPECT_EQ(read(output / "backup.original.json"), snapshot);
+  const auto candidate = read(output / "vibeshine_state.reset.json");
+  EXPECT_EQ(read(output / "vibeshine_state.reset.json.bak"), candidate);
+  EXPECT_EQ(json::parse(candidate), json::parse(R"({"root":{"display_helper_engine":"v2","api_tokens":[],"session_tokens":[]}})"));
+  const auto report = json::parse(read(output / "recovery.json"));
+  EXPECT_EQ(report["primary_status"], "not_read");
+  EXPECT_EQ(report["backup_sha256"], digest(snapshot));
+}
+
+TEST_F(AuxiliaryRecovery, BackupRecoveryRejectsMalformedOrPairingState) {
+  const auto backup = input.string() + ".bak";
+  for (const auto snapshot : {"{truncated", R"({"root":{"uniqueid":"host","named_devices":[]}})", R"({"root":{},"username":"user"})"}) {
+    write(backup, snapshot);
+    EXPECT_EQ(dispatch({"sunshine", "--auxiliary-recovery", "inspect-backup", backup}), 2);
+    EXPECT_FALSE(fs::exists(output));
+  }
+}
+
+TEST_F(AuxiliaryRecovery, PreparesFromEitherSingleZeroFilledSnapshot) {
+  const fs::path backup(input.string() + ".bak");
+  const auto primary_bytes = read(input);
+  const auto backup_bytes = read(backup);
+  for (const bool primary_missing : {true, false}) {
+    const auto &missing = primary_missing ? input : backup;
+    const auto &present = primary_missing ? backup : input;
+    const auto bytes = read(present);
+    ASSERT_TRUE(fs::remove(missing));
+    ASSERT_EQ(reset(auxiliary_token()), 0) << stderr_stream.str();
+    EXPECT_FALSE(fs::exists(missing));
+    EXPECT_EQ(read(present), bytes);
+    EXPECT_FALSE(fs::exists(output / (primary_missing ? "primary.original.json" : "backup.original.json")));
+    EXPECT_EQ(read(output / (primary_missing ? "backup.original.json" : "primary.original.json")), bytes);
+    const auto report = json::parse(read(output / "recovery.json"));
+    EXPECT_TRUE(report.at(primary_missing ? "primary_sha256" : "backup_sha256").is_null());
+    EXPECT_EQ(report.at(primary_missing ? "backup_sha256" : "primary_sha256"), digest(bytes));
+    EXPECT_EQ(read(output / "vibeshine_state.reset.json"), read(output / "vibeshine_state.reset.json.bak"));
+    fs::remove_all(output);
+    write(input, primary_bytes);
+    write(backup, backup_bytes);
+  }
+}
+
+TEST_F(AuxiliaryRecovery, BindsSnapshotPresenceAndRejectsBothMissing) {
+  const fs::path backup(input.string() + ".bak");
+  ASSERT_TRUE(fs::remove(backup));
+  const auto inspected = auxiliary_token();
+  write(backup, "");
+  EXPECT_EQ(reset(inspected), 2);
+  EXPECT_FALSE(fs::exists(output));
+  ASSERT_TRUE(fs::remove(input));
+  ASSERT_TRUE(fs::remove(backup));
+  EXPECT_EQ(inspect(), 2);
 }
 
 TEST_F(AuxiliaryRecovery, DoesNotAcceptPairingOrCustomStateFilenames) {

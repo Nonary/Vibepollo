@@ -26,6 +26,11 @@ namespace statefile {
 
   bool share_state_file();
 
+  enum class auxiliary_backup_policy_e {
+    required,
+    best_effort,
+  };
+
   /**
    * @brief Write a property-tree JSON file through a temporary file and atomic replace.
    *
@@ -34,7 +39,11 @@ namespace statefile {
    * interleaved on-disk writes from leaving malformed JSON behind. Configured
    * primary and auxiliary state writes also refresh their .bak recovery copy.
    */
-  void write_json_atomic(const std::string &path, const boost::property_tree::ptree &tree);
+  void write_json_atomic(
+    const std::string &path,
+    const boost::property_tree::ptree &tree,
+    auxiliary_backup_policy_e backup_policy = auxiliary_backup_policy_e::required
+  );
 
   /**
    * @brief Persist the primary Sunshine state and refresh its recovery copy.
