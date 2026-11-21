@@ -4,12 +4,16 @@ type Layout = { version: number; placements: Record<string, Record<string, unkno
 const peerPlacement = { anchor_kind: 'physical', anchor_id: 'primary', edge: 'left', alignment: 'end', gap_px: 16, primary: false };
 const manualPlacement = { anchor_kind: 'physical', anchor_id: 'primary', edge: 'below', alignment: 'end', gap_px: 24, primary: false, preserve: true };
 
-async function openEditor(page: Page, placements: Layout['placements'] = { peer: peerPlacement }) {
+async function openEditor(page: Page, placements: Layout['placements'] = { peer: peerPlacement }, extraMonitor = false) {
   const clients = [{ uuid: 'tablet', name: 'Tablet', enabled: true }, { uuid: 'peer', name: 'Peer', enabled: true }];
   let layout: Layout = { version: 1, placements: structuredClone(placements) };
   const initial = structuredClone(layout);
   const saved: Layout[] = [];
-  const response = () => ({ status: true, layout, clients, nodes: [{ id: 'primary', label: 'Primary', kind: 'physical', active: true, primary: true, desired_position: { x: 0, y: 0 }, mode: { width: 3840, height: 2160, refresh_hz: 60 } }] });
+  const nodes = [{ id: 'primary', label: 'Primary', kind: 'physical', active: true, primary: true, desired_position: { x: 0, y: 0 }, mode: { width: 3840, height: 2160, refresh_hz: 60 } }];
+  if (extraMonitor) {
+    nodes.push({ id: 'extra-monitor', label: 'Tablet (2)', kind: 'client', active: true, primary: false, desired_position: { x: 5760, y: 0 }, mode: { width: 1920, height: 1080, refresh_hz: 60 } });
+  }
+  const response = () => ({ status: true, layout, clients, nodes });
   await localRoute(page, '**/api/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
@@ -61,6 +65,18 @@ test('extended client arrangement saves directions and manual state without chan
   await saveLayout(editor, saved, 3);
   expect(saved[2].placements.tablet).toMatchObject({ edge: 'below', gap_px: 24, preserve: true });
   expect(saved[2].placements.peer).toEqual(saved[0].placements.peer);
+});
+
+test('extra Remote Monitor screens are visible without offering unsupported layout anchors', async ({ page }) => {
+  const { editor, saved } = await openEditor(page, {}, true);
+  await expect(editor.getByRole('button', { name: /Remote Monitor · Tablet \(2\)/ })).toBeDisabled();
+  await editor.getByRole('combobox', { name: 'Client display', exact: true }).selectOption('tablet');
+  await editor.getByRole('combobox', { name: 'Arrangement', exact: true }).selectOption('right');
+  const anchors = editor.getByRole('combobox', { name: 'Anchor', exact: true });
+  await expect(anchors.locator('option[value="extra-monitor"]')).toHaveCount(0);
+  await anchors.selectOption('peer');
+  await saveLayout(editor, saved, 1);
+  expect(saved[0].placements.tablet).toMatchObject({ anchor_kind: 'client', anchor_id: 'peer' });
 });
 
 for (const arrangement of ['preserve', 'below', 'automatic'] as const) {

@@ -2,6 +2,7 @@
 // RTSP operations below are deterministic boundary adapters; the real target
 // registry is exercised separately by test_host_stream_terminal_composition.py.
 #include "src/host_stream_control.h"
+#include "src/crypto.h"
 #include "src/remote_session.h"
 #include "src/rtsp_pending_policy.h"
 
@@ -40,6 +41,7 @@ struct log_t {
   log_t {}
 int config_clears = 0, draining = 0, finalizes = 0;
 std::function<void()> after_disconnect;
+bool teardown_control = false;
 std::function<void()> during_activity_check, before_cleanup_lock;
 thread_local bool expiry_worker = false, retry_worker = false;
 thread_local int cleanup_lock_depth = 0;
@@ -140,27 +142,43 @@ namespace nvhttp {
   }
 
   bool has_stream_session_activity(bool expire_pending = true);
+  bool end_remote_monitor_transport(std::string_view, std::uint64_t, std::string_view = {});
   /* @OWNERS@ */
 }  // namespace nvhttp
+
+void remember_monitor(std::string client, std::uint64_t generation, std::size_t slot = 0, std::string display = {}) {
+  if (display.empty()) display = client;
+  nvhttp::remember_remote_monitor({
+    .role = role_e::monitor,
+    .generation = generation,
+    .client_uuid = std::move(client),
+    .display_uuid = std::move(display),
+    .monitor_slot = slot,
+    .monitor_state = remote_session::monitor_slot_state_e::starting,
+  });
+}
 
 namespace stream {
   struct session_t {
     std::string device_uuid, history_uuid;
     role_e remote_role;
     std::uint64_t remote_role_generation;
+    std::string name;
+    crypto::PERM permissions {};
     int stops = 0, joins = 0;
   };
 
   namespace session {
     struct cleanup_reservation_t {};
     /* @MATCHES@ */
+    std::string uuid(const session_t &session) { return session.device_uuid; }
     void stop(session_t &session) {
       ++session.stops;
     }
 
     void join(session_t &session, bool lifecycle_lock_held) {
       check(cleanup_lock_depth == 0, "transport join must not retain the input cleanup lock");
-      check(lifecycle_lock_held, "replacement must transfer its lifecycle lock to join");
+      check(lifecycle_lock_held != teardown_control, "join must match the source route lifecycle ownership");
       check(++session.joins == 1, "transport must join exactly once");
       nvhttp::notify_remote_input_transport_lost(session.device_uuid, session.remote_role_generation);
     }
@@ -248,6 +266,13 @@ namespace rtsp_stream {
     void release_pending_runtime_holds(const std::shared_ptr<launch_session_t>& session) {
       session->audio_context_guard.reset(); session->display_power_guard.reset(); session->exact_target_hold.reset();
     }
+    bool has_pending_monitor_launch(std::string_view client, std::uint64_t generation) {
+      std::lock_guard lock {pending_launches_mutex};
+      const auto it = pending_launches.find(static_cast<std::uint32_t>(generation));
+      return it != pending_launches.end() && it->second.expires_at > std::chrono::steady_clock::now() &&
+             it->second.session->role == role_e::monitor && !it->second.session->monitor_stream_published &&
+             it->second.session->client_uuid == client && it->second.session->role_generation == generation;
+    }
     bool retain_pending_runtime_holds(const std::shared_ptr<launch_session_t>& session) {
       std::lock_guard lock {pending_launches_mutex};
       auto it=pending_launches.find(session->id);
@@ -284,7 +309,7 @@ namespace rtsp_stream {
     }
     bool disconnect_remote_role(std::string_view client, role_e role, std::optional<std::uint64_t> generation, bool lifecycle_lock_held=false) {
       check(cleanup_lock_depth==0,"disconnect must not retain cleanup lock");
-      check(lifecycle_lock_held,"replacement transfers lifecycle lock");
+      check(lifecycle_lock_held != teardown_control, "disconnect must match the source route lifecycle ownership");
       std::vector<std::shared_ptr<launch_session_t>> removed;
       { std::lock_guard lock {pending_launches_mutex};
         for(auto it=pending_launches.begin();it!=pending_launches.end();) {
@@ -303,6 +328,12 @@ namespace rtsp_stream {
       bool result=!removed.empty() || !active.empty(); if(result) ++finalizes; return result;
     }
   } server;
+
+  auto get_sessions_snapshot() { return server._session_state.sessions; }
+
+  bool has_pending_monitor_launch(std::string_view client, std::uint64_t generation) {
+    return server.has_pending_monitor_launch(client, generation);
+  }
 
   bool disconnect_remote_role_session(std::string_view client, role_e role, std::uint64_t generation, bool lifecycle_lock_held) {
     const auto disconnected = server.disconnect_remote_role(client, role, generation, lifecycle_lock_held);
@@ -352,7 +383,29 @@ struct tree_t {
   }
 
   void put(const char *, const char *) {}
+  void put(const char *, const std::string &) {}
 };
+
+void update_session_info(stream::session_t &session, const std::string &name, crypto::PERM permission) {
+  session.name = name;
+  session.permissions = permission;
+}
+/* @UPDATE_SESSION_INFO@ */
+
+void cleanup_virtual_display_if_idle_locked() {}
+
+int disconnect_remote(std::string client, control_e synthetic_control) {
+  struct { std::string uuid; } request_client_identity {client};
+  remote_session::dispatch_t decision;
+  tree_t tree;
+  teardown_control = true;
+  const auto execute = [&] {
+    /* @TEARDOWN_CONTROL@ */
+  };
+  execute();
+  teardown_control = false;
+  return tree.status;
+}
 
 std::function<void()> before_admission;
 std::unordered_map<std::string, std::string> launch_overrides;
@@ -531,7 +584,7 @@ int main() {
   check(delayed_expiry.size() == 1 && !has_stream_session_activity(), "expiry must detach pending input before retry");
   check(remote_owner_generation("a", role_e::input) == 31, "expiry notification must still be outstanding");
   remember_remote_owner("b", role_e::input, 33);
-  remember_remote_owner("c", role_e::monitor, 34);
+  remember_monitor("c", 34);
   after_disconnect = [&] {
     check(!has_stream_session_activity(), "no pending or active transport may mask expiry cleanup");
     rtsp_stream::server.notify_expired_pending(delayed_expiry);
@@ -570,7 +623,7 @@ int main() {
   auto own_game = active("a", 6, role_e::game);
   auto newer_input = active("a", 7);
   remember_remote_owner("b", role_e::input, 4);
-  remember_remote_owner("c", role_e::monitor, 5);
+  remember_monitor("c", 5);
   check(launch("a", 8, control_e::input, true, true) == 200, "removed input retains its existing owner reconnect");
   check(launch("new", 18, control_e::input, true, true) == 404, "removed input rejects a cached tile for a new owner");
   check(old_active->stops == 1 && old_active->joins == 1, "old input transport must be retired");
@@ -588,7 +641,7 @@ int main() {
 
   // Dispatch must not weaken permissions, cross-role isolation, or peer ownership.
   reset();
-  remember_remote_owner("a", role_e::monitor, 11);
+  remember_monitor("a", 11);
   auto monitor = active("a", 11, role_e::monitor);
   check(launch("a", 12) == 409 && monitor->stops == 0, "monitor owner cannot replace its role with input");
   reset();
@@ -630,11 +683,15 @@ int main() {
     },
   });
   auto monitor_pending = pending("monitor", 40, role_e::monitor);
+  remember_monitor("monitor", 40);
   check(rtsp_stream::server.session_raise(monitor_pending), "monitor expiry setup");
   std::vector<std::shared_ptr<rtsp_stream::launch_session_t>> monitor_expired;
   rtsp_stream::server.expire_pending_locked(std::chrono::steady_clock::now() + std::chrono::minutes(1), &monitor_expired);
   rtsp_stream::server.notify_expired_pending(monitor_expired);
   check(monitor_lost == 0, "expiry reconciliation must wait for startup");
+  check(remote_monitor_owners("monitor").front().monitor_state == remote_session::monitor_slot_state_e::starting &&
+          !rtsp_stream::has_pending_monitor_launch("monitor", 40),
+        "an expired launch cannot replay success before its starting owner reconciles");
   rtsp_stream::server.drain_monitor_reconciliation();
   check(monitor_lost == 1, "unconnected monitor expiry must release the ready gate");
 
@@ -666,9 +723,77 @@ int main() {
   monitor_lost = 0;
   monitor_generation = 41;
   auto canceled = pending("monitor", 41, role_e::monitor);
+  remember_monitor("monitor", 41);
   check(rtsp_stream::server.session_raise(canceled), "monitor cancellation setup");
   rtsp_stream::server.cancel_pending_launch("test cancellation");
   check(monitor_lost == 1, "unconnected canceled monitor must release the ready gate");
+
+  reset();
+  using monitor_state = remote_session::monitor_slot_state_e;
+  remember_monitor("workstation", 70, 0, "left-display");
+  remember_monitor("workstation", 71, 1, "right-display");
+  notify_remote_monitor_started("workstation", 70, false);
+  check(!can_start_remote_monitor("workstation", 71, false) &&
+          !can_start_remote_monitor("workstation", 71, true),
+        "a running legacy monitor cannot share its address-based startup with a sibling");
+  reset();
+  remember_monitor("workstation", 70, 0, "left-display");
+  remember_monitor("workstation", 71, 1, "right-display");
+  notify_remote_monitor_started("workstation", 70, true);
+  check(!can_start_remote_monitor("workstation", 71, false) &&
+          can_start_remote_monitor("workstation", 71, true),
+        "both simultaneous monitors must support unique session IDs");
+  notify_remote_monitor_started("workstation", 71, true);
+  notify_remote_monitor_stopping("workstation", 71);
+  check(remote_monitor_owners("workstation")[1].monitor_state == monitor_state::stopping,
+        "a draining screen must remain reserved until its transport ends");
+  std::string lost_output, released_output;
+  remote_session::register_monitor_runtime_hooks({
+    .explicit_release = [&](std::string_view output, std::uint64_t, std::string_view) {
+      released_output = output;
+      return true;
+    },
+    .transport_lost = [&](std::string_view output, std::uint64_t) { lost_output = output; },
+  });
+  end_remote_monitor_transport("other-workstation", 71);
+  check(lost_output.empty(), "another pairing cannot release a screen by generation");
+  end_remote_monitor_transport("workstation", 71);
+  const auto displays = remote_monitor_owners("workstation");
+  check(lost_output == "right-display" && displays[0].monitor_state == monitor_state::streaming &&
+          displays[1].monitor_state == monitor_state::retained,
+        "closing the second screen must retain it while the first continues streaming");
+  remember_monitor("workstation", 72, 1, "right-display");
+  lost_output.clear();
+  end_remote_monitor_transport("workstation", 71);
+  check(lost_output.empty(), "old transport callbacks cannot change a resumed screen");
+  notify_remote_monitor_started("workstation", 72, true);
+  notify_remote_monitor_stopping("workstation", 72);
+  check(request_remote_monitor_release("workstation", 72, "Disconnect Monitor") &&
+          released_output.empty() && remote_monitor_owners("workstation").size() == 2,
+        "a detached monitor must keep its display while capture drains");
+  check(end_remote_monitor_transport("workstation", 72) &&
+          released_output == "right-display" && remote_monitor_owners("workstation").size() == 1,
+        "capture completion releases only the requested screen of its pairing");
+  reset();
+  auto left = active("workstation", 80, role_e::monitor);
+  auto right = active("workstation", 81, role_e::monitor);
+  auto peer = active("another-workstation", 82, role_e::monitor);
+  peer->history_uuid = "workstation";
+  const auto permission = crypto::PERM::view;
+  check(find_and_udpate_session_info("workstation", "New name", permission) &&
+          left->name == "New name" && left->permissions == permission &&
+          right->name == "New name" && right->permissions == permission && peer->name.empty(),
+        "pairing updates affect every current monitor and ignore individual stream history IDs");
+  remember_monitor("workstation", 80, 0, "left-display");
+  remember_monitor("workstation", 81, 1, "right-display");
+  check(disconnect_remote("workstation", control_e::disconnect_monitor) == 410 &&
+          left->joins == 1 && right->joins == 1 && peer->joins == 0,
+        "teardown route owns no lifecycle gate while joining each paired screen");
+  auto input = active("workstation", 83);
+  remember_remote_owner("workstation", role_e::input, 83);
+  check(disconnect_remote("workstation", control_e::disconnect_input) == 410 && input->joins == 1,
+        "Disconnect Input also lets RTSP own the gate while removing its transport");
+
   remote_session::register_monitor_runtime_hooks({});
   std::cout << "PASS: pending/active/draining replacement, generation and client isolation, stale startup/completion, permissions, cancellation, delayed expiry and paused-game overrides, failure accounting, monitor expiry reconciliation\n";
 }

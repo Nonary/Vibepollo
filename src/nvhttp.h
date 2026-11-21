@@ -100,7 +100,11 @@ namespace nvhttp {
   // Remote Input has no retained resource; its catalogue ownership ends with
   // the exact transport generation that created it.
   void notify_remote_input_transport_lost(std::string_view client_uuid, std::uint64_t generation);
-  void notify_remote_monitor_released(std::string_view client_uuid, std::uint64_t generation);
+  bool can_start_remote_monitor(std::string_view client_uuid, std::uint64_t generation, bool session_ids);
+  void notify_remote_monitor_started(std::string_view client_uuid, std::uint64_t generation, bool session_ids);
+  void notify_remote_monitor_stopping(std::string_view client_uuid, std::uint64_t generation);
+  // Called under the lifecycle gate after capture drains, or for unpublished startup.
+  bool end_remote_monitor_transport(std::string_view client_uuid, std::uint64_t generation, std::string_view release_reason = {});
   void reconcile_remote_monitor_owners();
   // Conservative ownership observation for automatic display recovery. Call
   // under stream_lifecycle_mutex() so a fresh remote-role launch cannot enter

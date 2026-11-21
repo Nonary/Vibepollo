@@ -18,6 +18,36 @@ namespace {
   const std::vector<std::string> clients {"one", "two", "three", "four", "five"};
 }
 
+TEST(RemoteDisplayTopology, AdditionalMonitorHasItsOwnOutputAndPlacement) {
+  remote_display_topology::coordinator_t coordinator;
+  std::vector<remote_display_topology::node_t> applied;
+  std::vector<std::string> removed;
+  coordinator.set_runtime_callbacks({
+    .create_or_reclaim = [](const auto &, const auto &, const auto &) { return true; },
+    .apply_composed_topology = [&](const auto &nodes) { applied = nodes; return true; },
+    .exact_target_has_current_mode_and_dxgi = [](const auto &id, const auto &) { return std::optional<std::string> {id}; },
+    .remove_owned_display = [&](const auto &id) { removed.push_back(id); return true; },
+  });
+
+  const auto first = coordinator.activate_or_resume("workstation", "Workstation", {1920, 1080, 60}, 1);
+  const auto second = coordinator.activate_or_resume("workstation-screen-2", "Workstation (2)", {2560, 1440, 60}, 2);
+  ASSERT_TRUE(first.ready);
+  ASSERT_TRUE(second.ready);
+  EXPECT_NE(first.output, second.output);
+  const auto left = std::ranges::find(applied, "workstation", &remote_display_topology::node_t::id);
+  const auto right = std::ranges::find(applied, "workstation-screen-2", &remote_display_topology::node_t::id);
+  ASSERT_NE(left, applied.end());
+  ASSERT_NE(right, applied.end());
+  EXPECT_EQ(right->x, left->x + left->configured_mode.width);
+
+  coordinator.transport_lost("workstation-screen-2", 2);
+  const auto resumed = coordinator.activate_or_resume("workstation-screen-2", "Workstation (2)", {2560, 1440, 60}, 3);
+  EXPECT_EQ(resumed.output, second.output);
+  EXPECT_TRUE(coordinator.explicit_release("workstation-screen-2", 3, "test disconnect"));
+  EXPECT_EQ(removed, (std::vector<std::string> {"workstation-screen-2"}));
+  EXPECT_TRUE(coordinator.snapshot("workstation", 1).ready);
+}
+
 TEST(RemoteDisplayTopology, RejectsInvalidAtomicLayoutGraphs) {
   std::string error;
   EXPECT_FALSE(remote_display_topology::validate_layout(layout({{"one", {{"anchor_kind", "client"}, {"anchor_id", "one"}, {"edge", "left"}, {"alignment", "start"}, {"gap_px", 0}}}}), clients, {"path"}, error));
@@ -2499,7 +2529,7 @@ TEST(RemoteDisplayTopology, ConfiguredSixClientsShareSlotsAndRejectBeforeCreatin
   EXPECT_FALSE(coordinator.reserve_normal_game_identity("seven", "Seven", {}).accepted);
   const auto rejected = coordinator.activate_or_resume("seven", "Seven", {}, 1);
   EXPECT_FALSE(rejected.accepted);
-  EXPECT_NE(rejected.error.find("6 paired-client identities"), std::string::npos);
+  EXPECT_NE(rejected.error.find("6 virtual screens"), std::string::npos);
   EXPECT_EQ(creates, 6);
   EXPECT_EQ(coordinator.snapshot({})["capacity"], (nlohmann::json {{"max", 6}, {"used", 6}}));
 }

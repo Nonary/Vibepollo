@@ -637,7 +637,7 @@ namespace remote_display_topology {
       }
     }
     if (!clients_.contains(client_uuid) && clients_.size() >= client_identity_capacity_locked()) {
-      return {false, false, true, {}, "Remote display capacity is " + std::to_string(client_identity_capacity_locked()) + " paired-client identities."};
+      return {false, false, true, {}, "Remote display capacity is " + std::to_string(client_identity_capacity_locked()) + " virtual screens."};
     }
     auto [state_it, inserted] = clients_.try_emplace(client_uuid);
     auto &state = state_it->second;

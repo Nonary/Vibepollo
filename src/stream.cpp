@@ -4040,6 +4040,9 @@ namespace stream {
       if (!session.stop_reason.compare_exchange_strong(expected, reason)) {
         return;
       }
+      if (session.remote_role == remote_session::role_e::monitor) {
+        nvhttp::notify_remote_monitor_stopping(session.device_uuid, session.remote_role_generation);
+      }
 
       // The first cancellation owns the reason. Publish it and media shutdown
       // before STOPPING lets the control owner detach this session. In
@@ -4149,13 +4152,11 @@ namespace stream {
               config::video.remote_monitor_disconnect_on_client_disconnect,
               client_disconnected)) {
           const auto reason = client_disconnected ? "Remote Monitor client disconnected" : "Remote Monitor stream ended";
-          if (remote_session::release_monitor(session.device_uuid, session.remote_role_generation, reason)) {
-            nvhttp::notify_remote_monitor_released(session.device_uuid, session.remote_role_generation);
-          }
+          nvhttp::end_remote_monitor_transport(session.device_uuid, session.remote_role_generation, reason);
         } else {
           // Retain the exact display and desired mode so this paired client can
           // resume the Remote Monitor without changing any peer's topology.
-          remote_session::notify_monitor_transport_lost(session.device_uuid, session.remote_role_generation);
+          nvhttp::end_remote_monitor_transport(session.device_uuid, session.remote_role_generation);
         }
       } else if (session.remote_role == remote_session::role_e::input && !session.device_uuid.empty()) {
         nvhttp::notify_remote_input_transport_lost(session.device_uuid, session.remote_role_generation);

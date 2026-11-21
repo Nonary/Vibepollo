@@ -61,8 +61,11 @@ const previewNodes = computed<Node[]>(() => {
   [...knownClients.value].sort((left, right) => left.uuid.localeCompare(right.uuid)).forEach((client) => place(client.uuid));
   return nodes;
 });
-const clientNodes = computed(() => previewNodes.value.filter((node) => node.kind === 'client'));
-const anchors = computed(() => previewNodes.value.filter((node) => node.id !== selected.value));
+const pairedIds = computed(() => new Set(knownClients.value.map((client) => client.uuid)));
+function canArrange(node: Node) { return node.kind === 'client' && pairedIds.value.has(node.id); }
+const clientNodes = computed(() => previewNodes.value.filter(canArrange));
+const anchorNodes = computed(() => previewNodes.value.filter((node) => node.kind === 'physical' || canArrange(node)));
+const anchors = computed(() => anchorNodes.value.filter((node) => node.id !== selected.value));
 const previewOrigin = computed(() => ({
   x: Math.min(0, ...previewNodes.value.map((node) => node.desired_position.x)),
   y: Math.min(0, ...previewNodes.value.map((node) => node.desired_position.y)),
@@ -73,7 +76,7 @@ function defaultPlacement(client: string): Placement {
   const fallback = physical ?? clientNodes.value.find((node) => node.id !== client);
   return { anchor_kind: fallback?.kind ?? 'physical', anchor_id: fallback?.id ?? '', edge: 'right', alignment: 'center', gap_px: 0, primary: false };
 }
-function choose(client: string) { selected.value = client; }
+function choose(client: string) { if (pairedIds.value.has(client)) selected.value = client; }
 const selectedArrangement = computed<Edge | 'preserve' | 'automatic'>({
   get: () => !selectedPlacement.value || selectedPlacement.value.automatic_fallback ? 'automatic' : selectedPlacement.value.preserve ? 'preserve' : selectedPlacement.value.edge,
   set: (edge) => setDisplayArrangement(draft.value, selected.value, edge, defaultPlacement(selected.value)),
@@ -109,7 +112,7 @@ function clearDrag() {
   if (gesture?.element.hasPointerCapture(gesture.pointerId)) gesture.element.releasePointerCapture(gesture.pointerId);
 }
 function startDrag(event: PointerEvent, client: Node) {
-  if (client.kind !== 'client' || !event.isPrimary || event.button !== 0 || dragGesture) return;
+  if (!canArrange(client) || !event.isPrimary || event.button !== 0 || dragGesture) return;
   choose(client.id);
   const element = event.currentTarget as HTMLElement;
   dragGesture = { pointerId: event.pointerId, clientId: client.id, startX: event.clientX, startY: event.clientY, moved: false, element };
@@ -129,17 +132,17 @@ function cancelDrag(event: PointerEvent, client: Node) {
   if (ownsDrag(event, client)) clearDrag();
 }
 function keyboardPlace(edge: Edge, client: Node) {
-  if (client.kind !== 'client') return;
+  if (!canArrange(client)) return;
   choose(client.id);
   selectedArrangement.value = edge;
 }
 function dragPlace(event: PointerEvent, client: Node) {
   const canvas = (event.currentTarget as HTMLElement).closest('.topology-canvas');
-  if (!canvas || client.kind !== 'client') return;
+  if (!canvas || !canArrange(client)) return;
   choose(client.id);
   const rect = canvas.getBoundingClientRect();
   const point = { x: event.clientX - rect.left + canvas.scrollLeft, y: event.clientY - rect.top + canvas.scrollTop };
-  const candidates = previewNodes.value.filter((node) => node.id !== client.id);
+  const candidates = anchorNodes.value.filter((node) => node.id !== client.id);
   const canvasPoint = (node: Node) => ({ x: 18 + (node.desired_position.x - previewOrigin.value.x) / 18, y: 18 + (node.desired_position.y - previewOrigin.value.y) / 18 });
   const anchor = candidates.sort((left, right) => { const l = canvasPoint(left); const r = canvasPoint(right); return Math.hypot(point.x - l.x, point.y - l.y) - Math.hypot(point.x - r.x, point.y - r.y); })[0];
   if (!anchor) return;
@@ -159,14 +162,14 @@ onMounted(load);
   <section class="topology-editor vs-surface" :class="{ 'topology-editor--compact': compact }" :aria-labelledby="headingId">
     <div class="topology-editor__heading">
       <div><h3 :id="headingId">Client display arrangement</h3><p>Saved directions apply to extended application streams and Remote Monitor on their next activation. Verify only preserves the current Windows arrangement; choose an automatic display preparation option to apply a saved direction.</p></div>
-      <StatusBadge v-if="data?.capacity" :label="`${data.capacity.used} of ${data.capacity.max} client identities`" tone="neutral" compact />
+      <StatusBadge v-if="data?.capacity" :label="`${data.capacity.used} of ${data.capacity.max} virtual screens`" tone="neutral" compact />
     </div>
     <InlineAlert v-if="error || validationError" tone="danger">{{ error || validationError }}</InlineAlert>
     <InlineAlert v-for="warning in data?.warnings ?? []" :key="warning" tone="warning">{{ warning }}</InlineAlert>
     <label v-if="focusClients.length" class="topology-client-picker">Client display<select v-model="selected" @change="choose(selected)"><option disabled value="">Choose a paired client</option><option v-for="client in focusClients" :key="client.uuid" :value="client.uuid">{{ client.name || client.uuid }}</option></select></label>
     <div class="topology-canvas" role="group" aria-label="Display topology. Select a display rectangle to edit its placement.">
-      <button v-for="node in previewNodes" :key="node.id" type="button" class="topology-node" :class="[`topology-node--${node.kind}`, { 'is-selected': selected === node.id, 'is-inactive': !node.active }]" :style="scaled(node)" :aria-pressed="selected === node.id" @click="node.kind === 'client' && choose(node.id)" @pointerdown="startDrag($event, node)" @pointermove="moveDrag($event, node)" @pointerup="finishDrag($event, node)" @pointercancel="cancelDrag($event, node)" @lostpointercapture="cancelDrag($event, node)" @keydown.left.prevent="keyboardPlace('left', node)" @keydown.right.prevent="keyboardPlace('right', node)" @keydown.up.prevent="keyboardPlace('above', node)" @keydown.down.prevent="keyboardPlace('below', node)">
-        <strong>{{ node.kind === 'physical' ? 'Physical' : 'Client' }} · {{ node.label || node.id }}</strong><span>{{ node.mode.width }} × {{ node.mode.height }} @ {{ node.mode.refresh_hz }} Hz</span><span v-if="node.primary">Primary</span><span v-else-if="node.kind === 'client' && !node.active">Inactive preview</span>
+      <button v-for="node in previewNodes" :key="node.id" type="button" class="topology-node" :class="[`topology-node--${node.kind}`, { 'is-selected': selected === node.id, 'is-inactive': !node.active }]" :style="scaled(node)" :aria-pressed="selected === node.id" :disabled="node.kind === 'client' && !canArrange(node)" @click="canArrange(node) && choose(node.id)" @pointerdown="startDrag($event, node)" @pointermove="moveDrag($event, node)" @pointerup="finishDrag($event, node)" @pointercancel="cancelDrag($event, node)" @lostpointercapture="cancelDrag($event, node)" @keydown.left.prevent="keyboardPlace('left', node)" @keydown.right.prevent="keyboardPlace('right', node)" @keydown.up.prevent="keyboardPlace('above', node)" @keydown.down.prevent="keyboardPlace('below', node)">
+        <strong>{{ node.kind === 'physical' ? 'Physical' : canArrange(node) ? 'Client' : 'Remote Monitor' }} · {{ node.label || node.id }}</strong><span>{{ node.mode.width }} × {{ node.mode.height }} @ {{ node.mode.refresh_hz }} Hz</span><span v-if="node.primary">Primary</span><span v-else-if="node.kind === 'client' && !node.active">Inactive preview</span>
       </button>
     </div>
     <label v-if="selected" class="topology-client-picker">Arrangement<select v-model="selectedArrangement"><option value="automatic">Use application layout / automatic</option><option value="preserve">Preserve / manual (Windows layout)</option><option value="left">Left of</option><option value="right">Right of</option><option value="above">Above</option><option value="below">Below</option></select></label>

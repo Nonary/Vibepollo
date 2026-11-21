@@ -145,6 +145,8 @@ namespace net { using packet_t = std::unique_ptr<ENetPacket>; int map_port(int p
 constexpr int CONTROL_PORT = 47999;
 struct event_t { bool value = false; void raise(bool v) { value = v; } };
 namespace input { void reset(int &) { ++input_resets; } }
+namespace remote_session { enum class role_e { game, monitor }; }
+namespace nvhttp { void notify_remote_monitor_stopping(std::string_view, std::uint64_t) {} }
 template<class T> struct lockable_t {
   T value;
   struct lock_t { ~lock_t() {} };
@@ -159,6 +161,9 @@ struct session_t {
   std::atomic<stop_reason_e> stop_reason {stop_reason_e::none};
   std::chrono::steady_clock::time_point pingTimeout {};
   std::atomic_bool client_disconnected {false};
+  remote_session::role_e remote_role = remote_session::role_e::game;
+  std::string device_uuid;
+  std::uint64_t remote_role_generation = 0;
   struct { ENetPeer *peer = nullptr; std::uint32_t enet_recv_baseline = 0; std::string expected_peer_address; } control;
   struct { int controlProtocolType = 0; } config;
   int input = 0;

@@ -180,6 +180,13 @@ struct signal_t {
 
 /* PRODUCTION_PACKET_TYPES */
 constexpr int IDX_TERMINATION = 7;
+namespace remote_session {
+  enum class role_e { game, input, monitor };
+  bool release_monitor(const std::string &, std::uint64_t, const char *) { return false; }
+}
+namespace nvhttp {
+  void notify_remote_monitor_stopping(std::string_view, std::uint64_t) {}
+}
 namespace stream {
   /* PRODUCTION_REASON */
   namespace session {
@@ -246,6 +253,9 @@ namespace stream {
     std::atomic_bool client_disconnected {false};
     std::mutex metadata_mutex;
     std::string device_name = "device";
+    std::string device_uuid = "target";
+    remote_session::role_e remote_role = remote_session::role_e::game;
+    std::uint64_t remote_role_generation = 0;
     crypto::PERM permission = crypto::PERM::_allow_view;
     bool joined = false;
   };
@@ -289,10 +299,6 @@ namespace stream {
   }
 }
 
-namespace remote_session {
-  enum class role_e { input, monitor };
-  bool release_monitor(const std::string &, std::uint64_t, const char *) { return false; }
-}
 namespace rtsp_stream {
   struct client_disconnect_result_t {
     bool disconnected;
@@ -300,10 +306,15 @@ namespace rtsp_stream {
     std::vector<std::uint64_t> pending_generations;
   };
   stream::session_t *route_session = nullptr;
+  std::function<void()> before_monitor_scan;
   struct server_t {
     void clear(bool) {}
-    client_disconnect_result_t disconnect_client(const std::string &, const bool graceful = false) {
+    client_disconnect_result_t disconnect_client(
+      const std::string &, const bool graceful = false, const std::function<void()> &before_removal = {}
+    ) {
       (void) graceful;
+      if (before_monitor_scan) before_monitor_scan();
+      if (before_removal) before_removal();
       require(route_session, "route target missing");
       std::vector<std::shared_ptr<stream::session_t>> to_cleanup;
       to_cleanup.emplace_back(route_session, [](auto *) {});
@@ -328,6 +339,17 @@ namespace nvhttp {
   std::mutex lifecycle_mutex;
   std::mutex &stream_lifecycle_mutex() { return lifecycle_mutex; }
   std::optional<std::uint64_t> remote_owner_generation(const std::string &, remote_session::role_e) { return std::nullopt; }
+  struct remote_role_owner_t { std::uint64_t generation; };
+  std::vector<remote_role_owner_t> monitor_owners;
+  std::vector<std::uint64_t> released_monitors;
+  std::vector<remote_role_owner_t> remote_monitor_owners(std::string_view client_uuid) {
+    return client_uuid == "target" ? monitor_owners : std::vector<remote_role_owner_t> {};
+  }
+  bool request_remote_monitor_release(std::string_view client_uuid, std::uint64_t generation, std::string_view) {
+    require(client_uuid == "target", "disconnect must release only the requested client's monitors");
+    released_monitors.push_back(generation);
+    return true;
+  }
   void forget_remote_owner(const std::string &, remote_session::role_e, std::uint64_t) {}
   void cleanup_virtual_display_if_idle_locked() {}
   /* PRODUCTION_NVHTTP_DISCONNECT */
@@ -417,6 +439,14 @@ int main(int argc, char **argv) {
         require(proc::proc.app_id == 42 && proc::proc.terminations == 0 && proc::proc.pause_continued == 1,
                 "disconnect must retain the app and enter its existing pause path");
       }
+    } else if (name == "devices_disconnect_multiple_monitors") {
+      config::video.remote_monitor_disconnect_on_client_disconnect = true;
+      nvhttp::monitor_owners = {{101}, {102}};
+      rtsp_stream::before_monitor_scan = [] { nvhttp::monitor_owners.push_back({103}); };
+      require(nvhttp::disconnect_client("target"), "Devices route did not report disconnect");
+      require(nvhttp::released_monitors == std::vector<std::uint64_t> {101, 102, 103},
+              "Devices disconnect must capture monitor ownership at the RTSP removal boundary");
+      f.completed(true);
     } else if (name == "request_ownership") {
       stream::session::graceful_stop(session);
       require(!session.controlEnd.raised, "requester published control completion prematurely");

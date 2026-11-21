@@ -77,8 +77,10 @@ def program(root, revision=None):
         "STOPPING": block(stream, "if (session->state.load(std::memory_order_acquire) == session::state_e::STOPPING)"),
         "DISCONNECT": block(route, "for (auto &slot : to_cleanup)"),
         "NVHTTP_DISCONNECT": block(nvhttp, "bool disconnect_client(const std::string &uuid)"),
-        "RTSP_DECLARATION": next(line.strip() for line in rtsp_header.splitlines()
-                                 if "client_disconnect_result_t disconnect_client_sessions_with_result(" in line),
+        "RTSP_DECLARATION": re.search(
+            r"client_disconnect_result_t disconnect_client_sessions_with_result\([^;]+;",
+            rtsp_header,
+        ).group(),
         "RTSP_WITH_RESULT": block(rtsp, "client_disconnect_result_t disconnect_client_sessions_with_result("),
         "RTSP_WITHOUT_RESULT": block(rtsp, "bool disconnect_client_sessions("),
         "PAUSE_GATE": block(stream, "if (!rtsp_pending && !webrtc_active)"),
@@ -97,6 +99,7 @@ def program(root, revision=None):
 
 CASES = (
     "devices_disconnect",
+    "devices_disconnect_multiple_monitors",
     "request_ownership",
     "graceful_delivery",
     "transport_failure",

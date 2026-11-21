@@ -439,6 +439,41 @@ TEST(RemoteSession, MonitorDisconnectPoliciesKeepStreamEndAndClientLossIndepende
   EXPECT_TRUE(remote_session::disconnect_monitor_after_stream(true, true, true));
 }
 
+TEST(RemoteSession, RepeatedMonitorLaunchAddsAFreeScreenAndPrefersRetainedScreens) {
+  using state = remote_session::monitor_slot_state_e;
+  remote_session::monitor_slots_t slots {};
+  EXPECT_EQ(remote_session::select_monitor_slot(slots, true), 0);
+  EXPECT_FALSE(remote_session::select_monitor_slot(slots, false));
+  slots[0] = state::starting;
+  EXPECT_FALSE(remote_session::select_monitor_slot(slots, true));
+  slots[0] = state::streaming;
+  EXPECT_EQ(remote_session::select_monitor_slot(slots, true), 1);
+  EXPECT_FALSE(remote_session::select_monitor_slot(slots, false));
+  slots[1] = state::stopping;
+  EXPECT_FALSE(remote_session::select_monitor_slot(slots, true));
+  slots[1] = state::retained;
+  EXPECT_EQ(remote_session::select_monitor_slot(slots, true), 1);
+  EXPECT_EQ(remote_session::select_monitor_slot(slots, false), 1);
+  slots[0] = state::retained;
+  EXPECT_EQ(remote_session::select_monitor_slot(slots, true), 0);
+  slots.fill(state::streaming);
+  EXPECT_FALSE(remote_session::select_monitor_slot(slots, true));
+}
+
+TEST(RemoteSession, BuiltinMonitorTileRemainsAvailableToLaunchAnotherScreen) {
+  const remote_session::owner_t owner {.role = remote_session::role_e::monitor, .builtin_monitor = true};
+  const auto projected = remote_session::project(caller("workstation"), {}, owner, {}, true);
+  EXPECT_TRUE(std::any_of(projected.catalogue.begin(), projected.catalogue.end(), [](const auto &app) {
+    return app.id == remote_session::monitor_id;
+  }));
+  auto viewer = caller("workstation");
+  viewer.may_launch = false;
+  const auto view_only = remote_session::project(viewer, {}, owner, {}, true);
+  EXPECT_FALSE(std::any_of(view_only.catalogue.begin(), view_only.catalogue.end(), [](const auto &app) {
+    return app.id == remote_session::monitor_id;
+  }));
+}
+
 TEST(RemoteSession, StaleDisconnectControlsAreIdempotentButCannotTargetAnotherRole) {
   const auto stale_input = remote_session::dispatch(caller("input"), {}, {}, remote_session::control_e::disconnect_input);
   EXPECT_TRUE(stale_input.allowed);

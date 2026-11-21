@@ -107,7 +107,15 @@ namespace protocol {constexpr int BITSTREAM_FORMAT=99;constexpr std::string_view
 namespace policy {struct framing_e {static constexpr int records=1;};int select_framing(bool,std::optional<std::uint32_t>){return 0;}}
 namespace bandwidth {std::uint64_t pacing_link_bps(std::uint64_t,std::uint64_t){return 0;}}
 }
-namespace remote_session {enum class role_e {game,input,monitor};}
+constexpr int ML_FF_SESSION_ID_V1=1;
+namespace remote_session {
+enum class role_e {game,input,monitor};
+}
+namespace nvhttp {
+bool end_remote_monitor_transport(std::string_view, std::uint64_t, std::string_view = {});
+bool can_start_remote_monitor(std::string_view, std::uint64_t, bool) { return true; }
+void notify_remote_monitor_started(std::string_view, std::uint64_t, bool) {}
+}
 namespace pending_policy {
 bool disconnect_scope_matches(remote_session::role_e actual,remote_session::role_e expected,bool same,bool all) {return actual==expected && (same||all);}
 struct pending_owner_t {remote_session::role_e role;std::string client_uuid;std::uint64_t generation;};
@@ -127,7 +135,7 @@ struct launch_session_t {
  std::shared_ptr<void> audio_context_guard,display_power_guard;
  std::string remote_capture_output,rtsp_source_address,av_ping_payload,client_name,device_name,normal_vdd_owner_uuid,audio_codec_offered;
  int gcm_key=0,iv=0,control_connect_data=0,secondary_game_client=0,client_display_mode_override=0,client_display_refresh_millihz=0,prefer_sdr_10bit=0,virtual_display=0,normal_vdd_identity_token=0,framegen_refresh_rate=0,framegen_refresh_millihz=0,framegen_refresh_multiplier=0,framegen_fixed_refresh=0;
- bool host_audio=false,client_vrr_requested=false,continuous_audio=false,force_sdr=false,enable_hdr=false;
+ bool host_audio=false,client_vrr_requested=false,continuous_audio=false,force_sdr=false,enable_hdr=false,new_monitor_display=false;
  int gen1_framegen_fix=0,gen2_framegen_fix=0,frame_generation_enabled=0,lossless_scaling_framegen=0,frame_generation_provider=0,lossless_scaling_target_fps=0,lossless_scaling_rtss_limit=0;
 };
 @SNAPSHOT@
@@ -149,7 +157,7 @@ void respond(Socket &,launch_session_t &,OPTION_ITEM *option,int status,const ch
 }
 struct Pool {std::vector<std::function<void()>> queue;template<class F> void push(F f){queue.emplace_back(std::move(f));} void run(){auto q=std::move(queue);queue.clear();for(auto &f:q)f();}};
 int monitor_lost=0;
-namespace remote_session {void notify_monitor_transport_lost(std::string_view,std::uint64_t){++monitor_lost;}}
+bool nvhttp::end_remote_monitor_transport(std::string_view, std::uint64_t, std::string_view) { ++monitor_lost; return false; }
 namespace boost::asio {struct steady_timer {
   steady_timer(Pool &,std::chrono::milliseconds) {}
   template<class F> void async_wait(F &&) {}
@@ -170,6 +178,7 @@ struct rtsp_server_t {
  int startup_count() const {return startup_tasks.count();}
 @RELEASE_HOLDS@
 @RETAIN_HOLDS@
+@MONITOR_REPLAY@
 @MONITOR_RECONCILIATION@
 @CANCEL_PENDING@
 @SESSION_CLEAR@
@@ -282,11 +291,23 @@ int main() {
  reset();
  auto published_monitor=std::make_shared<launch_session_t>();
  published_monitor->role=remote_session::role_e::monitor;
+ published_monitor->client_uuid="workstation";
+ published_monitor->role_generation=42;
  server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{published_monitor,std::chrono::steady_clock::now()+1s});
+ {
+   std::lock_guard lock(nvhttp::lifecycle);
+   check(server.has_pending_monitor_launch("workstation",42),"reserved monitor can replay its pending launch");
+   check(!server.has_pending_monitor_launch("other-client",42),"replay requires the owning client");
+ }
  auto monitor_request=std::make_shared<Request>();monitor_request->payload=payload.data();monitor_request->payloadLength=payload.size();
  check(cmd_announce(&server,std::make_shared<socket_t>(),published_monitor,std::move(monitor_request)),"monitor ANNOUNCE accepted");
  server.startup_pool.run();
  check(published_monitor->monitor_stream_published,"production worker publishes on original pending monitor");
+ {
+   std::lock_guard lock(nvhttp::lifecycle);
+   check(!server.has_pending_monitor_launch("workstation",42),"published monitor cannot replay its HTTP launch");
+   check(!server.retain_pending_runtime_holds(published_monitor->clone_for_startup()),"published monitor cannot regain ANNOUNCE admission");
+ }
  monitor_lost=0;
  server.session_clear(published_monitor->id);
  check(monitor_lost==0,"published monitor retains transport ownership after pending removal");
@@ -348,7 +369,7 @@ int main() {
    reset();pending=std::make_shared<launch_session_t>();pending->audio_context_guard=std::make_shared<int>(1);resource=pending->audio_context_guard;
    server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
    if(removal==0)server.session_clear(1);
-   else if(removal==1)server.disconnect_client("one",false);
+   else if(removal==1)server.disconnect_client("one",false,{});
    else server.disconnect_remote_role("one",remote_session::role_e::input,1);
    check(resource.expired(),removal==0?"actual attached-launch removal retires socket resource alias":removal==1?"actual client disconnect retires socket resource alias":"actual role disconnect retires socket resource alias");
  }

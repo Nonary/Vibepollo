@@ -3,6 +3,7 @@
 #include "virtual_display_capacity.h"
 #include "display_target_lease.h"
 
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <functional>
@@ -34,6 +35,12 @@ namespace remote_session {
   enum class role_e : std::uint8_t { none, input, monitor, game };
   enum class control_e : std::uint8_t { none, resume, disconnect_monitor, disconnect_input, terminate, monitor, input, running_game };
   enum class permission_e : std::uint8_t { view, launch, terminate };
+  enum class monitor_slot_state_e : std::uint8_t { empty, retained, starting, streaming, stopping };
+  using monitor_slots_t = std::array<monitor_slot_state_e, max_client_vdds>;
+
+  // Resume a retained output before adding another. A launch or teardown in
+  // flight must settle before it can make a second display necessary.
+  [[nodiscard]] std::optional<std::size_t> select_monitor_slot(const monitor_slots_t &slots, bool allow_create);
 
   struct app_t {
     std::int32_t id {};
@@ -60,6 +67,7 @@ namespace remote_session {
     bool ready {};
     bool retryable {};
     std::optional<std::string> output;
+    bool builtin_monitor {};
   };
 
   struct caller_t {
