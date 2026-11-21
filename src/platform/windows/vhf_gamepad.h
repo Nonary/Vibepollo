@@ -41,8 +41,9 @@ namespace platf {
     [[nodiscard]] bool available() const;
 
     // Keyboard/mouse shares the controller connection and its lifetime lock.
-    // Initialization returns false before any HID input when unavailable.
-    bool open_keyboard_mouse();
+    // Returns whether input must use the VHF path. During reconnect this can
+    // also hold input while removal of a failed replacement is unconfirmed.
+    bool open_keyboard_mouse(bool reconnect = false);
     // A failed report may be followed by fallback only after the VHF child has
     // been synchronously removed; the failed event itself is never replayed.
     [[nodiscard]] bool keyboard_mouse_fallback_safe();
