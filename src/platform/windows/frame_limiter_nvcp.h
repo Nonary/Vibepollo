@@ -8,8 +8,13 @@
 
 namespace platf::frame_limiter_nvcp {
 
+  struct start_result {
+    bool frame_limit_applied = false;
+    bool settings_applied = false;
+  };
+
   bool is_available();
-  bool streaming_start(int fps, bool apply_frame_limit, bool force_frame_limit_off, bool force_vsync_off, bool force_low_latency_off, bool apply_smooth_motion);
+  start_result streaming_start(int fps, bool apply_frame_limit, bool force_frame_limit_off, bool force_vsync_off, bool force_low_latency_off, bool apply_smooth_motion);
   void streaming_stop();
   void restore_pending_overrides();
 

@@ -34,6 +34,8 @@ namespace platf {
     bool enabled;
     frame_limiter_provider configured_provider;
     frame_limiter_provider active_provider;
+    bool rtss_limit_unconfirmed;
+    bool stream_limiter_requested;
     bool nvidia_available;
     bool nvcp_ready;
     bool rtss_available;

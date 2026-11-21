@@ -101,6 +101,7 @@ namespace confighttp {
     out["enabled"] = fl.enabled;
     out["configured_provider"] = platf::frame_limiter_provider_to_string(fl.configured_provider);
     out["active_provider"] = platf::frame_limiter_provider_to_string(fl.active_provider);
+    out["rtss_limit_unconfirmed"] = fl.rtss_limit_unconfirmed;
     out["nvidia_available"] = fl.nvidia_available;
     out["nvcp_ready"] = fl.nvcp_ready;
     out["rtss_available"] = fl.rtss_available;
@@ -113,6 +114,7 @@ namespace confighttp {
     out["path_exists"] = rtss.path_exists;
     out["hooks_found"] = rtss.hooks_found;
     out["trust_valid"] = rtss.trust_valid;
+    out["trust_verification_unavailable"] = rtss.trust_verification_unavailable;
     out["profile_found"] = rtss.profile_found;
     out["can_bootstrap_profile"] = rtss.can_bootstrap_profile;
     out["process_running"] = rtss.process_running;
@@ -167,6 +169,8 @@ namespace confighttp {
         add_segment(provider_message, "NVIDIA Control Panel frame limiter active (not recommended; it cannot guarantee perfect frame pacing).");
       } else if (fl.active_provider == platf::frame_limiter_provider::rtss) {
         add_segment(provider_message, "RTSS frame limiter active for this stream.");
+      } else if (fl.rtss_limit_unconfirmed) {
+        add_segment(provider_message, "Could not confirm the RTSS frame limit. No active frame limit was confirmed.");
       } else {
         if (fl.configured_provider == platf::frame_limiter_provider::nvidia_control_panel) {
           if (!fl.nvidia_available) {
@@ -181,10 +185,16 @@ namespace confighttp {
             add_segment(provider_message, "RTSS not found at the resolved path. Install RTSS for the smoothest streaming experience.");
           } else if (!rtss.hooks_found) {
             add_segment(provider_message, "RTSSHooks DLL not found. Reinstall RTSS to restore frame limiter support.");
+          } else if (rtss.trust_verification_unavailable) {
+            add_segment(provider_message, "Could not verify the active Windows user's write access to the RTSS installation.");
           } else if (!rtss.trust_valid) {
             add_segment(provider_message, "RTSS is outside a protected Program Files installation, is user-writable, or failed signature validation. Reinstall RTSS under Program Files.");
           } else {
-            add_segment(provider_message, std::string("Frame limiter configured for ") + describe_provider(configured_id) + "; awaiting next stream.");
+            if (fl.stream_limiter_requested) {
+              add_segment(provider_message, "Frame limiter enabled for this stream, but no provider applied the requested limit.");
+            } else {
+              add_segment(provider_message, std::string("Frame limiter configured for ") + describe_provider(configured_id) + "; awaiting next stream.");
+            }
             if (!rtss.process_running) {
               add_segment(provider_message, "Sunshine will launch RTSS automatically when streaming starts.");
             }
