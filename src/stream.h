@@ -133,11 +133,22 @@ namespace stream {
     bool uuid_match(const session_t &session, const std::string_view &uuid);
     bool update_device_info(session_t &session, const std::string &name, const crypto::PERM &newPerm);
     bool remote_role_match(const session_t &session, remote_session::role_e role, std::optional<std::uint64_t> generation = std::nullopt);
+    std::uint32_t launch_session_id(const session_t &session);
+    // Whether the client's control stream ever attached. Only stable after join().
+    bool control_peer_attached(const session_t &session);
     void mark_client_disconnected(session_t &session);
     int start(session_t &session, const std::string &addr_string);
     void stop(session_t &session);
     void graceful_stop(session_t &session);
     void join(session_t &session, bool lifecycle_lock_held = false);
+
+    /**
+     * @brief Pause the app once the launch the last session left it running for is gone.
+     *
+     * Runs the pause the last session's join deferred to that launch, unless
+     * WebRTC now owns the app. Requires the lifecycle gate.
+     */
+    void pause_after_abandoned_launch();
     state_e state(session_t &session);
     bool has_running_video(const session_t &session);
     inline bool send(session_t &session, const std::string_view &payload);
