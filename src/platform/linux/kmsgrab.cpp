@@ -804,6 +804,11 @@ namespace platf {
           return -1;
         }
         presentation_rate_limiter.set_interval(delay);
+        // Local patch: VRR clients pace from RTP timestamps, so on ordinary
+        // (non-vibeshine_drm) KMS cards deliver only new primary framebuffers,
+        // timestamped within ~1 ms of the flip, instead of resampling at the
+        // stream rate (which inserts duplicates when the game runs below it).
+        vrr_dedupe = config.vrr_low_latency;
 
         // Empty historically selected monitor 0. Explicit decimal names remain
         // legacy aliases, while every other value resolves through the stable
@@ -1402,6 +1407,16 @@ namespace platf {
         // capture generation instead of retrying and logging at the frame rate.
         if (!plane || plane->fb_id == 0) {
           return capture_e::reinit;
+        }
+
+        if (vrr_dedupe) {
+          const auto now = *frame_timestamp;
+          const bool cursor_moved = cursor_plane_changed();
+          if (plane->fb_id == last_primary_fb_id && !cursor_moved && now - last_primary_fb_change < VRR_DEDUPE_MAX_HOLD) {
+            return capture_e::timeout;  // same framebuffer: no new game frame
+          }
+          last_primary_fb_id = plane->fb_id;
+          last_primary_fb_change = now;
         }
 
         auto fb = card.fb(plane.get());
@@ -2070,9 +2085,15 @@ namespace platf {
             sleep_overshoot_logger.second_point_now_and_log();
           }
 
-          next_frame += delay;
+          const auto step = vrr_dedupe ? std::min<std::chrono::nanoseconds>(delay, VRR_DEDUPE_POLL) : delay;
+          if (vrr_dedupe) {
+            const auto admit_at = presentation_rate_limiter.next_delivery(now);
+            next_frame = std::max(next_frame + step, admit_at);
+          } else {
+            next_frame += step;
+          }
           if (next_frame < now) {
-            next_frame = now + delay;
+            next_frame = now + step;
           }
 
           std::shared_ptr<platf::img_t> img_out;
@@ -2088,6 +2109,9 @@ namespace platf {
               }
               break;
             case platf::capture_e::ok:
+              if (vrr_dedupe) {
+                presentation_rate_limiter.mark_delivered(std::chrono::steady_clock::now());
+              }
               if (!push_captured_image_cb(std::move(img_out), true)) {
                 return platf::capture_e::ok;
               }
@@ -2109,6 +2133,30 @@ namespace platf {
       mem_type_e mem_type;
 
       std::chrono::nanoseconds delay;
+      static constexpr auto VRR_DEDUPE_POLL = std::chrono::milliseconds {1};
+      static constexpr auto VRR_DEDUPE_MAX_HOLD = std::chrono::milliseconds {50};
+      bool vrr_dedupe {false};
+      std::uint32_t last_primary_fb_id {0};
+      std::chrono::steady_clock::time_point last_primary_fb_change {};
+      std::uint32_t last_cursor_fb_id {0};
+      std::int32_t last_cursor_x {0}, last_cursor_y {0};
+
+      // Cheap cursor-plane change probe so pointer motion over a static
+      // primary plane is still delivered while deduping.
+      bool cursor_plane_changed() {
+        if (cursor_plane_id < 0) {
+          return false;
+        }
+        plane_t cp = drmModeGetPlane(card.fd.el, cursor_plane_id);
+        if (!cp) {
+          return false;
+        }
+        const bool changed = cp->fb_id != last_cursor_fb_id || cp->crtc_x != last_cursor_x || cp->crtc_y != last_cursor_y;
+        last_cursor_fb_id = cp->fb_id;
+        last_cursor_x = cp->crtc_x;
+        last_cursor_y = cp->crtc_y;
+        return changed;
+      }
 
       int img_width;
       int img_height;
