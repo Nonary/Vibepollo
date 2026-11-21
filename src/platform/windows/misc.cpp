@@ -1774,10 +1774,12 @@ namespace platf {
     // In that "paused" state, we must keep feeding the display helper heartbeat to prevent it from
     // autonomously reverting the virtual display configuration.
     const bool is_paused = proc::proc.current_app_id() > 0;
-    if (!is_paused) {
-      display_helper_integration::stop_watchdog();
-    } else {
+    if (is_paused) {
       BOOST_LOG(debug) << "Display helper: keeping watchdog alive while session is paused (awaiting /resume).";
+    } else if (display_helper_integration::has_failed_revert()) {
+      BOOST_LOG(info) << "Display helper: keeping watchdog alive to retry a REVERT the helper missed.";
+    } else {
+      display_helper_integration::stop_watchdog();
     }
     release_streaming_scheduling();
 
