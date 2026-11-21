@@ -121,7 +121,8 @@ WireFrame send_frame(Session *session, std::optional<Clock::time_point> source_s
   auto ratecontrol_next_frame_start = repeated_stamp;
   const auto ratecontrol_frame_start = repeated_stamp;
   const auto frame_pacing_delay = [](std::size_t count) { return Clock::duration(count); };
-  std::size_t ratecontrol_group_packets_sent = 0, ratecontrol_frame_packets_sent = 0;
+  [[maybe_unused]] std::size_t ratecontrol_group_packets_sent = 0;
+  std::size_t ratecontrol_frame_packets_sent = 0;
   // ACCOUNT
   WireFrame wire;
   try {
