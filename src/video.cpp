@@ -5348,7 +5348,9 @@ namespace video {
     double minimum_fps_target = (config::video.minimum_fps_target > 0.0) ? config::video.minimum_fps_target * 1000 : std::max(config.encodingFramerate / 5, 10000);
     auto max_frametime = std::chrono::nanoseconds(1000ms) * 1000 / minimum_fps_target;
     auto encode_frame_threshold = std::chrono::nanoseconds(1000ms) * 1000 / config.encodingFramerate;
-    auto frame_variation_threshold = encode_frame_threshold / 4;
+    // Local patch: do not snap VRR timestamps onto the stream-rate grid; a
+    // 104 fps source would otherwise get +-1.3 ms of synthetic pts jitter.
+    auto frame_variation_threshold = config.vrr_low_latency ? std::chrono::nanoseconds::zero() : encode_frame_threshold / 4;
     BOOST_LOG(info) << "Minimum FPS target set to ~"sv << (minimum_fps_target / 2000) << "fps ("sv << max_frametime * 2 << ")"sv;
     BOOST_LOG(info) << "Encoding Frame threshold: "sv << encode_frame_threshold;
 
