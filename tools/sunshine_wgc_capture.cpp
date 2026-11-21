@@ -1917,12 +1917,13 @@ private:
   void copy_pending_frame_to_shared_texture() {
     // Keep the pending slot replaceable during the keyed mutex wait. A timeout
     // leaves it queued so the worker retries even if no more callbacks arrive.
-    // Give shared ownership back before waiting for a busy helper context.
+    // Give shared ownership back before waiting for either helper-local lock.
     const auto &keyed_mutex = _deps->resource_manager.get_keyed_mutex();
     const auto acquire_start = std::chrono::steady_clock::now();
     const auto acquire_deadline = acquire_start + std::chrono::milliseconds(200);
     std::unique_lock delivery_lock(_delivery_mutex, std::defer_lock);
     std::unique_lock context_lock(_d3d_context_mutex, std::defer_lock);
+    std::chrono::steady_clock::duration delivery_wait {};
     std::chrono::steady_clock::duration context_wait {};
     HRESULT hr = WAIT_TIMEOUT;
     for (;;) {
@@ -1943,23 +1944,27 @@ private:
 
       // Match the callback's local lock order. With both local locks held
       // the newest committed scratch frame cannot be replaced or reused.
-      delivery_lock.lock();
-      if (context_lock.try_lock()) {
+      const int busy_lock = std::try_lock(delivery_lock, context_lock);
+      if (busy_lock == -1) {
         break;
       }
+
+      // std::try_lock returned with neither local lock held. Give the
+      // texture back before waiting so a preempted callback cannot stall
+      // the host's conversion.
       const HRESULT handback_hr = keyed_mutex->ReleaseSync(0);
-      delivery_lock.unlock();
       if (FAILED(handback_hr)) {
         hr = handback_hr;
         break;
       }
-      const auto context_wait_start = std::chrono::steady_clock::now();
+      const auto local_wait_start = std::chrono::steady_clock::now();
       {
-        std::lock_guard wait_for_callback_copy(_d3d_context_mutex);
+        std::lock_guard wait_for_local_work(busy_lock == 0 ? _delivery_mutex : _d3d_context_mutex);
       }
-      context_wait += std::chrono::steady_clock::now() - context_wait_start;
+      auto &local_wait = busy_lock == 0 ? delivery_wait : context_wait;
+      local_wait += std::chrono::steady_clock::now() - local_wait_start;
     }
-    const auto mutex_wait = std::chrono::steady_clock::now() - acquire_start - context_wait;
+    const auto mutex_wait = std::chrono::steady_clock::now() - acquire_start - delivery_wait - context_wait;
     if (hr == WAIT_TIMEOUT) {
       const auto slow_mutex_count = _slow_mutex_waits.fetch_add(1, std::memory_order_relaxed) + 1;
       if (slow_mutex_count <= 5 || slow_mutex_count % 120 == 0) {
@@ -2024,6 +2029,7 @@ private:
     _deps->resource_manager.signal_frame_ready();
     _published_frames.fetch_add(1, std::memory_order_relaxed);
 
+    const auto delivery_wait_ms = std::chrono::duration<double, std::milli>(delivery_wait).count();
     const auto context_wait_ms = std::chrono::duration<double, std::milli>(context_wait).count();
     const auto mutex_wait_ms = std::chrono::duration<double, std::milli>(mutex_wait).count();
     const auto shared_mutex_hold_ms = std::chrono::duration<double, std::milli>(shared_mutex_hold).count();
@@ -2042,7 +2048,8 @@ private:
       const bool should_log_slow_hold = slow_shared_hold && (slow_hold_count <= 5 || slow_hold_count % 120 == 0);
       const bool should_log_slow_copy = slow_copy && (slow_copy_count <= 5 || slow_copy_count % 120 == 0);
       if (should_log_slow_context || should_log_slow_mutex || should_log_slow_hold || should_log_slow_copy) {
-        BOOST_LOG(debug) << "WGC helper copy timing: context_wait_ms=" << context_wait_ms
+        BOOST_LOG(debug) << "WGC helper copy timing: delivery_wait_ms=" << delivery_wait_ms
+                         << " context_wait_ms=" << context_wait_ms
                          << " mutex_wait_ms=" << mutex_wait_ms
                          << " shared_mutex_hold_ms=" << shared_mutex_hold_ms
                          << " copy_submit_ms=" << copy_submit_ms

@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <semaphore>
 #include <sstream>
 #include <stop_token>
 #include <thread>
@@ -182,6 +183,36 @@ bool delivered_only(Manager &m, int marker) {
   };
 }
 
+void check_local_lock_handoff(std::mutex Manager::*local_mutex, int marker, const char *scenario) {
+  Manager m;
+  std::latch begin_work {1}, local_locked {1};
+  std::binary_semaphore shared_handed_back {0};
+  bool released_before_wait = false;
+
+  std::jthread callback([&]() {
+    begin_work.wait();
+    std::lock_guard lock(m.*local_mutex);
+    local_locked.count_down();
+    // Bound the wait so the earlier blocking implementation reports a
+    // failed assertion. A handback must happen before any IPC publication.
+    released_before_wait = shared_handed_back.try_acquire_for(std::chrono::seconds(1));
+  });
+  m.ipc().mutex.on_wait = [&](unsigned attempt) {
+    if (attempt == 1) {
+      begin_work.count_down();
+      local_locked.wait();
+    }
+    return S_OK;
+  };
+  m.ipc().mutex.on_release = [&](unsigned attempt) {
+    if (attempt == 1 && m.ipc().frame_id == 0) shared_handed_back.release();
+  };
+  m.capture(marker);
+  m.run();
+  callback.join();
+  check(released_before_wait && m.ipc().mutex.waited == 2 && delivered_only(m, marker), scenario);
+}
+
 int main() {
   {
     Manager m;
@@ -236,30 +267,10 @@ int main() {
     m.run();
     check(m.ipc().observed.empty(), "shutdown during acquisition never publishes pending pixels");
   }
-  {
-    Manager m;
-    std::latch begin_copy {1}, copying {1}, keyed_released {1};
-    std::jthread callback([&]() {
-      begin_copy.wait();
-      std::lock_guard lock(m._d3d_context_mutex);
-      copying.count_down();
-      keyed_released.wait();
-    });
-    m.ipc().mutex.on_wait = [&](unsigned attempt) {
-      if (attempt == 1) {
-        begin_copy.count_down();
-        copying.wait();
-      }
-      return S_OK;
-    };
-    m.ipc().mutex.on_release = [&](unsigned attempt) {
-      if (attempt == 1) keyed_released.count_down();
-    };
-    m.capture(351);
-    m.run();
-    check(m.ipc().mutex.waited == 2 && delivered_only(m, 351),
-          "busy helper context hands shared ownership back before waiting");
-  }
+  check_local_lock_handoff(&Manager::_d3d_context_mutex, 351,
+                           "busy helper context hands shared ownership back before waiting");
+  check_local_lock_handoff(&Manager::_delivery_mutex, 352,
+                           "busy delivery queue hands shared ownership back before waiting");
   {
     Manager m;
     m.ipc().mutex.on_wait = [](unsigned) { return E_FAIL; };
