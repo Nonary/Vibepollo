@@ -455,7 +455,15 @@
         "title": "Edit device",
         "use_common_value": "Use common setting: {value}",
         "allow_sleep": "Allow this device to put the PC to sleep",
-        "allow_sleep_description": "Separate permission for compatible clients and Windows hosts with native sleep support. Sleep requires every host application and stream to be closed. Disabled by default."
+        "allow_sleep_description": "Separate permission for compatible clients and Windows hosts with native sleep support. Sleep requires every host application and stream to be closed. Disabled by default.",
+        "touch_device": "Treat this device as a touch device",
+        "touch_device_description": "For clients that cannot report their posture. The virtual display is created with one fixed small physical size (14 in by default, see touch_posture_diagonal_mm), so Windows docks its touch keyboard instead of floating it. Clients that send a posture hint override this. Takes effect the next time the virtual display is created. Disabled by default.",
+        "posture_mode": "Host mode for this device",
+        "posture_mode_description": "Automatic follows what the device reports. Always desktop keeps the normal Windows desktop, always tablet uses Windows tablet mode, and always handheld uses tablet mode plus the Xbox full screen experience when the host allows it (see handheld_mode).",
+        "posture_mode_auto": "Automatic",
+        "posture_mode_desktop": "Always desktop",
+        "posture_mode_tablet": "Always tablet",
+        "posture_mode_handheld": "Always handheld"
       },
       "common_settings_title": "Common host settings unavailable",
       "common_settings_unavailable": "The common host settings could not be loaded. Existing client overrides are preserved, but inherited values may be incomplete.",

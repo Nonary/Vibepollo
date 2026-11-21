@@ -68,6 +68,8 @@
 #include "power_action_http.h"
 #include "nvhttp_bitrate_policy.h"
 #include "nvhttp_dispatch.h"
+#include "posture_state.h"
+#include "tablet_posture.h"
 #include "remote_session.h"
 #include "remote_display_topology.h"
 #include "platform/common.h"
@@ -1468,6 +1470,23 @@ namespace nvhttp {
       };
     }
 
+    // A resume whose posture crosses the touch size boundary (none versus some size) cannot keep a
+    // display created with the other size, so the display is recreated before streaming resumes.
+    // Shared displays are never recreated for one client. Unknown history, or a change between two
+    // touch classes, keeps the display.
+    bool posture_requires_display_recreation(
+      const rtsp_stream::launch_session_t &launch_session,
+      const GUID &display_guid,
+      bool shared_display
+    ) {
+      if (shared_display) {
+        return false;
+      }
+      posture::display_key_t display_key {};
+      std::memcpy(display_key.data(), &display_guid, display_key.size());
+      return posture::display_crosses_boundary(posture::applied_size(display_key), launch_session.client_posture);
+    }
+
     void prepare_virtual_display_for_session(
       const std::shared_ptr<rtsp_stream::launch_session_t> &launch_session,
       audio::display_change_hold_t &request_audio_hold,
@@ -1734,10 +1753,12 @@ namespace nvhttp {
                   launch_session->client_name,
                   VDISPLAY::policy::allow_generic_resume_fallback()
                 )) {
-            if (VDISPLAY::configuredRenderAdapterMatchesVirtualDisplay(
-                  virtual_display_stable_guid,
-                  "RTSP resume virtual display reuse"
-                )) {
+            const bool posture_boundary_crossed =
+              posture_requires_display_recreation(*launch_session, virtual_display_stable_guid, shared_virtual_display_mode);
+            if (posture_boundary_crossed) {
+              BOOST_LOG(info) << "Posture: resume crosses the touch size boundary; recreating the virtual display with the new size.";
+            }
+            if (!posture_boundary_crossed && VDISPLAY::configuredRenderAdapterMatchesVirtualDisplay(virtual_display_stable_guid, "RTSP resume virtual display reuse")) {
               launch_session->virtual_display = true;
               launch_session->virtual_display_failed = false;
               launch_session->virtual_display_device_id = *existing_device;
@@ -1773,7 +1794,9 @@ namespace nvhttp {
             launch_session->virtual_display_device_id.clear();
             launch_session->virtual_display_ready_since.reset();
             launch_session->virtual_display_hdr_enabled.reset();
-            BOOST_LOG(warning) << "Display helper: existing resume virtual display is on a different or unknown adapter; recreating it on demand.";
+            if (!posture_boundary_crossed) {
+              BOOST_LOG(warning) << "Display helper: existing resume virtual display is on a different or unknown adapter; recreating it on demand.";
+            }
           }
 
           BOOST_LOG(info) << "Display helper: resume requested virtual display capture but no reusable virtual display was found;"
@@ -1979,6 +2002,20 @@ namespace nvhttp {
             }
           }
           VDISPLAY::setWatchdogFeedingEnabled(true);
+          // Posture size policy: the display backend reads this by GUID when it creates the display.
+          // An empty result leaves the driver's default size, exactly as before.
+          posture::display_key_t posture_display_key {};
+          std::memcpy(posture_display_key.data(), &virtual_display_guid, posture_display_key.size());
+          posture::set_desired_size(
+            posture_display_key,
+            posture::derive_physical_size(
+              launch_session->client_posture,
+              static_cast<int>(recovery_params.width),
+              static_cast<int>(recovery_params.height),
+              config::video.touch_posture_diagonal_mm
+            ),
+            launch_session->client_uuid
+          );
           const char *hdr_profile = launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr;
           auto display_info = VDISPLAY::createVirtualDisplay(
             display_uuid_source.c_str(),
@@ -2538,6 +2575,12 @@ namespace nvhttp {
           named_cert_node["enable_legacy_ordering"] = named_cert_p->enable_legacy_ordering;
           named_cert_node["allow_client_commands"] = named_cert_p->allow_client_commands;
           named_cert_node["allow_sleep"] = named_cert_p->allow_sleep;
+          if (named_cert_p->touch_device) {
+            named_cert_node["touch_device"] = true;
+          }
+          if (named_cert_p->posture_mode != "auto") {
+            named_cert_node["posture_mode"] = named_cert_p->posture_mode;
+          }
           named_cert_node["always_use_virtual_display"] = named_cert_p->always_use_virtual_display;
           named_cert_node["requested_resolution_only"] = named_cert_p->requested_resolution_only;
           if (named_cert_p->prefer_10bit_sdr) {
@@ -2685,6 +2728,14 @@ namespace nvhttp {
               named_cert_p->enable_legacy_ordering = util::get_non_string_json_value<bool>(el, "enable_legacy_ordering", true);
               named_cert_p->allow_client_commands = util::get_non_string_json_value<bool>(el, "allow_client_commands", true);
               named_cert_p->allow_sleep = el.contains("allow_sleep") && el["allow_sleep"].is_boolean() && el["allow_sleep"].get<bool>();
+              named_cert_p->touch_device = el.contains("touch_device") && el["touch_device"].is_boolean() && el["touch_device"].get<bool>();
+              named_cert_p->posture_mode = "auto";
+              if (el.contains("posture_mode") && el["posture_mode"].is_string()) {
+                const auto loaded_posture_mode = el["posture_mode"].get<std::string>();
+                if (posture::parse_client_override(loaded_posture_mode)) {
+                  named_cert_p->posture_mode = loaded_posture_mode;
+                }
+              }
               named_cert_p->always_use_virtual_display = util::get_non_string_json_value<bool>(el, "always_use_virtual_display", false);
               named_cert_p->requested_resolution_only = util::get_non_string_json_value<bool>(el, "requested_resolution_only", false);
               named_cert_p->prefer_10bit_sdr =
@@ -3459,6 +3510,29 @@ namespace nvhttp {
       }
       launch_session->unique_id = get_arg(args, "uniqueid", "unknown");
       launch_session->perm = verified_client->perm;
+      launch_session->client_posture = posture::apply_client_override(
+        posture::parse_hints(
+          get_arg(args, "clientPosture", ""),
+          get_arg(args, "clientTouch", ""),
+          verified_client->touch_device
+        ),
+        posture::parse_client_override(verified_client->posture_mode).value_or(posture::client_override_e::automatic)
+      );
+      // Contract v2: the legacy clientDiagonalMm and clientDpi arguments of older clients are never read.
+      const int touch_diagonal_mm = posture::sanitize_touch_diagonal_mm(config::video.touch_posture_diagonal_mm);
+      posture::record_launch(launch_session->client_uuid, launch_session->client_posture, launch_session->width, launch_session->height, touch_diagonal_mm);
+      if (const auto session_size = posture::derive_physical_size(launch_session->client_posture, launch_session->width, launch_session->height, touch_diagonal_mm)) {
+        const auto state_class = posture::effective_class(launch_session->client_posture);
+        const auto reported_class = state_class ? state_class : launch_session->client_posture.posture;
+        const auto launch_host_mode = tablet_posture::host_mode_for(launch_session->client_posture);
+        const auto launch_mode_text = launch_host_mode == posture::host_mode_e::handheld ? " (handheld mode)"sv :
+                                      launch_host_mode == posture::host_mode_e::tablet   ? " (tablet mode)"sv :
+                                                                                           " (keyboard attached, desktop mode)"sv;
+        BOOST_LOG(info) << "Client posture class "sv << (reported_class ? posture::to_string(*reported_class) : "touch"sv)
+                        << launch_mode_text
+                        << ": virtual display physical size "sv << session_size->width_mm << 'x' << session_size->height_mm
+                        << " mm, diagonal "sv << posture::size_diagonal_mm(*session_size) << " mm (host touch_posture_diagonal_mm "sv << touch_diagonal_mm << ")"sv;
+      }
       const auto launch_appid_arg = get_arg(args, "appid", "0");
       const auto launch_appuuid_arg = get_arg(args, "appuuid", "");
       const auto launch_identity_control = remote_session::identify(
@@ -4668,6 +4742,8 @@ namespace nvhttp {
         named_cert_node["enable_legacy_ordering"] = named_cert->enable_legacy_ordering;
         named_cert_node["allow_client_commands"] = named_cert->allow_client_commands;
         named_cert_node["allow_sleep"] = named_cert->allow_sleep;
+        named_cert_node["touch_device"] = named_cert->touch_device;
+        named_cert_node["posture_mode"] = named_cert->posture_mode;
         named_cert_node["always_use_virtual_display"] = named_cert->always_use_virtual_display;
         named_cert_node["requested_resolution_only"] = named_cert->requested_resolution_only;
 #ifdef _WIN32
@@ -4713,6 +4789,30 @@ namespace nvhttp {
           }
         }
         named_cert_node["connected"] = connected;
+
+        // Posture status of a streaming client: what the size policy wants, what the display was
+        // created with (null: driver default or not known), and whether a runtime update is pending.
+        if (connected) {
+          if (const auto posture_status = posture::status_for_client(named_cert->uuid)) {
+            const auto size_node = [](const std::optional<posture::physical_size_t> &size) {
+              nlohmann::json node;
+              if (size) {
+                node["width_mm"] = size->width_mm;
+                node["height_mm"] = size->height_mm;
+              }
+              return size ? node : nlohmann::json(nullptr);
+            };
+            nlohmann::json posture_node;
+            posture_node["posture"] = posture_status->posture ? nlohmann::json(std::string(posture::to_string(*posture_status->posture))) : nlohmann::json(nullptr);
+            posture_node["class"] = posture_status->client_class ? nlohmann::json(std::string(posture::to_string(*posture_status->client_class))) : nlohmann::json(nullptr);
+            posture_node["touch_device"] = posture_status->paired_touch;
+            posture_node["wanted_size"] = size_node(posture_status->wanted_size);
+            posture_node["applied_known"] = posture_status->applied_known;
+            posture_node["applied_size"] = size_node(posture_status->applied_size);
+            posture_node["update_pending"] = posture_status->update_pending;
+            named_cert_node["posture"] = std::move(posture_node);
+          }
+        }
 
         named_cert_nodes.push_back(named_cert_node);
       }
@@ -7285,6 +7385,92 @@ launch_session->exact_target_hold.reset();
     tree.put("root.<xmlattr>.status_code", 200);
   }
 
+  /**
+   * @brief Update the posture hints of a streaming client (`/posture`).
+   *
+   * Takes the same posture arguments as /launch and /resume (`clientPosture`, `clientTouch`; the
+   * legacy `clientDiagonalMm` and `clientDpi` are accepted and ignored). The stored posture state of the
+   * client is replaced and the derived virtual display size is recomputed. A running stream's
+   * display is never recreated here: Windows reads the monitor size once at arrival and the
+   * capture target is the display itself, so a changed size stays pending and takes effect at
+   * the next launch or resume, which recreates the display when the change crosses the touch
+   * size boundary.
+   */
+  void setPosture(resp_https_t response, req_https_t request, const verified_client_t &verified_client) {
+    print_req<SunshineHTTPS>(request);
+
+    pt::ptree tree;
+    auto g = util::fail_guard([&]() {
+      std::ostringstream data;
+      pt::write_xml(data, tree);
+      response->write(data.str());
+      response->close_connection_after_response = true;
+    });
+    const auto fail = [&tree](int status_code, const char *message) {
+      tree.put("root.<xmlattr>.status_code", status_code);
+      tree.put("root.<xmlattr>.status_message", message);
+    };
+
+    if (!has_client_perm(verified_client, PERM::_allow_view)) {
+      log_permission_denied("SetPosture"sv, "View stream"sv, verified_client);
+      fail(403, "Permission denied: this device lacks the \"View stream\" permission.");
+      return;
+    }
+
+    auto args = request->parse_query_string();
+    const auto client_hints = posture::parse_hints(
+      get_arg(args, "clientPosture", ""),
+      get_arg(args, "clientTouch", ""),
+      verified_client->touch_device
+    );
+    if (!client_hints.has_client_hints()) {
+      fail(400, "Missing or invalid posture parameters");
+      return;
+    }
+    const auto hints = posture::apply_client_override(
+      client_hints,
+      posture::parse_client_override(verified_client->posture_mode).value_or(posture::client_override_e::automatic)
+    );
+
+    const auto connected_uuids = rtsp_stream::get_all_session_uuids();
+    if (std::find(connected_uuids.begin(), connected_uuids.end(), verified_client->uuid) == connected_uuids.end()) {
+      BOOST_LOG(debug) << "Posture update from ["sv << verified_client->name << "] but the client has no active session"sv;
+      fail(404, "No active session for this client");
+      return;
+    }
+
+    const auto update = posture::apply_runtime_update(verified_client->uuid, hints, std::chrono::steady_clock::now());
+    using update_status_e = posture::update_result_t::status_e;
+    const auto size_text = [](const std::optional<posture::physical_size_t> &size) {
+      return size ?
+               std::to_string(size->width_mm) + "x" + std::to_string(size->height_mm) + " mm (diagonal " + std::to_string(posture::size_diagonal_mm(*size)) + " mm)" :
+               std::string("default");
+    };
+    switch (update.status) {
+      case update_status_e::no_session:
+        fail(404, "No active session for this client");
+        return;
+      case update_status_e::rate_limited:
+        fail(429, "Too many posture updates; wait at least one second between calls");
+        return;
+      case update_status_e::unchanged:
+        tablet_posture::client_updated(verified_client->uuid, tablet_posture::to_client_mode(tablet_posture::host_mode_for(hints)));
+        BOOST_LOG(debug) << "Client ["sv << verified_client->name << "] posture update leaves the virtual display size at "sv << size_text(update.current);
+        break;
+      case update_status_e::changed:
+        tablet_posture::client_updated(verified_client->uuid, tablet_posture::to_client_mode(tablet_posture::host_mode_for(hints)));
+        BOOST_LOG(info) << "Client ["sv << verified_client->name << "] posture update changes the wanted virtual display size from "sv
+                        << size_text(update.previous) << " to "sv << size_text(update.current)
+                        << (update.boundary_crossed ? " (crosses the touch size boundary)"sv : ""sv)
+                        << ". The running display is not recreated; the change applies at the next launch or resume."sv;
+        break;
+    }
+    // Tells the client whether the new state needs a different virtual display, i.e. whether a
+    // stream restart is worth it. The host mode (desktop or tablet) has already been switched live.
+    tree.put("root.<xmlattr>.display_change", update.display_change ? 1 : 0);
+    tree.put("root.<xmlattr>.status_code", 200);
+  }
+
   void getAbrCapabilities(resp_https_t response, req_https_t request) {
     print_req<SunshineHTTPS>(request);
 
@@ -7843,6 +8029,22 @@ launch_session->exact_target_hold.reset();
         }
       );
     };
+    // Runtime posture update, authenticated by the paired client certificate like /bitrate.
+    const auto posture_route = [run_blocking_nvhttp](auto response, auto request) {
+      const auto client = get_verified_cert(request);
+      if (!has_client_perm(client, PERM::_allow_view)) {
+        // Rejected before queueing; setPosture writes the denial.
+        setPosture(std::move(response), std::move(request), client);
+        return;
+      }
+      run_blocking_nvhttp(response, "posture", [response, request = std::move(request)]() mutable {
+        // Permissions and pairing can change while queued, so resolve the client again.
+        const auto current_client = get_verified_cert(request);
+        setPosture(std::move(response), std::move(request), current_client);
+      });
+    };
+    https_server.resource["^/posture$"]["GET"] = posture_route;
+    https_server.resource["^/posture$"]["POST"] = posture_route;
     https_server.resource["^/api/abr/capabilities$"]["GET"] = getAbrCapabilities;
     https_server.resource["^/pyrowave-bandwidth-probe$"]["GET"] = getPyroWaveBandwidthProbe;
     https_server.resource["^/pyrowave-udp-probe$"]["GET"] = [run_blocking_nvhttp](auto resp, auto req) {
@@ -8267,6 +8469,56 @@ launch_session->exact_target_hold.reset();
       return saved;
     }
     return false;
+  }
+
+  bool set_client_touch_device(const std::string &uuid, bool touch_device) {
+    if (uuid.empty()) {
+      return false;
+    }
+
+    bool updated = false;
+    {
+      std::lock_guard<std::mutex> lock(client_mutex);
+      for (auto &named_cert : client_root.named_devices) {
+        if (named_cert->uuid != uuid) {
+          continue;
+        }
+
+        named_cert->touch_device = touch_device;
+        updated = true;
+        break;
+      }
+    }
+
+    if (updated) {
+      save_state();
+    }
+    return updated;
+  }
+
+  bool set_client_posture_mode(const std::string &uuid, const std::string &mode) {
+    if (uuid.empty() || !posture::parse_client_override(mode)) {
+      return false;
+    }
+
+    bool updated = false;
+    {
+      std::lock_guard<std::mutex> lock(client_mutex);
+      for (auto &named_cert : client_root.named_devices) {
+        if (named_cert->uuid != uuid) {
+          continue;
+        }
+
+        named_cert->posture_mode = mode;
+        updated = true;
+        break;
+      }
+    }
+
+    if (updated) {
+      save_state();
+    }
+    return updated;
   }
 
   bool set_client_hdr_profile(const std::string &uuid, const std::string &hdr_profile) {

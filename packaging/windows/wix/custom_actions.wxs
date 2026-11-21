@@ -182,6 +182,7 @@
     <CustomAction Id="UninstallSudovda" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UninstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="RemoveVirtualGamepadRoot" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="RemoveTabletPostureIndicator" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UnregisterVulkanHdrLayer" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="FactoryResetAppData" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="CleanupEmptyInstallRoot" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="ignore" Impersonate="no" />
@@ -248,6 +249,11 @@
     <CustomAction Id="SetRemoveVirtualGamepadRoot"
                  Property="RemoveVirtualGamepadRoot"
                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\vhf-gamepad\cleanup.ps1&quot; -InstallerBestEffort -RemoveDriverStorePackage:[REMOVEVIRTUALGAMEPADDRIVER]"/>
+
+    <!-- Removes only the ROOT\HIDCLASS laptop/slate indicator node the host creates for tablet posture. -->
+    <CustomAction Id="SetRemoveTabletPostureIndicator"
+                 Property="RemoveTabletPostureIndicator"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\tablet-posture\cleanup.ps1&quot; -InstallerBestEffort"/>
 
     <CustomAction Id="SetUnregisterVulkanHdrLayer"
                  Property="UnregisterVulkanHdrLayer"

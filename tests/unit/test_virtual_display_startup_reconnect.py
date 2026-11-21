@@ -761,6 +761,8 @@ namespace VDISPLAY {
   }
 }
 template<class... T> void stage_retained_rtsp_virtual_display_recovery(T &&...) {}
+bool posture_crossed = false;
+template<class... T> bool posture_requires_display_recreation(T &&...) { return posture_crossed; }
 namespace display_helper_integration {
   bool disarm_pending_restore(const std::function<bool()> &, Time, bool = false) { return true; }
   bool restore_in_progress(const std::function<bool()> &, Time) { return false; }
@@ -799,6 +801,11 @@ int main() {
   require(existing.virtual_display && existing.virtual_display_needs_resume_apply &&
           existing.virtual_display_device_id == "DISPLAY10" && creation_entries == 0,
           "existing resume display was recreated or lost its capture target");
+  creation_entries = 0; posture_crossed = true;
+  ResumeSession crossing; prepare_resume(crossing, true);
+  require(crossing.virtual_display_recreated_on_demand && !crossing.virtual_display_needs_resume_apply && creation_entries == 1,
+          "resume crossing the posture size boundary did not recreate the display");
+  posture_crossed = false; creation_entries = 0;
   VDISPLAY::adapter_matches = false;
   ResumeSession wrong_adapter; prepare_resume(wrong_adapter, true);
   require(wrong_adapter.virtual_display_recreated_on_demand && creation_entries == 1,
@@ -811,7 +818,7 @@ int main() {
   ResumeSession denied; prepare_resume(denied, true);
   require(!denied.virtual_display_recreated_on_demand && creation_entries == 0,
           "failed identity reservation continued to creation");
-  std::cout << "5 production resume scenarios passed\n";
+  std::cout << "6 production resume scenarios passed\n";
 }
 '''
 

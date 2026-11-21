@@ -25,6 +25,8 @@ export interface ClientCommandDraft {
 export interface ClientDeviceDraft {
   name: string;
   allowSleep: boolean;
+  touchDevice: boolean;
+  postureMode: string;
   permissions: number;
   enableLegacyOrdering: boolean;
   allowClientCommands: boolean;
@@ -240,6 +242,13 @@ const displayOverrideSummary = computed(() => {
   return mode;
 });
 
+const postureModeOptions = computed(() => [
+  { label: t('ui.devices.editor.posture_mode_auto'), value: 'auto' },
+  { label: t('ui.devices.editor.posture_mode_desktop'), value: 'desktop' },
+  { label: t('ui.devices.editor.posture_mode_tablet'), value: 'tablet' },
+  { label: t('ui.devices.editor.posture_mode_handheld'), value: 'handheld' },
+]);
+
 const hdrProfileOptions = computed(() => {
   const profiles = [...props.hdrProfiles].sort(
     (left, right) => Number(right.added_ms ?? 0) - Number(left.added_ms ?? 0),
@@ -446,6 +455,39 @@ function applyDisplaySelection(selection: ClientDisplaySelection): void {
             <span class="vs-switch__track" aria-hidden="true" />
             <span class="vs-sr-only">{{ t('ui.devices.editor.allow_sleep') }}</span>
           </label>
+        </SettingRow>
+        <SettingRow
+          class="client-setting-row--switch"
+          :label="t('ui.devices.editor.touch_device')"
+          :description="t('ui.devices.editor.touch_device_description')"
+          :control-id="`${controlIdPrefix}-touch-device`"
+        >
+          <label class="vs-switch">
+            <input
+              :id="`${controlIdPrefix}-touch-device`"
+              v-model="draft.touchDevice"
+              type="checkbox"
+              :disabled="busy"
+            />
+            <span class="vs-switch__track" aria-hidden="true" />
+            <span class="vs-sr-only">{{ t('ui.devices.editor.touch_device') }}</span>
+          </label>
+        </SettingRow>
+        <SettingRow
+          :label="t('ui.devices.editor.posture_mode')"
+          :description="t('ui.devices.editor.posture_mode_description')"
+          :control-id="`${controlIdPrefix}-posture-mode`"
+        >
+          <select
+            :id="`${controlIdPrefix}-posture-mode`"
+            v-model="draft.postureMode"
+            class="vs-select"
+            :disabled="busy"
+          >
+            <option v-for="option in postureModeOptions" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
         </SettingRow>
         <SettingRow :label="t('pin.device_name')" :control-id="`${controlIdPrefix}-name`">
           <input

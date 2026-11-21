@@ -26,6 +26,7 @@
 #include "src/platform/windows/display_helper_reactivation.h"
 #include "src/platform/windows/misc.h"
 #include "src/platform/windows/virtual_display_recovery_policy.h"
+#include "src/posture_state.h"
 #include "src/process.h"
 #include "src/state_storage.h"
 #include "src/uuid.h"
@@ -7097,6 +7098,10 @@ namespace VDISPLAY_SUNSHINE {
 
       std::vector<VirtualDisplayRecoveryEntry> recovery_entries;
       std::optional<sunshine_driver::OwnerCapability> owner_capability;
+      // Size the posture policy wants for this display (see posture_state.h); empty keeps the driver default.
+      posture::display_key_t posture_display_key {};
+      std::memcpy(posture_display_key.data(), requested_uuid.b8, posture_display_key.size());
+      const auto posture_size = posture::desired_size(posture_display_key);
       bool reclaimed_for_reuse = false;
       if (*secure_reclaim_supported) {
         if (!load_virtual_display_recovery_journal_for_driver(client, recovery_entries)) {
@@ -7164,7 +7169,16 @@ namespace VDISPLAY_SUNSHINE {
                               << " (guid=" << requested_uuid.string()
                               << ", display_id=" << display_id << ").";
             }
-            if (reclaimed_plan.action == VDISPLAY::policy::reclaimed_display_action::recreate) {
+            // A display created with the other side of the touch size boundary (none versus some size)
+            // must be replaced for the new size to take effect. Shared displays are never replaced here.
+            const bool posture_recreate =
+              replace_existing &&
+              posture::size_crosses_boundary(posture::applied_size(posture_display_key), posture_size);
+            if (posture_recreate) {
+              BOOST_LOG(info) << "Posture: the reclaimed virtual display was created with a different size class; replacing it"
+                              << " (guid=" << requested_uuid.string() << ").";
+            }
+            if (reclaimed_plan.action == VDISPLAY::policy::reclaimed_display_action::recreate || posture_recreate) {
               BOOST_LOG(info)
                 << "Securely releasing the prior owned virtual display before "
                 << (replace_existing ? "replacement" : "render-adapter-safe recreation")
@@ -7175,6 +7189,11 @@ namespace VDISPLAY_SUNSHINE {
               }
               if (requested_resolution_only) {
                 allow_driver_recovery = false;
+                retry_owned_replacement = true;
+              }
+              if (posture_recreate) {
+                // The old display is gone on purpose. Without this the outer loop gives up after this
+                // first attempt and the session falls back to a physical display with another aspect.
                 retry_owned_replacement = true;
               }
               // Removal may reopen the transport. Return to the outer bounded
@@ -7250,6 +7269,18 @@ namespace VDISPLAY_SUNSHINE {
       // physical size can make Windows classify the display as a handheld.
       // Apply requested scaling through set_display_scale_percent after activation.
       create_request.refresh_rate_millihz = descriptor_fps;
+      // Touch clients (posture hint or paired-client touch flag) get a small reported physical
+      // size so Windows docks its touch keyboard. This is one fixed diagonal from the posture policy
+      // (host option touch_posture_diagonal_mm), split by the stream aspect; it never depends on the
+      // client screen. The driver takes millimetres as is (EDID cm bytes and DTD image size), with no
+      // rescale or swap. Without a size the driver keeps its default monitor dimensions.
+      if (posture_size) {
+        create_request.physical_width_mm = posture_size->width_mm;
+        create_request.physical_height_mm = posture_size->height_mm;
+        BOOST_LOG(info) << "Posture: requesting virtual display physical size " << posture_size->width_mm << 'x'
+                        << posture_size->height_mm << " mm, diagonal " << posture::size_diagonal_mm(*posture_size)
+                        << " mm (guid=" << requested_uuid.string() << ").";
+      }
       if (!VDISPLAY::catalog_policy::set_create_policy(client, create_request, requested_resolution_only)) {
         allow_driver_recovery = false;
         return std::nullopt;
@@ -7511,6 +7542,10 @@ namespace VDISPLAY_SUNSHINE {
                static_cast<unsigned long>(error_code));
         return std::nullopt;
       }
+
+      // The driver accepted a new display with this size. A reclaimed display never reaches here,
+      // so its earlier record stays valid.
+      posture::note_applied_size(posture_display_key, posture_size);
 
       // Publish the exact lease returned by the successful create before any
       // fallible validation. Rollback must be able to prove ownership even if

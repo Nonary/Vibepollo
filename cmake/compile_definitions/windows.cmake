@@ -185,6 +185,8 @@ set(PLATFORM_TARGET_FILES
         "${CMAKE_SOURCE_DIR}/src/platform/windows/publish.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/misc.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/misc.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/tablet_posture.cpp"
+        "${CMAKE_SOURCE_DIR}/src/platform/windows/gaming_posture.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/host_stats.cpp"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.h"
         "${CMAKE_SOURCE_DIR}/src/platform/windows/ipc/pipes.cpp"
