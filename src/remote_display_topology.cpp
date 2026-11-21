@@ -109,32 +109,40 @@ namespace remote_display_topology {
     return normalized;
   }
 
-  nlohmann::json remove_client_from_layout(const nlohmann::json &layout, const std::string &client_uuid) {
-    auto result = normalize_layout(layout);
-    auto &placements = result["placements"];
-    for (auto it = placements.begin(); it != placements.end();) {
-      const auto &placement = it.value();
-      const bool references_client = placement.value("anchor_kind", "") == "client" &&
-                                     placement.value("anchor_id", "") == client_uuid;
-      if (it.key() == client_uuid) {
-        it = placements.erase(it);
-      } else {
-        if (references_client) {
-          // The former anchor cannot return after unpair. Retain independent
-          // primary preference while falling back to automatic positioning.
-          it.value()["anchor_kind"] = "physical";
-          it.value()["anchor_id"] = "";
+  namespace {
+    nlohmann::json remove_layout_clients(const nlohmann::json &layout, const auto &is_removed) {
+      auto result = normalize_layout(layout);
+      auto &placements = result["placements"];
+      for (auto it = placements.begin(); it != placements.end();) {
+        if (is_removed(it.key())) {
+          it = placements.erase(it);
+          continue;
+        }
+        auto &placement = it.value();
+        if (placement["anchor_kind"] == "client" && is_removed(placement["anchor_id"].get_ref<const std::string &>())) {
+          // Retain independent primary and manual-preserve preferences when
+          // the former anchor can no longer return.
+          placement["anchor_kind"] = "physical";
+          placement["anchor_id"] = "";
           if (!placement.value("preserve", false)) {
             // Older versions accept this as a manual placement rather than
             // rejecting the entire saved layout on downgrade.
-            it.value()["preserve"] = true;
-            it.value()["automatic_fallback"] = true;
+            placement["preserve"] = true;
+            placement["automatic_fallback"] = true;
           }
         }
         ++it;
       }
+      return result;
     }
-    return result;
+  }  // namespace
+
+  nlohmann::json remove_client_from_layout(const nlohmann::json &layout, const std::string &client_uuid) {
+    return remove_layout_clients(layout, [&client_uuid](std::string_view id) { return id == client_uuid; });
+  }
+
+  nlohmann::json reconcile_saved_layout(const nlohmann::json &layout, const std::unordered_set<std::string_view> &paired_clients) {
+    return remove_layout_clients(layout, [&paired_clients](std::string_view id) { return !paired_clients.contains(id); });
   }
 
   bool validate_layout(const nlohmann::json &layout, const std::vector<std::string> &known_clients, const std::vector<std::string> &known_physical_ids, std::string &error) {

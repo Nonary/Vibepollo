@@ -2708,19 +2708,21 @@ namespace nvhttp {
           }
 
 
-          nlohmann::json remote_display_layout;
-          try {
-            remote_display_layout = remote_display_topology::normalize_layout(
-              nlohmann::json::parse(client.remote_display_layout_json)
-            );
-          } catch (...) {
-            remote_display_layout = remote_display_topology::normalize_layout(nlohmann::json {});
-          }
-          client.remote_display_layout_json = remote_display_layout.dump();
-
           std::vector<std::string> identities;
           std::vector<pairing_policy::paired_client_record_view_t> records;
           if (!build_paired_client_records(client, identities, records)) return std::nullopt;
+
+          // The next normal save persists the repaired layout. Use all paired
+          // UUIDs, including disabled clients, and leave physical anchors alone.
+          std::unordered_set<std::string_view> paired_clients;
+          paired_clients.reserve(records.size());
+          for (const auto &record : records) {
+            paired_clients.insert(record.uuid);
+          }
+          auto remote_display_layout = remote_display_topology::reconcile_saved_layout(
+            nlohmann::json::parse(client.remote_display_layout_json, nullptr, false), paired_clients
+          );
+          client.remote_display_layout_json = remote_display_layout.dump();
           return parsed_state_t {std::move(client), std::move(remote_display_layout), std::move(collapsed)};
         } catch (...) {
           BOOST_LOG(error) << "Vibepollo pairing state is malformed.";

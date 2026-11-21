@@ -89,6 +89,52 @@ TEST(RemoteDisplayTopology, RemovingClientCleansItsPlacementAndDirectClientAncho
   EXPECT_EQ(remote_display_topology::remove_client_from_layout(after, "old"), after);
 }
 
+TEST(RemoteDisplayTopology, ReconcilesOrphanedPlacementsFromAnOlderState) {
+  const auto physical = nlohmann::json {
+    {"anchor_kind", "physical"}, {"anchor_id", "old-a"}, {"edge", "right"}, {"alignment", "end"}, {"gap_px", 21},
+  };
+  const auto direct = nlohmann::json {
+    {"anchor_kind", "client"}, {"anchor_id", "old-a"}, {"edge", "below"}, {"alignment", "center"}, {"gap_px", 10}, {"primary", true},
+  };
+  const auto indirect = nlohmann::json {
+    {"anchor_kind", "client"}, {"anchor_id", "direct"}, {"edge", "left"}, {"alignment", "start"}, {"gap_px", 0},
+  };
+  auto manual = direct;
+  manual["anchor_id"] = "old-without-placement";
+  manual["preserve"] = true;
+  const auto saved = layout({
+    {"old-a", physical}, {"old-b", physical}, {"direct", direct}, {"indirect", indirect},
+    {"physical", physical}, {"manual", manual},
+  }).dump();
+  const std::vector<std::string> known_clients {"direct", "indirect", "physical", "manual", "new"};
+  const std::unordered_set<std::string_view> paired_clients(known_clients.begin(), known_clients.end());
+  const auto loaded = nlohmann::json::parse(saved);
+
+  std::string error;
+  EXPECT_FALSE(remote_display_topology::validate_layout(
+    remote_display_topology::normalize_layout(loaded), known_clients, {"old-a"}, error
+  ));
+  const auto repaired = remote_display_topology::reconcile_saved_layout(loaded, paired_clients);
+  const auto &placements = repaired.at("placements");
+  EXPECT_EQ(placements.size(), 4u);
+  EXPECT_EQ(placements.at("physical"), physical);
+  EXPECT_EQ(placements.at("indirect"), indirect);
+  const auto expected = remote_display_topology::remove_client_from_layout(loaded, "old-a");
+  EXPECT_EQ(placements.at("direct"), expected.at("placements").at("direct"));
+  manual["anchor_kind"] = "physical";
+  manual["anchor_id"] = "";
+  EXPECT_EQ(placements.at("manual"), manual);
+
+  error.clear();
+  EXPECT_TRUE(remote_display_topology::validate_layout(repaired, known_clients, {"old-a"}, error)) << error;
+  EXPECT_EQ(remote_display_topology::reconcile_saved_layout(nlohmann::json::parse(repaired.dump()), paired_clients), repaired);
+  remote_display_topology::coordinator_t coordinator;
+  coordinator.set_layout(repaired);
+  const auto stream_layout = coordinator.saved_stream_placement({.id = "direct", .active = true}, {});
+  EXPECT_TRUE(stream_layout.primary_requested);
+  EXPECT_FALSE(stream_layout.position);
+}
+
 TEST(RemoteDisplayTopology, UnpairRetainsActiveDependentPrimaryAndIndirectAnchor) {
   remote_display_topology::coordinator_t coordinator;
   std::vector<remote_display_topology::node_t> applied;
