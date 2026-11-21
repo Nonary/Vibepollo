@@ -993,14 +993,19 @@ namespace nvhttp {
         };
       };
 
+      const auto shutdown = mail::process_shutdown_event();
       bool probe_complete = false;
       auto caps = video::advertised_encoder_capabilities(false, &probe_complete, &adapter_identity);
       if (probe_complete) {
         return publish(std::move(caps), true, "matching-cache");
       }
 
+      if (shutdown && shutdown->peek()) {
+        return publish(std::move(caps), false, "shutdown");
+      }
+
       // Session starts publish their pending owner while holding this gate.
-      // Hold it through the idle decision and temporary-display probe so a
+      // Hold it through the idle decision and synthetic encoder probe so a
       // new start cannot enter between the counter samples below.
       std::unique_lock<std::mutex> lifecycle_lock(
         stream_lifecycle_mutex(),
@@ -1018,6 +1023,9 @@ namespace nvhttp {
         return publish(std::move(caps), false, "active-or-stopping-session");
       }
 
+      if (shutdown && shutdown->peek()) {
+        return publish(std::move(caps), false, "shutdown");
+      }
       // Later capability discovery uses synthetic encoder sources only. A
       // temporary monitor is exclusively owned by the bounded startup probe.
       caps = video::advertised_encoder_capabilities(true, &probe_complete, &adapter_identity);
