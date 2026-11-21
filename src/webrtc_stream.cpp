@@ -3417,6 +3417,11 @@ namespace webrtc_stream {
       }
 #endif
 
+#ifdef _WIN32
+      auto recovery_display_guard = util::fail_guard([&] {
+        nvhttp::rollback_capture_display_recovery(launch_session);
+      });
+#endif
       std::optional<config::runtime_output_override_lease_t> pending_output_override_lease;
       auto output_override_guard = util::fail_guard([&]() {
         if (pending_output_override_lease) {
@@ -3458,6 +3463,17 @@ namespace webrtc_stream {
         }
 
 #ifdef _WIN32
+        // Preserve the physical restore baseline before either explicit VDD
+        // preparation or a later capture-failure recovery can add an output.
+        if (allow_display_changes && current_app_id <= 0) {
+          const auto snapshot_deadline = std::chrono::steady_clock::now() +
+                                         display_helper_integration::kStreamStartApplyVerificationTimeout;
+          const auto snapshot_cancelled = [snapshot_deadline] {
+            return mail::man->event<bool>(mail::shutdown)->peek() ||
+                   std::chrono::steady_clock::now() >= snapshot_deadline;
+          };
+          (void) display_helper_integration::snapshot_current_display_state(snapshot_cancelled, snapshot_deadline);
+        }
         prepare_virtual_display_for_webrtc_session(
           launch_session,
           allow_display_changes,
@@ -3523,19 +3539,6 @@ namespace webrtc_stream {
 
 #ifdef _WIN32
         if (!video::has_successful_encoder_probe()) {
-          VDISPLAY::ensure_display_result ensure_result {};
-          auto cleanup_probe_display = util::fail_guard([&ensure_result]() {
-            VDISPLAY::cleanup_ensure_display(ensure_result);
-          });
-
-          if (VDISPLAY::policy::should_ensure_probe_display(launch_session->virtual_display)) {
-            ensure_result = VDISPLAY::ensure_display();
-            if (!ensure_result.owns_temporary_probe_request() && !ensure_result.ready_for_capture()) {
-              BOOST_LOG(warning)
-                << "WebRTC could not acquire a temporary-display lease; continuing with synthetic encoder validation.";
-            }
-          }
-
           const bool probe_failed = video::probe_encoders();
           if (probe_failed) {
             return std::string {"Failed to initialize a video encoder on the selected adapter."};
@@ -3552,6 +3555,21 @@ namespace webrtc_stream {
 #endif
         if (video::probe_encoders()) {
           return std::string {"Failed to initialize video capture/encoding. Is a display connected and turned on?"};
+        }
+#endif
+#ifdef _WIN32
+        if (!capture_already_active && !launch_session->input_only) {
+          if (!nvhttp::recover_capture_display_for_webrtc(launch_session, request_audio_hold)) {
+            return std::string {"Unable to initialize a capture display for this session."};
+          }
+          if (launch_session->capture_display_recovery) {
+            pending_output_override_lease = config::set_runtime_output_name_override_with_lease(
+              launch_session->virtual_display_device_id
+            );
+            if (webrtc_capture.stream_start_params) {
+              webrtc_capture.stream_start_params->uses_virtual_display = true;
+            }
+          }
         }
 #endif
       }
@@ -3628,6 +3646,9 @@ namespace webrtc_stream {
           webrtc_capture.output_override_lease = pending_output_override_lease;
         }
         output_override_guard.disable();
+#ifdef _WIN32
+        recovery_display_guard.disable();
+#endif
 #ifdef __linux__
         linux_private_display_guard.disable();
 #endif

@@ -53,56 +53,65 @@ Can't access the web UI?
    that its bind address and `origin_web_ui_allowed` permit the intended LAN access,
    and that firewall rules allow the configured Web UI port on the intended network.
 
-### Zero-filled auxiliary state prevents crash dismissal or token saves
+### Damaged auxiliary state prevents crash dismissal or token saves
 
-If both `vibeshine_state.json` and `vibeshine_state.json.bak` are empty or contain
-only zero bytes after an unexpected shutdown, their contents cannot be recovered.
-The host deliberately refuses to overwrite them. A newer file writer prevents
-known write/flush failures from replacing an existing target, but does not repair
-already-lost data or establish power-loss durability on every storage device.
+The host restores a missing or malformed auxiliary primary from a valid backup
+when it can verify the replacement. If at least one standard separate auxiliary
+file exists and every existing copy is empty or zero-filled, the host archives
+the damaged copies in `.corrupt-*` directories beside the originals and
+creates clean state. The next auxiliary save can retry a temporary failure
+that occurred before the replacement was published. The
+automatic reset requires colocated `sunshine_state.json` and
+`vibeshine_state.json`, with Web UI credentials stored in `sunshine_state.json`.
 
-The native `--auxiliary-recovery` command can prepare an **explicit reset**, not a
-repair. It does not start the host or install anything. Resetting auxiliary state
-loses API tokens, Web UI sessions, app-ID aliases, display metadata and crash/update
-notification metadata. API integrations need new tokens, the Web UI needs a fresh
-login, and display settings/launch shortcuts may need reconfiguration. It does
-**not** reset the Web UI username/password or Moonlight pairings.
+#### Prepare a separate recovery pair on Windows
 
-1. Stop the host/service and keep a private copy of the entire configuration
-   directory. This disconnects active streams. Confirm that the configured
-   auxiliary file is the separate `vibeshine_state.json`, **not** the pairing or
-   credentials file. Custom/shared filenames are unsupported by this command;
-   do not rename a pairing/credential file to bypass this check. The command
-   runs before host configuration is parsed and cannot verify this separation
-   from zero-filled copies. Copy the auxiliary
-   file and its `.bak` into `C:\PrivateRecovery`. Never upload either snapshot.
-2. In PowerShell, inspect those two copies:
+1. Stop the host/service, which disconnects active streams. Check the effective
+   `vibeshine_file_state`, `file_state`, and `credentials_file` settings. Confirm
+   that the damaged `vibeshine_state.json` and its `.bak` are separate from pairing
+   and credentials. Keep backups private. Leave both original paths in place,
+   including a primary that cannot be read.
+2. Adjust the executable and file paths below. Use the actual configured
+   auxiliary paths, or verified private copies with the same names.
 
-   ```powershell
-   & 'C:\Program Files\Sunshine\sunshine.exe' --auxiliary-recovery inspect 'C:\PrivateRecovery\vibeshine_state.json'
-   ```
-
-   Adjust the executable path for your installation. Both snapshots must exist
-   and be entirely empty/zero-filled. A valid, partially readable, missing or
-   inaccessible snapshot requires separate investigation, not this reset. Copy
-   the `snapshot_token` from the report.
-3. If you accept the listed data loss, prepare the reset. Replace `TOKEN` with
-   that value; `C:\PrivateRecovery\reset` must not exist:
+   **Both files are unusable, or one is missing.** Use `inspect` when every
+   existing file can be read, including truncated JSON. It refuses to reset a
+   usable snapshot. Resetting loses auxiliary metadata and requires a fresh
+   Web UI login and new API tokens. Copy the reported `snapshot_token`.
 
    ```powershell
-   & 'C:\Program Files\Sunshine\sunshine.exe' --auxiliary-recovery prepare-reset 'C:\PrivateRecovery\vibeshine_state.json' --expect-snapshot TOKEN --accept-token-and-metadata-loss --confirm-separate-auxiliary-state --output 'C:\PrivateRecovery\reset'
+   & 'C:\Program Files\Apollo\sunshine.exe' --auxiliary-recovery inspect 'C:\PrivateRecovery\vibeshine_state.json'
+   & 'C:\Program Files\Apollo\sunshine.exe' --auxiliary-recovery prepare-reset 'C:\PrivateRecovery\vibeshine_state.json' --expect-snapshot TOKEN --accept-token-and-metadata-loss --confirm-separate-auxiliary-state --output 'C:\PrivateRecovery\prepared'
    ```
 
-   Success creates private copies of both originals, two identical reset
-   candidates and `recovery.json`. Check that the manifest says `complete: true`.
-   Do not install files from an incomplete output directory. No source file,
-   pairing state, password or running configuration was changed by the command.
-4. With the host still stopped, copy `vibeshine_state.reset.json` and
-   `vibeshine_state.reset.json.bak` from the output directory to the actual
-   configuration directory as `vibeshine_state.json` and `vibeshine_state.json.bak`.
-   Replace **only these two auxiliary files**, retaining the originals privately.
-   Start the host, sign in again, check crash dismissal and re-create API tokens
-   as needed. Do not install an old token-bearing backup over the reset later.
+   **The primary cannot be read, and the backup can.** Inspect the backup
+   directly. Preparation reads only the supplied backup and preserves a copy.
+   It recovers known display, launch and notification metadata from that
+   snapshot. A fresh login and new API tokens are required because older
+   authorization is unsafe to restore. Copy the reported `snapshot_token`.
+
+   ```powershell
+   & 'C:\Program Files\Apollo\sunshine.exe' --auxiliary-recovery inspect-backup 'C:\PrivateRecovery\vibeshine_state.json.bak'
+   & 'C:\Program Files\Apollo\sunshine.exe' --auxiliary-recovery prepare-restore 'C:\PrivateRecovery\vibeshine_state.json.bak' --expect-snapshot TOKEN --accept-token-loss --confirm-separate-auxiliary-state --output 'C:\PrivateRecovery\prepared'
+   ```
+
+3. Replace `TOKEN` with the inspection token. The output directory must be new.
+   Proceed after the command exits successfully and `recovery.json` says
+   `complete: true`. While the host is still stopped, put the two candidates
+   `vibeshine_state.reset.json` and `vibeshine_state.reset.json.bak` in a new
+   directory under the host's config directory, for example
+   `recovered-auxiliary`, as `vibeshine_state.json` and its `.bak`.
+   Use a directory the host account can read and write. Copy only the two
+   candidates and verify that both files have the `candidate_sha256` hash from
+   the report. Keep the original snapshots and the private evidence directory.
+4. Set `vibeshine_file_state` in the active `sunshine.conf` to the **absolute
+   path** of the new `vibeshine_state.json`, for example
+   `C:\Program Files\Apollo\config\recovered-auxiliary\vibeshine_state.json`.
+   Update any command-line override to use the same new path.
+   Leave `file_state` and `credentials_file` pointing to their original files.
+   Start the host, sign in again, and check that auxiliary saves work. Keep the
+   original paths for investigation; using the new path avoids replacing even
+   an unreadable original.
 
 ### Duplicate paired-client records after upgrading from 1.x
 

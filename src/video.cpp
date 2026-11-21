@@ -71,6 +71,7 @@ extern "C" {
 #endif
 
 #ifdef _WIN32
+  #include "src/platform/windows/capture_initialization.h"
   #include "src/platform/windows/display.h"
   #include "src/platform/windows/display_helper_integration.h"
   #include "src/platform/windows/display_vram.h"
@@ -83,6 +84,7 @@ extern "C" {
   #include <AMF/core/Debug.h>
   #include <AMF/core/Factory.h>
   #include <AMF/core/Trace.h>
+  #include <display_device/windows/win_api_recovery.h>
 
   // These using-declarations must sit between the AMF headers above and
   // hwcontext_amf.h below, and must stay outside the extern "C" block. hwcontext_amf.h
@@ -476,10 +478,39 @@ namespace video {
 
 #endif
 
-    probe_target_t resolve_probe_target(const bool materialize_capture_output = true) {
+    probe_target_t resolve_probe_target(const bool materialize_capture_output = true,
+                                        safe::signal_t *shutdown = nullptr) {
 #ifdef _WIN32
+      std::optional<LUID> pending_virtual_display_adapter_hint;
+      bool pending_virtual_display_adapter_hint_ready_for_verification = false;
+      {
+        auto &state = encoder_probe_cache_state();
+        std::lock_guard<std::mutex> lock(state.mutex);
+        pending_virtual_display_adapter_hint =
+          state.pending_virtual_display_adapter_hint;
+        pending_virtual_display_adapter_hint_ready_for_verification =
+          state.pending_virtual_display_adapter_hint_ready_for_verification;
+      }
+      const bool adapter_is_configured =
+        !config::video.adapter_name.empty() ||
+        !config::video.adapter_pnp_id.empty();
+      // Encoder validation uses synthetic surfaces too: resolving its adapter
+      // must remain observational. Real capture owns display recovery.
+      display_device::DisplayRecoveryBehaviorGuard skip_recovery(display_device::DisplayRecoveryBehavior::Skip);
+      const bool needs_output_identity = materialize_capture_output ||
+                                         (!pending_virtual_display_adapter_hint && !adapter_is_configured);
+      const auto automatic_capture_output = [shutdown](
+                                              const std::optional<platf::adapter_id_t> &required_adapter = std::nullopt
+                                            ) {
+        if (shutdown && shutdown->peek()) {
+          return std::optional<platf::dxgi::capture_output_identity_t> {};
+        }
+        return platf::dxgi::resolve_automatic_capture_output(platf::mem_type_e::dxgi, required_adapter);
+      };
       const auto active_output = config::get_active_output_name();
-      const auto mapped_output = display_device::map_output_name(active_output);
+      const auto mapped_output = needs_output_identity ?
+                                   display_device::map_output_name(active_output) :
+                                   std::string {};
       const bool mapped_output_is_active =
         !mapped_output.empty() && display_device::output_is_active(mapped_output);
       const auto current_wgc_identity = [&]() -> std::optional<platf::dxgi::wgc_adapter_identity_t> {
@@ -499,16 +530,6 @@ namespace video {
         return output_adapter && platf::adapter_luid_equal(*output_adapter.luid, adapter_luid);
       };
 
-      std::optional<LUID> pending_virtual_display_adapter_hint;
-      bool pending_virtual_display_adapter_hint_ready_for_verification = false;
-      {
-        auto &state = encoder_probe_cache_state();
-        std::lock_guard<std::mutex> lock(state.mutex);
-        pending_virtual_display_adapter_hint =
-          state.pending_virtual_display_adapter_hint;
-        pending_virtual_display_adapter_hint_ready_for_verification =
-          state.pending_virtual_display_adapter_hint_ready_for_verification;
-      }
       if (pending_virtual_display_adapter_hint) {
         const auto pending_adapter = adapter_id_from_luid(*pending_virtual_display_adapter_hint);
         // A cache lookup needs only the expected adapter identity. Materializing
@@ -553,10 +574,7 @@ namespace video {
           std::string probe_output;
           if (reuse_observed_output) {
             probe_output = mapped_output;
-          } else if (const auto scoped_output = platf::dxgi::resolve_automatic_capture_output(
-                       platf::mem_type_e::dxgi,
-                       pending_adapter
-                     )) {
+          } else if (const auto scoped_output = automatic_capture_output(pending_adapter)) {
             probe_output = scoped_output->output_name;
           }
           return probe_target_t {
@@ -576,10 +594,7 @@ namespace video {
         // producers replace it with the adapter returned by the initialized
         // probe display before update_probe_cache() is called.
         std::string probe_output;
-        if (const auto scoped_output = platf::dxgi::resolve_automatic_capture_output(
-              platf::mem_type_e::dxgi,
-              pending_adapter
-            )) {
+        if (const auto scoped_output = automatic_capture_output(pending_adapter)) {
           probe_output = scoped_output->output_name;
         }
         return probe_target_t {
@@ -595,9 +610,6 @@ namespace video {
         };
       }
 
-      const bool adapter_is_configured =
-        !config::video.adapter_name.empty() ||
-        !config::video.adapter_pnp_id.empty();
       if (adapter_is_configured) {
         const auto configured_adapter = platf::resolve_adapter(
           config::video.adapter_name,
@@ -622,10 +634,7 @@ namespace video {
             !platf::adapter_luid_equal(*configured_adapter.luid, current_wgc_identity->luid);
           std::string probe_output = preferred_output_matches_adapter ? mapped_output : std::string {};
           if (probe_output.empty()) {
-            if (const auto scoped_output = platf::dxgi::resolve_automatic_capture_output(
-                  platf::mem_type_e::dxgi,
-                  configured_adapter_id
-                )) {
+            if (const auto scoped_output = automatic_capture_output(configured_adapter_id)) {
               probe_output = scoped_output->output_name;
             }
           }
@@ -686,7 +695,7 @@ namespace video {
       // Materialize Automatic using the same ordered, compatibility-tested
       // output enumeration used by normal capture. Passing both values into
       // the probe prevents WGC and DDX from choosing different monitors.
-      const auto automatic_output = platf::dxgi::resolve_automatic_capture_output(platf::mem_type_e::dxgi);
+      const auto automatic_output = automatic_capture_output();
       if (automatic_output) {
         return probe_target_t {
           .display_name = automatic_output->output_name,
@@ -695,6 +704,17 @@ namespace video {
             .identity = adapter_cache_identity(automatic_output->adapter_id),
             .source = "automatic-output-dxgi",
             .resolved = true,
+          },
+        };
+      }
+
+      // With no observed adapter, a preferred render adapter cannot establish
+      // which Automatic capture output would actually have worked.
+      if (shutdown && shutdown->peek()) {
+        return probe_target_t {
+          .adapter_identity = probe_adapter_identity_t {
+            .identity = "unresolved-automatic-adapter=shutdown",
+            .source = "automatic-adapter-unresolved",
           },
         };
       }
@@ -727,6 +747,7 @@ namespace video {
       };
 #else
       (void) materialize_capture_output;
+      (void) shutdown;
       const auto active_output = display_device::map_output_name(config::get_active_output_name());
       return probe_target_t {
         .display_name =
@@ -742,7 +763,8 @@ namespace video {
 #endif
     }
 
-    probe_cache_key_t build_probe_cache_key(const probe_target_t *probe_target = nullptr) {
+    probe_cache_key_t build_probe_cache_key(const probe_target_t *probe_target = nullptr,
+                                           safe::signal_t *shutdown = nullptr) {
       std::ostringstream oss;
       // Keep encoder configuration separate from the exact selected adapter.
       // Output identifiers and the whole-machine GPU inventory are deliberately
@@ -790,7 +812,7 @@ namespace video {
       oss << "|amf_quarantined=" << (native_amf_lifecycle_gate.is_quarantined() ? 1 : 0);
       const auto adapter_identity = probe_target ?
                                       probe_target->adapter_identity :
-                                      resolve_probe_target(false).adapter_identity;
+                                      resolve_probe_target(false, shutdown).adapter_identity;
       return probe_cache_key_t {
         .encoder_configuration = oss.str(),
         .adapter_identity = adapter_identity.identity,
@@ -2765,6 +2787,13 @@ namespace video {
 #endif
   int active_hevc_mode;
   int active_av1_mode;
+#ifdef __linux__
+  static thread_local const int *capture_probe_hevc_mode = nullptr;
+
+  int hevc_mode_for_capture() {
+    return capture_probe_hevc_mode ? *capture_probe_hevc_mode : active_hevc_mode;
+  }
+#endif
   std::atomic_int active_pyrowave_mode {0};
   bool last_encoder_probe_supported_ref_frames_invalidation = false;
   std::array<bool, 3> last_encoder_probe_supported_yuv444_for_codec = {};
@@ -2781,7 +2810,7 @@ namespace video {
     encoder_probe_status_t encoder_probe_status_for_key(const probe_cache_key_t &key) {
       auto &state = encoder_probe_cache_state();
       std::lock_guard<std::mutex> lock(state.mutex);
-      const bool successful = state.valid && state.cache_key && *state.cache_key == key;
+      const bool successful = key.adapter_identity_resolved && state.valid && state.cache_key && *state.cache_key == key;
       return encoder_probe_status_t {
         .attempted = state.attempted_cache_key && *state.attempted_cache_key == key,
         .successful = successful,
@@ -2854,6 +2883,8 @@ namespace video {
   }
 #endif
 
+  static std::optional<int> probe_encoders_impl(safe::signal_t *shutdown);
+
   advertised_encoder_capabilities_t advertised_encoder_capabilities(
     const bool probe_before_negative,
     bool *probe_complete
@@ -2866,31 +2897,27 @@ namespace video {
     bool *probe_complete,
     std::string *adapter_identity
   ) {
-    auto current_key = build_probe_cache_key();
+    const auto shutdown = mail::process_shutdown_event();
+    auto current_key = build_probe_cache_key(nullptr, shutdown.get());
     auto probe_status = encoder_probe_status_for_key(current_key);
-    const auto refresh_probe_status = [&]() {
-      current_key = build_probe_cache_key();
-      probe_status = encoder_probe_status_for_key(current_key);
-    };
 
-    if (probe_before_negative && !probe_status.successful && !probe_status.attempted) {
-      BOOST_LOG(info) << "Encoder capabilities are unprobed for the current adapter identity; probing encoders now.";
-      if (probe_encoders()) {
-        BOOST_LOG(warning) << "Encoder probe failed before HTTP capability advertisement; reporting current encoder capabilities.";
-      }
-      refresh_probe_status();
-    } else if (probe_before_negative && !probe_status.successful && probe_status.attempted) {
+    if (probe_before_negative && !probe_status.successful && !(shutdown && shutdown->peek())) {
       const auto now = std::chrono::steady_clock::now();
       const auto now_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(now.time_since_epoch()).count();
       const auto last_ns = last_negative_hdr_advertisement_probe_ns.load(std::memory_order_acquire);
       const auto retry_interval = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::seconds(10)).count();
-      if (last_ns <= 0 || now_ns - last_ns >= retry_interval) {
-        last_negative_hdr_advertisement_probe_ns.store(now_ns, std::memory_order_release);
-        BOOST_LOG(info) << "Encoder capabilities lack a successful probe for the current adapter identity; re-probing before advertisement.";
-        if (probe_encoders()) {
-          BOOST_LOG(warning) << "Encoder re-probe failed before HTTP capability advertisement; reporting current encoder capabilities.";
+      if (!probe_status.attempted || last_ns <= 0 || now_ns - last_ns >= retry_interval) {
+        const auto result = probe_encoders_impl(shutdown.get());
+        if (result) {
+          if (probe_status.attempted) {
+            last_negative_hdr_advertisement_probe_ns.store(now_ns, std::memory_order_release);
+          }
+          if (*result != 0) {
+            BOOST_LOG(warning) << "Encoder probe failed before HTTP capability advertisement; reporting current encoder capabilities.";
+          }
         }
-        refresh_probe_status();
+        current_key = build_probe_cache_key(nullptr, shutdown.get());
+        probe_status = encoder_probe_status_for_key(current_key);
       }
     }
 
@@ -4263,7 +4290,8 @@ namespace video {
     const config_t &config,
     int width,
     int height,
-    std::unique_ptr<platf::avcodec_encode_device_t> encode_device
+    std::unique_ptr<platf::avcodec_encode_device_t> encode_device,
+    const std::optional<encoder_t::codec_flags_t> &probe_flags
   ) {
     auto platform_formats = dynamic_cast<const encoder_platform_formats_avcodec *>(encoder.platform_formats.get());
     if (!platform_formats) {
@@ -4272,18 +4300,19 @@ namespace video {
 
     bool hardware = platform_formats->avcodec_base_dev_type != AV_HWDEVICE_TYPE_NONE;
 
-    auto &video_format = encoder.codec_from_config(config);
-    if (!video_format[encoder_t::PASSED] || (disp && !disp->is_codec_supported(video_format.name, config))) {
+    const auto &video_format = encoder.codec_from_config(config);
+    const auto codec_flags = probe_flags ? *probe_flags : video_format.capability_flags();
+    if (!codec_flags[encoder_t::PASSED] || (disp && !disp->is_codec_supported(video_format.name, config))) {
       BOOST_LOG(error) << encoder.name << ": "sv << video_format.name << " mode not supported"sv;
       return nullptr;
     }
 
-    if (config.dynamicRange && !video_format[encoder_t::DYNAMIC_RANGE]) {
+    if (config.dynamicRange && !codec_flags[encoder_t::DYNAMIC_RANGE]) {
       BOOST_LOG(error) << video_format.name << ": dynamic range not supported"sv;
       return nullptr;
     }
 
-    if (config.chromaSamplingType == 1 && !video_format[encoder_t::YUV444]) {
+    if (config.chromaSamplingType == 1 && !codec_flags[encoder_t::YUV444]) {
       BOOST_LOG(error) << video_format.name << ": YUV 4:4:4 not supported"sv;
       return nullptr;
     }
@@ -4379,7 +4408,7 @@ namespace video {
 
       // Some client decoders have limits on the number of reference frames
       if (config.numRefFrames) {
-        if (video_format[encoder_t::REF_FRAMES_RESTRICT]) {
+        if (codec_flags[encoder_t::REF_FRAMES_RESTRICT]) {
           ctx->refs = config.numRefFrames;
         } else {
           BOOST_LOG(warning) << "Client requested reference frame limit, but encoder doesn't support it!"sv;
@@ -4672,7 +4701,7 @@ namespace video {
       std::move(encode_device_final),
 
       // 0 ==> don't inject, 1 ==> inject for h264, 2 ==> inject for hevc
-      config.videoFormat <= 1 ? (1 - (int) video_format[encoder_t::VUI_PARAMETERS]) * (1 + config.videoFormat) : 0
+      config.videoFormat <= 1 ? (1 - (int) codec_flags[encoder_t::VUI_PARAMETERS]) * (1 + config.videoFormat) : 0
     );
 
     return session;
@@ -4889,7 +4918,8 @@ namespace video {
     initialization_cancel_t cancelled = {},
     bool *operation_cancelled_out = nullptr,
     bool *gate_contended_out = nullptr,
-    amf::lifecycle::initialization_failure_e *failure_out = nullptr) {
+    amf::lifecycle::initialization_failure_e *failure_out = nullptr,
+    std::optional<encoder_t::codec_flags_t> probe_flags = std::nullopt) {
     if (!cancelled) cancelled = []() { return false; };
     if (operation_cancelled_out) *operation_cancelled_out = false;
     if (gate_contended_out) *gate_contended_out = false;
@@ -4897,7 +4927,7 @@ namespace video {
     bool gate_contended = false;
     if (dynamic_cast<platf::avcodec_encode_device_t *>(encode_device.get())) {
       auto avcodec_encode_device = boost::dynamic_pointer_cast<platf::avcodec_encode_device_t>(std::move(encode_device));
-      return make_avcodec_encode_session(disp, encoder, config, width, height, std::move(avcodec_encode_device));
+      return make_avcodec_encode_session(disp, encoder, config, width, height, std::move(avcodec_encode_device), probe_flags);
     } else if (dynamic_cast<platf::nvenc_encode_device_t *>(encode_device.get())) {
       auto nvenc_encode_device = boost::dynamic_pointer_cast<platf::nvenc_encode_device_t>(std::move(encode_device));
       return make_nvenc_encode_session(config, std::move(nvenc_encode_device));
@@ -5030,7 +5060,8 @@ namespace video {
     bool &operation_cancelled,
     bool &gate_contended,
     std::optional<sunshine_colorspace_t> required_colorspace = std::nullopt,
-    const SS_HDR_METADATA *required_hdr_metadata = nullptr) {
+    const SS_HDR_METADATA *required_hdr_metadata = nullptr,
+    std::optional<encoder_t::codec_flags_t> probe_flags = std::nullopt) {
     operation_cancelled = false;
     gate_contended = false;
     if (!disp || native_amf_lifecycle_gate.is_quarantined()) {
@@ -5076,7 +5107,7 @@ namespace video {
     std::thread initialization_thread;
     try {
       initialization_thread = std::thread {
-        [config, width, height, prepared_device = std::move(prepared_device), prepared_bundle = std::move(prepared_bundle), handoff]() mutable {
+        [config, width, height, prepared_device = std::move(prepared_device), prepared_bundle = std::move(prepared_bundle), handoff, probe_flags]() mutable {
           bool gate_finished = false;
           auto gate_cleanup = util::fail_guard([&gate_finished]() {
             if (!gate_finished) {
@@ -5086,7 +5117,8 @@ namespace video {
           try {
             if (prepared_device->is_codec_supported(amdvce_ffmpeg.codec_from_config(config).name, config)) {
               prepared_bundle.session = make_encode_session(
-                nullptr, amdvce_ffmpeg, config, width, height, std::move(prepared_device));
+                nullptr, amdvce_ffmpeg, config, width, height, std::move(prepared_device),
+                std::chrono::steady_clock::time_point::max(), {}, nullptr, nullptr, nullptr, probe_flags);
             }
             const bool initialized = static_cast<bool>(prepared_bundle.session);
             const bool accepted = handoff->publish(std::move(prepared_bundle));
@@ -7125,7 +7157,14 @@ namespace video {
     VUI_PARAMS = 0x01,  ///< VUI parameters
   };
 
-  int validate_config(std::shared_ptr<platf::display_t> disp, const encoder_t &encoder, const config_t &config) {
+  int validate_config(
+    std::shared_ptr<platf::display_t> disp,
+    const encoder_t &encoder,
+    const config_t &config,
+    safe::signal_t *shutdown,
+    const encoder_t::codec_flags_t &probe_flags,
+    [[maybe_unused]] bool &amf_retry
+  ) {
     const int max_attempts = config.videoFormat >= 1 ? 3 : 1;  // HEVC/AV1 can fail transiently during probing
     // The tight submission/wall-clock bounds exist for AMF drivers that stall in
     // INPUT_FULL; probing for every other encoder keeps the pre-existing limits
@@ -7153,6 +7192,9 @@ namespace video {
     }();
 
     for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+      if (shutdown && shutdown->peek()) {
+        return -1;
+      }
       auto validate_once = [&]() -> util::optional_t<int> {
         std::unique_ptr<encode_session_t> session;
 #ifdef _WIN32
@@ -7162,7 +7204,7 @@ namespace video {
           auto legacy = make_legacy_amf_session_bounded(
             disp, config, disp->width, disp->height,
             probe_deadline, []() { return false; },
-            legacy_cancelled, legacy_gate_contended);
+            legacy_cancelled, legacy_gate_contended, std::nullopt, nullptr, probe_flags);
           if (legacy_cancelled || legacy_gate_contended) {
             return util::false_v<util::optional_t<int>>;
           }
@@ -7171,17 +7213,15 @@ namespace video {
 #endif
         {
           auto encode_device = make_encode_device(*disp, encoder, config);
-          if (encode_device) {
+          if (encode_device && !(shutdown && shutdown->peek())) {
             amf::lifecycle::initialization_failure_e failure = amf::lifecycle::initialization_failure_e::device_or_capture;
             session = make_encode_session(
               disp.get(), encoder, config, disp->width, disp->height,
-              std::move(encode_device), probe_deadline, []() { return false; }, nullptr, nullptr, &failure);
+              std::move(encode_device), probe_deadline, []() { return false; }, nullptr, nullptr, &failure, probe_flags);
 #ifdef _WIN32
             if (&encoder == &amdvce_experimental && config.videoFormat == 0) {
-              native_amf_probe_retry_allowed.store(
-                !session && (failure == amf::lifecycle::initialization_failure_e::encoder_create ||
-                             failure == amf::lifecycle::initialization_failure_e::encoder_init),
-                std::memory_order_release);
+              amf_retry = !session && (failure == amf::lifecycle::initialization_failure_e::encoder_create ||
+                                       failure == amf::lifecycle::initialization_failure_e::encoder_init);
             }
 #endif
           }
@@ -7206,6 +7246,10 @@ namespace video {
           destroy_encode_session_bounded(session, "probe"sv);
         });
 
+        if (shutdown && shutdown->peek()) {
+          return util::false_v<util::optional_t<int>>;
+        }
+
         // Keep the probe image alive while native AMF primes a lookahead pipeline.
         // Every PA input is rendered into a newly reserved ring surface; repeatedly
         // submitting the first surface cannot make progress if AMF still owns it.
@@ -7227,6 +7271,9 @@ namespace video {
         // HEVC/AV1 retries below, keeping the complete validation below one watchdog
         // interval while still leaving ample time for a cold hardware encoder.
         for (int probe_attempts = 0; !packets->peek(); ++probe_attempts) {
+          if (shutdown && shutdown->peek()) {
+            return util::false_v<util::optional_t<int>>;
+          }
           const auto now = std::chrono::steady_clock::now();
           if (probe_attempts >= max_probe_submissions || now >= probe_deadline) {
             const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - probe_start);
@@ -7274,6 +7321,9 @@ namespace video {
       };
 
       auto result = validate_once();
+      if (shutdown && shutdown->peek()) {
+        return -1;
+      }
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
       if (&encoder == &nvenc && native_nvenc_runtime_quarantined.load(std::memory_order_acquire)) {
         BOOST_LOG(error) << "NvEnc: native probe teardown was unsafe; rejecting the probe result and quarantining native NVENC until process restart"sv;
@@ -7296,16 +7346,88 @@ namespace video {
     return -1;
   }
 
+#ifdef _WIN32
+  capture_probe_result_e probe_capture(const config_t &config) {
+    std::lock_guard<std::mutex> lock(encoder_probe_mutex);
+    if (!chosen_encoder) {
+      return capture_probe_result_e::encoder_unavailable;
+    }
+    display_device::DisplayRecoveryBehaviorGuard skip_recovery(display_device::DisplayRecoveryBehavior::Skip);
+    const auto type = chosen_encoder->platform_formats->dev_type;
+    std::vector<std::string> outputs;
+    int selected = -1;
+    if (config.capture_source == capture_source_e::exact_output) {
+      if (!config.capture_output || config.capture_output->empty()) {
+        return capture_probe_result_e::display_unavailable;
+      }
+      // Enumeration filters Desktop Duplication failures such as access denied.
+      // Open the exact recovery target even if that filter cannot see it; the
+      // native open reports whether this is a display or secure-desktop error.
+      outputs.push_back(display_device::map_output_name(*config.capture_output));
+      if (outputs.back().empty()) {
+        return capture_probe_result_e::display_unavailable;
+      }
+      selected = 0;
+    } else {
+      refresh_displays(type, outputs, selected);
+    }
+    if (outputs.empty() || selected < 0 || selected >= static_cast<int>(outputs.size())) {
+      return capture_probe_result_e::display_unavailable;
+    }
+    // Match normal capture selection and adapter policy. Never publish a probe
+    // as a live capture instance or retain its backend across RTSP admission.
+    auto display = platf::display(type, outputs[selected], config);
+    if (display) {
+      return capture_probe_result_e::ready;
+    }
+    return platf::dxgi::capture_initialization_display_unavailable ?
+             capture_probe_result_e::display_unavailable :
+             capture_probe_result_e::capture_failed;
+  }
+#endif
+
+  // Codec validation needs tentative flags in the encoder-opening code,
+  // including the legacy AMF worker. Keep them private until validation ends.
+  struct encoder_probe_flags_t {
+    encoder_t::codec_flags_t h264, hevc, av1;
+
+    const encoder_t::codec_flags_t &for_codec(const int format) const {
+      switch (format) {
+        case 1:
+          return hevc;
+        case 2:
+          return av1;
+        default:
+          return h264;
+      }
+    }
+
+    void publish(encoder_t &encoder) const {
+      encoder.h264.capabilities.store(h264.to_ulong(), std::memory_order_relaxed);
+      encoder.hevc.capabilities.store(hevc.to_ulong(), std::memory_order_relaxed);
+      encoder.av1.capabilities.store(av1.to_ulong(), std::memory_order_relaxed);
+    }
+  };
+
   bool validate_encoder(
-    encoder_t &encoder,
+    const encoder_t &encoder,
     const bool expect_failure,
     const std::optional<platf::adapter_id_t> &required_adapter,
     std::optional<platf::adapter_id_t> *actual_adapter,
-    const std::string &probe_display_name
+    const std::string &probe_display_name,
+    const int hevc_mode,
+    const int av1_mode,
+    safe::signal_t *shutdown,
+    encoder_probe_flags_t &flags,
+    bool &amf_retry
   ) {
 #ifdef _WIN32
     (void) probe_display_name;
 #endif
+    const auto cancelled = [shutdown]() { return shutdown && shutdown->peek(); };
+    if (cancelled()) {
+      return false;
+    }
     if (actual_adapter) {
       actual_adapter->reset();
     }
@@ -7313,36 +7435,46 @@ namespace video {
 
     BOOST_LOG(info) << "Trying encoder ["sv << encoder.name << ']';
     auto fg = util::fail_guard([&]() {
-      BOOST_LOG(info) << "Encoder ["sv << encoder.name << "] failed"sv;
+      if (!cancelled()) {
+        BOOST_LOG(info) << "Encoder ["sv << encoder.name << "] failed"sv;
+      }
     });
 
-    auto test_hevc = active_hevc_mode >= 2 || (active_hevc_mode == 0 && !(encoder.flags & H264_ONLY));
-    auto test_av1 = active_av1_mode >= 2 || (active_av1_mode == 0 && !(encoder.flags & H264_ONLY));
+    auto test_hevc = hevc_mode >= 2 || (hevc_mode == 0 && !(encoder.flags & H264_ONLY));
+    auto test_av1 = av1_mode >= 2 || (av1_mode == 0 && !(encoder.flags & H264_ONLY));
 
-    encoder.h264.capabilities.set();
-    encoder.hevc.capabilities.set();
-    encoder.av1.capabilities.set();
+    flags.h264.set();
+    flags.hevc.set();
+    flags.av1.set();
 
     auto clear_capabilities = [&]() {
-      encoder.h264.capabilities.reset();
-      encoder.hevc.capabilities.reset();
-      encoder.av1.capabilities.reset();
+      flags.h264.reset();
+      flags.hevc.reset();
+      flags.av1.reset();
+    };
+
+    const auto validate_probe_config = [&](const config_t &config) {
+      return validate_config(disp, encoder, config, shutdown, flags.for_codec(config.videoFormat), amf_retry);
     };
 
     const auto reset_probe_display = [&](const config_t &probe_config) {
+      if (cancelled()) {
+        disp.reset();
+        return;
+      }
 #ifdef _WIN32
       // Encoder capability validation is intentionally independent of WGC,
       // Desktop Duplication, GDI publication, and the interactive desktop.
       // A short retry covers transient D3D device creation without waiting for
       // display topology to converge.
       disp.reset();
-      for (int attempt = 0; attempt < 2 && !disp; ++attempt) {
+      for (int attempt = 0; attempt < 2 && !disp && !cancelled(); ++attempt) {
         disp = make_synthetic_probe_display(
           encoder.platform_formats->dev_type,
           probe_config,
           required_adapter
         );
-        if (!disp && attempt == 0) {
+        if (!disp && attempt == 0 && !cancelled()) {
           std::this_thread::sleep_for(100ms);
         }
       }
@@ -7379,7 +7511,7 @@ namespace video {
     // a different format.
     reset_probe_display(config_autoselect);
 
-    if (!disp) {
+    if (!disp || cancelled()) {
       clear_capabilities();
       return false;
     }
@@ -7399,8 +7531,11 @@ namespace video {
 
     // If we're expecting failure, use the autoselect ref config first since that will always succeed
     // if the encoder is available.
-    auto max_ref_frames_h264 = expect_failure ? -1 : validate_config(disp, encoder, config_max_ref_frames);
-    auto autoselect_h264 = max_ref_frames_h264 >= 0 ? max_ref_frames_h264 : validate_config(disp, encoder, config_autoselect);
+    auto max_ref_frames_h264 = expect_failure ? -1 : validate_probe_config(config_max_ref_frames);
+    auto autoselect_h264 = max_ref_frames_h264 >= 0 ? max_ref_frames_h264 : validate_probe_config(config_autoselect);
+    if (cancelled()) {
+      return false;
+    }
     if (autoselect_h264 < 0) {
       clear_capabilities();
       BOOST_LOG(warning) << "Encoder ["sv << encoder.name
@@ -7408,7 +7543,7 @@ namespace video {
       return false;
     } else if (expect_failure) {
       // We expected failure, but actually succeeded. Do the max_ref_frames probe we skipped.
-      max_ref_frames_h264 = validate_config(disp, encoder, config_max_ref_frames);
+      max_ref_frames_h264 = validate_probe_config(config_max_ref_frames);
     }
 
     std::vector<std::pair<validate_flag_e, encoder_t::flag_e>> packet_deficiencies {
@@ -7416,77 +7551,86 @@ namespace video {
     };
 
     for (auto [validate_flag, encoder_flag] : packet_deficiencies) {
-      encoder.h264[encoder_flag] = (max_ref_frames_h264 & validate_flag && autoselect_h264 & validate_flag);
+      flags.h264[encoder_flag] = (max_ref_frames_h264 & validate_flag && autoselect_h264 & validate_flag);
     }
 
-    encoder.h264[encoder_t::REF_FRAMES_RESTRICT] = max_ref_frames_h264 >= 0;
-    encoder.h264[encoder_t::PASSED] = true;
+    flags.h264[encoder_t::REF_FRAMES_RESTRICT] = max_ref_frames_h264 >= 0;
+    flags.h264[encoder_t::PASSED] = true;
 
+    if (cancelled()) {
+      return false;
+    }
     if (test_hevc) {
       config_max_ref_frames.videoFormat = 1;
       config_autoselect.videoFormat = 1;
 
       if (disp->is_codec_supported(encoder.hevc.name, config_autoselect)) {
-        auto max_ref_frames_hevc = validate_config(disp, encoder, config_max_ref_frames);
+        auto max_ref_frames_hevc = validate_probe_config(config_max_ref_frames);
 
         // If H.264 succeeded with max ref frames specified, assume that we can count on
         // HEVC to also succeed with max ref frames specified if HEVC is supported.
         auto autoselect_hevc = (max_ref_frames_hevc >= 0 || max_ref_frames_h264 >= 0) ?
                                  max_ref_frames_hevc :
-                                 validate_config(disp, encoder, config_autoselect);
+                                 validate_probe_config(config_autoselect);
 
         for (auto [validate_flag, encoder_flag] : packet_deficiencies) {
-          encoder.hevc[encoder_flag] = (max_ref_frames_hevc & validate_flag && autoselect_hevc & validate_flag);
+          flags.hevc[encoder_flag] = (max_ref_frames_hevc & validate_flag && autoselect_hevc & validate_flag);
         }
 
-        encoder.hevc[encoder_t::REF_FRAMES_RESTRICT] = max_ref_frames_hevc >= 0;
-        encoder.hevc[encoder_t::PASSED] = max_ref_frames_hevc >= 0 || autoselect_hevc >= 0;
+        flags.hevc[encoder_t::REF_FRAMES_RESTRICT] = max_ref_frames_hevc >= 0;
+        flags.hevc[encoder_t::PASSED] = max_ref_frames_hevc >= 0 || autoselect_hevc >= 0;
       } else {
         BOOST_LOG(info) << "Encoder ["sv << encoder.hevc.name << "] is not supported on this GPU"sv;
-        encoder.hevc.capabilities.reset();
+        flags.hevc.reset();
       }
     } else {
       // Clear all cap bits for HEVC if we didn't probe it
-      encoder.hevc.capabilities.reset();
+      flags.hevc.reset();
     }
 
+    if (cancelled()) {
+      return false;
+    }
     if (test_av1) {
       config_max_ref_frames.videoFormat = 2;
       config_autoselect.videoFormat = 2;
 
       if (disp->is_codec_supported(encoder.av1.name, config_autoselect)) {
-        auto max_ref_frames_av1 = validate_config(disp, encoder, config_max_ref_frames);
+        auto max_ref_frames_av1 = validate_probe_config(config_max_ref_frames);
 
         // If H.264 succeeded with max ref frames specified, assume that we can count on
         // AV1 to also succeed with max ref frames specified if AV1 is supported.
         auto autoselect_av1 = (max_ref_frames_av1 >= 0 || max_ref_frames_h264 >= 0) ?
                                 max_ref_frames_av1 :
-                                validate_config(disp, encoder, config_autoselect);
+                                validate_probe_config(config_autoselect);
 
         for (auto [validate_flag, encoder_flag] : packet_deficiencies) {
-          encoder.av1[encoder_flag] = (max_ref_frames_av1 & validate_flag && autoselect_av1 & validate_flag);
+          flags.av1[encoder_flag] = (max_ref_frames_av1 & validate_flag && autoselect_av1 & validate_flag);
         }
 
-        encoder.av1[encoder_t::REF_FRAMES_RESTRICT] = max_ref_frames_av1 >= 0;
-        encoder.av1[encoder_t::PASSED] = max_ref_frames_av1 >= 0 || autoselect_av1 >= 0;
+        flags.av1[encoder_t::REF_FRAMES_RESTRICT] = max_ref_frames_av1 >= 0;
+        flags.av1[encoder_t::PASSED] = max_ref_frames_av1 >= 0 || autoselect_av1 >= 0;
       } else {
         BOOST_LOG(info) << "Encoder ["sv << encoder.av1.name << "] is not supported on this GPU"sv;
-        encoder.av1.capabilities.reset();
+        flags.av1.reset();
       }
     } else {
       // Clear all cap bits for AV1 if we didn't probe it
-      encoder.av1.capabilities.reset();
+      flags.av1.reset();
     }
 
+    if (cancelled()) {
+      return false;
+    }
     // Test HDR and YUV444 support
     {
       // H.264 is special because encoders may support YUV 4:4:4 without supporting 10-bit color depth
       if (encoder.flags & YUV444_SUPPORT) {
         config_t config_h264_yuv444 {1920, 1080, 60, 6000, 1000, 1, 0, 1, 0, 0, 1};
-        encoder.h264[encoder_t::YUV444] = disp->is_codec_supported(encoder.h264.name, config_h264_yuv444) &&
-                                          validate_config(disp, encoder, config_h264_yuv444) >= 0;
+        flags.h264[encoder_t::YUV444] = disp->is_codec_supported(encoder.h264.name, config_h264_yuv444) &&
+                                          validate_probe_config(config_h264_yuv444) >= 0;
       } else {
-        encoder.h264[encoder_t::YUV444] = false;
+        flags.h264[encoder_t::YUV444] = false;
       }
 
       const config_t generic_hdr_config = {1920, 1080, 60, 6000, 1000, 1, 0, 3, 1, 1, 0};
@@ -7494,13 +7638,16 @@ namespace video {
       // A capture backend can reject HDR entirely (stock Gamescope is SDR).
       // Keep its successful SDR probes instead of failing the whole encoder
       // when constructing an unsupported HDR capture surface.
+      if (cancelled()) {
+        return false;
+      }
       if (disp->is_codec_supported(encoder.hevc.name, generic_hdr_config) ||
           disp->is_codec_supported(encoder.av1.name, generic_hdr_config)) {
         // Reset the synthetic surface since we're switching from SDR to HDR.
         // The D3D adapter remains exact while the fake source format changes to
         // FP16, exercising the real 10-bit encoder conversion path.
         reset_probe_display(generic_hdr_config);
-        if (!disp) {
+        if (!disp || cancelled()) {
           return false;
         }
         const auto hdr_probe_adapter = disp->capture_adapter_id();
@@ -7514,7 +7661,7 @@ namespace video {
           auto config = generic_hdr_config;
           config.videoFormat = video_format;
 
-          if (!flag_map[encoder_t::PASSED]) {
+          if (cancelled() || !flag_map[encoder_t::PASSED]) {
             return;
           }
 
@@ -7528,7 +7675,7 @@ namespace video {
           // gates dynamicRange configs on the current codec capability bit.
           config.chromaSamplingType = 0;
           if (disp->is_codec_supported(encoder_codec_name, config) &&
-              validate_config(disp, encoder, config) >= 0) {
+              validate_probe_config(config) >= 0) {
             flag_map[encoder_t::DYNAMIC_RANGE] = true;
           } else {
             flag_map[encoder_t::DYNAMIC_RANGE] = false;
@@ -7537,34 +7684,37 @@ namespace video {
 
           // Test optional HDR 4:4:4 after 4:2:0 has already established HDR support.
           config.chromaSamplingType = 1;
-          if ((encoder.flags & YUV444_SUPPORT) &&
+          if (!cancelled() && (encoder.flags & YUV444_SUPPORT) &&
               disp->is_codec_supported(encoder_codec_name, config) &&
-              validate_config(disp, encoder, config) >= 0) {
+              validate_probe_config(config) >= 0) {
             flag_map[encoder_t::YUV444] = true;
           }
         };
 
         // HDR is not supported with H.264. Don't bother even trying it.
-        encoder.h264[encoder_t::DYNAMIC_RANGE] = false;
+        flags.h264[encoder_t::DYNAMIC_RANGE] = false;
 
-        test_hdr_and_yuv444(encoder.hevc, 1);
-        test_hdr_and_yuv444(encoder.av1, 2);
+        test_hdr_and_yuv444(flags.hevc, 1);
+        test_hdr_and_yuv444(flags.av1, 2);
       } else {
-        encoder.h264[encoder_t::DYNAMIC_RANGE] = false;
-        encoder.hevc[encoder_t::DYNAMIC_RANGE] = false;
-        encoder.av1[encoder_t::DYNAMIC_RANGE] = false;
-        encoder.hevc[encoder_t::YUV444] = false;
-        encoder.av1[encoder_t::YUV444] = false;
+        flags.h264[encoder_t::DYNAMIC_RANGE] = false;
+        flags.hevc[encoder_t::DYNAMIC_RANGE] = false;
+        flags.av1[encoder_t::DYNAMIC_RANGE] = false;
+        flags.hevc[encoder_t::YUV444] = false;
+        flags.av1[encoder_t::YUV444] = false;
       }
     }
 
-    encoder.h264[encoder_t::VUI_PARAMETERS] = encoder.h264[encoder_t::VUI_PARAMETERS] && !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];
-    encoder.hevc[encoder_t::VUI_PARAMETERS] = encoder.hevc[encoder_t::VUI_PARAMETERS] && !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];
+    if (cancelled()) {
+      return false;
+    }
+    flags.h264[encoder_t::VUI_PARAMETERS] = flags.h264[encoder_t::VUI_PARAMETERS] && !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];
+    flags.hevc[encoder_t::VUI_PARAMETERS] = flags.hevc[encoder_t::VUI_PARAMETERS] && !config::sunshine.flags[config::flag::FORCE_VIDEO_HEADER_REPLACE];
 
-    if (!encoder.h264[encoder_t::VUI_PARAMETERS]) {
+    if (!flags.h264[encoder_t::VUI_PARAMETERS]) {
       BOOST_LOG(warning) << encoder.name << ": h264 missing sps->vui parameters"sv;
     }
-    if (encoder.hevc[encoder_t::PASSED] && !encoder.hevc[encoder_t::VUI_PARAMETERS]) {
+    if (flags.hevc[encoder_t::PASSED] && !flags.hevc[encoder_t::VUI_PARAMETERS]) {
       BOOST_LOG(warning) << encoder.name << ": hevc missing sps->vui parameters"sv;
     }
 
@@ -7600,16 +7750,34 @@ namespace video {
     return 1;
   }
 
-  int probe_encoders() {
-    std::lock_guard<std::mutex> lock(encoder_probe_mutex);
-    const auto probe_target = resolve_probe_target();
+  static std::optional<int> probe_encoders_impl(safe::signal_t *shutdown) {
+    const auto cancelled = [shutdown]() { return shutdown && shutdown->peek(); };
+    std::unique_lock lock(encoder_probe_mutex, std::defer_lock);
+    if (shutdown) {
+      // A discovery request can still answer from the cache while another
+      // probe owns the encoder. Never queue behind a driver during shutdown.
+      if (cancelled() || !lock.try_lock() || cancelled()) {
+        return std::nullopt;
+      }
+    } else {
+      lock.lock();
+    }
+    const auto probe_target = resolve_probe_target(true, shutdown);
+    if (cancelled()) {
+      return std::nullopt;
+    }
     const auto &required_adapter = probe_target.required_adapter;
     const auto cache_key = build_probe_cache_key(&probe_target);
-    mark_probe_attempted(cache_key);
+    if (!shutdown) {
+      mark_probe_attempted(cache_key);
+    }
     // Attempt ownership is frozen with the target selected at probe start.
     // A topology/configuration change during validation must remain unattempted
     // under its new key so the next request can probe it immediately.
-    auto final_attempt_key_guard = util::fail_guard([cache_key]() {
+    auto final_attempt_key_guard = util::fail_guard([&]() {
+      if (cancelled()) {
+        return;
+      }
       try {
         mark_probe_attempted(cache_key);
       } catch (...) {
@@ -7653,25 +7821,29 @@ namespace video {
       return 0;
     }
 
+    if (cancelled()) {
+      return std::nullopt;
+    }
     if (!allow_encoder_probing()) {
       // Error already logged
       update_probe_cache(cache_key, false, false, false, false, false, false);
       return -1;
     }
-    const auto previous_active_hevc_mode = active_hevc_mode;
-    const auto previous_active_av1_mode = active_av1_mode;
-    const auto previous_active_pyrowave_mode = active_pyrowave_mode.load();
-    const auto previous_last_ref_frames_invalidation = last_encoder_probe_supported_ref_frames_invalidation;
-    const auto previous_last_yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec;
-    auto previous_encoder = chosen_encoder;
+    const auto previous_encoder = chosen_encoder;
+    int hevc_mode = config::video.hevc_mode;
+    int av1_mode = config::video.av1_mode;
+#ifdef __linux__
+    // VA-API checks the requested HEVC level while opening the probe display.
+    // Other threads still see the last completed level.
+    capture_probe_hevc_mode = &hevc_mode;
+    auto clear_capture_probe_mode = util::fail_guard([]() { capture_probe_hevc_mode = nullptr; });
+#endif
 
-    auto restore_previous_probe_state = util::fail_guard([&]() {
-      active_hevc_mode = previous_active_hevc_mode;
-      active_av1_mode = previous_active_av1_mode;
-      active_pyrowave_mode = previous_active_pyrowave_mode;
-      last_encoder_probe_supported_ref_frames_invalidation = previous_last_ref_frames_invalidation;
-      last_encoder_probe_supported_yuv444_for_codec = previous_last_yuv444_for_codec;
-    });
+    std::map<encoder_t *, encoder_probe_flags_t> probe_flags;
+    bool amf_retry = false;
+#ifdef _WIN32
+    amf_retry = native_amf_probe_retry_allowed.load(std::memory_order_acquire);
+#endif
 
     auto encoder_list = encoders;
 #if defined(__linux__) && defined(SUNSHINE_BUILD_CUDA)
@@ -7693,37 +7865,44 @@ namespace video {
     encoder_t *new_encoder = nullptr;
     std::optional<platf::adapter_id_t> candidate_probe_adapter;
     std::optional<platf::adapter_id_t> successful_probe_adapter;
+    const auto run_validation = [&](encoder_t &encoder, const bool expect_failure,
+                                    const std::optional<platf::adapter_id_t> &adapter,
+                                    std::optional<platf::adapter_id_t> *observed_adapter) {
+      auto &flags = probe_flags[&encoder];
+      const bool valid = validate_encoder(
+        encoder, expect_failure, adapter, observed_adapter, probe_target.display_name,
+        hevc_mode, av1_mode, shutdown, flags, amf_retry
+      );
+      if (!shutdown) {
+        flags.publish(encoder);
+#ifdef _WIN32
+        native_amf_probe_retry_allowed.store(amf_retry, std::memory_order_release);
+#endif
+      }
+      return valid;
+    };
     const auto validate_probe_encoder = [&](encoder_t &encoder, const bool expect_failure) {
       candidate_probe_adapter.reset();
-      return validate_encoder(
-        encoder,
-        expect_failure,
-        required_adapter,
-        &candidate_probe_adapter,
-        probe_target.display_name
-      );
+      return run_validation(encoder, expect_failure, required_adapter, &candidate_probe_adapter);
     };
-    active_hevc_mode = config::video.hevc_mode;
-    active_av1_mode = config::video.av1_mode;
-    last_encoder_probe_supported_ref_frames_invalidation = false;
-    last_encoder_probe_supported_yuv444_for_codec = {};
 
     auto adjust_encoder_constraints = [&](encoder_t *encoder) {
+      const auto &flags = probe_flags.at(encoder);
       // If we can't satisfy both the encoder and codec requirement, prefer the encoder over codec support
-      if (active_hevc_mode == 3 && !encoder->hevc[encoder_t::DYNAMIC_RANGE]) {
+      if (hevc_mode == 3 && !flags.hevc[encoder_t::DYNAMIC_RANGE]) {
         BOOST_LOG(warning) << "Encoder ["sv << encoder->name << "] does not support HEVC Main10 on this system"sv;
-        active_hevc_mode = 0;
-      } else if (active_hevc_mode == 2 && !encoder->hevc[encoder_t::PASSED]) {
+        hevc_mode = 0;
+      } else if (hevc_mode == 2 && !flags.hevc[encoder_t::PASSED]) {
         BOOST_LOG(warning) << "Encoder ["sv << encoder->name << "] does not support HEVC on this system"sv;
-        active_hevc_mode = 0;
+        hevc_mode = 0;
       }
 
-      if (active_av1_mode == 3 && !encoder->av1[encoder_t::DYNAMIC_RANGE]) {
+      if (av1_mode == 3 && !flags.av1[encoder_t::DYNAMIC_RANGE]) {
         BOOST_LOG(warning) << "Encoder ["sv << encoder->name << "] does not support AV1 Main10 on this system"sv;
-        active_av1_mode = 0;
-      } else if (active_av1_mode == 2 && !encoder->av1[encoder_t::PASSED]) {
+        av1_mode = 0;
+      } else if (av1_mode == 2 && !flags.av1[encoder_t::PASSED]) {
         BOOST_LOG(warning) << "Encoder ["sv << encoder->name << "] does not support AV1 on this system"sv;
-        active_av1_mode = 0;
+        av1_mode = 0;
       }
     };
 
@@ -7734,7 +7913,11 @@ namespace video {
 
         if (encoder->name == config::video.encoder) {
           // Remove the encoder from the list entirely if it fails validation
-          if (!validate_probe_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
+          const bool valid = validate_probe_encoder(*encoder, previous_encoder && previous_encoder != encoder);
+          if (cancelled()) {
+            return std::nullopt;
+          }
+          if (!valid) {
             pos = encoder_list.erase(pos);
             break;
           }
@@ -7770,26 +7953,31 @@ namespace video {
     BOOST_LOG(info) << "// Testing for available encoders, this may generate errors. You can safely ignore those errors. //"sv;
 
     // If we haven't found an encoder yet, but we want one with specific codec support, search for that now.
-    if (new_encoder == nullptr && (active_hevc_mode >= 2 || active_av1_mode >= 2)) {
+    if (new_encoder == nullptr && (hevc_mode >= 2 || av1_mode >= 2)) {
       KITTY_WHILE_LOOP(auto pos = std::begin(encoder_list), pos != std::end(encoder_list), {
         auto encoder = *pos;
 
         // Remove the encoder from the list entirely if it fails validation
-        if (!validate_probe_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
+        const bool valid = validate_probe_encoder(*encoder, previous_encoder && previous_encoder != encoder);
+        if (cancelled()) {
+          return std::nullopt;
+        }
+        if (!valid) {
           pos = encoder_list.erase(pos);
           continue;
         }
 
+        const auto &flags = probe_flags.at(encoder);
         // Skip it if it doesn't support the specified codec at all
-        if ((active_hevc_mode >= 2 && !encoder->hevc[encoder_t::PASSED]) ||
-            (active_av1_mode >= 2 && !encoder->av1[encoder_t::PASSED])) {
+        if ((hevc_mode >= 2 && !flags.hevc[encoder_t::PASSED]) ||
+            (av1_mode >= 2 && !flags.av1[encoder_t::PASSED])) {
           pos++;
           continue;
         }
 
         // Skip it if it doesn't support HDR on the specified codec
-        if ((active_hevc_mode == 3 && !encoder->hevc[encoder_t::DYNAMIC_RANGE]) ||
-            (active_av1_mode == 3 && !encoder->av1[encoder_t::DYNAMIC_RANGE])) {
+        if ((hevc_mode == 3 && !flags.hevc[encoder_t::DYNAMIC_RANGE]) ||
+            (av1_mode == 3 && !flags.av1[encoder_t::DYNAMIC_RANGE])) {
           pos++;
           continue;
         }
@@ -7813,7 +8001,11 @@ namespace video {
         // If we've used a previous encoder and it's not this one, we expect this encoder to
         // fail to validate. It will use a slightly different order of checks to more quickly
         // eliminate failing encoders.
-        if (!validate_probe_encoder(*encoder, previous_encoder && previous_encoder != encoder)) {
+        const bool valid = validate_probe_encoder(*encoder, previous_encoder && previous_encoder != encoder);
+        if (cancelled()) {
+          return std::nullopt;
+        }
+        if (!valid) {
           pos = encoder_list.erase(pos);
           continue;
         }
@@ -7827,6 +8019,9 @@ namespace video {
       });
     }
 
+    if (cancelled()) {
+      return std::nullopt;
+    }
     if (new_encoder == nullptr) {
       BOOST_LOG(fatal) << "Unable to initialize a working video encoder during startup."sv;
 #ifdef __APPLE__
@@ -7843,6 +8038,9 @@ namespace video {
       } else {
         BOOST_LOG(fatal) << "Please check the GPU driver and configured encoder."sv;
       }
+      if (cancelled()) {
+        return std::nullopt;
+      }
       update_probe_cache(cache_key, false, false, false, false, false, false);
       return -1;
     }
@@ -7852,13 +8050,17 @@ namespace video {
     BOOST_LOG(info);
 
     auto &encoder = *new_encoder;
+    const auto &flags = probe_flags.at(new_encoder);
 
 #ifdef _WIN32
     if (&encoder == &amdvce_experimental && config::video.encoder.empty()) {
       std::optional<platf::adapter_id_t> legacy_adapter;
-      const bool legacy_available = validate_encoder(
+      const bool legacy_available = run_validation(
         amdvce_ffmpeg, true, successful_probe_adapter ? successful_probe_adapter : required_adapter,
-        &legacy_adapter, probe_target.display_name);
+        &legacy_adapter);
+      if (cancelled()) {
+        return std::nullopt;
+      }
       BOOST_LOG(info) << "AMF: native is the automatic default; compatible FFmpeg initialization rollback is "
                       << (legacy_available ? "available"sv : "unavailable"sv);
       if (native_amf_lifecycle_gate.is_quarantined()) {
@@ -7875,59 +8077,63 @@ namespace video {
     }
 #endif
 
-    last_encoder_probe_supported_ref_frames_invalidation = (encoder.flags & REF_FRAMES_INVALIDATION);
-    last_encoder_probe_supported_yuv444_for_codec[0] = encoder.h264[encoder_t::PASSED] &&
-                                                       encoder.h264[encoder_t::YUV444];
-    last_encoder_probe_supported_yuv444_for_codec[1] = encoder.hevc[encoder_t::PASSED] &&
-                                                       encoder.hevc[encoder_t::YUV444];
-    last_encoder_probe_supported_yuv444_for_codec[2] = encoder.av1[encoder_t::PASSED] &&
-                                                       encoder.av1[encoder_t::YUV444];
+    const std::array<bool, 3> yuv444_for_codec {
+      flags.h264[encoder_t::PASSED] && flags.h264[encoder_t::YUV444],
+      flags.hevc[encoder_t::PASSED] && flags.hevc[encoder_t::YUV444],
+      flags.av1[encoder_t::PASSED] && flags.av1[encoder_t::YUV444],
+    };
 
     BOOST_LOG(debug) << "------  h264 ------"sv;
     for (int x = 0; x < encoder_t::MAX_FLAGS; ++x) {
       auto flag = (encoder_t::flag_e) x;
-      BOOST_LOG(debug) << encoder_t::from_flag(flag) << (encoder.h264[flag] ? ": supported"sv : ": unsupported"sv);
+      BOOST_LOG(debug) << encoder_t::from_flag(flag) << (flags.h264[flag] ? ": supported"sv : ": unsupported"sv);
     }
     BOOST_LOG(debug) << "-------------------"sv;
     BOOST_LOG(info) << "Found H.264 encoder: "sv << encoder.h264.name << " ["sv << encoder.name << ']';
 
-    if (encoder.hevc[encoder_t::PASSED]) {
+    if (flags.hevc[encoder_t::PASSED]) {
       BOOST_LOG(debug) << "------  hevc ------"sv;
       for (int x = 0; x < encoder_t::MAX_FLAGS; ++x) {
         auto flag = (encoder_t::flag_e) x;
-        BOOST_LOG(debug) << encoder_t::from_flag(flag) << (encoder.hevc[flag] ? ": supported"sv : ": unsupported"sv);
+        BOOST_LOG(debug) << encoder_t::from_flag(flag) << (flags.hevc[flag] ? ": supported"sv : ": unsupported"sv);
       }
       BOOST_LOG(debug) << "-------------------"sv;
 
       BOOST_LOG(info) << "Found HEVC encoder: "sv << encoder.hevc.name << " ["sv << encoder.name << ']';
     }
 
-    if (encoder.av1[encoder_t::PASSED]) {
+    if (flags.av1[encoder_t::PASSED]) {
       BOOST_LOG(debug) << "------  av1 ------"sv;
       for (int x = 0; x < encoder_t::MAX_FLAGS; ++x) {
         auto flag = (encoder_t::flag_e) x;
-        BOOST_LOG(debug) << encoder_t::from_flag(flag) << (encoder.av1[flag] ? ": supported"sv : ": unsupported"sv);
+        BOOST_LOG(debug) << encoder_t::from_flag(flag) << (flags.av1[flag] ? ": supported"sv : ": unsupported"sv);
       }
       BOOST_LOG(debug) << "-------------------"sv;
 
       BOOST_LOG(info) << "Found AV1 encoder: "sv << encoder.av1.name << " ["sv << encoder.name << ']';
     }
 
-    if (active_hevc_mode == 0) {
-      active_hevc_mode = encoder.hevc[encoder_t::PASSED] ? (encoder.hevc[encoder_t::DYNAMIC_RANGE] ? 3 : 2) : 1;
+    if (hevc_mode == 0) {
+      hevc_mode = flags.hevc[encoder_t::PASSED] ? (flags.hevc[encoder_t::DYNAMIC_RANGE] ? 3 : 2) : 1;
     }
 
-    if (active_av1_mode == 0) {
-      active_av1_mode = encoder.av1[encoder_t::PASSED] ? (encoder.av1[encoder_t::DYNAMIC_RANGE] ? 3 : 2) : 1;
+    if (av1_mode == 0) {
+      av1_mode = flags.av1[encoder_t::PASSED] ? (flags.av1[encoder_t::DYNAMIC_RANGE] ? 3 : 2) : 1;
     }
 
     // PyroWave does not use the selected encoder, only the capture adapter it validated on.
-    active_pyrowave_mode = probe_pyrowave(successful_probe_adapter ? successful_probe_adapter : required_adapter);
+    if (cancelled()) {
+      return std::nullopt;
+    }
+    const int pyrowave_mode = probe_pyrowave(successful_probe_adapter ? successful_probe_adapter : required_adapter);
+    if (cancelled()) {
+      return std::nullopt;
+    }
 
-    const bool hevc_passed = encoder.hevc[encoder_t::PASSED];
-    const bool hevc_hdr_supported = encoder.hevc[encoder_t::DYNAMIC_RANGE];
-    const bool av1_passed = encoder.av1[encoder_t::PASSED];
-    const bool av1_hdr_supported = encoder.av1[encoder_t::DYNAMIC_RANGE];
+    const bool hevc_passed = flags.hevc[encoder_t::PASSED];
+    const bool hevc_hdr_supported = flags.hevc[encoder_t::DYNAMIC_RANGE];
+    const bool av1_passed = flags.av1[encoder_t::PASSED];
+    const bool av1_hdr_supported = flags.av1[encoder_t::DYNAMIC_RANGE];
     const bool cache_hdr_supported = hevc_hdr_supported || av1_hdr_supported;
     auto successful_cache_key = cache_key;
 #ifdef _WIN32
@@ -7960,6 +8166,9 @@ namespace video {
       if (required_adapter) {
         BOOST_LOG(error)
           << "Encoder validation did not produce an observed adapter matching its required adapter; refusing to publish or cache its selection.";
+        if (cancelled()) {
+          return std::nullopt;
+        }
         update_probe_cache(cache_key, false, false, false, false, false, false);
         return -1;
       }
@@ -7973,11 +8182,22 @@ namespace video {
     }
 #endif
     const advertised_encoder_capabilities_t successful_capabilities {
-      .hevc_mode = active_hevc_mode,
-      .av1_mode = active_av1_mode,
-      .pyrowave_mode = active_pyrowave_mode.load(),
-      .yuv444_for_codec = last_encoder_probe_supported_yuv444_for_codec,
+      .hevc_mode = hevc_mode,
+      .av1_mode = av1_mode,
+      .pyrowave_mode = pyrowave_mode,
+      .yuv444_for_codec = yuv444_for_codec,
     };
+    if (cancelled()) {
+      return std::nullopt;
+    }
+    if (shutdown) {
+      for (const auto &[candidate, candidate_flags] : probe_flags) {
+        candidate_flags.publish(*candidate);
+      }
+#ifdef _WIN32
+      native_amf_probe_retry_allowed.store(amf_retry, std::memory_order_release);
+#endif
+    }
     update_probe_cache(
       successful_cache_key,
       true,
@@ -7990,9 +8210,17 @@ namespace video {
     );
     // Publish the new encoder only after the probe has fully succeeded,
     // so concurrent capture threads never observe a null chosen_encoder.
+    active_hevc_mode = hevc_mode;
+    active_av1_mode = av1_mode;
+    active_pyrowave_mode = pyrowave_mode;
+    last_encoder_probe_supported_ref_frames_invalidation = (encoder.flags & REF_FRAMES_INVALIDATION);
+    last_encoder_probe_supported_yuv444_for_codec = yuv444_for_codec;
     chosen_encoder = new_encoder;
-    restore_previous_probe_state.disable();
     return 0;
+  }
+
+  int probe_encoders() {
+    return probe_encoders_impl(nullptr).value_or(-1);
   }
 
   // Linux only declaration

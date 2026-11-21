@@ -612,11 +612,12 @@ namespace va {
       return false;
     }
 
-    if (video::active_hevc_mode > 1 && !query(display.get(), VAProfileHEVCMain)) {
+    const int hevc_mode = video::hevc_mode_for_capture();
+    if (hevc_mode > 1 && !query(display.get(), VAProfileHEVCMain)) {
       return false;
     }
 
-    if (video::active_hevc_mode > 2 && !query(display.get(), VAProfileHEVCMain10)) {
+    if (hevc_mode > 2 && !query(display.get(), VAProfileHEVCMain10)) {
       return false;
     }
 

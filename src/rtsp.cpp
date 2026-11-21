@@ -240,6 +240,7 @@ namespace rtsp_stream {
     snapshot->client_do_cmds = client_do_cmds;
     snapshot->client_undo_cmds = client_undo_cmds;
     snapshot->virtual_display = virtual_display;
+    snapshot->capture_display_recovery = capture_display_recovery;
     snapshot->normal_vdd_identity_token = normal_vdd_identity_token;
     snapshot->normal_vdd_owner_uuid = normal_vdd_owner_uuid;
     snapshot->virtual_display_guid_bytes = virtual_display_guid_bytes;

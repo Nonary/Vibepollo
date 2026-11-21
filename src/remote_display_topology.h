@@ -9,7 +9,9 @@
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -114,6 +116,8 @@ namespace remote_display_topology {
   nlohmann::json normalize_layout(const nlohmann::json &layout);
   // Remove a deleted client's placement and detach direct dependent anchors.
   nlohmann::json remove_client_from_layout(const nlohmann::json &layout, const std::string &client_uuid);
+  // Reconcile an older saved layout against the complete pairing snapshot.
+  nlohmann::json reconcile_saved_layout(const nlohmann::json &layout, const std::unordered_set<std::string_view> &paired_clients);
   bool validate_layout(const nlohmann::json &layout, const std::vector<std::string> &known_clients, const std::vector<std::string> &known_physical_ids, std::string &error);
 
   class coordinator_t {

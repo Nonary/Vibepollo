@@ -9,6 +9,7 @@
 #include "state_storage_policy.h"
 
 #include <boost/property_tree/json_parser.hpp>
+#include <cerrno>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -98,7 +99,7 @@ namespace pairing_recovery {
       return identity;
     }
 
-    std::string read_snapshot(const fs::path &path) {
+    std::optional<std::string> read_snapshot_if_present(const fs::path &path, bool allow_missing) {
       // Validate the opened object, not a separate pre-open path inspection.
       // No source is ever opened for writing, and special files cannot block us.
 #ifdef _WIN32
@@ -112,6 +113,9 @@ namespace pairing_recovery {
         }
       } input {CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
 
+      if (input.file == INVALID_HANDLE_VALUE && allow_missing && GetLastError() == ERROR_FILE_NOT_FOUND) {
+        return std::nullopt;
+      }
       require(input.file != INVALID_HANDLE_VALUE, "Could not open the snapshot.");
       BY_HANDLE_FILE_INFORMATION information {};
       require(GetFileInformationByHandle(input.file, &information) && GetFileType(input.file) == FILE_TYPE_DISK && !(information.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)), "Snapshot must be an existing regular file, not a link.");
@@ -126,6 +130,9 @@ namespace pairing_recovery {
         }
       } input {::open(path.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)};
 
+      if (input.file < 0 && allow_missing && errno == ENOENT) {
+        return std::nullopt;
+      }
       require(input.file >= 0, "Could not open the snapshot.");
       struct stat information {};
       require(::fstat(input.file, &information) == 0 && S_ISREG(information.st_mode), "Snapshot must be an existing regular file, not a link.");
@@ -147,6 +154,10 @@ namespace pairing_recovery {
         bytes.append(chunk, static_cast<std::size_t>(count));
       }
       return bytes;
+    }
+
+    std::string read_snapshot(const fs::path &path) {
+      return read_snapshot_if_present(path, false).value();
     }
 
     json parse_snapshot(const std::string &bytes) {
@@ -434,8 +445,8 @@ namespace pairing_recovery {
       require(file != INVALID_HANDLE_VALUE, "Could not create a new recovery file.");
       DWORD written = 0;
       const bool complete = WriteFile(file, bytes.data(), static_cast<DWORD>(bytes.size()), &written, nullptr) && written == bytes.size() && FlushFileBuffers(file);
-      CloseHandle(file);
-      require(complete, "Could not persist recovery files; the incomplete output directory must not be used.");
+      const bool closed = CloseHandle(file) != 0;
+      require(complete && closed, "Could not persist recovery files; the incomplete output directory must not be used.");
 #else
       const int file = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
       require(file >= 0, "Could not create a new recovery file.");
@@ -451,6 +462,43 @@ namespace pairing_recovery {
       const int close_result = ::close(file);
       require(complete && close_result == 0, "Could not persist recovery files; the incomplete output directory must not be used.");
 #endif
+    }
+    bool usable_auxiliary_snapshot(const std::optional<std::string> &snapshot) {
+      if (!snapshot) {
+        return false;
+      }
+      namespace policy = statefile::policy;
+      pt::ptree tree;
+      const auto result = policy::load_json_for_read("auxiliary snapshot", tree, [&](const std::string &) {
+        return policy::read_result_t {policy::read_status_e::loaded, *snapshot};
+      });
+      return result == policy::load_result_e::loaded && policy::valid_vibeshine_tree(tree);
+    }
+
+    std::string auxiliary_candidate_from_backup(const std::string &bytes) {
+      const auto snapshot = parse_snapshot(bytes);
+      require(snapshot.is_object() && snapshot.size() == 1 && snapshot.contains("root") &&
+                snapshot["root"].is_object() && statefile::policy::valid_vibeshine_tree(property_tree(snapshot)),
+              "Backup is not a valid separate auxiliary snapshot.");
+      const auto &root = snapshot["root"];
+      require(!root.contains("uniqueid") && !root.contains("devices") && !root.contains("named_devices"),
+              "Backup contains pairing state. Use only the separate auxiliary backup.");
+
+      // Recover metadata without restoring older authorizations. Keep explicit
+      // empty token containers so migration cannot repopulate them from pairing state.
+      json recovered = {{"api_tokens", json::array()}, {"session_tokens", json::array()}};
+      for (const auto key : {
+             "app_id_aliases", "client_last_seen", "crashdump_dismissal",
+             "display_helper_engine", "display_restore_prefer_golden",
+             "last_notified_version", "linux_display_topology", "notified_versions",
+             "shared_virtual_display_guid", "snapshot_exclude_devices", "virtual_display_devices",
+             "virtual_display_guid", "virtual_display_placements", "virtual_display_scales"
+           }) {
+        if (const auto value = root.find(key); value != root.end()) {
+          recovered[key] = *value;
+        }
+      }
+      return json({{"root", std::move(recovered)}}).dump() + "\n";
     }
   }  // namespace
 
@@ -521,20 +569,22 @@ namespace pairing_recovery {
     }
   }
 
-  // Reuse the bounded, no-follow input and private, create-only output helpers.
-  // This is an explicit destructive reset candidate, never automatic recovery.
+  // Prepare a separate pair for offline activation. Source paths stay untouched.
   int run_auxiliary(int argc, const char *const argv[], std::ostream &out, std::ostream &error) {
     try {
-      require(argc >= 2, "Usage: --auxiliary-recovery inspect INPUT | prepare-reset INPUT --expect-snapshot TOKEN --accept-token-and-metadata-loss --confirm-separate-auxiliary-state --output NEW_DIRECTORY");
+      require(argc >= 2, "Usage: --auxiliary-recovery inspect INPUT | prepare-reset INPUT | inspect-backup BACKUP | prepare-restore BACKUP. Preparation requires --expect-snapshot TOKEN, --confirm-separate-auxiliary-state, --output NEW_DIRECTORY and the operation's loss acceptance.");
       const std::string_view operation = argv[0];
-      require(operation == "inspect" || operation == "prepare-reset", "Auxiliary operation must be inspect or prepare-reset.");
+      const bool inspect = operation == "inspect" || operation == "inspect-backup";
+      const bool from_backup = operation == "inspect-backup" || operation == "prepare-restore";
+      require(inspect || from_backup || operation == "prepare-reset", "Auxiliary operation must be inspect, prepare-reset, inspect-backup or prepare-restore.");
       std::string expected, destination;
       bool accept_loss = false;
       bool confirm_separate = false;
+      const std::string_view loss_option = from_backup ? "--accept-token-loss" : "--accept-token-and-metadata-loss";
       for (int i = 2; i < argc; ++i) {
-        require(operation == "prepare-reset", "Inspection does not accept reset options.");
+        require(!inspect, "Inspection does not accept preparation options.");
         const std::string_view option = argv[i];
-        if (option == "--accept-token-and-metadata-loss" && !accept_loss) {
+        if (option == loss_option && !accept_loss) {
           accept_loss = true;
         } else if (option == "--confirm-separate-auxiliary-state" && !confirm_separate) {
           confirm_separate = true;
@@ -547,51 +597,75 @@ namespace pairing_recovery {
         }
       }
       const auto source = utf8_path(argv[1]);
-      // Zero-filled snapshots have no embedded identity. The name check catches
-      // obvious mistakes; the operator must confirm configured path separation.
-      require(source.filename() == "vibeshine_state.json", "Use copies of the configured vibeshine_state.json and its .bak. Custom filenames are not supported.");
-      const auto bytes = read_snapshot(source);
+      require(source.filename() == (from_backup ? "vibeshine_state.json.bak" : "vibeshine_state.json"),
+              "Use the standard separate auxiliary snapshot filename required by this operation.");
+      std::optional<std::string> primary, backup;
+      std::string candidate;
       auto backup_path = source;
-      backup_path += ".bak";
-      const auto backup = read_snapshot(backup_path);
-      const auto zero_filled = [](const std::string &contents) {
-        return contents.find_first_not_of('\0') == std::string::npos;
+      if (from_backup) {
+        // This mode can work even when the primary cannot be opened. The
+        // operator leaves it at its original path and activates the new pair elsewhere.
+        backup = read_snapshot(source);
+        candidate = auxiliary_candidate_from_backup(*backup);
+      } else {
+        primary = read_snapshot_if_present(source, true);
+        backup_path += ".bak";
+        backup = read_snapshot_if_present(backup_path, true);
+        require(primary || backup, "At least one auxiliary snapshot must exist; confirm the configured input path.");
+        require(!usable_auxiliary_snapshot(primary) && !usable_auxiliary_snapshot(backup),
+                "Reset refused because a usable snapshot exists. Use backup recovery or repair access to the original state.");
+        candidate = statefile::policy::auxiliary_reset_json;
+      }
+      const auto primary_hash = primary ? sha256(*primary) : "missing";
+      const auto backup_hash = backup ? sha256(*backup) : "missing";
+      const auto token = sha256((from_backup ? "auxiliary-backup:" : "auxiliary-reset:") + primary_hash + ":" + backup_hash);
+      json report = {
+        {"schema_version", 1},
+        {"operation", from_backup ? "auxiliary_restore_without_tokens" : "auxiliary_reset_not_recovery"},
+        {"snapshot_token", token},
+        {"primary_sha256", primary ? json(primary_hash) : json(nullptr)},
+        {"primary_status", from_backup ? "not_read" : (primary ? "preserved_on_prepare" : "missing")},
+        {"backup_sha256", backup ? json(backup_hash) : json(nullptr)},
+        {"lost_state", from_backup ?
+                         json::array({"API tokens", "Web UI sessions", "changes after the backup", "unrecognized metadata"}) :
+                         json::array({"API tokens", "Web UI sessions", "application ID aliases", "display metadata", "crash dismissal and notification metadata"})},
+        {"warning", "Confirm the auxiliary state is separate from pairing and credentials. Activate the new pair at a different path to preserve the originals."},
       };
-      require(zero_filled(bytes) && zero_filled(backup), "Reset is limited to two existing empty or entirely zero-filled auxiliary snapshots. Nonzero, missing or unreadable state requires separate investigation; no files were changed.");
-      const auto primary_hash = sha256(bytes);
-      const auto backup_hash = sha256(backup);
-      const auto token = sha256("auxiliary-reset:" + primary_hash + ":" + backup_hash);
-      json report = {{"schema_version", 1}, {"operation", "auxiliary_reset_not_recovery"}, {"snapshot_token", token}, {"primary_sha256", primary_hash}, {"backup_sha256", backup_hash}, {"lost_state", {"API tokens", "Web UI sessions", "application ID aliases", "display metadata", "crash dismissal and notification metadata"}}, {"warning", "This cannot recover lost data. Verify the configured auxiliary file is separate from pairing state and Web UI credentials before preparing or installing a reset."}};
-      if (operation == "inspect") {
+      if (inspect) {
         out << report.dump(2, ' ', true) << '\n';
         return 0;
       }
-      require(accept_loss, "Reset requires --accept-token-and-metadata-loss. Existing API tokens, Web UI sessions and auxiliary metadata cannot be recovered.");
+      require(accept_loss, from_backup ? "Restoring backup metadata requires --accept-token-loss." :
+                                        "Reset requires --accept-token-and-metadata-loss.");
       require(confirm_separate, "Reset requires --confirm-separate-auxiliary-state after verifying the configured auxiliary and pairing paths differ.");
       require(!expected.empty() && expected == token, "Snapshot changed or --expect-snapshot does not match inspection. Inspect the current copies again.");
       require(!destination.empty(), "Preparation requires --output NEW_DIRECTORY.");
-      // Explicit empty token containers also prevent startup migration from
-      // resurrecting stale tokens retained in older primary-state snapshots.
-      const std::string candidate = "{\n  \"root\": {\n    \"api_tokens\": [],\n    \"session_tokens\": []\n  }\n}\n";
+      require(candidate.size() <= max_snapshot_bytes, "Serialized candidate exceeds the state-file size limit.");
       const auto output = utf8_path(destination);
       create_private_directory(output);
-      write_new_file(output / "primary.original.json", bytes);
-      write_new_file(output / "backup.original.json", backup);
+      const auto preserve = [&](const char *filename, const std::optional<std::string> &snapshot) {
+        if (snapshot) {
+          write_new_file(output / filename, *snapshot);
+          require(read_snapshot(output / filename) == *snapshot, "Original snapshot verification failed; do not use the incomplete output directory.");
+        }
+      };
+      preserve("primary.original.json", primary);
+      preserve("backup.original.json", backup);
       write_new_file(output / "vibeshine_state.reset.json", candidate);
       write_new_file(output / "vibeshine_state.reset.json.bak", candidate);
-      require(read_snapshot(output / "primary.original.json") == bytes && read_snapshot(output / "backup.original.json") == backup && read_snapshot(output / "vibeshine_state.reset.json") == candidate && read_snapshot(output / "vibeshine_state.reset.json.bak") == candidate, "Output read-back verification failed; do not use the incomplete output directory.");
+      require(read_snapshot(output / "vibeshine_state.reset.json") == candidate && read_snapshot(output / "vibeshine_state.reset.json.bak") == candidate, "Output read-back verification failed; do not use the incomplete output directory.");
       report["candidate_sha256"] = sha256(candidate);
       report["operator_confirmed_separate_auxiliary_state"] = true;
       report["complete"] = true;
       // Complete manifest is published last, as for pairing recovery.
       write_new_file(output / "recovery.json", report.dump(2, ' ', true) + "\n");
-      out << "Auxiliary RESET candidate prepared, not installed. No lost data was recovered. Original snapshots, pairing state and credentials were not changed. Review recovery.json before offline installation of both reset copies.\n";
+      out << "Auxiliary candidate prepared. Review recovery.json and activate the new pair at a different path. Original files were preserved.\n";
       return 0;
     } catch (const recovery_error_t &exception) {
       error << exception.what() << '\n';
       return 2;
     } catch (const std::exception &) {
-      error << "Auxiliary reset preparation failed; originals were not changed. Do not use an output directory without a complete recovery.json manifest.\n";
+      error << "Auxiliary recovery preparation failed; originals were preserved. Use the output only after successful preparation with a complete recovery.json manifest.\n";
       return 2;
     }
   }

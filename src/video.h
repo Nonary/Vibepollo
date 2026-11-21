@@ -239,6 +239,8 @@ namespace video {
 
     const std::unique_ptr<const encoder_platform_formats_t> platform_formats;
 
+    using codec_flags_t = std::bitset<MAX_FLAGS>;
+
     struct codec_t {
       std::vector<option_t> common_options;
       std::vector<option_t> sdr_options;
@@ -248,14 +250,14 @@ namespace video {
       std::vector<option_t> fallback_options;
 
       std::string name;
-      std::bitset<MAX_FLAGS> capabilities;
+      std::atomic_ulong capabilities {0};
 
-      bool operator[](flag_e flag) const {
-        return capabilities[(std::size_t) flag];
+      codec_flags_t capability_flags() const {
+        return codec_flags_t {capabilities.load(std::memory_order_relaxed)};
       }
 
-      std::bitset<MAX_FLAGS>::reference operator[](flag_e flag) {
-        return capabilities[(std::size_t) flag];
+      bool operator[](flag_e flag) const {
+        return capability_flags()[(std::size_t) flag];
       }
     };
 
@@ -456,6 +458,10 @@ namespace video {
 
   extern int active_hevc_mode;
   extern int active_av1_mode;
+#ifdef __linux__
+  // The current probe's requested mode on its own thread, or the completed mode.
+  int hevc_mode_for_capture();
+#endif
   /**
    * PyroWave encoding on the probed capture adapter: 0 - not probed, 1 - disabled
    * or unsupported, 2 - available (advertised). PyroWave bypasses the encoder_t
@@ -505,6 +511,19 @@ namespace video {
     config_t config,
     void *channel_data
   );
+
+#ifdef _WIN32
+  enum class capture_probe_result_e {
+    ready,
+    display_unavailable,
+    capture_failed,
+    encoder_unavailable,
+  };
+
+  // Opens the real capture backend without encoding. Only a display-specific
+  // initialization failure authorizes session-owned display recovery.
+  capture_probe_result_e probe_capture(const config_t &config);
+#endif
 
   bool validate_encoder(
     encoder_t &encoder,

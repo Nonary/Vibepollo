@@ -10,6 +10,7 @@
 #include <functional>
 #include <cstdint>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -32,6 +33,14 @@ using namespace std::chrono_literals;
 /**
  * @brief Contains all the functions and variables related to the nvhttp (GameStream) server.
  */
+namespace audio {
+  class display_change_hold_t;
+}
+
+namespace rtsp_stream {
+  struct launch_session_t;
+}
+
 namespace nvhttp {
 
   using args_t = SimpleWeb::CaseInsensitiveMultimap;
@@ -313,6 +322,14 @@ namespace nvhttp {
    * publication; final teardown holds it through its shared cleanup decision.
    */
   std::mutex &stream_lifecycle_mutex();
+#ifdef _WIN32
+  // Called under stream_lifecycle_mutex(), before publishing a WebRTC owner.
+  bool recover_capture_display_for_webrtc(
+    const std::shared_ptr<rtsp_stream::launch_session_t> &session,
+    audio::display_change_hold_t &audio_hold
+  );
+  void rollback_capture_display_recovery(const std::shared_ptr<rtsp_stream::launch_session_t> &session);
+#endif
 
 #ifdef _WIN32
   /** End all transports, pending launches and the app, then restore displays.

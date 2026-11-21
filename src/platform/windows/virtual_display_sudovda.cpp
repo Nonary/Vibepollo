@@ -150,7 +150,7 @@ namespace VDISPLAY_SUDOVDA {
   bool should_auto_enable_virtual_display();
   bool has_retained_ensure_display();
   void cleanup_retained_ensure_display();
-  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid);
+  ensure_display_result ensure_display(const std::optional<LUID> &required_adapter_luid, bool startup_probe);
   void cleanup_ensure_display(const ensure_display_result &result);
 
   enum class RestartCooldownBehavior {
@@ -5332,13 +5332,14 @@ namespace {
 }  // namespace
 
 VDISPLAY_SUDOVDA::ensure_display_result VDISPLAY_SUDOVDA::ensure_display(
-  const std::optional<LUID> &required_adapter_luid
+  const std::optional<LUID> &required_adapter_luid,
+  const bool startup_probe
 ) {
   std::lock_guard<std::mutex> acquire_lock(g_ensure_display_acquire_mutex);
   ensure_display_result result;
 
   const auto physical = active_physical_displays();
-  if (!physical.enumeration_available || !physical.display_names.empty()) {
+  if (!physical.display_names.empty() || (!physical.enumeration_available && !startup_probe)) {
     if (!physical.enumeration_available || !required_adapter_luid ||
         platf::adapter_drives_any_output(*required_adapter_luid, physical.display_names) != platf::adapter_output_match_e::no_match) {
       result.readiness = ensure_display_readiness_e::existing_display;
@@ -5348,7 +5349,7 @@ VDISPLAY_SUDOVDA::ensure_display_result VDISPLAY_SUDOVDA::ensure_display(
     }
     return result;
   }
-  if (!VDISPLAY::policy::should_create_host_probe_display()) {
+  if (!VDISPLAY::policy::should_create_host_probe_display(startup_probe)) {
     BOOST_LOG(info) << "Encoder probe deferred until a requesting client owns a usable display.";
     return result;
   }
@@ -5368,7 +5369,7 @@ VDISPLAY_SUDOVDA::ensure_display_result VDISPLAY_SUDOVDA::ensure_display(
       BOOST_LOG(warning) << "SudoVDA driver not available for owned encoder probing.";
       return result;
     }
-  } else if (!should_auto_enable_virtual_display()) {
+  } else if (physical.enumeration_available && !should_auto_enable_virtual_display()) {
     BOOST_LOG(debug) << "No active physical displays and virtual display auto-enable is disabled.";
     return result;
   }

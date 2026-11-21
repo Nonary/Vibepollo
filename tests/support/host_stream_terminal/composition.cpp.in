@@ -115,6 +115,7 @@ auto expired_remote_input_owners(const std::vector<pending_owner_t> &v) {return 
 struct rates {int capture_framerate=60,encoding_framerate=60;};std::optional<rates> parse_requested_framerate(std::string_view){return rates{};}
 }
 struct launch_session_t {
+ bool capture_display_recovery=false;
  int guide_button=0;
  std::shared_ptr<launch_session_t> clone_for_startup() const;
  bool monitor_stream_published=false;
@@ -228,7 +229,8 @@ void blocked_cleanup(Pause &pause,const char *name,std::function<void()> cleanup
  check(waited && !before && physical && !late_ordinary,name);
 }
 int main() {
- launch_session_t metadata;metadata.audio_codec_offered="EAC3";metadata.guide_button=37;metadata.monitor_profile_uuid="exact-monitor-profile";auto copied=metadata.clone_for_startup();check(copied->guide_button==37,"actual startup snapshot preserves Guide metadata");check(copied->monitor_profile_uuid=="exact-monitor-profile","actual startup snapshot preserves Monitor profile metadata");
+ launch_session_t metadata;metadata.capture_display_recovery=true;metadata.audio_codec_offered="EAC3";metadata.guide_button=37;metadata.monitor_profile_uuid="exact-monitor-profile";auto copied=metadata.clone_for_startup();check(copied->guide_button==37,"actual startup snapshot preserves Guide metadata");check(copied->monitor_profile_uuid=="exact-monitor-profile","actual startup snapshot preserves Monitor profile metadata");
+ check(copied->capture_display_recovery,"actual startup clone preserves forced capture recovery");
  check(copied->audio_codec_offered=="EAC3","actual startup clone preserves the codec offer");
  reset();running=1;join_pause.reset(true);server._session_state->sessions.insert(std::make_shared<stream::session_t>());
  blocked_cleanup(join_pause,"actual natural clear drains removed owner before recovery",[]{server.clear(false);});

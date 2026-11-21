@@ -43,6 +43,7 @@ prefix = r'''
 #define _WIN32 1
 #endif
 struct LUID { unsigned long LowPart; long HighPart; };
+namespace safe { struct signal_t { bool peek() { return true; } }; }
 namespace platf {
 struct adapter_id_t { long high_part; unsigned long low_part; bool operator==(const adapter_id_t &) const = default; };
 enum class mem_type_e { dxgi };
@@ -92,8 +93,25 @@ struct config_t {
 }
 namespace display_device {
 static bool active = false;
-inline std::string map_output_name(const std::string &s) { return s; }
-inline bool output_is_active(const std::string &) { return active; }
+static int mapping_queries = 0, activity_queries = 0;
+static bool skip_recovery = false;
+static int recovery_queries = 0;
+enum class DisplayRecoveryBehavior { Skip };
+struct DisplayRecoveryBehaviorGuard {
+  bool was_skipping = skip_recovery;
+  explicit DisplayRecoveryBehaviorGuard(DisplayRecoveryBehavior) { skip_recovery = true; }
+  ~DisplayRecoveryBehaviorGuard() { skip_recovery = was_skipping; }
+};
+inline std::string map_output_name(const std::string &s) {
+  ++mapping_queries;
+  if (!skip_recovery) ++recovery_queries;
+  return s;
+}
+inline bool output_is_active(const std::string &) {
+  ++activity_queries;
+  if (!skip_recovery) ++recovery_queries;
+  return active;
+}
 }
 struct gate_t { bool quarantined = false; bool is_quarantined() const { return quarantined; } } native_amf_lifecycle_gate;
 struct state_t {
@@ -124,6 +142,7 @@ static void reset() {
   platf::dxgi::automatic = platf::dxgi::capture_output_identity_t {"A", {0, 1}};
   platf::dxgi::capture_tests = 0;
   display_device::active = false;
+  display_device::mapping_queries = display_device::activity_queries = 0;
   state.pending_virtual_display_adapter_hint.reset();
   state.pending_virtual_display_adapter_hint_ready_for_verification = false;
   native_amf_lifecycle_gate.quarantined = false;
@@ -131,10 +150,13 @@ static void reset() {
 int main() {
   reset();
   state.pending_virtual_display_adapter_hint = a;
+  config::active_output = "configured-output";
   const auto cached = build_probe_cache_key();
   for (int i = 0; i < 100; ++i) assert(build_probe_cache_key() == cached);
   assert(cached.adapter_identity == "luid=0:1" && cached.adapter_identity_resolved);
   assert(platf::dxgi::capture_tests == 0);
+
+  assert(display_device::mapping_queries == 0 && display_device::activity_queries == 0);
 
   // A real probe still verifies capture selection, never the lookup-only target.
   const auto target = resolve_probe_target();
@@ -171,6 +193,7 @@ int main() {
   const auto configured_key = build_probe_cache_key();
   for (int i = 0; i < 100; ++i) assert(build_probe_cache_key() == configured_key);
   assert(platf::dxgi::capture_tests == 0);
+  assert(display_device::mapping_queries == 0 && display_device::activity_queries == 0);
   assert(resolve_probe_target().display_name == "A");
   assert(platf::dxgi::capture_tests == 1);
   platf::configured.luid = b;
@@ -203,13 +226,34 @@ int main() {
   platf::dxgi::wgc.reset(); platf::mapped.luid = b;
   assert(build_probe_cache_key().adapter_identity == "luid=0:2");
   assert(platf::dxgi::capture_tests == 2);
+
+  // Shutdown preserves identities already known without opening a device.
+  safe::signal_t shutdown;
+  const int recovery_queries = display_device::recovery_queries;
+  assert(build_probe_cache_key(nullptr, &shutdown).adapter_identity == "luid=0:2");
+  state.pending_virtual_display_adapter_hint = a;
+  assert(build_probe_cache_key(nullptr, &shutdown) == hinted);
+  state.pending_virtual_display_adapter_hint.reset();
+
+  // Automatic without a known output would normally run a Desktop Duplication
+  // test, including when an older cache exists. Shutdown must stay unresolved,
+  // even if metadata can suggest a different preferred GPU.
+  config::active_output.clear();
+  display_device::active = false;
+  platf::preferred.luid = a;
+  const auto unresolved = build_probe_cache_key(nullptr, &shutdown);
+  assert(!unresolved.adapter_identity_resolved && !(unresolved == hinted));
+  assert(display_device::recovery_queries == recovery_queries);
+  assert(platf::dxgi::capture_tests == 2);
 }
 '''
 with tempfile.TemporaryDirectory(prefix='encoder-probe-lookup-') as temp:
     for name, code, expect_success in [
         ('production', production, True),
-        ('old-eager-key', production.replace('resolve_probe_target(false).adapter_identity',
-                                             'resolve_probe_target().adapter_identity'), False),
+        ('old-eager-key', production.replace('resolve_probe_target(false, shutdown).adapter_identity',
+                                             'resolve_probe_target(true, shutdown).adapter_identity'), False),
+        ('old-automatic-key', production.replace('resolve_probe_target(false, shutdown).adapter_identity',
+                                                  'resolve_probe_target(false).adapter_identity'), False),
     ]:
         cpp = Path(temp) / (name + '.cpp')
         binary = Path(temp) / name
@@ -222,6 +266,8 @@ with tempfile.TemporaryDirectory(prefix='encoder-probe-lookup-') as temp:
         result = subprocess.run([str(binary)], env=env, capture_output=True, text=True)
         if expect_success != (result.returncode == 0):
             raise AssertionError(f'{name}: unexpected exit {result.returncode}\n{result.stderr}')
-        if not expect_success and 'capture_tests == 0' not in result.stderr:
+        expected_failure = ('!unresolved.adapter_identity_resolved' if name == 'old-automatic-key'
+                            else 'capture_tests == 0')
+        if not expect_success and expected_failure not in result.stderr:
             raise AssertionError(f'negative control failed for an unrelated reason:\n{result.stderr}')
         print(f'{name}: expected outcome verified')

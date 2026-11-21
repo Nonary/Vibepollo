@@ -18,6 +18,7 @@
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <nlohmann/json.hpp>
 #include <set>
@@ -39,21 +40,16 @@ namespace statefile {
     namespace pt = boost::property_tree;
 
     std::once_flag migration_once;
+    // Protected by state_mutex. Recovery may retry, while legacy metadata
+    // migration remains a startup-only operation.
+    bool auxiliary_startup_recovery_pending = false;
 
     using policy_load_result_e = policy::load_result_e;
 
     void write_json_atomic_direct(const std::string &path, const nlohmann::json &tree);
 
-    /**
-     * @brief Best-effort rename of an unparseable state file out of the way so a
-     *        fresh, valid file can replace it. Preserves the bad copy for forensics.
-     *
-     * Callers hold state_mutex() during their read/modify/write transaction, so this
-     * runs serialized with respect to other writers of the same file.
-     */
-    void quarantine_corrupt_state(const fs::path &path) {
+    fs::path corrupt_snapshot_path(const fs::path &path) {
       static std::atomic<unsigned> sequence {0};
-      std::error_code ec;
       const auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
                            std::chrono::system_clock::now().time_since_epoch()
       )
@@ -62,6 +58,13 @@ namespace statefile {
       // Include a process-unique counter so two corrupt-detections in the same
       // wall-clock second cannot overwrite each other's forensic copy.
       quarantine += ".corrupt-" + std::to_string(stamp) + "-" + std::to_string(sequence.fetch_add(1));
+      return quarantine;
+    }
+
+    /** Best-effort rename for generic state while the caller holds state_mutex(). */
+    void quarantine_corrupt_state(const fs::path &path) {
+      std::error_code ec;
+      const auto quarantine = corrupt_snapshot_path(path);
       fs::rename(path, quarantine, ec);
       if (ec) {
         // The subsequent atomic write replaces the file in place anyway, so this is non-fatal.
@@ -154,15 +157,88 @@ namespace statefile {
       return !path.empty() && path == vibeshine_state_path() && !share_state_file();
     }
 
-    policy_load_result_e load_auxiliary_state(const std::string &path, pt::ptree &out) {
-      const auto result = policy::load_vibeshine_state(
-        path, out, read_state_file,
-        [](const std::string &target, const std::string &contents) {
-          return file_handler::write_file(target.c_str(), contents) == 0;
-        });
+    bool is_unlinked_snapshot_or_missing(const fs::path &path) {
+      std::error_code ec;
+      const auto status = fs::symlink_status(path, ec);
+      if (status.type() == fs::file_type::not_found) {
+        return true;
+      }
+      if (ec || !fs::is_regular_file(status)) {
+        return false;
+      }
+#ifdef _WIN32
+      const auto attributes = GetFileAttributesW(path.c_str());
+      if (attributes == INVALID_FILE_ATTRIBUTES || (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) {
+        return false;
+      }
+#endif
+      const auto links = fs::hard_link_count(path, ec);
+      return !ec && links == 1;
+    }
+
+    bool has_standard_separate_auxiliary_paths(const fs::path &path) {
+      const fs::path pairing = sunshine_state_path();
+      auto backup = path;
+      backup += ".bak";
+      // Only the standard, colocated files are unambiguous enough to reset
+      // without operator confirmation. Shared/custom paths still fail closed.
+      return path.filename() == "vibeshine_state.json" && pairing.filename() == "sunshine_state.json" &&
+             path.parent_path() == pairing.parent_path() &&
+             config::sunshine.credentials_file == sunshine_state_path() &&
+             is_unlinked_snapshot_or_missing(path) && is_unlinked_snapshot_or_missing(backup);
+    }
+
+    bool archive_zeroed_snapshot(const std::string &path, const std::string &contents) {
+      // Recovery retries run under state_mutex. Reuse verified archives so a
+      // temporary failure to publish the replacement does not consume space on every save.
+      static std::map<std::string, fs::path> archived;
+      if (const auto previous = archived.find(path); previous != archived.end()) {
+        const auto stored = read_state_file(previous->second.string());
+        if (stored.status == policy::read_status_e::failed) {
+          return false;
+        }
+        if (stored.status == policy::read_status_e::loaded && stored.contents == contents) {
+          return true;
+        }
+      }
+      // Reserve a new directory so the atomic writer cannot replace an
+      // earlier archive. It removes its temporary file on an ordinary failure.
+      const auto directory = corrupt_snapshot_path(path);
+      std::error_code ec;
+      if (!fs::create_directory(directory, ec)) {
+        BOOST_LOG(error) << "statefile: could not preserve damaged auxiliary snapshot " << path << ": " << ec.message();
+        return false;
+      }
+      const auto archive = directory / fs::path(path).filename();
+      if (file_handler::write_file(archive.string().c_str(), contents) != 0) {
+        (void) fs::remove(directory, ec);  // Only remove our directory if empty.
+        BOOST_LOG(error) << "statefile: could not archive damaged auxiliary snapshot " << path;
+        return false;
+      }
+      archived.insert_or_assign(path, archive);
+      const auto stored = read_state_file(archive.string());
+      return stored.status == policy::read_status_e::loaded && stored.contents == contents;
+    }
+
+    policy_load_result_e load_auxiliary_state(const std::string &path, pt::ptree &out, bool reset_zeroed_at_startup = false) {
+      const auto write_file = [](const std::string &target, const std::string &contents) {
+        return file_handler::write_file(target.c_str(), contents) == 0;
+      };
+      auto result = policy::load_vibeshine_state(path, out, read_state_file, write_file);
+      const bool allow_zero_reset = reset_zeroed_at_startup || auxiliary_startup_recovery_pending;
+      if (result == policy::load_result_e::failed && allow_zero_reset &&
+          has_standard_separate_auxiliary_paths(path) &&
+          policy::reset_zeroed_auxiliary(path, read_state_file, archive_zeroed_snapshot, write_file)) {
+        BOOST_LOG(warning) << "statefile: reset zero-filled auxiliary state and preserved damaged snapshots beside " << path
+                           << "; sign in again and recreate API tokens. Pairing state and credentials were preserved.";
+        result = policy::load_vibeshine_state(path, out, read_state_file, write_file);
+      }
+      if (allow_zero_reset) {
+        auxiliary_startup_recovery_pending = result == policy::load_result_e::failed;
+      }
       if (result == policy::load_result_e::failed) {
         BOOST_LOG(error) << "statefile: refusing to replace unavailable auxiliary state " << path
-                         << "; preserve this file and its .bak. If both are empty or zero-filled, --auxiliary-recovery can prepare an explicit reset candidate; it cannot recover lost tokens or metadata. Do not replace pairing state or credentials.";
+                         << "; preserve both files. See auxiliary-state recovery in the troubleshooting guide for an offline reset or backup recovery. Do not replace pairing state or credentials.";
       }
       return result;
     }
@@ -503,9 +579,9 @@ namespace statefile {
     }
 #endif
 
-    policy_load_result_e load_tree_for_read(const fs::path &path, pt::ptree &out) {
+    policy_load_result_e load_tree_for_read(const fs::path &path, pt::ptree &out, bool reset_zeroed_at_startup = false) {
       if (is_auxiliary_state(path.string())) {
-        return load_auxiliary_state(path.string(), out);
+        return load_auxiliary_state(path.string(), out, reset_zeroed_at_startup);
       }
       return policy::load_json_for_read(path.string(), out, read_state_file);
     }
@@ -516,7 +592,7 @@ namespace statefile {
     return mutex;
   }
 
-  void write_json_atomic(const std::string &path, const pt::ptree &tree) {
+  void write_json_atomic(const std::string &path, const pt::ptree &tree, auxiliary_backup_policy_e backup_policy) {
     // All callers use this entry point for JSON updates, including credentials
     // and API-token persistence. Route the primary through the paired-state
     // writer so those updates refresh the recovery copy too.
@@ -525,11 +601,18 @@ namespace statefile {
       return;
     }
     if (is_auxiliary_state(path)) {
-      policy::write_vibeshine_state(
-        path, tree,
-        [](const std::string &target, const std::string &contents) {
-          return file_handler::write_file(target.c_str(), contents) == 0;
-        }, read_state_file);
+      try {
+        policy::write_vibeshine_state(
+          path, tree,
+          [](const std::string &target, const std::string &contents) {
+            return file_handler::write_file(target.c_str(), contents) == 0;
+          }, read_state_file);
+      } catch (const policy::auxiliary_backup_error &error) {
+        if (backup_policy == auxiliary_backup_policy_e::required) {
+          throw;
+        }
+        BOOST_LOG(warning) << "statefile: primary auxiliary state saved, but could not refresh " << path << ".bak: " << error.what();
+      }
       return;
     }
     write_json_atomic_direct(path, tree);
@@ -909,14 +992,29 @@ namespace statefile {
     static constexpr std::string_view known_config_files[] {
       "sunshine_state.json"sv,
       "sunshine_state.json.bak"sv,
-      "vibeshine_state.json"sv,
-      "vibeshine_state.json.bak"sv,
       "sunshine.conf"sv,
       "apps.json"sv,
     };
 
+    const fs::path active_auxiliary = config::nvhttp.vibeshine_file_state;
+    const auto auxiliary_root = active_auxiliary.parent_path();
+    const auto pairing_root = fs::path(config::nvhttp.file_state).parent_path();
+    const bool colocated = path_is_at_or_under(auxiliary_root, pairing_root) &&
+                           path_is_at_or_under(pairing_root, auxiliary_root);
     for (const auto &dir : config_roots) {
-      enable_acl_inheritance(dir);
+      const bool can_repair_directory = colocated || !path_is_at_or_under(pairing_root, dir);
+      const auto default_auxiliary = dir / "vibeshine_state.json";
+      const bool default_is_active = path_is_at_or_under(default_auxiliary, active_auxiliary) &&
+                                     path_is_at_or_under(active_auxiliary, default_auxiliary);
+      // Updating a directory DACL can propagate inherited permissions to
+      // retired snapshots, including under a custom subdirectory of the old
+      // pairing root. Repair the explicitly configured files there instead.
+      if (can_repair_directory &&
+          (default_is_active ||
+           (!path_exists_or_may_be_access_denied(default_auxiliary) &&
+            !path_exists_or_may_be_access_denied(dir / "vibeshine_state.json.bak")))) {
+        enable_acl_inheritance(dir);
+      }
       for (const auto name : known_config_files) {
         config_files.insert(dir / std::string {name});
       }
@@ -951,11 +1049,12 @@ namespace statefile {
       // or ever turning malformed host state into an empty metadata snapshot.
       const auto old_load_result = load_tree_for_update(old_path, old_tree);
       if (old_load_result == policy::load_result_e::failed) {
+        auxiliary_startup_recovery_pending = true;
         return;
       }
 
       pt::ptree new_tree;
-      const auto new_load_result = load_tree_for_read(new_path, new_tree);
+      const auto new_load_result = load_tree_for_read(new_path, new_tree, true);
       if (new_load_result == policy::load_result_e::failed) {
         return;
       }
