@@ -316,4 +316,12 @@ namespace platf {
 
   windows_version_info_t query_windows_version();
   bool is_windows_11_or_later();
+
+  /**
+   * @brief Finish restoring Mouse Keys if an earlier Sunshine process exited first.
+   *
+   * Sunshine records the user's Mouse Keys settings while it has Mouse Keys
+   * turned on. Call once at startup.
+   */
+  void recover_mouse_keys();
 }  // namespace platf

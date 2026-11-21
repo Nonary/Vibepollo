@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <csignal>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <iterator>
 #include <limits>
@@ -230,6 +231,10 @@ namespace platf {
 
   std::mutex mouse_keys_mutex;
   bool enabled_mouse_keys = false;
+  // Mouse Keys was left on after a stream because turning it off would have
+  // hidden the cursor (see restore_mouse_keys_locked).
+  bool mouse_keys_restore_deferred = false;
+  bool mouse_keys_restore_poll_scheduled = false;
   MOUSEKEYS previous_mouse_keys_state;
 
   HANDLE qos_handle = nullptr;
@@ -1732,6 +1737,374 @@ namespace platf {
     enable_mouse_keys();
   }
 
+  namespace {
+    MOUSEKEYS streaming_mouse_keys_state() {
+      MOUSEKEYS state = {};
+      state.cbSize = sizeof(state);
+      state.dwFlags = MKF_MOUSEKEYSON | MKF_AVAILABLE;
+      state.iMaxSpeed = 10;
+      state.iTimeToMaxSpeed = 1000;
+      return state;
+    }
+
+    bool same_mouse_keys(const MOUSEKEYS &lhs, const MOUSEKEYS &rhs) {
+      return lhs.dwFlags == rhs.dwFlags && lhs.iMaxSpeed == rhs.iMaxSpeed &&
+             lhs.iTimeToMaxSpeed == rhs.iTimeToMaxSpeed && lhs.iCtrlSpeed == rhs.iCtrlSpeed;
+    }
+
+    /**
+     * @brief The Mouse Keys settings that undo Sunshine's change and nothing else.
+     *
+     * Every field, and every flag bit, that still holds the value Sunshine set gets
+     * the user's original value back. Anything changed since, for example in
+     * Settings while the restore was deferred, keeps its current value.
+     */
+    MOUSEKEYS mouse_keys_restore_target(const MOUSEKEYS &current, const MOUSEKEYS &original) {
+      const auto ours = streaming_mouse_keys_state();
+      const auto restore = [](const auto current_value, const auto ours_value, const auto original_value) {
+        return current_value == ours_value ? original_value : current_value;
+      };
+
+      MOUSEKEYS target = current;
+      target.cbSize = sizeof(target);
+      const auto unchanged_flags = ~(current.dwFlags ^ ours.dwFlags);
+      target.dwFlags = (current.dwFlags & ~unchanged_flags) | (original.dwFlags & unchanged_flags);
+      target.iMaxSpeed = restore(current.iMaxSpeed, ours.iMaxSpeed, original.iMaxSpeed);
+      target.iTimeToMaxSpeed = restore(current.iTimeToMaxSpeed, ours.iTimeToMaxSpeed, original.iTimeToMaxSpeed);
+      target.iCtrlSpeed = restore(current.iCtrlSpeed, ours.iCtrlSpeed, original.iCtrlSpeed);
+      return target;
+    }
+
+    /**
+     * @brief The interactive logon whose Mouse Keys settings this process changes.
+     *
+     * Mouse Keys settings belong to a logon. The service starts Sunshine in the
+     * active console session, so a later process can run in another session, or
+     * in a later logon that reuses this session ID. The logon time tells those
+     * logons apart.
+     */
+    struct mouse_keys_owner_t {
+      DWORD session_id = 0;
+      std::int64_t logon_time = 0;
+    };
+
+    std::optional<mouse_keys_owner_t> current_mouse_keys_owner() {
+      DWORD session_id = 0;
+      if (!ProcessIdToSessionId(GetCurrentProcessId(), &session_id)) {
+        return std::nullopt;
+      }
+      WTSINFOW *info = nullptr;
+      DWORD bytes = 0;
+      if (!WTSQuerySessionInformationW(WTS_CURRENT_SERVER_HANDLE, session_id, WTSSessionInfo, reinterpret_cast<LPWSTR *>(&info), &bytes) || !info) {
+        return std::nullopt;
+      }
+      const std::int64_t logon_time = info->LogonTime.QuadPart;
+      WTSFreeMemory(info);
+      if (logon_time == 0) {
+        return std::nullopt;  // No user is logged on to this session.
+      }
+      return mouse_keys_owner_t {session_id, logon_time};
+    }
+
+    // The owner of the record this process wrote, guarded by mouse_keys_mutex.
+    std::optional<mouse_keys_owner_t> mouse_keys_record_owner;
+
+    /**
+     * @brief Path of the record that Sunshine owns a logon's Mouse Keys settings.
+     *
+     * It exists from turning Mouse Keys on until the user's settings are restored,
+     * and holds those settings and the logon they belong to. Mouse Keys changes
+     * last for the logon, so if Sunshine exits first, including while the restore
+     * is deferred, the next process in that logon finishes the restore at startup
+     * (see recover_mouse_keys). Each session has its own record, so a process in
+     * another session leaves it alone.
+     */
+    std::filesystem::path mouse_keys_record_path(const DWORD session_id) {
+      return appdata() / ("mouse_keys_restore-" + std::to_string(session_id) + ".txt");
+    }
+
+    constexpr std::string_view mouse_keys_record_tag = "vibepollo-mouse-keys-v2";
+
+    void write_mouse_keys_record(const MOUSEKEYS &original) {
+      const auto owner = current_mouse_keys_owner();
+      if (owner) {
+        try {
+          std::ofstream file {mouse_keys_record_path(owner->session_id), std::ios::binary | std::ios::trunc};
+          file << mouse_keys_record_tag << ' ' << owner->logon_time << ' ' << original.dwFlags << ' '
+               << original.iMaxSpeed << ' ' << original.iTimeToMaxSpeed << ' ' << original.iCtrlSpeed << '\n';
+          file.flush();
+          if (file.good()) {
+            mouse_keys_record_owner = owner;
+            return;
+          }
+        } catch (...) {
+        }
+      }
+      BOOST_LOG(warning) << "Unable to record the original state of Mouse Keys; it will not be restored if Sunshine exits first."sv;
+    }
+
+    void clear_mouse_keys_record() {
+      if (!mouse_keys_record_owner) {
+        return;
+      }
+      std::error_code ec;
+      std::filesystem::remove(mouse_keys_record_path(mouse_keys_record_owner->session_id), ec);
+      mouse_keys_record_owner.reset();
+    }
+
+    /**
+     * @brief Read the record for `owner`'s logon.
+     *
+     * A record from an earlier logon that reused the session ID belongs to
+     * settings Windows has already reset, so it is discarded without a restore.
+     */
+    std::optional<MOUSEKEYS> read_mouse_keys_record(const mouse_keys_owner_t &owner) {
+      const auto path = mouse_keys_record_path(owner.session_id);
+      std::error_code ec;
+      if (!std::filesystem::exists(path, ec)) {
+        return std::nullopt;
+      }
+      bool readable = false;
+      try {
+        std::ifstream file {path, std::ios::binary};
+        std::string tag;
+        std::int64_t logon_time = 0;
+        std::uint32_t flags = 0, max_speed = 0, time_to_max_speed = 0, ctrl_speed = 0;
+        if (file >> tag >> logon_time >> flags >> max_speed >> time_to_max_speed >> ctrl_speed && tag == mouse_keys_record_tag) {
+          readable = true;
+          if (logon_time == owner.logon_time) {
+            MOUSEKEYS state = {};
+            state.cbSize = sizeof(state);
+            state.dwFlags = flags;
+            state.iMaxSpeed = max_speed;
+            state.iTimeToMaxSpeed = time_to_max_speed;
+            state.iCtrlSpeed = ctrl_speed;
+            return state;
+          }
+        }
+      } catch (...) {
+      }
+      if (readable) {
+        BOOST_LOG(info) << "Discarding a Mouse Keys record from an earlier logon to this session."sv;
+      } else {
+        BOOST_LOG(warning) << "Ignoring an unreadable record of the original Mouse Keys state."sv;
+      }
+      std::filesystem::remove(path, ec);
+      return std::nullopt;
+    }
+
+    // A restore Windows refused is retried every second; only the first failure
+    // in a row is logged as a warning. Guarded by mouse_keys_mutex.
+    bool mouse_keys_restore_failing = false;
+
+    /// @pre `mouse_keys_mutex` is held.
+    void log_mouse_keys_restore_failure(const std::string_view what, const DWORD winerr) {
+      if (mouse_keys_restore_failing) {
+        BOOST_LOG(debug) << what << ": "sv << winerr;
+      } else {
+        BOOST_LOG(warning) << what << ": "sv << winerr << "; retrying every second."sv;
+      }
+      mouse_keys_restore_failing = true;
+    }
+
+    /// @pre `mouse_keys_mutex` is held.
+    void release_mouse_keys_locked() {
+      enabled_mouse_keys = false;
+      mouse_keys_restore_deferred = false;
+      mouse_keys_restore_failing = false;
+      clear_mouse_keys_record();
+    }
+
+    /**
+     * @brief Whether the raw input stack lists any mouse.
+     *
+     * Unlike `SM_MOUSEPRESENT`, this is neither faked by Mouse Keys nor left stale
+     * when Windows misses a mouse arrival.
+     *
+     * @return Whether a mouse is listed, or `std::nullopt` if enumeration failed.
+     */
+    std::optional<bool> raw_input_mouse_present() {
+      for (int attempt = 0; attempt < 3; ++attempt) {
+        UINT count = 0;
+        if (GetRawInputDeviceList(nullptr, &count, sizeof(RAWINPUTDEVICELIST)) == static_cast<UINT>(-1)) {
+          return std::nullopt;
+        }
+        if (count == 0) {
+          return false;
+        }
+
+        std::vector<RAWINPUTDEVICELIST> devices(count);
+        const auto listed = GetRawInputDeviceList(devices.data(), &count, sizeof(RAWINPUTDEVICELIST));
+        if (listed == static_cast<UINT>(-1)) {
+          if (GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+            continue;  // A device arrived between the two calls.
+          }
+          return std::nullopt;
+        }
+
+        return std::any_of(devices.begin(), devices.begin() + listed, [](const RAWINPUTDEVICELIST &device) {
+          return device.dwType == RIM_TYPEMOUSE;
+        });
+      }
+      return std::nullopt;
+    }
+
+    enum class mouse_keys_restore_e {
+      restored,  ///< Sunshine no longer owns Mouse Keys.
+      failed,  ///< Windows refused to read or restore the settings; Mouse Keys is unchanged.
+      kept_on,  ///< Restoring would or might hide the cursor, so Mouse Keys was turned back on.
+    };
+
+    /**
+     * @brief Restore the user's Mouse Keys settings, unless that would hide the cursor.
+     *
+     * Windows only notices a mouse when the first one arrives after there were none.
+     * If that arrival happens while Mouse Keys is on (a KVM or monitor USB hub
+     * reconnecting during a stream, or a Bluetooth mouse waking up), Windows misses
+     * it: turning Mouse Keys off leaves `SM_MOUSEPRESENT` at 0 and the cursor hidden
+     * while the mouse still moves it, until every mouse is removed and reconnected.
+     * Detect that, or a failed check for it, and turn Mouse Keys back on so the
+     * cursor stays visible.
+     *
+     * Only the settings Sunshine still holds are restored, so if the current
+     * settings cannot be read, nothing is written: Sunshine keeps ownership and
+     * the record, and the caller retries.
+     *
+     * @pre `mouse_keys_mutex` is held and `enabled_mouse_keys` is true.
+     */
+    mouse_keys_restore_e restore_mouse_keys_locked() {
+      MOUSEKEYS current = {};
+      current.cbSize = sizeof(current);
+      if (!SystemParametersInfoW(SPI_GETMOUSEKEYS, 0, &current, 0)) {
+        log_mouse_keys_restore_failure("Unable to read the current state of Mouse Keys to restore it"sv, GetLastError());
+        return mouse_keys_restore_e::failed;
+      }
+      auto target = mouse_keys_restore_target(current, previous_mouse_keys_state);
+      if (same_mouse_keys(target, current)) {
+        // Every setting Sunshine changed has been changed again since.
+        release_mouse_keys_locked();
+        return mouse_keys_restore_e::restored;
+      }
+
+      if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &target, 0)) {
+        log_mouse_keys_restore_failure("Unable to restore original state of Mouse Keys"sv, GetLastError());
+        return mouse_keys_restore_e::failed;
+      }
+
+      if (GetSystemMetrics(SM_MOUSEPRESENT) || raw_input_mouse_present() == false) {
+        release_mouse_keys_locked();
+        return mouse_keys_restore_e::restored;
+      }
+
+      if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &current, 0)) {
+        auto winerr = GetLastError();
+        BOOST_LOG(warning) << "Windows may have lost track of the connected mouse and hidden its cursor; unable to turn Mouse Keys back on: "sv << winerr;
+        release_mouse_keys_locked();
+        return mouse_keys_restore_e::restored;
+      }
+      mouse_keys_restore_failing = false;
+      return mouse_keys_restore_e::kept_on;
+    }
+
+    void poll_mouse_keys_restore();
+
+    /// @pre `mouse_keys_mutex` is held.
+    void schedule_mouse_keys_poll_locked() {
+      if (!mouse_keys_restore_poll_scheduled) {
+        mouse_keys_restore_poll_scheduled = true;
+        task_pool.pushDelayed(poll_mouse_keys_restore, 1s);
+      }
+    }
+
+    /**
+     * @brief Restore Mouse Keys now, or keep it on and retry.
+     *
+     * A restore that would hide the cursor is deferred until no mouse is
+     * connected. One that Windows refused, including a failed read of the current
+     * settings, is retried every second.
+     *
+     * @pre `mouse_keys_mutex` is held and `enabled_mouse_keys` is true.
+     */
+    void restore_or_defer_mouse_keys_locked() {
+      switch (restore_mouse_keys_locked()) {
+        case mouse_keys_restore_e::restored:
+          return;
+        case mouse_keys_restore_e::failed:
+          schedule_mouse_keys_poll_locked();
+          return;
+        case mouse_keys_restore_e::kept_on:
+          if (!mouse_keys_restore_deferred) {
+            BOOST_LOG(warning) << "Keeping Mouse Keys on: a mouse may have reconnected while it was on, and if Windows lost track of it, "
+                                  "turning Mouse Keys off would hide the cursor. It will be restored once no mouse is connected."sv;
+          }
+          mouse_keys_restore_deferred = true;
+          schedule_mouse_keys_poll_locked();
+          return;
+      }
+    }
+
+    /**
+     * @brief Retry a restore that Windows refused or that was deferred.
+     *
+     * A refused restore is retried like a stream end. A deferred one runs once no
+     * mouse is connected: the next mouse to arrive is then counted normally. An
+     * enumeration error or a failed read proves nothing, so it only retries. A
+     * later stream's end also retries the restore.
+     */
+    void poll_mouse_keys_restore() {
+      const auto lock = std::lock_guard(mouse_keys_mutex);
+      mouse_keys_restore_poll_scheduled = false;
+      if (!enabled_mouse_keys) {
+        mouse_keys_restore_deferred = false;
+        return;
+      }
+      if (!mouse_keys_restore_deferred) {
+        restore_or_defer_mouse_keys_locked();
+        return;
+      }
+
+      MOUSEKEYS current = {};
+      current.cbSize = sizeof(current);
+      if (SystemParametersInfoW(SPI_GETMOUSEKEYS, 0, &current, 0)) {
+        auto target = mouse_keys_restore_target(current, previous_mouse_keys_state);
+        if (same_mouse_keys(target, current)) {
+          BOOST_LOG(info) << "Mouse Keys was changed since the stream ended; keeping the new settings."sv;
+          release_mouse_keys_locked();
+          return;
+        }
+
+        if (raw_input_mouse_present() == false && SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &target, 0)) {
+          BOOST_LOG(info) << "No mouse is connected anymore; restored the original state of Mouse Keys."sv;
+          release_mouse_keys_locked();
+          return;
+        }
+      }
+
+      schedule_mouse_keys_poll_locked();
+    }
+  }  // namespace
+
+  void recover_mouse_keys() {
+    const auto lock = std::lock_guard(mouse_keys_mutex);
+    if (enabled_mouse_keys) {
+      return;
+    }
+    const auto owner = current_mouse_keys_owner();
+    if (!owner) {
+      return;
+    }
+    const auto original = read_mouse_keys_record(*owner);
+    if (!original) {
+      return;
+    }
+
+    BOOST_LOG(info) << "Sunshine exited before restoring the original state of Mouse Keys; restoring it now."sv;
+    previous_mouse_keys_state = *original;
+    enabled_mouse_keys = true;
+    mouse_keys_record_owner = owner;
+    restore_or_defer_mouse_keys_locked();
+  }
+
   void enable_mouse_keys() {
     // Capture threads check every frame, including concurrent streams. Keep the
     // original snapshot until restoration succeeds instead of saving our own
@@ -1748,16 +2121,12 @@ namespace platf {
       // Get the current state of Mouse Keys so we can restore it when streaming is over
       previous_mouse_keys_state.cbSize = sizeof(previous_mouse_keys_state);
       if (SystemParametersInfoW(SPI_GETMOUSEKEYS, 0, &previous_mouse_keys_state, 0)) {
-        MOUSEKEYS new_mouse_keys_state = {};
-
-        // Enable Mouse Keys
-        new_mouse_keys_state.cbSize = sizeof(new_mouse_keys_state);
-        new_mouse_keys_state.dwFlags = MKF_MOUSEKEYSON | MKF_AVAILABLE;
-        new_mouse_keys_state.iMaxSpeed = 10;
-        new_mouse_keys_state.iTimeToMaxSpeed = 1000;
+        auto new_mouse_keys_state = streaming_mouse_keys_state();
         if (SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &new_mouse_keys_state, 0)) {
-          // Remember to restore the previous settings when we stop streaming
+          // Remember to restore the previous settings when we stop streaming,
+          // even if Sunshine exits first.
           enabled_mouse_keys = true;
+          write_mouse_keys_record(previous_mouse_keys_state);
         } else {
           auto winerr = GetLastError();
           BOOST_LOG(warning) << "Unable to enable Mouse Keys: "sv << winerr;
@@ -1793,12 +2162,7 @@ namespace platf {
     // Restore Mouse Keys back to the previous settings if we turned it on
     const auto lock = std::lock_guard(mouse_keys_mutex);
     if (enabled_mouse_keys) {
-      if (!SystemParametersInfoW(SPI_SETMOUSEKEYS, 0, &previous_mouse_keys_state, 0)) {
-        auto winerr = GetLastError();
-        BOOST_LOG(warning) << "Unable to restore original state of Mouse Keys: "sv << winerr;
-      } else {
-        enabled_mouse_keys = false;
-      }
+      restore_or_defer_mouse_keys_locked();
     }
   }
 
