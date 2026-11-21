@@ -260,7 +260,6 @@ int main() {
     Manager m;
     m.ipc().mutex.on_wait = [&](unsigned) {
       m._shutting_down = true;
-      m._delivery_stop = true;
       return S_OK;
     };
     m.capture(301);

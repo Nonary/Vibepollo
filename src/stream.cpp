@@ -683,6 +683,10 @@ namespace stream {
       std::string ping_payload;
 
       std::uint32_t lowseq;
+#ifdef _WIN32
+      // The UDP sender owns this unwrapped clock for the lifetime of the session.
+      std::optional<std::int64_t> last_sent_rtp_tick;
+#endif
       udp::endpoint peer;
 
       std::optional<crypto::cipher::gcm_t> cipher;
@@ -2654,8 +2658,16 @@ namespace stream {
       BOOST_LOG(verbose) << "Generating "sv << fec_blocks_needed << " FEC blocks"sv;
 
       std::size_t frame_packets_accepted = 0;
+#ifdef _WIN32
+      std::int64_t frame_rtp_tick = 0;
+#endif
       const auto bytes_per_packet = blocksize + (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
       auto account_accepted_packets = util::fail_guard([&] {
+#ifdef _WIN32
+        if (frame_packets_accepted != 0) {
+          session->video.last_sent_rtp_tick = frame_rtp_tick;
+        }
+#endif
         // These counters feed session-history bitrate. Preserve actual socket
         // traffic even when only a prefix of the frame was accepted.
         session->stats.packets_sent.fetch_add(frame_packets_accepted, std::memory_order_relaxed);
@@ -2881,9 +2893,19 @@ namespace stream {
           // had the encode time to deliver those presents.
           packet->frame_timestamp = platf::dxgi::present_timing::refine_send_timestamp(*packet->frame_timestamp);
         }
-#endif
+        // A repeat sent during a capture stall can have a newer stamp than
+        // the recovered image's source time. Advance only the RTP wire clock
+        // in that case and keep the source stamp for timing diagnostics.
+        using rtp_tick = std::chrono::duration<std::int64_t, std::ratio<1, 90000>>;
+        frame_rtp_tick = std::chrono::round<rtp_tick>(*packet->frame_timestamp - video_epoch).count();
+        if (session->video.last_sent_rtp_tick && frame_rtp_tick <= *session->video.last_sent_rtp_tick) {
+          frame_rtp_tick = *session->video.last_sent_rtp_tick + 1;
+        }
+        const auto timestamp = static_cast<std::uint32_t>(frame_rtp_tick);
+#else
         using rtp_tick = std::chrono::duration<uint32_t, std::ratio<1, 90000>>;
         const uint32_t timestamp = std::chrono::round<rtp_tick>(*packet->frame_timestamp - video_epoch).count();
+#endif
 
         // PyroWave record framing: flag the shards that start with a record, where a
         // client that lost a record header resumes parsing.
