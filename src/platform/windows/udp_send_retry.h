@@ -15,6 +15,10 @@ namespace platf::udp_send_retry {
     unsigned retries = 0;
   };
 
+  inline bool segmented_send_would_block(const result_t &result, bool segmented) {
+    return segmented && result.timed_out && result.error == WSAEWOULDBLOCK;
+  }
+
   inline bool pressure_error(int error) {
     return error == WSAENOBUFS || error == WSAEWOULDBLOCK;
   }
@@ -39,8 +43,9 @@ namespace platf::udp_send_retry {
    * No send is retried after the deadline, including when readiness is immediate.
    */
   template<class Send, class Wait, class Cancelled, class Now>
-  result_t send(Send &&attempt, Wait &&wait, Cancelled &&cancelled, Now &&now) {
-    const auto deadline = now() + retry_budget;
+  result_t send(Send &&attempt, Wait &&wait, Cancelled &&cancelled, Now &&now,
+                std::chrono::steady_clock::duration budget = retry_budget) {
+    const auto deadline = now() + budget;
     result_t result;
     for (;;) {
       if (cancelled()) {

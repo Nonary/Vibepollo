@@ -688,6 +688,10 @@ namespace stream {
       std::optional<std::int64_t> last_sent_rtp_tick;
 #endif
       udp::endpoint peer;
+#ifdef _WIN32
+      // Owned by the video broadcast thread.
+      video_send_fallback_t send_fallback;
+#endif
 
       std::optional<crypto::cipher::gcm_t> cipher;
       std::uint64_t gcm_iv_counter;
@@ -2475,6 +2479,13 @@ namespace stream {
       }
 
       auto lowseq = session->video.lowseq;
+#ifdef _WIN32
+      auto &send_fallback = session->video.send_fallback;
+      const bool send_individually = send_fallback.send_individually(packet_pop_timestamp);
+      bool segmented_would_block = false;
+#else
+      constexpr bool send_individually = false;
+#endif
       const auto send_cancelled = [&] {
         return shutdown_event->peek() || session->shutdown_event->peek() ||
                session->state.load(std::memory_order_acquire) == session::state_e::STOPPING;
@@ -3059,7 +3070,13 @@ namespace stream {
               const auto send_result = send_video_batch(
                 current_batch_size,
                 batch_info.allow_fallback,
-                [&] { return platf::send_batch(batch_info); },
+                [&] {
+                  const bool sent = platf::send_batch(batch_info);
+#ifdef _WIN32
+                  segmented_would_block = batch_info.segmented_send_would_block;
+#endif
+                  return sent;
+                },
                 [&](std::size_t y) {
                   auto send_info = platf::send_info_t {
                     shards.prefix(next_shard_to_send + y),
@@ -3072,9 +3089,11 @@ namespace stream {
                     session->localAddress,
                   };
                   send_info.send_cancelled = send_cancelled;
+                  send_info.retry_on_pressure = !send_individually;
                   return platf::send(send_info);
                 },
-                send_cancelled
+                send_cancelled,
+                send_individually
               );
               burst_fallback_batches += send_result.used_fallback;
               frame_packets_accepted += send_result.packets_accepted;
@@ -3268,6 +3287,11 @@ namespace stream {
           wire_timeline_state.previous_frame = current_wire_frame;
         }
 
+#ifdef _WIN32
+        if (send_fallback.frame_sent(send_individually, std::chrono::steady_clock::now())) {
+          BOOST_LOG(info) << "Windows video UDP: individual sends recovered a frame after segmented sends would block"sv;
+        }
+#endif
         // Update per-session performance counters
         session->stats.frames_sent.fetch_add(1, std::memory_order_relaxed);
         session->stats.last_frame_index.store(packet->frame_index(), std::memory_order_relaxed);
@@ -3279,6 +3303,9 @@ namespace stream {
           session->stats.video_send_failures.fetch_add(1, std::memory_order_relaxed);
           ++failed_video_frames;
           const auto now = std::chrono::steady_clock::now();
+#ifdef _WIN32
+          send_fallback.frame_failed(send_individually, segmented_would_block, now);
+#endif
           if (now >= next_send_failure_log) {
             BOOST_LOG(warning) << "Video frame send aborted: frame="sv << packet->frame_index()
                                << "; block="sv << e.block
@@ -3289,6 +3316,9 @@ namespace stream {
           }
         }
       } catch (const std::exception &e) {
+#ifdef _WIN32
+        send_fallback.frame_failed(send_individually, false, std::chrono::steady_clock::now());
+#endif
         BOOST_LOG(error) << "Broadcast video failed "sv << e.what();
         std::this_thread::sleep_for(100ms);
       }

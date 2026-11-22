@@ -2009,8 +2009,9 @@ namespace platf {
   }
 
   namespace {
-    int send_udp_message(SOCKET socket, WSAMSG &msg, const std::function<bool()> &send_cancelled) {
-      const auto result = udp_send_retry::send(
+    udp_send_retry::result_t send_udp_message(SOCKET socket, WSAMSG &msg, const std::function<bool()> &send_cancelled,
+                                             std::chrono::steady_clock::duration budget = udp_send_retry::retry_budget) {
+      return udp_send_retry::send(
         [&]() {
           DWORD bytes_sent;
           return WSASendMsg(socket, &msg, 0, &bytes_sent, nullptr, nullptr) == SOCKET_ERROR ? WSAGetLastError() : 0;
@@ -2044,9 +2045,9 @@ namespace platf {
           return 0;
         },
         [&]() { return send_cancelled && send_cancelled(); },
-        []() { return std::chrono::steady_clock::now(); }
+        []() { return std::chrono::steady_clock::now(); },
+        budget
       );
-      return result.error;
     }
   }  // namespace
 
@@ -2152,7 +2153,9 @@ namespace platf {
 
     msg.Control.len = cmbuflen;
 
-    const auto winerr = send_udp_message((SOCKET) send_info.native_socket, msg, send_info.send_cancelled);
+    const auto result = send_udp_message((SOCKET) send_info.native_socket, msg, send_info.send_cancelled);
+    const auto winerr = result.error;
+    send_info.segmented_send_would_block = udp_send_retry::segmented_send_would_block(result, send_info.block_count > 1);
     if (winerr == 0) {
       return true;
     }
@@ -2252,7 +2255,8 @@ namespace platf {
 
     msg.Control.len = cmbuflen;
 
-    const auto winerr = send_udp_message((SOCKET) send_info.native_socket, msg, send_info.send_cancelled);
+    const auto budget = send_info.retry_on_pressure ? udp_send_retry::retry_budget : std::chrono::milliseconds {0};
+    const auto winerr = send_udp_message((SOCKET) send_info.native_socket, msg, send_info.send_cancelled, budget).error;
     if (winerr == WSAEINTR) {
       return false;
     }
