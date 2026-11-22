@@ -740,7 +740,7 @@
     "max_bitrate": "最大比特率",
     "max_bitrate_desc": "Vibepollo 的最大比特率(Kbps) 将编码流。如果设置为 0，它将始终使用月亮请求的比特率。",
     "minimum_fps_target": "最低 FPS 目标",
-    "minimum_fps_target_desc": "串流可降到的最低有效 FPS。值为 0 时，约等于串流 FPS 的一半。如果串流 24 或 30 FPS 内容，建议设为 20。",
+    "minimum_fps_target_desc": "控制画面静止时的帧发送间隔。默认值为 20 FPS。设为 0 时，PyroWave 等异步编码器使用串流的帧间隔。macOS 上的 ScreenCaptureKit 使用串流帧率的五分之一，最低为 10 FPS。实际的帧发送间隔取决于捕获和编码方式。",
     "rtx_hdr_title": "RTX HDR（AI SDR → HDR）",
     "rtx_hdr_intro": "由应用启用的 RTX HDR 转换的默认调校值。在 RTX HDR 串流期间，桌面和不匹配的帧会使用 SDR 亮度，并保持中性对比度和饱和度。",
     "rtx_hdr": "RTX HDR",

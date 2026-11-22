@@ -29,6 +29,7 @@
 #include "config.h"
 #include "platform/common.h"
 #include "rtsp.h"
+#include "steam_big_picture_stream_policy.h"
 #include "steam_process_tracker.h"
 #include "utility.h"
 
@@ -179,6 +180,9 @@ namespace proc {
     friend void refresh(const std::string &file_name, bool needs_terminate);
     catalog::state_view_t catalog_state();
     int launch_app_commands(bool stream_lifecycle_lock_held, bool config_read_gate_held = false);
+#if defined(_WIN32) || defined(__linux__)
+    void run_steam_big_picture(platf::steam::stream_ui::action action);
+#endif
 
     std::atomic<int> _app_id {0};
     std::string _app_name;
@@ -203,6 +207,10 @@ namespace proc {
     bool placebo {};
 
     std::unique_ptr<managed_app_focus::session> _app_focus;
+    platf::steam::stream_ui::session _steam_big_picture;
+#ifdef _WIN32
+    std::optional<DWORD> _steam_big_picture_windows_session;
+#endif
     platf::steam::lifecycle::tracker _steam_tracker;
     std::shared_ptr<platf::steam::lifecycle::process_controller> _steam_process_controller;
     bool _steam_tracking_active {false};

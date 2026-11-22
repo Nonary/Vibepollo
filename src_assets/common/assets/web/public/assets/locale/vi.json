@@ -740,7 +740,7 @@
     "max_bitrate": "Tốc độ bit tối đa",
     "max_bitrate_desc": "Tốc độ bit tối đa (đơn vị Kbps) mà Vibepollo sẽ mã hóa luồng. Nếu đặt thành 0, nó sẽ luôn sử dụng tốc độ bit được yêu cầu bởi Moonlight.",
     "minimum_fps_target": "Mục tiêu FPS tối thiểu",
-    "minimum_fps_target_desc": "Tốc độ khung hình hiệu quả thấp nhất mà luồng có thể đạt được. Giá trị 0 được coi là khoảng một nửa tốc độ khung hình của luồng. Nên thiết lập giá trị 20 nếu bạn phát nội dung có tốc độ khung hình 24 hoặc 30fps.",
+    "minimum_fps_target_desc": "Điều chỉnh khoảng thời gian giữa các khung hình được gửi khi hình ảnh không thay đổi. Giá trị mặc định là 20 FPS. Khi đặt thành 0, các bộ mã hóa bất đồng bộ, bao gồm PyroWave, sử dụng khoảng thời gian giữa hai khung hình của luồng. Trên macOS, ScreenCaptureKit sử dụng một phần năm tốc độ khung hình của luồng, với mức tối thiểu là 10 FPS. Tần suất gửi khung hình thực tế phụ thuộc vào cách thu hình và mã hóa.",
     "rtx_hdr_title": "RTX HDR (AI SDR → HDR)",
     "rtx_hdr_intro": "Giá trị tinh chỉnh mặc định cho chuyển đổi RTX HDR do ứng dụng bật. Trong luồng RTX HDR, màn hình nền và các khung không khớp sử dụng SDR Brightness với độ tương phản và độ bão hòa trung tính.",
     "rtx_hdr": "RTX HDR",

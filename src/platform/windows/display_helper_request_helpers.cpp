@@ -307,20 +307,13 @@ namespace display_helper_integration::helpers {
       session_ {session},
       include_request_detail_log_fields_ {include_request_detail_log_fields} {
     effective_video_config_.dd.configuration_option = proc::display_policy::effective_preparation(
-      video_config.dd.configuration_option, session, virtual_display_intended
+      video_config.dd.configuration_option, session, virtual_display_intended, true
     );
     if (session.virtual_display_mode_override) {
       effective_video_config_.virtual_display_mode = *session.virtual_display_mode_override;
     }
     if (auto runtime_output_override = config::runtime_output_name_override()) {
       effective_video_config_.output_name = *runtime_output_override;
-    }
-    const auto effective_layout =
-      session_.virtual_display_layout_override.value_or(effective_video_config_.virtual_display_layout);
-    if ((session_.virtual_display || virtual_display_intended) &&
-        effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
-        effective_layout == config::video_t::virtual_display_layout_e::exclusive) {
-      effective_video_config_.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_only_display;
     }
   }
 
@@ -481,11 +474,7 @@ namespace display_helper_integration::helpers {
     if (auto resolved = resolve_virtual_device_id(effective_video_config_, session_)) {
       target_device_id = *resolved;
     }
-    const auto target_policy = request_policy::evaluate({
-      .virtual_display = true,
-      .target_device_id = target_device_id,
-    });
-    if (!target_policy.dispatch) {
+    if (target_device_id.empty()) {
       BOOST_LOG(warning) << "Display helper: virtual display target identity is not ready; skipping display configuration changes to avoid targeting a physical display.";
       builder.set_action(DisplayApplyAction::Skip);
       return false;
@@ -652,20 +641,13 @@ namespace display_helper_integration::helpers {
       session_ {session},
       include_request_detail_log_fields_ {include_request_detail_log_fields} {
     effective_video_config_.dd.configuration_option = proc::display_policy::effective_preparation(
-      video_config.dd.configuration_option, session
+      video_config.dd.configuration_option, session, false, true
     );
     if (session.virtual_display_mode_override) {
       effective_video_config_.virtual_display_mode = *session.virtual_display_mode_override;
     }
     if (auto runtime_output_override = config::runtime_output_name_override()) {
       effective_video_config_.output_name = *runtime_output_override;
-    }
-    const auto effective_layout =
-      session_.virtual_display_layout_override.value_or(effective_video_config_.virtual_display_layout);
-    if (session_.virtual_display &&
-        effective_video_config_.dd.configuration_option == config::video_t::dd_t::config_option_e::disabled &&
-        effective_layout == config::video_t::virtual_display_layout_e::exclusive) {
-      effective_video_config_.dd.configuration_option = config::video_t::dd_t::config_option_e::ensure_only_display;
     }
   }
 
@@ -922,7 +904,7 @@ namespace display_helper_integration::helpers {
     const bool include_request_detail_log_fields
   ) {
     const auto effective_config_option =
-      proc::display_policy::effective_preparation(video_config.dd.configuration_option, session);
+      proc::display_policy::effective_preparation(video_config.dd.configuration_option, session, false, true);
     const auto policy = request_policy::evaluate({
       .configuration_option = effective_config_option == config::video_t::dd_t::config_option_e::disabled ?
                                 request_policy::ConfigurationOption::Disabled :
@@ -939,7 +921,7 @@ namespace display_helper_integration::helpers {
       if (session.virtual_display && session.virtual_display_device_id.empty()) {
         BOOST_LOG(warning) << "Display helper: virtual display target identity is not ready; deferring display configuration changes.";
       } else {
-        BOOST_LOG(info) << "Display helper: physical output override with display configuration disabled; using capture target only.";
+        BOOST_LOG(info) << "Display helper: display automation is disabled; using capture target only.";
       }
       return std::nullopt;
     }

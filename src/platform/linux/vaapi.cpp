@@ -249,6 +249,11 @@ namespace va {
         av_dict_set_int(options, "low_power", 1, 0);
       } else {
         BOOST_LOG(info) << "Using normal encoding mode"sv;
+        // The common encoder options request low_power=1. Drivers that only expose
+        // VAEntrypointEncSlice (e.g. radeonsi) have no LP entrypoint, so FFmpeg fails the
+        // first open with "No usable encoding entrypoint found". Request the entrypoint
+        // we actually selected so the first attempt succeeds instead of the fallback retry.
+        av_dict_set_int(options, "low_power", 0, 0);
       }
 
       VAConfigAttrib rc_attr = {VAConfigAttribRateControl};
@@ -439,6 +444,7 @@ namespace va {
       }
 
       sws.load_vram(descriptor, offset_x, offset_y, rgb->tex[0]);
+      sws.apply_output_lut(descriptor.crtc_gamma_lut, descriptor.crtc_gamma_lut_serial);
 
       sws.convert(nv12->buf);
       return 0;

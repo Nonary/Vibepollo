@@ -756,6 +756,7 @@ namespace platf {
 
   bool send_batch(batched_send_info_t &send_info) {
     // Fall back to unbatched send calls
+    send_info.socket_error = 0;
     return false;
   }
 
@@ -765,6 +766,7 @@ namespace platf {
   constexpr std::chrono::milliseconds send_poll_interval {10};
 
   bool send(send_info_t &send_info) {
+    send_info.socket_error = 0;
     auto sockfd = (int) send_info.native_socket;
     struct msghdr msg = {};
 
@@ -858,8 +860,9 @@ namespace platf {
 
       const auto ready = poll(&pfd, 1, static_cast<int>(send_poll_interval.count()));
       if (ready < 0 && errno != EINTR) {
-        BOOST_LOG(warning) << "poll() failed: "sv << errno;
-        break;
+        send_info.socket_error = errno;
+        BOOST_LOG(warning) << "poll() failed: "sv << send_info.socket_error;
+        return false;
       }
       if (ready <= 0) {
         if (std::chrono::steady_clock::now() >= give_up_at) {
@@ -870,6 +873,7 @@ namespace platf {
           if (now - last >= 5 && last_logged.compare_exchange_strong(last, now)) {
             BOOST_LOG(warning) << "Dropping packets the network won't take; the client may have gone"sv;
           }
+          send_info.socket_error = EAGAIN;
           return false;
         }
         errno = EAGAIN;
@@ -881,7 +885,8 @@ namespace platf {
     }
 
     if (bytes_sent < 0) {
-      BOOST_LOG(warning) << "sendmsg() failed: "sv << errno;
+      send_info.socket_error = errno;
+      BOOST_LOG(warning) << "sendmsg() failed: "sv << send_info.socket_error;
       return false;
     }
 

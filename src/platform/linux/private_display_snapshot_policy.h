@@ -36,7 +36,8 @@ namespace platf::linux_private_display::snapshot_policy {
         if (!safe_identifier(name) || !names.insert(name).second) {
           return false;
         }
-        if (output.contains("hdr") && !output["hdr"].is_boolean()) {
+        if ((output.contains("hdr") && !output["hdr"].is_boolean()) ||
+            (output.contains("wcg") && !output["wcg"].is_boolean())) {
           return false;
         }
         const auto scale = output.value("scale", 1.0);

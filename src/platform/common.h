@@ -1051,6 +1051,11 @@ namespace platf {
     // Output: a rejected segmented batch may be retried as individual packets.
     // Terminal errors, cancellation and exhausted pressure retries forbid that.
     bool allow_fallback {true};
+    // Windows only: a segmented message repeatedly would block. The video
+    // sender can try individual datagrams on a later frame.
+    bool segmented_send_would_block {false};
+    // Native error from the failed batch (zero when no socket error is available).
+    int socket_error {0};
 
     /**
      * @brief Returns a payload buffer descriptor for the given payload offset.
@@ -1085,6 +1090,10 @@ namespace platf {
     uint16_t target_port;
     boost::asio::ip::address &source_address;
     std::function<bool()> send_cancelled {};
+    // Windows video recovery attempts each datagram once on the shared sender.
+    bool retry_on_pressure {true};
+    // Native error from the failed datagram.
+    int socket_error {0};
   };
 
   bool send(send_info_t &send_info);

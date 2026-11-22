@@ -51,6 +51,7 @@
 #include "app_framegen_config.h"
 #include "audio.h"
 #include "config.h"
+#include "config_steam.h"
 #include "confighttp.h"
 #include "crypto.h"
 #include "display_device.h"
@@ -80,6 +81,8 @@
   #include "tools/playnite_launcher/lossless_scaling.h"
 
   #include <Psapi.h>
+  #include <tlhelp32.h>
+  #include <wtsapi32.h>
 #elif defined(__linux__)
   #include "platform/linux/gamescopegrab.h"
   #include "platform/linux/frame_limiter.h"
@@ -89,7 +92,6 @@
   #include "platform/linux/secure_open.h"
   #include "platform/linux/smooth_motion_policy.h"
   #include "platform/linux/wayland_hdr_compatibility.h"
-  #include "steam_integration.h"
 
   #include <fcntl.h>
   #include <linux/openat2.h>
@@ -116,6 +118,7 @@
 #include "rtsp.h"
 #include "shutdown_signal.h"
 #include "state_storage.h"
+#include "steam_integration.h"
 #include "stream.h"
 #include "system_tray.h"
 #include "utility.h"
@@ -1053,6 +1056,10 @@ namespace proc {
       _active_client_vdd_identity_token(other._active_client_vdd_identity_token),
       placebo(other.placebo),
       _app_focus(std::move(other._app_focus)),
+      _steam_big_picture(std::move(other._steam_big_picture)),
+#ifdef _WIN32
+      _steam_big_picture_windows_session(std::exchange(other._steam_big_picture_windows_session, std::nullopt)),
+#endif
       _steam_tracker(std::move(other._steam_tracker)),
       _steam_process_controller(std::move(other._steam_process_controller)),
       _steam_tracking_active(other._steam_tracking_active),
@@ -1099,6 +1106,10 @@ namespace proc {
       _active_client_vdd_identity_token = other._active_client_vdd_identity_token;
       placebo = other.placebo;
       _app_focus = std::move(other._app_focus);
+      _steam_big_picture = std::move(other._steam_big_picture);
+#ifdef _WIN32
+      _steam_big_picture_windows_session = std::exchange(other._steam_big_picture_windows_session, std::nullopt);
+#endif
       _steam_tracker = std::move(other._steam_tracker);
       _steam_process_controller = std::move(other._steam_process_controller);
       _steam_tracking_active = other._steam_tracking_active;
@@ -2418,6 +2429,88 @@ namespace proc {
     return launch_app_commands(true, config_read_gate_held);
   }
 
+  namespace {
+    using big_picture_action = platf::steam::stream_ui::action;
+
+#ifdef _WIN32
+    std::optional<DWORD> steam_command_windows_session() {
+      DWORD session = WTSGetActiveConsoleSessionId();
+      if (!platf::is_running_as_system() && !ProcessIdToSessionId(GetCurrentProcessId(), &session)) {
+        return std::nullopt;
+      }
+      return session && session != 0xFFFFFFFF ? std::optional<DWORD> {session} : std::nullopt;
+    }
+
+    // A URI handler can start Steam. Skip it at teardown if the client exited.
+    bool interactive_steam_is_running(DWORD session) {
+      const HANDLE processes = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+      if (processes == INVALID_HANDLE_VALUE) {
+        return false;
+      }
+      auto close_snapshot = util::fail_guard([&] { CloseHandle(processes); });
+      PROCESSENTRY32W entry {};
+      entry.dwSize = sizeof(entry);
+      for (BOOL found = Process32FirstW(processes, &entry); found; found = Process32NextW(processes, &entry)) {
+        DWORD process_session = 0;
+        if (CompareStringOrdinal(entry.szExeFile, -1, L"steam.exe", -1, TRUE) == CSTR_EQUAL &&
+            ProcessIdToSessionId(entry.th32ProcessID, &process_session) && process_session == session) {
+          return true;
+        }
+      }
+      return false;
+    }
+#endif
+
+  }  // namespace
+
+#if defined(_WIN32) || defined(__linux__)
+  void proc_t::run_steam_big_picture(big_picture_action action) {
+    const auto uri = platf::steam::stream_ui::uri(action);
+    try {
+#ifdef _WIN32
+      const auto target = steam_command_windows_session();
+      if (action == big_picture_action::open) {
+        _steam_big_picture_windows_session = target;
+      } else {
+        // Do not close Big Picture in a different signed-in desktop.
+        const auto original = std::exchange(_steam_big_picture_windows_session, std::nullopt);
+        if (!original || original != target || !interactive_steam_is_running(*original)) {
+          return;
+        }
+      }
+      if (!target) return;
+      const std::string command = "cmd /c start \"\" " + std::string(uri);
+#else
+      const bool machine_host = std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr;
+      const auto launcher = machine_host ?
+                              "/usr/libexec/vibeshine/vibepollo-steam-launch --big-picture-ui "sv :
+                              platf::steam::stream_ui::portable_linux_launcher(action);
+      const std::string command = std::string(launcher) + std::string(uri);
+#endif
+      std::error_code ec;
+      boost::filesystem::path working_dir;
+      auto child = platf::run_command(false, false, command, working_dir, _env, nullptr, ec, nullptr);
+      if (!ec && child) {
+        const auto deadline = std::chrono::steady_clock::now() + 2s;
+        while (child.running(ec) && !ec && std::chrono::steady_clock::now() < deadline) {
+          std::this_thread::sleep_for(25ms);
+        }
+        if (!ec && !child.running(ec) && !ec && child.exit_code() == 0) {
+          return;
+        }
+#ifdef __linux__
+        // Dropping the machine session-exec child cancels the supervised
+        // command. Only the portable open handler can itself become Steam.
+        if (!machine_host && action == big_picture_action::open) child.detach();
+#endif
+      }
+      BOOST_LOG(warning) << "Steam Big Picture command failed or timed out: " << uri;
+    } catch (const std::exception &error) {
+      BOOST_LOG(warning) << "Steam Big Picture command failed: " << uri << " (" << error.what() << ')';
+    }
+  }
+#endif
+
   int proc_t::launch_app_commands(bool stream_lifecycle_lock_held, bool config_read_gate_held) {
     std::error_code ec;
     _app_prep_begin = std::begin(_app.prep_cmds);
@@ -2702,6 +2795,17 @@ namespace proc {
           lossless_install_dir_hint.clear();
         }
       }
+#endif
+#if defined(_WIN32) || defined(__linux__)
+      const bool steam_big_picture_enabled = config::steam.enabled && config::steam.big_picture_on_stream;
+      const bool steam_mediated_launch = steam_big_picture_enabled && !_app.steam_id.empty() &&
+#ifdef __linux__
+                                         !platf::gamescope_capture_selected() &&
+#endif
+                                         platf::steam::runtime_launch_command(_app.steam_id, {}, true) == _app.cmd;
+      _steam_big_picture.start(steam_big_picture_enabled, steam_mediated_launch, [&](auto action) {
+        run_steam_big_picture(action);
+      });
 #endif
       // Steam's xdg-open/cmd URI launcher is intentionally short-lived. Take
       // the process baseline immediately before handing the URI to Steam so
@@ -3312,6 +3416,12 @@ namespace proc {
     _process_group = bp::group();
 
     _env["APOLLO_APP_STATUS"] = "TERMINATING";
+
+#if defined(_WIN32) || defined(__linux__)
+    _steam_big_picture.finish([&](auto action) {
+      run_steam_big_picture(action);
+    });
+#endif
 
     const bool has_run = had_active_app;
     const bool should_dispatch_revert = has_run && !proc::proc.get_last_run_app_name().empty();

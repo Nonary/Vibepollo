@@ -304,24 +304,17 @@ and generic application preparation. Dedicated application preparation takes
 precedence over its same-application generic representation; unset fields inherit
 the effective global configuration.
 
-An explicit application/client virtual target, virtual mode, or virtual layout
-can lift a lower-level VerifyOnly preparation to the layout's normal preparation.
-For example, global VerifyOnly plus an application extended-primary virtual
-layout prepares the virtual display as primary. An explicit VerifyOnly at the
-same or a higher level remains authoritative. Without a higher virtual override,
-VerifyOnly still verifies an existing extended target without preparing topology.
-Physical selections and explicit client disables do not trigger this promotion.
-The explicit preparation and deferred virtual-only promotion are stored on the
-launch session; they never write into the configuration file or runtime/global
-settings. Windows configuration, monitor-position, and request helpers consume
-that same policy. Linux private-display mode parsing consumes the same effective
-preparation after reserving the virtual target. Promotion applies only while
-creating or configuring a virtual target; a fallback to physical capture retains
-VerifyOnly. WebRTC resolves it before virtual-output selection is consumed.
-Vibepollo also finalizes preparation after resume fills in the running app's
-display settings, retaining the verified client's original display choice.
-These policy rules do not establish that a physical monitor honors a disable
-request; that requires separate runtime evidence.
+An explicit app or client virtual target, mode, or layout can allow normal
+layout preparation despite inherited Disabled or Verify Only. Windows also
+applies a virtual layout under inherited Verify Only when no higher-level
+preparation is set. An explicit paired-client Verify Only retains precedence
+over an app layout, and an explicit Disabled override remains authoritative.
+The resolved preparation and virtual choice are session fields. The Windows
+configuration, monitor-position and request helpers read those same fields.
+Linux private-display mode parsing retains its existing preparation policy.
+Physical fallback uses its own preparation. WebRTC resolves the verified
+client's display choice ahead of application preferences, and resume carries
+the resolved choice when it fills in settings from the running app.
 
 #### Nonblocking client display warning
 

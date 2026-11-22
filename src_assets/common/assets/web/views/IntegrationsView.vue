@@ -42,6 +42,7 @@ interface SteamStatus {
   excluded_game_count?: number;
   tool_game_count?: number;
   playnite_available?: boolean;
+  big_picture_on_stream?: boolean;
   auto_sync?: boolean;
   sync_all_installed?: boolean;
   recent_games?: number;
@@ -1152,13 +1153,18 @@ async function saveLutrisExclusions(): Promise<void> {
 }
 
 async function setSteamPolicy(
-  key: 'steam_auto_sync' | 'steam_sync_all_installed' | 'steam_autosync_remove_uninstalled',
+  key:
+    | 'steam_auto_sync'
+    | 'steam_sync_all_installed'
+    | 'steam_autosync_remove_uninstalled'
+    | 'steam_big_picture_on_stream',
   value: boolean,
 ): Promise<void> {
   try {
     await apiPatch('/api/config', { [key]: value });
     if (steam.value) {
-      if (key === 'steam_auto_sync') steam.value.auto_sync = value;
+      if (key === 'steam_big_picture_on_stream') steam.value.big_picture_on_stream = value;
+      else if (key === 'steam_auto_sync') steam.value.auto_sync = value;
       else if (key === 'steam_sync_all_installed') steam.value.sync_all_installed = value;
       else steam.value.autosync_remove_uninstalled = value;
     }
@@ -1396,6 +1402,29 @@ function libraryRequest(
             </div>
 
             <div class="integration-settings__rows">
+              <SettingRow
+                v-if="isWindows || isLinux"
+                class="steam-setting-row"
+                :label="t('ui.integrations.steam.bigPictureOnStream')"
+                :description="t('ui.integrations.steam.bigPictureOnStreamDescription')"
+                control-id="steam-big-picture-on-stream"
+              >
+                <label class="vs-switch">
+                  <input
+                    id="steam-big-picture-on-stream"
+                    type="checkbox"
+                    :checked="steam?.big_picture_on_stream === true"
+                    @change="
+                      setSteamPolicy(
+                        'steam_big_picture_on_stream',
+                        ($event.target as HTMLInputElement).checked,
+                      )
+                    "
+                  />
+                  <span class="vs-switch__track" aria-hidden="true" />
+                  <span class="vs-sr-only">{{ t('ui.integrations.steam.bigPictureOnStream') }}</span>
+                </label>
+              </SettingRow>
               <SettingRow
                 class="steam-setting-row"
                 :label="t('ui.integrations.steam.autoSync')"

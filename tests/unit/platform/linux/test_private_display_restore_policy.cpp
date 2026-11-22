@@ -33,6 +33,20 @@ namespace {
   }
 }
 
+TEST(LinuxPrivateDisplayRestorePolicy, RestoresWideGamutOnlyForSupportedManagedOutputs) {
+  auto saved = external_desktop();
+  saved["outputs"][1]["name"] = "Virtual-1";
+  saved["outputs"][1]["wcg"] = false;
+  auto current = saved;
+  current["outputs"][1]["wcg"] = true;
+  EXPECT_TRUE(policy::snapshot_matches(saved, current, true));
+  EXPECT_FALSE(policy::snapshot_matches(saved, current, true, {"Virtual-1"}));
+  current["outputs"][1]["wcg"] = false;
+  EXPECT_TRUE(policy::snapshot_matches(saved, current, true, {"Virtual-1"}));
+  current["outputs"][1].erase("wcg");
+  EXPECT_TRUE(policy::snapshot_matches(saved, current, true, {"Virtual-1"}));
+}
+
 TEST(LinuxPrivateDisplayRestorePolicy, SavesDesktopBeforeHotplugCanEnablePanelAndExtendMonitor) {
   auto desktop = external_desktop();
   const auto original = desktop;

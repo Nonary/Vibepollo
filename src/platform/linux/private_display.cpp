@@ -794,6 +794,11 @@ namespace platf::linux_private_display {
       if (saved.contains("hdr") && output_hdr_capable(present, name)) {
         arguments.push_back(prefix + "hdr." + std::string(saved.value("hdr", false) ? "enable" : "disable"));
       }
+      const auto saved_wcg = linux_hdr::observed_wcg(&saved);
+      const auto current_wcg = linux_hdr::observed_wcg(present);
+      if (saved_wcg && current_wcg && saved_wcg != current_wcg && is_managed_output(name)) {
+        arguments.push_back(prefix + (*saved_wcg ? "wcg.enable" : "wcg.disable"));
+      }
       return arguments;
     }
 
@@ -862,8 +867,10 @@ namespace platf::linux_private_display {
     }
 
     bool wait_for_snapshot_activation(const json &snapshot, const bool final = false) {
+      const auto managed = discover_managed_outputs();
+      const std::set<std::string> managed_outputs {managed.begin(), managed.end()};
       return wait_for_configuration([&](const json &current) {
-        return restore_policy::snapshot_matches(snapshot, current, final);
+        return restore_policy::snapshot_matches(snapshot, current, final, managed_outputs);
       }, final);
     }
 
@@ -1466,6 +1473,7 @@ namespace platf::linux_private_display {
     std::optional<double> diagnostic_expected_refresh_hz;
     std::optional<double> diagnostic_expected_scale;
     std::optional<bool> diagnostic_expected_hdr;
+    std::optional<bool> expected_wcg;
     std::string diagnostic_refresh_selection = "unresolved";
     std::string_view diagnostic_last_readback_stage = "not_observed";
     std::string diagnostic_mode_id;
@@ -1658,6 +1666,10 @@ namespace platf::linux_private_display {
       if (output) {
         const bool current_hdr = output->value("hdr", false) &&
                                  output_hdr_capable(nullptr, session.virtual_display_device_id);
+        if (current_hdr && expected_wcg == true && linux_hdr::observed_wcg(output) != true) {
+          BOOST_LOG(warning) << "Linux private display: HDR wide color gamut could not be verified on "
+                             << session.virtual_display_device_id << '.';
+        }
         if (rtsp_stream::hdr_capture_required(session, config::video) && !current_hdr) {
           session.force_sdr = true;
         }
@@ -1885,9 +1897,17 @@ namespace platf::linux_private_display {
     if (hdr_policy.command && !separate_hdr) {
       arguments.push_back(target_prefix + "hdr.disable");
     }
-    const std::vector<std::string> hdr_arguments = separate_hdr ?
-      std::vector<std::string> {target_prefix + "hdr." + std::string(*hdr_policy.command ? "enable" : "disable")} :
-      std::vector<std::string> {};
+    std::vector<std::string> hdr_arguments;
+    if (separate_hdr) {
+      hdr_arguments.push_back(target_prefix + "hdr.enable");
+    }
+    if (hdr_policy.command && linux_hdr::observed_wcg(target_before) && is_managed_output(session.virtual_display_device_id)) {
+      // KWin can use PQ with native EDID primaries until WCG is enabled.
+      // The HDR encoder expects the managed output to use BT.2020.
+      expected_wcg = hdr_policy.command;
+      auto &color_arguments = separate_hdr ? hdr_arguments : arguments;
+      color_arguments.push_back(target_prefix + (*expected_wcg ? "wcg.enable" : "wcg.disable"));
+    }
     const std::vector<std::string> hdr_rearm_arguments = linux_hdr::requires_hdr_rearm(hdr_policy.command, newly_connected) ?
       std::vector<std::string> {target_prefix + "hdr.disable"} :
       std::vector<std::string> {};
@@ -1953,7 +1973,8 @@ namespace platf::linux_private_display {
       if (!base_matches(current)) {
         return false;
       }
-      if (hdr_policy.command && output->value("hdr", false) != *hdr_policy.command) {
+      if ((hdr_policy.command && output->value("hdr", false) != *hdr_policy.command) ||
+          !linux_hdr::wcg_matches(expected_wcg, linux_hdr::observed_wcg(output))) {
         return false;
       }
       verified_hdr_enabled = hdr_capable && output->value("hdr", false);
@@ -1961,7 +1982,7 @@ namespace platf::linux_private_display {
     }, require_hdr_stability);
 
     if (!verified || !wait_for_capture_publication(session.virtual_display_device_id, session.exclusive_private_capture)) {
-      BOOST_LOG(error) << "Linux private display: timed out verifying mode/HDR/scale or capture state on "
+      BOOST_LOG(error) << "Linux private display: timed out verifying mode/HDR/WCG/scale or capture state on "
                        << session.virtual_display_device_id << '.';
       return use_current_output();
     }
@@ -2111,6 +2132,7 @@ namespace platf::linux_private_display {
       bool owned_client {false};
       std::string mode_id;
       double scale {1.0};
+      std::optional<bool> expected_wcg;
     };
 
     auto &manager = state();
@@ -2268,10 +2290,13 @@ namespace platf::linux_private_display {
               )) {
             hdr_rearm_arguments.push_back(prefix + "hdr.disable");
           }
-          if (linux_hdr::requires_post_modeset_transaction(entry.node.configured_mode.hdr)) {
-            hdr_arguments.push_back(prefix + "hdr.enable");
-          } else {
-            activate_arguments.push_back(prefix + "hdr.disable");
+          const bool hdr_enabled = entry.node.configured_mode.hdr;
+          auto &color_arguments = hdr_enabled ? hdr_arguments : activate_arguments;
+          color_arguments.push_back(prefix + (hdr_enabled ? "hdr.enable" : "hdr.disable"));
+          if (config::video.dd.hdr_option != config::video_t::dd_t::hdr_option_e::disabled &&
+              linux_hdr::observed_wcg(output) && is_managed_output(entry.name)) {
+            entry.expected_wcg = hdr_enabled;
+            color_arguments.push_back(prefix + (hdr_enabled ? "wcg.enable" : "wcg.disable"));
           }
         } else if (entry.node.configured_mode.hdr) {
           BOOST_LOG(error) << "Linux Remote Monitor: " << entry.name
@@ -2340,12 +2365,13 @@ namespace platf::linux_private_display {
           return true;
         }
         const auto *output = find_output(current, entry.name);
-        return !output_hdr_capable(output, entry.name) ||
-               output->value("hdr", false) == entry.node.configured_mode.hdr;
+        return (!output_hdr_capable(output, entry.name) ||
+                output->value("hdr", false) == entry.node.configured_mode.hdr) &&
+               linux_hdr::wcg_matches(entry.expected_wcg, linux_hdr::observed_wcg(output));
       });
     }, !hdr_rearm_arguments.empty());
     if (!verified) {
-      BOOST_LOG(error) << "Linux Remote Monitor: timed out verifying the composed mode/HDR/scale state.";
+      BOOST_LOG(error) << "Linux Remote Monitor: timed out verifying the composed mode/HDR/WCG/scale state.";
       return false;
     }
     const bool retired = restore_policy::retire_with_capture_guard(retiring_active_scanout, [&]() -> std::optional<std::string> {

@@ -118,6 +118,7 @@ namespace config {
     steam_t result;
     consume(vars, "steam_enabled", result.enabled);
     consume(vars, "steam_auto_sync", result.auto_sync);
+    consume(vars, "steam_big_picture_on_stream", result.big_picture_on_stream);
     consume(vars, "steam_sync_all_installed", result.sync_all_installed);
     consume(vars, "steam_recent_games", result.recent_games);
     consume(vars, "steam_recent_max_age_days", result.recent_max_age_days);

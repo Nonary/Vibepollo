@@ -240,7 +240,7 @@ namespace nvhttp {
   bool unpair_client(std::string_view uuid);
 
   bool has_client_uuid(std::string_view uuid);
-  bool get_client_always_use_virtual_display(const std::string &uuid);
+  void apply_client_display_routing(rtsp_stream::launch_session_t &session, const std::string &uuid);
 
   /**
    * @brief Enable or disable a client.

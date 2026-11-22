@@ -3,10 +3,10 @@
 
 #include <stdarg.h>
 
-// The supported snapshot budget is 64 outputs, with at most seven activation
+// The supported snapshot budget is 64 outputs, with at most eight activation
 // properties each. Keep room for one extra property to test rejection.
 enum {
-  TEST_DISPLAY_MAX_PROPERTIES = 64 * 7,
+  TEST_DISPLAY_MAX_PROPERTIES = 64 * 8,
   TEST_DISPLAY_PROPERTY_BYTES = 513,
 };
 
@@ -78,7 +78,8 @@ static bool compose_maximum_restore_request(struct display_request_fixture *fixt
         !append_display_property(fixture, "output.%s.scale.5.000000", name) ||
         !append_display_property(fixture, "output.%s.position.-1000000,-1000000", name) ||
         !append_display_property(fixture, "output.%s.priority.64", name) ||
-        !append_display_property(fixture, "output.%s.hdr.disable", name)) return false;
+        !append_display_property(fixture, "output.%s.hdr.disable", name) ||
+        !append_display_property(fixture, "output.Virtual-%d.wcg.disable", output + 1)) return false;
   }
   return fixture->argc == TEST_DISPLAY_MAX_PROPERTIES + 2;
 }

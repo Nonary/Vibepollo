@@ -741,7 +741,7 @@
     "max_bitrate": "Bitrate Máximo",
     "max_bitrate_desc": "A taxa de bits máxima (em Kbps) que Vibepollo irá codificar o stream. Se definido como 0, ele sempre usará a bitrate solicitada pela luar.",
     "minimum_fps_target": "Meta mínima de FPS",
-    "minimum_fps_target_desc": "O menor FPS efetivo que um stream pode atingir. Um valor de 0 é tratado como aproximadamente metade do FPS do stream. A configuração 20 é recomendada se você transmite conteúdo a 24 ou 30fps.",
+    "minimum_fps_target_desc": "Controla o intervalo de envio dos quadros quando a imagem não muda. O valor padrão é 20 FPS. Com o valor 0, os codificadores assíncronos, incluindo o PyroWave, usam o intervalo entre quadros da transmissão. No macOS, o ScreenCaptureKit usa um quinto dos FPS da transmissão, com um mínimo de 10 FPS. O envio real dos quadros depende do método de captura e codificação.",
     "rtx_hdr_title": "RTX HDR (IA SDR → HDR)",
     "rtx_hdr_intro": "Valores de ajuste padrão para conversão RTX HDR habilitada por app. Durante um stream RTX HDR, a área de trabalho e quadros não correspondentes usam Brilho SDR com contraste e saturação neutros.",
     "rtx_hdr": "RTX HDR",

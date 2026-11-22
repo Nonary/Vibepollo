@@ -11,6 +11,7 @@ namespace config {
   struct steam_t {
     bool enabled = false;
     bool auto_sync = false;
+    bool big_picture_on_stream = false;
     bool sync_all_installed = false;
     int recent_games = 10;
     int recent_max_age_days = 30;

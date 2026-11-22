@@ -741,7 +741,7 @@
     "max_bitrate": "Maksymalny Bitrate",
     "max_bitrate_desc": "Maksymalny bitrate (w Kbps), który Vibepollo zakoduje stream. Jeśli ustawiony na 0, zawsze będzie używał bitrate żądany przez Moonlight.",
     "minimum_fps_target": "Minimalny cel FPS",
-    "minimum_fps_target_desc": "Najniższy efektywny strumień FPS może osiągnąć. Wartość 0 jest traktowana jako mniej więcej połowa FPS strumienia. Zalecane jest ustawienie 20 w przypadku zawartości strumienia 24 lub 30fps.",
+    "minimum_fps_target_desc": "Steruje odstępem między wysyłanymi klatkami, gdy obraz pozostaje nieruchomy. Domyślna wartość to 20 FPS. Przy wartości 0 kodery asynchroniczne, w tym PyroWave, używają odstępu między klatkami strumienia. W systemie macOS ScreenCaptureKit używa jednej piątej liczby klatek na sekundę strumienia, z minimum 10 FPS. Rzeczywista częstotliwość wysyłania klatek zależy od sposobu przechwytywania i kodowania.",
     "rtx_hdr_title": "RTX HDR (AI SDR → HDR)",
     "rtx_hdr_intro": "Domyślne wartości strojenia dla konwersji RTX HDR włączanej przez aplikację. Podczas strumienia RTX HDR pulpit i niepasujące klatki używają jasności SDR z neutralnym kontrastem i nasyceniem.",
     "rtx_hdr": "RTX HDR",

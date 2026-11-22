@@ -1436,9 +1436,11 @@ namespace nvhttp {
           recovery_session->virtual_display_hdr_enabled = result.hdr_enabled;
           if (recovery_session->virtual_display) {
             constexpr int kMaxApplyAttempts = 5;
+            const auto preparation = proc::display_policy::effective_preparation(config::video.dd.configuration_option, *recovery_session, false, true);
+            const bool configure_display = preparation != config::video_t::dd_t::config_option_e::disabled;
             bool applied = false;
 
-            for (int attempt = 1; attempt <= kMaxApplyAttempts; ++attempt) {
+            for (int attempt = 1; configure_display && attempt <= kMaxApplyAttempts; ++attempt) {
               if (cancelled()) {
                 return {};
               }
@@ -1495,7 +1497,7 @@ namespace nvhttp {
               return {};
             }
             BOOST_LOG(info) << "Virtual display recovery: requested capture reinit to pick up recreated display"
-                            << (applied ? "." : " (apply did not succeed).");
+                            << (!configure_display || applied ? "." : " (apply did not succeed).");
           }
           std::function<void()> rollback_output_override;
           if (recovery_output_override_lease) {
@@ -8238,14 +8240,20 @@ namespace nvhttp {
     return false;
   }
 
-  bool get_client_always_use_virtual_display(const std::string &uuid) {
+  void apply_client_display_routing(rtsp_stream::launch_session_t &session, const std::string &uuid) {
     std::lock_guard<std::mutex> lock(client_mutex);
     for (const auto &named_cert : client_root.named_devices) {
-      if (named_cert->uuid == uuid) {
-        return named_cert->always_use_virtual_display;
+      if (named_cert->uuid != uuid) {
+        continue;
       }
+      session.client_requests_virtual_display = named_cert->always_use_virtual_display;
+      if (!named_cert->output_name_override.empty()) {
+        session.output_name_override = named_cert->output_name_override;
+      }
+      session.virtual_display_mode_override = parse_virtual_display_mode_override(named_cert->virtual_display_mode_override);
+      session.virtual_display_layout_override = parse_virtual_display_layout_override(named_cert->virtual_display_layout_override);
+      return;
     }
-    return false;
   }
 
   std::unordered_map<std::string, std::string> get_client_config_overrides(const std::string &uuid) {

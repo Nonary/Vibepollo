@@ -787,6 +787,7 @@ namespace platf {
   }
 
   bool send_batch(batched_send_info_t &send_info) {
+    send_info.socket_error = 0;
     auto sockfd = (int) send_info.native_socket;
     struct msghdr msg = {};
 
@@ -930,7 +931,8 @@ namespace platf {
             pfd.events = POLLOUT;
 
             if (poll(&pfd, 1, -1) != 1) {
-              BOOST_LOG(warning) << "poll() failed: "sv << errno;
+              send_info.socket_error = errno;
+              BOOST_LOG(warning) << "poll() failed: "sv << send_info.socket_error;
               break;
             }
 
@@ -938,7 +940,8 @@ namespace platf {
             continue;
           }
 
-          BOOST_LOG(verbose) << "sendmsg() failed: "sv << errno;
+          send_info.socket_error = errno;
+          BOOST_LOG(verbose) << "sendmsg() failed: "sv << send_info.socket_error;
           break;
         }
 
@@ -954,6 +957,7 @@ namespace platf {
 
     {
       // If GSO is not supported, use sendmmsg() instead.
+      send_info.socket_error = 0;
       std::vector<struct mmsghdr> msgs(send_info.block_count);
       std::vector<struct iovec> iovs(send_info.block_count * (send_info.headers ? 2 : 1));
       int iov_idx = 0;
@@ -992,7 +996,8 @@ namespace platf {
             pfd.events = POLLOUT;
 
             if (poll(&pfd, 1, -1) != 1) {
-              BOOST_LOG(warning) << "poll() failed: "sv << errno;
+              send_info.socket_error = errno;
+              BOOST_LOG(warning) << "poll() failed: "sv << send_info.socket_error;
               break;
             }
 
@@ -1000,7 +1005,8 @@ namespace platf {
             continue;
           }
 
-          BOOST_LOG(warning) << "sendmmsg() failed: "sv << errno;
+          send_info.socket_error = errno;
+          BOOST_LOG(warning) << "sendmmsg() failed: "sv << send_info.socket_error;
           return false;
         }
 
@@ -1012,6 +1018,7 @@ namespace platf {
   }
 
   bool send(send_info_t &send_info) {
+    send_info.socket_error = 0;
     auto sockfd = (int) send_info.native_socket;
     struct msghdr msg = {};
 
@@ -1113,8 +1120,9 @@ namespace platf {
       pfd.events = POLLOUT;
 
       if (poll(&pfd, 1, -1) != 1) {
-        BOOST_LOG(warning) << "poll() failed: "sv << errno;
-        break;
+        send_info.socket_error = errno;
+        BOOST_LOG(warning) << "poll() failed: "sv << send_info.socket_error;
+        return false;
       }
 
       // Try to send again
@@ -1122,7 +1130,8 @@ namespace platf {
     }
 
     if (bytes_sent < 0) {
-      BOOST_LOG(warning) << "sendmsg() failed: "sv << errno;
+      send_info.socket_error = errno;
+      BOOST_LOG(warning) << "sendmsg() failed: "sv << send_info.socket_error;
       return false;
     }
 

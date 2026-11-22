@@ -111,7 +111,7 @@ namespace {
   };
 }  // namespace
 
-TEST(DisplayHelperV2TopologyTransition, DeferredPolicyKeepsCompleteTopologyWhenDispatchIsSuppressed) {
+TEST(DisplayHelperV2TopologyTransition, BuildsCompleteTopologyOnlyWhenPreparationIsEnabled) {
   namespace policy = display_helper_integration::request_policy;
   policy::Input input;
   input.virtual_display = true;
@@ -120,9 +120,14 @@ TEST(DisplayHelperV2TopologyTransition, DeferredPolicyKeepsCompleteTopologyWhenD
   input.target_device_id = "VIRTUAL";
   input.topology_snapshot = {{"PHYSICAL"}};
 
-  const auto result = policy::evaluate(input);
-  EXPECT_FALSE(result.dispatch);
-  EXPECT_EQ(result.topology, (std::vector<std::vector<std::string>> {{"PHYSICAL"}, {"VIRTUAL"}}));
+  const auto disabled = policy::evaluate(input);
+  EXPECT_FALSE(disabled.dispatch);
+  EXPECT_TRUE(disabled.topology.empty());
+
+  input.configuration_option = policy::ConfigurationOption::EnsureActive;
+  const auto enabled = policy::evaluate(input);
+  ASSERT_TRUE(enabled.dispatch);
+  EXPECT_EQ(enabled.topology, (ActiveTopology {{"PHYSICAL"}, {"VIRTUAL"}}));
 }
 
 TEST(DisplayHelperV2TopologyTransition, RestoreDoesNotAcceptOsAdjustedPartialSnapshot) {
