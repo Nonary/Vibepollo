@@ -686,10 +686,12 @@ namespace platf {
       return;
     }
 
-    // ASIO doesn't use O_CLOEXEC, so we have to close all fds ourselves
+    // ASIO doesn't use O_CLOEXEC, so every descriptor is marked to close when the new image
+    // starts. They aren't closed here: system frameworks guard some of their descriptors, and
+    // closing a guarded one ends the process with EXC_GUARD before it can restart.
     int openmax = (int) sysconf(_SC_OPEN_MAX);
     for (int fd = STDERR_FILENO + 1; fd < openmax; fd++) {
-      close(fd);
+      fcntl(fd, F_SETFD, FD_CLOEXEC);
     }
 
     // Re-exec ourselves with the same arguments
