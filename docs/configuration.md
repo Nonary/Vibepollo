@@ -867,8 +867,12 @@ controller of another client. This option does not create or redirect controller
             <br>
             <br>
             On macOS, a pen is posted as a tablet device, so apps that read pressure, tilt, and the eraser
-            see them. macOS has no public way to inject multi-touch, so a tap clicks, one or two fingers
-            scroll, and holding a finger before moving it drags. This needs the same Accessibility permission as mouse and keyboard input.
+            see them. Fingers are emulated by default: a tap clicks, one or two fingers scroll, and
+            holding a finger before moving it drags. This needs the same Accessibility permission as mouse and keyboard input.
+            <br>
+            <br>
+            On macOS 27 and later, fingers can reach the Mac as a real touchscreen instead, if you
+            sign the bundled touch helper yourself. See [Direct touch on macOS 27](macos_touch.md).
         </td>
     </tr>
     <tr>
