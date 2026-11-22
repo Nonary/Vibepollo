@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -39,6 +40,40 @@ namespace platf {
   using namespace std::literals;
 
   namespace {
+    /**
+     * @brief Remembers a display that just sent no image, so the next few tries don't wait again.
+     * @details An encoder probe tries a display once per encoder and codec, and a probe that
+     *          failed is repeated while clients ask the host for its status. Each try on a
+     *          display that sends nothing (its panel is off, say) waits out the full timeout, so
+     *          those requests took four timeouts each. A display that sent nothing is taken to
+     *          still send nothing for a short while, and then gets a real try again.
+     */
+    constexpr auto no_image_memo = std::chrono::seconds {15};
+    std::mutex no_image_mutex;
+    std::map<CGDirectDisplayID, std::chrono::steady_clock::time_point> no_image_since;
+
+    bool recently_sent_no_image(const CGDirectDisplayID display_id) {
+      std::lock_guard lock {no_image_mutex};
+      const auto found = no_image_since.find(display_id);
+      if (found == no_image_since.end()) {
+        return false;
+      }
+      if (std::chrono::steady_clock::now() - found->second >= no_image_memo) {
+        no_image_since.erase(found);
+        return false;
+      }
+      return true;
+    }
+
+    void note_image_result(const CGDirectDisplayID display_id, const bool delivered) {
+      std::lock_guard lock {no_image_mutex};
+      if (delivered) {
+        no_image_since.erase(display_id);
+      } else {
+        no_image_since.emplace(display_id, std::chrono::steady_clock::now());
+      }
+    }
+
     /**
      * @brief State shared by a capture call and its frame callback.
      * @details The callback runs on the capture queue and can fire after the call has timed out and
@@ -313,6 +348,10 @@ namespace platf {
         return 1;
       }
 
+      if (recently_sent_no_image(display_id)) {
+        return 1;
+      }
+
       auto state = std::make_shared<capture_state_t>();
       FrameCallbackBlock on_frame = [^bool(CMSampleBufferRef sampleBuffer) {
         std::lock_guard lock {state->mutex};
@@ -357,6 +396,7 @@ namespace platf {
       dispatch_semaphore_wait(signal, dispatch_time(DISPATCH_TIME_NOW, 3 * NSEC_PER_SEC));
       std::lock_guard lock {state->mutex};
       state->stopped = true;
+      note_image_result(display_id, state->delivered);
       if (!state->delivered) {
         BOOST_LOG(error) << "Display "sv << display_id << " sent no image within 3 seconds"sv;
         return 1;
