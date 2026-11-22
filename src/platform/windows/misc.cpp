@@ -2155,6 +2155,7 @@ namespace platf {
 
     const auto result = send_udp_message((SOCKET) send_info.native_socket, msg, send_info.send_cancelled);
     const auto winerr = result.error;
+    send_info.socket_error = winerr;
     send_info.segmented_send_would_block = udp_send_retry::segmented_send_would_block(result, send_info.block_count > 1);
     if (winerr == 0) {
       return true;
@@ -2257,6 +2258,7 @@ namespace platf {
 
     const auto budget = send_info.retry_on_pressure ? udp_send_retry::retry_budget : std::chrono::milliseconds {0};
     const auto winerr = send_udp_message((SOCKET) send_info.native_socket, msg, send_info.send_cancelled, budget).error;
+    send_info.socket_error = winerr;
     if (winerr == WSAEINTR) {
       return false;
     }

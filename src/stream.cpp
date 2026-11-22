@@ -688,6 +688,9 @@ namespace stream {
       std::optional<std::int64_t> last_sent_rtp_tick;
 #endif
       udp::endpoint peer;
+      // Send failure reporting is owned by the video broadcast thread.
+      std::chrono::steady_clock::time_point next_send_failure_log {std::chrono::steady_clock::time_point::min()};
+      std::uint64_t failed_video_frames_since_log {0};
 #ifdef _WIN32
       // Owned by the video broadcast thread.
       video_send_fallback_t send_fallback;
@@ -2402,12 +2405,14 @@ namespace stream {
     logging::min_max_avg_periodic_logger<double> frame_burst_rate_logger(debug, "Network: frame send burst rate (100+ packets)", "Mbps");
     logging::min_max_avg_periodic_logger<double> detail_fec_coverage_logger(debug, "PyroWave: detail packets protected", "%");
     auto next_burst_detail_log = std::chrono::steady_clock::now();
-    auto next_send_failure_log = std::chrono::steady_clock::time_point {};
-    std::uint64_t failed_video_frames = 0;
     struct video_send_failed_t {
       bool cancelled;
       unsigned block;
       std::size_t packets_accepted;
+      std::size_t batch_packets {0};
+      bool used_fallback {false};
+      int batch_error {0};
+      int datagram_error {0};
     };
 
     crypto::aes_t iv(12);
@@ -3067,6 +3072,7 @@ namespace stream {
               if (!burst_first_send) {
                 burst_first_send = send_start;
               }
+              int datagram_error = 0;
               const auto send_result = send_video_batch(
                 current_batch_size,
                 batch_info.allow_fallback,
@@ -3090,7 +3096,9 @@ namespace stream {
                   };
                   send_info.send_cancelled = send_cancelled;
                   send_info.retry_on_pressure = !send_individually;
-                  return platf::send(send_info);
+                  const bool sent = platf::send(send_info);
+                  datagram_error = send_info.socket_error;
+                  return sent;
                 },
                 send_cancelled,
                 send_individually
@@ -3104,7 +3112,15 @@ namespace stream {
               ratecontrol_next_frame_start = ratecontrol_frame_start +
                                              frame_pacing_delay(ratecontrol_frame_packets_sent);
               if (!send_result.sent) {
-                throw video_send_failed_t {send_result.cancelled, unsigned(blockIndex), send_result.packets_accepted};
+                throw video_send_failed_t {
+                  send_result.cancelled,
+                  unsigned(blockIndex),
+                  send_result.packets_accepted,
+                  current_batch_size,
+                  send_result.used_fallback,
+                  send_individually ? 0 : batch_info.socket_error,
+                  datagram_error,
+                };
               }
               frame_send_batch_latency_logger.second_point_now_and_log();
               burst_last_return = std::chrono::steady_clock::now();
@@ -3301,18 +3317,27 @@ namespace stream {
         // exception path's 100 ms sleep for temporary socket pressure.
         if (!e.cancelled) {
           session->stats.video_send_failures.fetch_add(1, std::memory_order_relaxed);
-          ++failed_video_frames;
+          auto &video = session->video;
+          ++video.failed_video_frames_since_log;
           const auto now = std::chrono::steady_clock::now();
 #ifdef _WIN32
           send_fallback.frame_failed(send_individually, segmented_would_block, now);
 #endif
-          if (now >= next_send_failure_log) {
+          if (now >= video.next_send_failure_log) {
+            const auto send_path = send_individually ? "individual"sv :
+                                   e.used_fallback   ? "batch fallback"sv :
+                                                       "batch"sv;
             BOOST_LOG(warning) << "Video frame send aborted: frame="sv << packet->frame_index()
                                << "; block="sv << e.block
                                << "; packets accepted in failed batch="sv << e.packets_accepted
-                               << "; failed frames since previous report="sv << failed_video_frames;
-            failed_video_frames = 0;
-            next_send_failure_log = now + 5s;
+                               << "; failed frames since previous report="sv << video.failed_video_frames_since_log
+                               << "; session="sv << session->launch_session_id
+                               << "; send path="sv << send_path
+                               << "; batch packets="sv << e.batch_packets
+                               << "; batch socket error="sv << (e.batch_error ? std::to_string(e.batch_error) : "n/a")
+                               << "; datagram socket error="sv << (e.datagram_error ? std::to_string(e.datagram_error) : "n/a");
+            video.failed_video_frames_since_log = 0;
+            video.next_send_failure_log = now + 5s;
           }
         }
       } catch (const std::exception &e) {
