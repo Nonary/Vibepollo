@@ -757,6 +757,11 @@ namespace platf {
     return false;
   }
 
+  /// How long one packet waits for room in the socket's send buffer before it is dropped.
+  constexpr std::chrono::milliseconds send_wait_limit {50};
+  /// How often that wait checks whether the send was cancelled.
+  constexpr std::chrono::milliseconds send_poll_interval {10};
+
   bool send(send_info_t &send_info) {
     auto sockfd = (int) send_info.native_socket;
     struct msghdr msg = {};
@@ -833,16 +838,40 @@ namespace platf {
 
     auto bytes_sent = sendmsg(sockfd, &msg, 0);
 
-    // If there's no send buffer space, wait for some to be available
+    // If there's no send buffer space, wait for some to be available, but not without limit.
+    // When a client drops off the network, macOS keeps the socket flow-controlled and never
+    // reports it writable again, so an endless wait here holds the broadcast thread for good:
+    // the session that owns it can't end, and no later stream can start. A packet that can't go
+    // out within the limit is late for a live stream anyway, so it is dropped.
+    const auto give_up_at = std::chrono::steady_clock::now() + send_wait_limit;
     while (bytes_sent < 0 && errno == EAGAIN) {
+      if (send_info.send_cancelled && send_info.send_cancelled()) {
+        return false;
+      }
+
       struct pollfd pfd;
 
       pfd.fd = sockfd;
       pfd.events = POLLOUT;
 
-      if (poll(&pfd, 1, -1) != 1) {
+      const auto ready = poll(&pfd, 1, static_cast<int>(send_poll_interval.count()));
+      if (ready < 0 && errno != EINTR) {
         BOOST_LOG(warning) << "poll() failed: "sv << errno;
         break;
+      }
+      if (ready <= 0) {
+        if (std::chrono::steady_clock::now() >= give_up_at) {
+          // Once every few seconds at most: every packet to a client that has gone gets here.
+          static std::atomic<std::int64_t> last_logged {0};
+          const auto now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+          auto last = last_logged.load();
+          if (now - last >= 5 && last_logged.compare_exchange_strong(last, now)) {
+            BOOST_LOG(warning) << "Dropping packets the network won't take; the client may have gone"sv;
+          }
+          return false;
+        }
+        errno = EAGAIN;
+        continue;
       }
 
       // Try to send again
