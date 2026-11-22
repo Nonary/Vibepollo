@@ -444,6 +444,7 @@ namespace va {
       }
 
       sws.load_vram(descriptor, offset_x, offset_y, rgb->tex[0]);
+      sws.apply_output_lut(descriptor.crtc_gamma_lut, descriptor.crtc_gamma_lut_serial);
 
       sws.convert(nv12->buf);
       return 0;
