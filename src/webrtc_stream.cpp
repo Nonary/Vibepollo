@@ -3109,11 +3109,11 @@ namespace webrtc_stream {
             rtsp_stream::launch_session_t::app_metadata_t metadata;
             metadata.id = app_ctx->id;
             metadata.name = app_ctx->name;
-            metadata.virtual_screen = app_ctx->virtual_screen || app_ctx->virtual_display;
+            metadata.virtual_screen = app_ctx->virtual_screen;
             metadata.has_command = !app_ctx->cmd.empty();
             metadata.has_playnite = !app_ctx->playnite_id.empty();
             metadata.playnite_fullscreen = app_ctx->playnite_fullscreen;
-            launch_session->virtual_display = app_ctx->virtual_screen || app_ctx->virtual_display;
+            launch_session->virtual_display = app_ctx->virtual_screen;
             if (!launch_session->virtual_display_mode_override && app_ctx->virtual_display_mode_override) {
               launch_session->virtual_display_mode_override = app_ctx->virtual_display_mode_override;
             }

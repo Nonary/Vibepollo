@@ -59,7 +59,9 @@ assert webrtc.index(web_physical_resolution) < webrtc.index('proc::proc.execute(
 process = (source / 'process.cpp').read_text()
 assert 'if (!launch_session->virtual_display_request_resolved)' in process
 web_end = webrtc.index('            launch_session->app_metadata = std::move(metadata);', web_start)
-web_fields = through_metadata(webrtc, web_start, web_end)
+web_metadata_start = webrtc.rindex('            metadata.virtual_screen =', 0, web_start)
+web_metadata = webrtc[web_metadata_start:webrtc.index(';', web_metadata_start) + 1] + '\n'
+web_fields = web_metadata + through_metadata(webrtc, web_start, web_end)
 web_finalizer = ''
 web_marker = '      // Resolve display preparation after client and application fields.'
 if web_marker in webrtc:
@@ -178,7 +180,7 @@ auto assemble_resume(Client client, App app, const std::unordered_map<std::strin
  return launch_session;
 }
 auto assemble_webrtc(Client client, App app) {
- rtsp_stream::launch_session_t::app_metadata_t metadata {app.virtual_screen || app.virtual_display};
+ rtsp_stream::launch_session_t::app_metadata_t metadata {};
  auto launch_session = std::make_shared<rtsp_stream::launch_session_t>();
  auto app_ctx = std::make_shared<App>(app);
  const std::string requested_uuid = "paired-client";
@@ -234,7 +236,7 @@ int main() {
    count += 2;
    if (resume_helper.effective_video_config_.dd.configuration_option != expected_windows) { std::cerr << "FAIL resume " << name << "\n"; ++failed; }
    if (linux_preparation(*resumed) != expected) { std::cerr << "FAIL Linux resume " << name << "\n"; ++failed; }
-   if (args.empty()) {
+   if (args.empty() && !app.virtual_display) {
      auto web_session = assemble_webrtc(client, app);
      web_session->virtual_display = virtual_target;
      display_helper_integration::helpers::SessionDisplayConfigurationHelper web_helper(config::video, *web_session);
@@ -261,6 +263,12 @@ int main() {
  check("legacy app virtual-screen beats global VerifyOnly", {}, app, Prep::ensure_active);
  app = {}; app.virtual_display = true;
  check("Vibepollo legacy app virtual-display beats global VerifyOnly", {}, app, Prep::ensure_active);
+ const auto legacy_browser_app = assemble_webrtc({}, app);
+ ++count;
+ if (legacy_browser_app->virtual_display || legacy_browser_app->app_metadata->virtual_screen ||
+     linux_preparation(*legacy_browser_app) != Prep::verify_only) {
+   std::cerr << "FAIL browser app with only the legacy virtual-display field must preserve Linux physical capture\n"; ++failed;
+ }
  Client client; client.virtual_display_mode_override = "shared";
  check("client mode beats global VerifyOnly", client, {}, Prep::ensure_active);
  client = {}; client.virtual_display_layout_override = "extended";
