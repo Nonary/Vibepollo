@@ -12,6 +12,7 @@
  */
 // standard includes
 #include <cerrno>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -182,7 +183,11 @@ namespace {
   struct device_t {
     IOHIDUserDeviceRef ref {};
     dispatch_queue_t queue {};
+    dispatch_semaphore_t cancelled {};  ///< Signaled by the device's cancel handler.
   };
+
+  /// How long a cancelled device may take to run its cancel handler.
+  constexpr std::int64_t cancel_timeout_ns = 2 * static_cast<std::int64_t>(NSEC_PER_SEC);
 
   std::map<std::uint32_t, device_t> devices;
 
@@ -227,16 +232,18 @@ namespace {
     const auto lift = ts::pack_input_report({});
     IOHIDUserDeviceHandleReportWithTimeStamp(device.ref, mach_absolute_time(), lift.data(), lift.size());
 
-    // The header says to release the device only after the cancel handler has run.
-    const auto done = dispatch_semaphore_create(0);
-    IOHIDUserDeviceSetCancelHandler(device.ref, ^{
-      dispatch_semaphore_signal(done);
-    });
+    // The header says to release the device only after the cancel handler has run. The wait is
+    // bounded so a handler that never runs can't hold the helper, and with it the host that is
+    // waiting for the helper to exit; the device is then left for the kernel to remove when
+    // the helper exits, rather than released while something may still use it.
     IOHIDUserDeviceCancel(device.ref);
-    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    if (dispatch_semaphore_wait(device.cancelled, dispatch_time(DISPATCH_TIME_NOW, cancel_timeout_ns)) != 0) {
+      os_log_error(log_handle(), "touch helper: touchscreen %u didn't finish cancelling; leaving it", id);
+      return;
+    }
     CFRelease(device.ref);
     dispatch_release(device.queue);
-    dispatch_release(done);
+    dispatch_release(device.cancelled);
   }
 
   void handle_create(const wire::message_t &message) {
@@ -253,8 +260,13 @@ namespace {
       return;
     }
 
-    device_t device {ref, dispatch_queue_create("touch helper device", DISPATCH_QUEUE_SERIAL)};
+    device_t device {ref, dispatch_queue_create("touch helper device", DISPATCH_QUEUE_SERIAL), dispatch_semaphore_create(0)};
     IOHIDUserDeviceSetDispatchQueue(ref, device.queue);
+    // Set before the device is activated, as the header's example does.
+    const auto cancelled = device.cancelled;
+    IOHIDUserDeviceSetCancelHandler(ref, ^{
+      dispatch_semaphore_signal(cancelled);
+    });
     IOHIDUserDeviceRegisterGetReportBlock(ref, ^IOReturn(IOHIDReportType type, uint32_t report_id, uint8_t *report, CFIndex *length) {
       if (type != kIOHIDReportTypeFeature || report_id != ts::feature_report_id || !length || *length < static_cast<CFIndex>(ts::feature_report_size)) {
         return kIOReturnUnsupported;

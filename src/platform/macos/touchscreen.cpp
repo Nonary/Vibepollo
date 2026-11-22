@@ -10,8 +10,10 @@
 #include <cerrno>
 #include <climits>
 #include <condition_variable>
+#include <cstring>
 #include <deque>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <set>
 #include <string>
@@ -50,6 +52,13 @@ namespace platf::macos_touchscreen {
      *          attach itself took about 50 ms.
      */
     constexpr auto device_settle_time = 300ms;
+
+    /// How long the helper may take to answer a request to make a device. Past this it is taken
+    /// to be stuck: it is stopped, and touch uses the emulation.
+    constexpr auto answer_timeout = 5s;
+
+    /// How long the helper may take to remove its devices and exit when it is no longer needed.
+    constexpr auto stop_timeout = 2s;
 
     /// Reports kept while a device is being made; a gesture longer than this loses its start.
     constexpr std::size_t max_queued_reports = 128;
@@ -231,6 +240,7 @@ namespace platf::macos_touchscreen {
       std::uint32_t id {};
       std::string uuid;
       device_state_e state = device_state_e::creating;
+      clock::time_point requested_at {};  ///< When the helper was asked to make it.
       clock::time_point failed_at {};  ///< When it failed; it's retried after retry_after.
       contact_table_t contacts;
       std::set<owner_t> owners;  ///< Clients streaming this display that have touched it.
@@ -248,27 +258,42 @@ namespace platf::macos_touchscreen {
         std::unique_lock lock {mutex_};
         const auto now = clock::now();
         if (auto *device = find(display)) {
+          if (device->state == device_state_e::creating && now - device->requested_at >= answer_timeout) {
+            // The helper never answered. Stop it, so the reader cleans up, and emulate from here.
+            BOOST_LOG(warning) << "Touchscreen: the touch helper didn't answer within "sv << answer_timeout.count() << " seconds; stopping it"sv;
+            end_helper_now();
+            device->state = device_state_e::failed;
+            device->failed_at = now;
+            device->queued.clear();
+            return false;
+          }
           if (device->state != device_state_e::failed) {
             device->owners.insert(owner);
-            return true;
+            // While the helper is still being checked and started, it may turn out to be
+            // unusable, so this gesture is emulated rather than held for it.
+            return !launching_;
           }
           if (now - device->failed_at < retry_after) {
             return false;
           }
         }
 
+        if (stopping_ && socket_ >= 0) {
+          // An idle helper is on its way out; the next gesture starts a new one.
+          return false;
+        }
         gate_t gate {os_major(), config::input.native_pen_touch, helper_};
         if (helper_ == helper_state_e::ready || helper_ == helper_state_e::starting) {
-          return create_device(lock, owner, display);
+          return create_device(lock, owner, display) && !launching_;
         }
         if (!should_try_helper(gate, now, last_attempt_)) {
           return false;
         }
         last_attempt_ = now;
-        if (!start_helper(lock)) {
-          return false;
-        }
-        return create_device(lock, owner, display);
+        start_helper();
+        // The device is asked for now and made once the helper is up; this gesture is emulated.
+        create_device(lock, owner, display);
+        return false;
       }
 
       bool touch(const owner_t owner, const display_t display, const std::uint32_t pointer, const double x, const double y) {
@@ -339,13 +364,18 @@ namespace platf::macos_touchscreen {
         return found == devices_.end() ? nullptr : &found->second;
       }
 
-      std::uint32_t free_device_id() const {
-        for (std::uint32_t id = 0; id < wire::max_devices; ++id) {
+      /// The next free device id, or max_devices when all are in use. Ids are handed out in
+      /// turn rather than lowest first, so a reply about a device that was just removed can't
+      /// be taken for one about the device made right after it.
+      std::uint32_t free_device_id() {
+        for (std::uint32_t tried = 0; tried < wire::max_devices; ++tried) {
+          const auto id = (next_device_id_ + tried) % wire::max_devices;
           bool used = false;
           for (const auto &[display, device] : devices_) {
             used = used || device.id == id;
           }
           if (!used) {
+            next_device_id_ = (id + 1) % wire::max_devices;
             return id;
           }
         }
@@ -368,6 +398,7 @@ namespace platf::macos_touchscreen {
         device.id = id;
         device.uuid = uuid;
         device.state = device_state_e::creating;
+        device.requested_at = clock::now();
         device.owners = std::move(owners);
 
         auto message = wire::make(wire::type_e::create, id);
@@ -396,7 +427,9 @@ namespace platf::macos_touchscreen {
       }
 
       void send(const wire::message_t &message) {
-        if (socket_ < 0) {
+        // While the helper is being started there is no socket yet; what is queued goes out once
+        // it is up.
+        if (socket_ < 0 && !launching_) {
           return;
         }
         // A pinch's per-finger moves go out as one report: a newer message replaces an unsent
@@ -413,11 +446,15 @@ namespace platf::macos_touchscreen {
             warned_backlog_ = true;
           }
           // Keep the newest state rather than the oldest: every report names every contact, so
-          // a finger that lifted in a skipped update still reads as lifted in this one.
-          if (outgoing_.back().type == message.type && outgoing_.back().device == message.device) {
-            outgoing_.back() = message;
+          // a finger that lifted in a skipped update still reads as lifted in this one. The
+          // newest state is never dropped, or a last lift could be lost and the finger left down.
+          for (auto queued = outgoing_.rbegin(); queued != outgoing_.rend(); ++queued) {
+            if (queued->type == message.type && queued->device == message.device) {
+              *queued = message;
+              return;
+            }
           }
-          return;
+          // Nothing is queued for this device, so this adds one message per device at most.
         }
         outgoing_.push_back(message);
         outgoing_ready_.notify_one();
@@ -443,63 +480,110 @@ namespace platf::macos_touchscreen {
         }
       }
 
-      bool start_helper(std::unique_lock<std::mutex> &lock) {
+      /// The threads of an earlier helper, for the launcher to join.
+      struct old_threads_t {
+        util::jthread launcher;
+        util::jthread reader;
+        util::jthread writer;
+      };
+
+      /**
+       * @brief Starts the helper in the background. Call with the lock held.
+       * @details Checking the helper's signature on disk reads and hashes its bundle, and an
+       *          earlier helper's threads may still be finishing, so none of that runs on the
+       *          caller's thread, which is the input thread when a touch starts the helper.
+       */
+      void start_helper() {
+        if (launching_) {
+          return;
+        }
+        launching_ = true;
+        outgoing_.clear();
+        set_helper(helper_state_e::starting);
+        auto old = std::make_shared<old_threads_t>();
+        old->launcher = std::move(launcher_);
+        old->reader = std::move(reader_);
+        old->writer = std::move(writer_);
+        launcher_ = util::jthread {[this, old] {
+          launch(*old);
+        }};
+      }
+
+      /// Marks every device that is waiting for the helper as failed, to be retried later.
+      void fail_waiting_devices(const clock::time_point failed_at) {
+        for (auto &[display, device] : devices_) {
+          if (device.state == device_state_e::creating) {
+            device.state = device_state_e::failed;
+            device.failed_at = failed_at;
+            device.queued.clear();
+          }
+        }
+      }
+
+      /// The launcher thread: checks the helper on disk and spawns it.
+      void launch(old_threads_t &old) {
         // The threads of a helper that already exited have finished or are finishing.
-        if (reader_.joinable() || writer_.joinable()) {
-          auto reader = std::move(reader_);
-          auto writer = std::move(writer_);
-          lock.unlock();
-          if (writer.joinable()) {
-            writer.join();
-          }
-          if (reader.joinable()) {
-            reader.join();
-          }
-          lock.lock();
-          if (helper_ == helper_state_e::ready || helper_ == helper_state_e::starting) {
-            return true;
+        for (auto *thread : {&old.writer, &old.reader, &old.launcher}) {
+          if (thread->joinable()) {
+            thread->join();
           }
         }
 
         const auto bundle = helper_bundle_path();
         const auto team = host_team();
-        if (const auto why = check_helper_on_disk(bundle, team); !why.empty()) {
-          set_helper(helper_state_e::unavailable, (bundle.empty() ? "(no app bundle)"s : bundle) + ": "s + why);
-          return false;
-        }
-
+        auto state = helper_state_e::starting;
+        std::string why;
         int fds[2] {-1, -1};
-        if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
-          set_helper(helper_state_e::failed, "socketpair failed: "s + std::strerror(errno));
-          return false;
-        }
-        fcntl(fds[0], F_SETFD, FD_CLOEXEC);
-        const int nosigpipe = 1;
-        setsockopt(fds[0], SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
-
-        posix_spawn_file_actions_t actions;
-        posix_spawn_file_actions_init(&actions);
-        posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
-        posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0);
-        posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
-        posix_spawn_file_actions_adddup2(&actions, fds[1], 3);
-        posix_spawnattr_t attributes;
-        posix_spawnattr_init(&attributes);
-        // Only the descriptors named above reach the helper.
-        posix_spawnattr_setflags(&attributes, POSIX_SPAWN_CLOEXEC_DEFAULT);
-
-        const auto executable = bundle + "/Contents/MacOS/" TOUCH_HELPER_EXECUTABLE_NAME;
-        char *argv[] {const_cast<char *>(executable.c_str()), nullptr};
-        char *envp[] {nullptr};
         pid_t pid = -1;
-        const auto spawned = posix_spawn(&pid, executable.c_str(), &actions, &attributes, argv, envp);
-        posix_spawn_file_actions_destroy(&actions);
-        posix_spawnattr_destroy(&attributes);
-        close(fds[1]);
-        if (spawned != 0) {
-          close(fds[0]);
-          set_helper(helper_state_e::failed, "couldn't start it: "s + std::strerror(spawned));
-          return false;
+        if (const auto problem = check_helper_on_disk(bundle, team); !problem.empty()) {
+          state = helper_state_e::unavailable;
+          why = (bundle.empty() ? "(no app bundle)"s : bundle) + ": "s + problem;
+        } else if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
+          state = helper_state_e::failed;
+          why = "socketpair failed: "s + std::strerror(errno);
+        } else {
+          // Neither end may leak into another process this host starts: a copy of the helper's
+          // end held elsewhere would keep the connection open after the helper exits. The
+          // spawn's own dup2 to descriptor 3 is what the helper gets.
+          fcntl(fds[0], F_SETFD, FD_CLOEXEC);
+          fcntl(fds[1], F_SETFD, FD_CLOEXEC);
+          const int nosigpipe = 1;
+          setsockopt(fds[0], SOL_SOCKET, SO_NOSIGPIPE, &nosigpipe, sizeof(nosigpipe));
+
+          posix_spawn_file_actions_t actions;
+          posix_spawn_file_actions_init(&actions);
+          posix_spawn_file_actions_addopen(&actions, 0, "/dev/null", O_RDONLY, 0);
+          posix_spawn_file_actions_addopen(&actions, 1, "/dev/null", O_WRONLY, 0);
+          posix_spawn_file_actions_addopen(&actions, 2, "/dev/null", O_WRONLY, 0);
+          posix_spawn_file_actions_adddup2(&actions, fds[1], 3);
+          posix_spawnattr_t attributes;
+          posix_spawnattr_init(&attributes);
+          // Only the descriptors named above reach the helper.
+          posix_spawnattr_setflags(&attributes, POSIX_SPAWN_CLOEXEC_DEFAULT);
+
+          const auto executable = bundle + "/Contents/MacOS/" TOUCH_HELPER_EXECUTABLE_NAME;
+          char *argv[] {const_cast<char *>(executable.c_str()), nullptr};
+          char *envp[] {nullptr};
+          const auto spawned = posix_spawn(&pid, executable.c_str(), &actions, &attributes, argv, envp);
+          posix_spawn_file_actions_destroy(&actions);
+          posix_spawnattr_destroy(&attributes);
+          close(fds[1]);
+          if (spawned != 0) {
+            close(fds[0]);
+            state = helper_state_e::failed;
+            why = "couldn't start it: "s + std::strerror(spawned);
+          }
+        }
+
+        std::unique_lock lock {mutex_};
+        launching_ = false;
+        const auto now = clock::now();
+        last_attempt_ = now;
+        if (state != helper_state_e::starting) {
+          set_helper(state, why);
+          outgoing_.clear();
+          fail_waiting_devices(now);
+          return;
         }
 
         pid_ = pid;
@@ -507,27 +591,52 @@ namespace platf::macos_touchscreen {
         stopping_ = false;
         stop_requested_ = false;
         verified_ = false;
-        outgoing_.clear();
         closers_done_ = 0;
         warned_backlog_ = false;
-        set_helper(helper_state_e::starting);
         reader_ = util::jthread {[this, pid, team, fd = socket_] {
           read_loop(pid, team, fd);
         }};
         writer_ = util::jthread {[this, fd = socket_] {
           write_loop(fd);
         }};
-        return true;
+      }
+
+      /// Ends a helper that isn't answering, so its reader cleans up. Call with the lock held.
+      void end_helper_now() {
+        if (pid_ > 0) {
+          kill(pid_, SIGKILL);
+        }
+        if (socket_ >= 0) {
+          // Unblocks the reader and the writer even if something else holds the helper's end.
+          shutdown(socket_, SHUT_RDWR);
+        }
       }
 
       /// Closes the connection; the helper destroys its devices when it reads end of file, and exits.
       void stop_helper(std::unique_lock<std::mutex> &lock) {
+        if (launching_ || launcher_.joinable()) {
+          // A helper still being started is stopped once it is up.
+          auto launcher = std::move(launcher_);
+          lock.unlock();
+          if (launcher.joinable()) {
+            launcher.join();
+          }
+          lock.lock();
+        }
         if (socket_ < 0) {
           return;
         }
         stopping_ = true;
         stop_requested_ = true;
         outgoing_ready_.notify_all();
+        // The helper removes its devices and exits by itself. One that doesn't is ended, so
+        // whoever is closing a stream never waits on it without limit.
+        if (!stopped_.wait_for(lock, stop_timeout, [this] {
+              return socket_ < 0;
+            })) {
+          BOOST_LOG(warning) << "Touchscreen: the touch helper didn't exit within "sv << stop_timeout.count() << " seconds; ending it"sv;
+          end_helper_now();
+        }
         auto writer = std::move(writer_);
         auto reader = std::move(reader_);
         lock.unlock();
@@ -589,6 +698,7 @@ namespace platf::macos_touchscreen {
 
       void read_loop(const pid_t pid, const std::string team, const int fd) {
         bool verified = false;
+        bool check_failed = false;
         bool clean_eof = false;
         wire::message_t message {};
         while (true) {
@@ -619,11 +729,18 @@ namespace platf::macos_touchscreen {
               lock.lock();
               if (!verified) {
                 clean_eof = false;
+                check_failed = true;
                 lock.unlock();
                 goto done;
               }
               verified_ = true;
               set_helper(helper_state_e::ready);
+              if (devices_.empty()) {
+                // Every stream that wanted it ended while it started. The writer sends what is
+                // queued and closes the connection, and the helper exits.
+                stopping_ = true;
+                stop_requested_ = true;
+              }
               outgoing_ready_.notify_all();
               break;
             case wire::type_e::created:
@@ -655,6 +772,7 @@ namespace platf::macos_touchscreen {
         outgoing_.clear();
         socket_ = -1;
         pid_ = -1;
+        stopped_.notify_all();
         const bool expected = stop_requested_ || devices_.empty();
         const auto now = clock::now();
         for (auto &[display, device] : devices_) {
@@ -665,7 +783,7 @@ namespace platf::macos_touchscreen {
           device.queued.clear();
         }
         if (!verified) {
-          set_helper(helper_state_e::failed, WIFEXITED(status) ? "it exited with status "s + std::to_string(WEXITSTATUS(status)) + " before it was ready (see Console for touch helper messages)" : "the running helper didn't pass its signature check"s);
+          set_helper(helper_state_e::failed, check_failed ? "the running helper didn't pass its signature check"s : WIFEXITED(status) ? "it exited with status "s + std::to_string(WEXITSTATUS(status)) + " before it was ready (see Console for touch helper messages)" : "it was ended by signal "s + std::to_string(WTERMSIG(status)) + " before it was ready"s);
         } else if (expected) {
           helper_ = helper_state_e::not_started;
         } else {
@@ -699,18 +817,22 @@ namespace platf::macos_touchscreen {
 
       std::mutex mutex_;
       std::condition_variable outgoing_ready_;
+      std::condition_variable stopped_;  ///< The reader finished with a helper.
       std::deque<wire::message_t> outgoing_;
       std::map<display_t, device_t> devices_;
       helper_state_e helper_ = helper_state_e::not_started;
       clock::time_point last_attempt_ {};
       int socket_ = -1;
       pid_t pid_ = -1;
+      bool launching_ = false;  ///< The launcher thread is checking and starting the helper.
+      std::uint32_t next_device_id_ = 0;
       bool stopping_ = false;
       bool stop_requested_ = false;  ///< The host closed the connection on purpose.
       bool verified_ = false;  ///< The running helper passed the host's signature check.
       bool warned_backlog_ = false;
       std::mutex close_mutex_;
       int closers_done_ = 0;
+      util::jthread launcher_;
       util::jthread reader_;
       util::jthread writer_;
     };
