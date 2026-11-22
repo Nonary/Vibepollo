@@ -2116,7 +2116,7 @@ namespace stream {
           // The gamepad feedback queues below are drained only by this loop, so a
           // session with a controller attached needs the short wait too: a Steam
           // haptic click or a rumble stop must not sit for up to 150 ms.
-          haptics_client |= (session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM) != 0 ||
+          haptics_client |= (session->config.mlFeatureFlags & (ML_FF_HAPTICS_PCM | controller_speaker_pcm::session_feature)) != 0 ||
                             input::has_gamepad(session->input);
 
           if (now > session->pingTimeout) {

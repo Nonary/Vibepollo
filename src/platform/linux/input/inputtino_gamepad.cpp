@@ -6,6 +6,7 @@
 #include <boost/locale.hpp>
 #include <inputtino/input.hpp>
 #include <libevdev/libevdev.h>
+#include <cmath>
 
 // local includes
 #include "inputtino_common.h"
@@ -184,10 +185,13 @@ namespace platf::gamepad {
           auto ds5 = create_ds5(id.globalIndex);
           if (ds5) {
             (*ds5).set_on_rumble(on_rumble_fn);
-            if (metadata.capabilities & LI_CCAP_HAPTICS_PCM) {
-              auto packetizer = std::make_shared<ds5_haptics_packetizer>();
-              (*ds5).set_on_haptics([feedback_queue, idx = id.clientRelativeIndex, packetizer](const unsigned char *pcm, std::size_t bytes) {
-                packetizer->push(pcm, bytes, [&](std::uint32_t sequence, const auto &samples) {
+            const bool waveform = metadata.capabilities & LI_CCAP_HAPTICS_PCM;
+            const bool speaker = metadata.speaker_owner && controller_speaker_pcm::capable(metadata.type, metadata.capabilities);
+            if (waveform || speaker) {
+              auto packetizer = waveform ? std::make_shared<ds5_haptics_packetizer>() : nullptr;
+              auto speaker_packetizer = speaker ? std::make_shared<ds5_speaker_packetizer>(metadata.speaker_owner) : nullptr;
+              (*ds5).set_on_haptics([feedback_queue, idx = id.clientRelativeIndex, packetizer, speaker_packetizer, on_rumble_fn](const unsigned char *pcm, std::size_t bytes) {
+                if (packetizer) packetizer->push(pcm, bytes, [&](std::uint32_t sequence, const auto &samples) {
                   gamepad_feedback_msg_t msg {};
                   msg.type = gamepad_feedback_e::haptics_pcm;
                   msg.id = idx;
@@ -196,6 +200,40 @@ namespace platf::gamepad {
                   // PCM may be dropped under load; never purge queued trigger,
                   // LED, or stop-rumble messages to make room for audio.
                   feedback_queue->try_raise(std::move(msg));
+                });
+                // Installing a raw PCM callback suppresses Inputtino's RMS
+                // fallback, so preserve it when only the speaker is capable.
+                if (!packetizer && pcm && bytes >= 8 && bytes % 8 == 0) {
+                  double power[2] {};
+                  for (std::size_t offset = 0; offset < bytes; offset += 8) {
+                    for (unsigned channel = 0; channel < 2; ++channel) {
+                      const auto p = pcm + offset + 4 + channel * 2;
+                      const auto sample = static_cast<std::int16_t>(std::uint16_t(p[0]) | (std::uint16_t(p[1]) << 8));
+                      const double value = sample / 32768.0;
+                      power[channel] += value * value;
+                    }
+                  }
+                  const auto magnitude = [frames = bytes / 8](double p) {
+                    return static_cast<int>(std::clamp(std::sqrt(p / frames) * 4.0, 0.0, 1.0) * 65535);
+                  };
+                  on_rumble_fn(magnitude(power[0]), magnitude(power[1]));
+                }
+                if (speaker_packetizer) speaker_packetizer->push(pcm, bytes, ds5_speaker_packetizer::clock::now(), [&](const auto &block, const auto &epoch) {
+                  gamepad_feedback_msg_t msg {};
+                  msg.type = gamepad_feedback_e::speaker_pcm;
+                  msg.id = idx;
+                  msg.speaker_epoch = epoch;
+                  msg.data.speaker = block;
+                  // Inputtino copies the callback on dispatch. Keep one-time
+                  // diagnostic state on the shared producer.
+                  const bool first_nonzero = speaker_packetizer->take_first_nonzero(block);
+                  const bool queued = feedback_queue->raise_recent(std::move(msg), controller_speaker_pcm::pending_blocks, [idx](const gamepad_feedback_msg_t &pending) {
+                    return pending.type == gamepad_feedback_e::speaker_pcm && pending.id == idx;
+                  });
+                  if (first_nonzero) {
+                    BOOST_LOG(debug) << "DualSense speaker PCM " << (queued ? "accepted" : "rejected")
+                                     << " by feedback queue; client-relative controller index=" << unsigned(idx);
+                  }
                 });
               });
             }
