@@ -631,13 +631,15 @@ namespace {
 
   int big_picture_ui(std::string_view uri) {
     if (!install_clean_environment()) return 126;
-    if (!steam_client_running(steam_state_directory())) {
-      // Only opening may start Steam, and the client must live outside this
-      // transient command's cgroup. Leaving Big Picture never starts Steam.
-      if (uri == "steam://close/bigpicture") return 0;
+    if (uri == "steam://close/bigpicture") {
+      // The client may exit during teardown. Leave its UI without starting it.
+      execl("/usr/bin/steam", "/usr/bin/steam", "-ifrunning", uri.data(), nullptr);
+    } else if (!steam_client_running(steam_state_directory())) {
+      // Keep a cold client outside the short-lived command's cgroup.
       return start_steam_client("-gamepadui") ? 0 : 1;
+    } else {
+      execl("/usr/bin/steam", "/usr/bin/steam", uri.data(), nullptr);
     }
-    execl("/usr/bin/steam", "/usr/bin/steam", uri.data(), nullptr);
     return errno == ENOENT ? 127 : 126;
   }
 

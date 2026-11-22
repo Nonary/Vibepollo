@@ -13,6 +13,11 @@ namespace platf::steam::stream_ui {
     return command == action::open ? "steam://open/bigpicture" : "steam://close/bigpicture";
   }
 
+  constexpr std::string_view portable_linux_launcher(action command) {
+    // Only opening may activate the Steam desktop handler.
+    return command == action::open ? "xdg-open " : "steam -ifrunning ";
+  }
+
   // One opt-in applies to one app lifetime, including its resumable sessions.
   // Steam's UI mode is never read. An eligible launch schedules a close even
   // when Steam was already in Big Picture or the open command reported failure.

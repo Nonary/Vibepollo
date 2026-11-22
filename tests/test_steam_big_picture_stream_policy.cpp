@@ -76,3 +76,9 @@ TEST(SteamBigPictureStream, MovingTheAppLeavesOnePendingClose) {
   replacement.finish(record);
   EXPECT_EQ(events, (std::vector {action::open, action::close}));
 }
+
+TEST(SteamBigPictureStream, PortableLinuxCloseCannotActivateTheSteamUriHandler) {
+  using platf::steam::stream_ui::portable_linux_launcher;
+  EXPECT_EQ(portable_linux_launcher(action::open), "xdg-open ");
+  EXPECT_EQ(portable_linux_launcher(action::close), "steam -ifrunning ");
+}

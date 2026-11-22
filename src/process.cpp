@@ -2482,9 +2482,10 @@ namespace proc {
       const std::string command = "cmd /c start \"\" " + std::string(uri);
 #else
       const bool machine_host = std::getenv("VIBEPOLLO_MACHINE_HOST") != nullptr;
-      const std::string command = (machine_host ?
-                                      "/usr/libexec/vibeshine/vibepollo-steam-launch --big-picture-ui " :
-                                      "xdg-open ") + std::string(uri);
+      const auto launcher = machine_host ?
+                              "/usr/libexec/vibeshine/vibepollo-steam-launch --big-picture-ui "sv :
+                              platf::steam::stream_ui::portable_linux_launcher(action);
+      const std::string command = std::string(launcher) + std::string(uri);
 #endif
       std::error_code ec;
       boost::filesystem::path working_dir;
@@ -2498,10 +2499,9 @@ namespace proc {
           return;
         }
 #ifdef __linux__
-        // For the machine host, dropping the session-exec child cancels the
-        // supervised command. A portable xdg-open handler may itself become
-        // Steam, so leave that handler running when it exceeds the deadline.
-        if (!machine_host) child.detach();
+        // Dropping the machine session-exec child cancels the supervised
+        // command. Only the portable open handler can itself become Steam.
+        if (!machine_host && action == big_picture_action::open) child.detach();
 #endif
       }
       BOOST_LOG(warning) << "Steam Big Picture command failed or timed out: " << uri;
