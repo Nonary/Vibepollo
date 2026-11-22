@@ -25,10 +25,13 @@ def main():
         end += 1
         depth += (source[end] == "{") - (source[end] == "}")
     body = source[start:end + 1]
+    flags_start = source.index("  struct encoder_probe_flags_t")
+    flags = source[flags_start:start]
     legacy_cache = "\n".join(re.findall(
         r"^  static thread_local .* cached_(?:probe_display|display_type).*;$",
         source, re.MULTILINE))
     prefix = r'''
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <cstdlib>
@@ -51,6 +54,7 @@ struct config_t {
 };
 int live = 0, created = 0, peak = 0;
 bool hdr = false, unsupported = false, invalid = false, throws = false;
+int codec_attempts = 0;
 namespace platf {
   using adapter_id_t = int;
   enum class mem_type_e { system, gpu };
@@ -76,23 +80,27 @@ namespace config {
   namespace flag { constexpr int FORCE_VIDEO_HEADER_REPLACE = 0; }
   struct { std::bitset<1> flags; } sunshine;
 }
+namespace safe { struct signal_t { bool stopped = false; bool peek() { return stopped; } }; }
 namespace video {
   constexpr int H264_ONLY = 1, YUV444_SUPPORT = 2;
   enum validate_flag_e { VUI_PARAMS = 1 };
   int active_hevc_mode = 1, active_av1_mode = 1;
   struct encoder_t {
     enum flag_e { VUI_PARAMETERS, REF_FRAMES_RESTRICT, PASSED, YUV444, DYNAMIC_RANGE };
+    using codec_flags_t = std::bitset<5>;
+    struct capability_storage_t {
+      void store(unsigned long, std::memory_order) {}
+    };
     struct codec_t {
       std::string name;
-      std::bitset<5> capabilities;
-      auto operator[](flag_e flag) { return capabilities[flag]; }
+      capability_storage_t capabilities;
     };
     struct formats_t { platf::mem_type_e dev_type = platf::mem_type_e::gpu; } formats;
     formats_t *platform_formats = &formats;
     std::string name = "fake";
     int flags = 0;
     codec_t h264 {"h264", {}}, hevc {"hevc", {}}, av1 {"av1", {}};
-    codec_t &codec_from_config(const config_t &config) {
+    const codec_t &codec_from_config(const config_t &config) const {
       return config.videoFormat == 0 ? h264 : config.videoFormat == 1 ? hevc : av1;
     }
   };
@@ -100,7 +108,11 @@ namespace video {
     platf::mem_type_e, const config_t &, const std::optional<int> &) {
     return std::make_shared<platf::display_t>();
   }
-  int validate_config(const std::shared_ptr<platf::display_t> &, const encoder_t &, const config_t &) {
+  int validate_config(const std::shared_ptr<platf::display_t> &, const encoder_t &, const config_t &, safe::signal_t *shutdown,
+                      const encoder_t::codec_flags_t &, bool &) {
+    if (shutdown && shutdown->peek()) return -1;
+    ++codec_attempts;
+    if (shutdown) shutdown->stopped = true;
     if (throws) throw std::runtime_error("driver failure");
     return invalid ? -1 : VUI_PARAMS;
   }
@@ -114,7 +126,11 @@ int main() {
   using namespace video;
   encoder_t encoder;
   std::optional<int> observed;
-  auto run = [&]() { return validate_encoder(encoder, false, 7, &observed, ""); };
+  encoder_probe_flags_t flags;
+  bool amf_retry = false;
+  auto run = [&]() {
+    return validate_encoder(encoder, false, 7, &observed, "", active_hevc_mode, active_av1_mode, nullptr, flags, amf_retry);
+  };
   require(run(), "SDR probe must succeed");
   require(live == 0, "SDR success retained a probe GPU source on the calling thread");
   require(observed == 7, "adapter identity must remain published as a value");
@@ -139,13 +155,19 @@ int main() {
   require(peak == 1, "replaced SDR source must be released before HDR allocation");
   require(live == 0, "HDR success retained a probe GPU source");
   for (int i = 0; i < 100; ++i) require(run() && live == 0, "repeated probes retain resources");
+  safe::signal_t shutdown;
+  const int attempts_before_shutdown = codec_attempts;
+  require(!validate_encoder(encoder, false, 7, &observed, "", 0, 0, &shutdown, flags, amf_retry),
+          "shutdown during H.264 probing must cancel validation");
+  require(codec_attempts == attempts_before_shutdown + 1 && live == 0,
+          "cancelled validation must release its source without probing another codec");
   std::cout << "Encoder probe lifetime regressions passed\n";
 }
 '''
     with tempfile.TemporaryDirectory() as directory:
         cpp = Path(directory) / "probe.cpp"
         exe = Path(directory) / "probe"
-        cpp.write_text(prefix + legacy_cache + "\n" + body + suffix)
+        cpp.write_text(prefix + legacy_cache + "\n" + flags + body + suffix)
         subprocess.run([args.compiler, "-std=c++20", "-Wall", "-Wextra", "-Werror",
                         str(cpp), "-pthread", "-o", str(exe)], check=True)
         subprocess.run([str(exe)], check=True)

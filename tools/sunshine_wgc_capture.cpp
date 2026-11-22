@@ -1063,8 +1063,7 @@ private:
   enum class scratch_state_e {
     free,
     reserved,
-    pending,
-    delivering
+    pending
   };
 
   struct scratch_texture_t {
@@ -1777,19 +1776,14 @@ private:
    *          frame is queued; those need one GPU copy instead of two (WGC -> scratch -> shared).
    *          Every GPU submission here competes with the host's conversion for the graphics
    *          queue, so halving them shortens the host's encode latency tail. Anything busy
-   *          falls back to the scratch path, which keeps publication order and never blocks.
+   *          falls back to the scratch path without waiting for shared ownership.
    * @return true if the frame was published.
    */
   bool try_publish_directly(const winrt::com_ptr<ID3D11Texture2D> &frame_tex, uint64_t frame_qpc) {
     std::unique_lock delivery_lock(_delivery_mutex);
-    const bool frame_delivering = std::any_of(_scratch_textures.begin(), _scratch_textures.end(), [](const auto &scratch) {
-      return scratch.state == scratch_state_e::delivering;
-    });
     if (!platf::dxgi::wgc_policy::may_publish_directly(
           _delivery_stop || _shutting_down.load(std::memory_order_acquire),
-          _pending_delivery_frame.has_value(),
-          frame_delivering
-        )) {
+          _pending_delivery_frame.has_value())) {
       return false;
     }
 
@@ -1895,74 +1889,48 @@ private:
     }
 
     for (;;) {
-      std::optional<delivery_frame_t> frame;
       {
         std::unique_lock lock(_delivery_mutex);
         _delivery_cv.wait(lock, [&]() {
-          return _delivery_stop || stop_token.stop_requested() || _pending_delivery_frame.has_value();
+          return _delivery_stop || stop_token.stop_requested() || _shutting_down.load(std::memory_order_acquire) ||
+                 _pending_delivery_frame.has_value();
         });
 
-        if (_delivery_stop || stop_token.stop_requested()) {
+        if (_delivery_stop || stop_token.stop_requested() || _shutting_down.load(std::memory_order_acquire)) {
           break;
         }
-
-        frame = std::move(_pending_delivery_frame);
-        _pending_delivery_frame.reset();
-        if (frame && frame->scratch_index < _scratch_textures.size()) {
-          _scratch_textures[frame->scratch_index].state = scratch_state_e::delivering;
-        }
-      }
-      _delivery_cv.notify_all();
-
-      if (!frame || !frame->texture) {
-        continue;
       }
 
       try {
-        copy_frame_to_shared_texture(frame->texture, frame->frame_qpc);
+        copy_pending_frame_to_shared_texture();
       } catch (const winrt::hresult_error &ex) {
         BOOST_LOG(error) << "WinRT error in WGC delivery thread: " << ex.code() << " - " << winrt::to_string(ex.message());
       } catch (...) {
         BOOST_LOG(error) << "Unknown error in WGC delivery thread";
       }
-
-      {
-        std::lock_guard lock(_delivery_mutex);
-        if (frame->scratch_index < _scratch_textures.size() &&
-            _scratch_textures[frame->scratch_index].state == scratch_state_e::delivering) {
-          _scratch_textures[frame->scratch_index].state = scratch_state_e::free;
-        }
-      }
     }
   }
 
   /**
-   * @brief Copies the captured texture to the shared texture and signals the main process.
-   * @param frame_tex The captured D3D11 texture.
-   * @param frame_qpc The QPC timestamp from when the frame was captured.
+   * @brief Publishes the newest queued scratch frame once shared ownership is available.
    */
-  void copy_frame_to_shared_texture(const winrt::com_ptr<ID3D11Texture2D> &frame_tex, uint64_t frame_qpc) {
-    if (!_deps || !frame_tex) {
-      return;
-    }
-
-    // Wait for the shared keyed mutex without holding the helper-local D3D
-    // context lock. The callback thread needs that lock for its scratch copy,
-    // and the host can hold the shared texture for a whole conversion when
-    // encoders read it directly, so holding the context through this wait would
-    // stall FrameArrived behind encoder backpressure. Once the keyed mutex is
-    // ours, take the context only if it is free: if the callback is mid-copy,
-    // hand the texture back and wait for the context instead, so the host never
-    // waits on helper work either. Publication order still holds because this
-    // frame stays in the delivering state, which keeps the callback from
-    // publishing a newer frame directly ahead of it.
+  void copy_pending_frame_to_shared_texture() {
+    // Keep the pending slot replaceable during the keyed mutex wait. A timeout
+    // leaves it queued so the worker retries even if no more callbacks arrive.
+    // Give shared ownership back before waiting for either helper-local lock.
     const auto &keyed_mutex = _deps->resource_manager.get_keyed_mutex();
     const auto acquire_start = std::chrono::steady_clock::now();
     const auto acquire_deadline = acquire_start + std::chrono::milliseconds(200);
+    std::unique_lock delivery_lock(_delivery_mutex, std::defer_lock);
     std::unique_lock context_lock(_d3d_context_mutex, std::defer_lock);
+    std::chrono::steady_clock::duration delivery_wait {};
     std::chrono::steady_clock::duration context_wait {};
     HRESULT hr = WAIT_TIMEOUT;
     for (;;) {
+      if (_shutting_down.load(std::memory_order_acquire)) {
+        return;
+      }
+
       const auto now = std::chrono::steady_clock::now();
       if (now >= acquire_deadline) {
         hr = WAIT_TIMEOUT;
@@ -1970,32 +1938,52 @@ private:
       }
       const auto remaining_ms = std::chrono::ceil<std::chrono::milliseconds>(acquire_deadline - now).count();
       hr = keyed_mutex->AcquireSync(0, static_cast<DWORD>(remaining_ms));
-      if ((hr != S_OK && hr != WAIT_ABANDONED) || context_lock.try_lock()) {
+      if (hr != S_OK && hr != WAIT_ABANDONED) {
         break;
       }
 
+      // Match the callback's local lock order. With both local locks held
+      // the newest committed scratch frame cannot be replaced or reused.
+      const int busy_lock = std::try_lock(delivery_lock, context_lock);
+      if (busy_lock == -1) {
+        break;
+      }
+
+      // std::try_lock returned with neither local lock held. Give the
+      // texture back before waiting so a preempted callback cannot stall
+      // the host's conversion.
       const HRESULT handback_hr = keyed_mutex->ReleaseSync(0);
       if (FAILED(handback_hr)) {
-        BOOST_LOG(warning) << "Failed to release mutex key 0: " << std::format(": 0x{:08X}", handback_hr);
-        return;
+        hr = handback_hr;
+        break;
       }
-      const auto context_wait_start = std::chrono::steady_clock::now();
+      const auto local_wait_start = std::chrono::steady_clock::now();
       {
-        std::lock_guard wait_for_callback_copy(_d3d_context_mutex);
+        std::lock_guard wait_for_local_work(busy_lock == 0 ? _delivery_mutex : _d3d_context_mutex);
       }
-      context_wait += std::chrono::steady_clock::now() - context_wait_start;
+      auto &local_wait = busy_lock == 0 ? delivery_wait : context_wait;
+      local_wait += std::chrono::steady_clock::now() - local_wait_start;
     }
-    const auto mutex_wait = std::chrono::steady_clock::now() - acquire_start - context_wait;
+    const auto mutex_wait = std::chrono::steady_clock::now() - acquire_start - delivery_wait - context_wait;
     if (hr == WAIT_TIMEOUT) {
       const auto slow_mutex_count = _slow_mutex_waits.fetch_add(1, std::memory_order_relaxed) + 1;
       if (slow_mutex_count <= 5 || slow_mutex_count % 120 == 0) {
-        BOOST_LOG(debug) << "Timed out acquiring keyed mutex for WGC frame copy; dropping frame"
+        BOOST_LOG(debug) << "Timed out acquiring keyed mutex for WGC frame copy; retaining pending frame"
                          << " (count=" << slow_mutex_count << ")";
       }
       return;
     }
     if (hr != S_OK && hr != WAIT_ABANDONED) {
-      BOOST_LOG(error) << "Failed to acquire mutex key 0: " << std::format(": 0x{:08X}", hr);
+      // A failed mutex operation may never succeed. Wait for a new frame
+      // instead of retrying a broken resource in a tight loop.
+      {
+        std::lock_guard lock(_delivery_mutex);
+        if (_pending_delivery_frame) {
+          _scratch_textures[_pending_delivery_frame->scratch_index].state = scratch_state_e::free;
+          _pending_delivery_frame.reset();
+        }
+      }
+      BOOST_LOG(error) << "Failed to acquire or release mutex key 0: " << std::format(": 0x{:08X}", hr);
       return;
     }
     if (hr == WAIT_ABANDONED) {
@@ -2010,15 +1998,21 @@ private:
       }
     });
 
-    // Copy frame data while holding the keyed mutex. The main process acquires
-    // the same mutex before snapshotting this shared texture into a pool-owned frame.
+    if (_delivery_stop || _shutting_down.load(std::memory_order_acquire) || !_pending_delivery_frame) {
+      return;
+    }
+    auto frame = std::move(*_pending_delivery_frame);
+    _pending_delivery_frame.reset();
+    _scratch_textures[frame.scratch_index].state = scratch_state_e::free;
+
+    // The host takes the same keyed mutex before reading these pixels.
     const auto copy_start = std::chrono::steady_clock::now();
-    _deps->d3d_context->CopyResource(_deps->resource_manager.get_shared_texture().get(), frame_tex.get());
+    _deps->d3d_context->CopyResource(_deps->resource_manager.get_shared_texture().get(), frame.texture.get());
     const auto copy_submit = std::chrono::steady_clock::now() - copy_start;
 
     // Publish the metadata while still holding the shared keyed mutex so the
     // consumer can never lock a newer texture while reading an older frame id.
-    _deps->resource_manager.publish_frame_metadata(frame_qpc);
+    _deps->resource_manager.publish_frame_metadata(frame.frame_qpc);
 
     const HRESULT rel_hr = _deps->resource_manager.get_keyed_mutex()->ReleaseSync(0);
     release_shared_mutex.disable();
@@ -2028,12 +2022,14 @@ private:
     }
     const auto shared_mutex_hold = std::chrono::steady_clock::now() - shared_mutex_hold_start;
     context_lock.unlock();
+    delivery_lock.unlock();
 
     // Signal only after releasing the mutex so a woken consumer can acquire the
     // frame without waiting on the producer's normal release path.
     _deps->resource_manager.signal_frame_ready();
     _published_frames.fetch_add(1, std::memory_order_relaxed);
 
+    const auto delivery_wait_ms = std::chrono::duration<double, std::milli>(delivery_wait).count();
     const auto context_wait_ms = std::chrono::duration<double, std::milli>(context_wait).count();
     const auto mutex_wait_ms = std::chrono::duration<double, std::milli>(mutex_wait).count();
     const auto shared_mutex_hold_ms = std::chrono::duration<double, std::milli>(shared_mutex_hold).count();
@@ -2052,7 +2048,8 @@ private:
       const bool should_log_slow_hold = slow_shared_hold && (slow_hold_count <= 5 || slow_hold_count % 120 == 0);
       const bool should_log_slow_copy = slow_copy && (slow_copy_count <= 5 || slow_copy_count % 120 == 0);
       if (should_log_slow_context || should_log_slow_mutex || should_log_slow_hold || should_log_slow_copy) {
-        BOOST_LOG(debug) << "WGC helper copy timing: context_wait_ms=" << context_wait_ms
+        BOOST_LOG(debug) << "WGC helper copy timing: delivery_wait_ms=" << delivery_wait_ms
+                         << " context_wait_ms=" << context_wait_ms
                          << " mutex_wait_ms=" << mutex_wait_ms
                          << " shared_mutex_hold_ms=" << shared_mutex_hold_ms
                          << " copy_submit_ms=" << copy_submit_ms

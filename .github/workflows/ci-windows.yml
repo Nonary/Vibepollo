@@ -1032,7 +1032,7 @@ jobs:
             throw "Administrative extraction of unsigned MSI failed with exit code $($process.ExitCode)."
           }
           $vulkanInstaller = Join-Path $extractRoot 'Apollo\drivers\sunshine\install.ps1'
-          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $vulkanInstaller -RegisterVulkanLayerOnly -ValidateOnly
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $vulkanInstaller -ValidateVulkanLayerOnly
           if ($LASTEXITCODE -ne 0) {
             throw "Unsigned MSI Vulkan layer payload validation failed with exit code $LASTEXITCODE."
           }
@@ -1696,7 +1696,7 @@ jobs:
           $virtualDisplayInf = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.inf'
           $virtualDisplayDll = Join-Path $virtualDisplayRoot 'SunshineVirtualDisplayDriver.dll'
           $vulkanInstaller = Join-Path $virtualDisplayRoot 'install.ps1'
-          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $vulkanInstaller -RegisterVulkanLayerOnly -ValidateOnly
+          & powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $vulkanInstaller -ValidateVulkanLayerOnly
           if ($LASTEXITCODE -ne 0) {
             $failures.Add("Signed MSI Vulkan layer payload validation failed with exit code $LASTEXITCODE.")
           }

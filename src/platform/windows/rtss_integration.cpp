@@ -35,7 +35,9 @@
   #include <Aclapi.h>
   #include <Softpub.h>
   #include <tlhelp32.h>
+  #include <userenv.h>
   #include <wintrust.h>
+  #include <wtsapi32.h>
 // clang-format on
 
   // local includes
@@ -161,9 +163,29 @@ namespace platf {
       }
     };
 
+    enum class rtss_host_identity {
+      unavailable,
+      local_system,
+      interactive
+    };
+
+    using owned_handle = std::unique_ptr<void, decltype(&CloseHandle)>;
+
+    struct console_access_context {
+      rtss_host_identity host;
+      DWORD session;
+      owned_handle primary_token;
+      owned_handle access_token;
+
+      bool session_is_current() const {
+        return WTSGetActiveConsoleSessionId() == session;
+      }
+    };
+
     struct pinned_directory_t {
       HANDLE handle = INVALID_HANDLE_VALUE;
       fs::path path;
+      std::optional<console_access_context> console;
 
       pinned_directory_t() = default;
       pinned_directory_t(const pinned_directory_t &) = delete;
@@ -171,7 +193,8 @@ namespace platf {
 
       pinned_directory_t(pinned_directory_t &&other) noexcept:
           handle(std::exchange(other.handle, INVALID_HANDLE_VALUE)),
-          path(std::move(other.path)) {
+          path(std::move(other.path)),
+          console(std::move(other.console)) {
       }
 
       ~pinned_directory_t() {
@@ -316,39 +339,179 @@ namespace platf {
       return fs::path(value);
     }
 
-    bool active_console_user_has_mutating_access(HANDLE object, DWORD mutation_mask) {
-      PSECURITY_DESCRIPTOR descriptor = nullptr;
-      PACL dacl = nullptr;
-      PSID owner = nullptr;
-      PSID group = nullptr;
+    bool token_matches_interactive_logon(HANDLE token) {
+      // WinSta0 is assigned to the interactive logon. Match its logon SID
+      // rather than an account SID, which can also belong to a Run As token.
+      const HWINSTA station = GetProcessWindowStation();
+      USEROBJECTFLAGS flags {};
+      alignas(SID) std::array<BYTE, SECURITY_MAX_SID_SIZE> station_sid {};
+      DWORD returned = 0;
+      if (!station ||
+          !GetUserObjectInformationW(station, UOI_FLAGS, &flags, sizeof(flags), &returned) ||
+          (flags.dwFlags & WSF_VISIBLE) == 0 ||
+          !GetUserObjectInformationW(station, UOI_USER_SID, station_sid.data(), static_cast<DWORD>(station_sid.size()), &returned) ||
+          returned == 0 || !IsValidSid(station_sid.data())) {
+        return false;
+      }
+
+      alignas(TOKEN_GROUPS) std::array<BYTE, sizeof(TOKEN_GROUPS) + SECURITY_MAX_SID_SIZE> logon {};
+      if (!GetTokenInformation(token, TokenLogonSid, logon.data(), static_cast<DWORD>(logon.size()), &returned)) {
+        return false;
+      }
+      const auto *groups = reinterpret_cast<const TOKEN_GROUPS *>(logon.data());
+      return groups->GroupCount == 1 &&
+             IsValidSid(groups->Groups[0].Sid) &&
+             EqualSid(groups->Groups[0].Sid, station_sid.data());
+    }
+
+    bool token_matches_console_session(HANDLE token, DWORD console_session) {
+      DWORD session = 0;
+      DWORD returned = 0;
+      return GetTokenInformation(token, TokenSessionId, &session, sizeof(session), &returned) &&
+             session == console_session;
+    }
+
+    bool is_unelevated_console_token(HANDLE token, DWORD console_session) {
+      TOKEN_ELEVATION elevation {};
+      TOKEN_GROUPS restricted_sids {};
+      DWORD app_container = 0;
+      DWORD returned = 0;
+      return token_matches_console_session(token, console_session) &&
+             GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &returned) &&
+             !elevation.TokenIsElevated &&
+             GetTokenInformation(token, TokenRestrictedSids, &restricted_sids, sizeof(restricted_sids), &returned) &&
+             restricted_sids.GroupCount == 0 &&
+             GetTokenInformation(token, TokenIsAppContainer, &app_container, sizeof(app_container), &returned) &&
+             !app_container;
+    }
+
+    bool token_has_console_integrity(HANDLE token) {
+      alignas(TOKEN_MANDATORY_LABEL) std::array<BYTE, sizeof(TOKEN_MANDATORY_LABEL) + SECURITY_MAX_SID_SIZE> label {};
+      DWORD returned = 0;
+      if (!GetTokenInformation(token, TokenIntegrityLevel, label.data(), static_cast<DWORD>(label.size()), &returned)) {
+        return false;
+      }
+      const PSID sid = reinterpret_cast<const TOKEN_MANDATORY_LABEL *>(label.data())->Label.Sid;
+      if (!IsValidSid(sid) || *GetSidSubAuthorityCount(sid) != 1) {
+        return false;
+      }
+      return *GetSidSubAuthority(sid, 0) == SECURITY_MANDATORY_MEDIUM_RID;
+    }
+
+    bool token_preserves_console_groups(HANDLE token) {
+      DWORD filtered = 0;
+      TOKEN_ELEVATION_TYPE elevation_type {};
+      DWORD size = 0;
+      if (!GetTokenInformation(token, TokenHasRestrictions, &filtered, sizeof(filtered), &size) ||
+          !GetTokenInformation(token, TokenElevationType, &elevation_type, sizeof(elevation_type), &size) ||
+          (filtered && elevation_type != TokenElevationTypeLimited)) {
+        return false;
+      }
+
+      // A normal UAC-limited desktop token is itself filtered. Windows can
+      // make the Administrators and local-account administrator SIDs deny-only.
+      // Other attenuated grants could hide write access available to the user.
+      size = 0;
+      GetTokenInformation(token, TokenGroups, nullptr, 0, &size);
+      if (size < sizeof(TOKEN_GROUPS)) {
+        return false;
+      }
+      std::vector<BYTE> storage(size);
+      if (!GetTokenInformation(token, TokenGroups, storage.data(), size, &size)) {
+        return false;
+      }
+      const auto *groups = reinterpret_cast<const TOKEN_GROUPS *>(storage.data());
+      for (DWORD index = 0; index < groups->GroupCount; ++index) {
+        const auto &group = groups->Groups[index];
+        if (group.Attributes & SE_GROUP_USE_FOR_DENY_ONLY) {
+          const bool uac_admin_group =
+            IsWellKnownSid(group.Sid, WinBuiltinAdministratorsSid) ||
+            IsWellKnownSid(group.Sid, WinLocalAccountAndAdministratorSid);
+          if (elevation_type != TokenElevationTypeLimited || !uac_admin_group) {
+            return false;
+          }
+        } else if ((group.Attributes & SE_GROUP_ENABLED_BY_DEFAULT) && !(group.Attributes & SE_GROUP_ENABLED)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    rtss_host_identity identify_rtss_host(HANDLE process_token, DWORD console_session) {
+      alignas(TOKEN_USER) std::array<BYTE, sizeof(TOKEN_USER) + SECURITY_MAX_SID_SIZE> user {};
+      DWORD returned = 0;
+      if (!GetTokenInformation(process_token, TokenUser, user.data(), static_cast<DWORD>(user.size()), &returned)) {
+        return rtss_host_identity::unavailable;
+      }
+      const auto &account = reinterpret_cast<const TOKEN_USER *>(user.data())->User;
+      if (!IsValidSid(account.Sid) || (account.Attributes & SE_GROUP_USE_FOR_DENY_ONLY)) {
+        return rtss_host_identity::unavailable;
+      }
+      // The service moves its own LocalSystem token into the console session.
+      // Session ID alone cannot tell a service host from a console user.
+      if (IsWellKnownSid(account.Sid, WinLocalSystemSid)) {
+        return rtss_host_identity::local_system;
+      }
+      if (!is_unelevated_console_token(process_token, console_session) || !token_has_console_integrity(process_token) ||
+          !token_matches_interactive_logon(process_token) || !token_preserves_console_groups(process_token)) {
+        return rtss_host_identity::unavailable;
+      }
+      return rtss_host_identity::interactive;
+    }
+
+    enum class console_access {
+      protected_object,
+      writable,
+      unverifiable
+    };
+
+    std::optional<console_access_context> get_console_access_context() {
+      const DWORD session = WTSGetActiveConsoleSessionId();
+      HANDLE token = nullptr;
+      if (session == 0xFFFFFFFF || !OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &token)) {
+        return std::nullopt;
+      }
+      owned_handle primary {token, CloseHandle};
+      const auto host = identify_rtss_host(primary.get(), session);
+      if (host == rtss_host_identity::unavailable) {
+        return std::nullopt;
+      }
+
+      // The WTS token is authoritative for a LocalSystem service. Keep that
+      // exact token for the whole verification and launch transaction.
+      if (host == rtss_host_identity::local_system) {
+        HANDLE console_token = nullptr;
+        if (!WTSQueryUserToken(session, &console_token)) {
+          return std::nullopt;
+        }
+        primary.reset(console_token);
+        if (!primary || !is_unelevated_console_token(primary.get(), session) || !token_has_console_integrity(primary.get())) {
+          return std::nullopt;
+        }
+      }
+
+      HANDLE duplicate = nullptr;
+      if (!DuplicateToken(primary.get(), SecurityIdentification, &duplicate)) {
+        return std::nullopt;
+      }
+      return console_access_context {host, session, std::move(primary), owned_handle {duplicate, CloseHandle}};
+    }
+
+    console_access active_console_user_access(const console_access_context &console, HANDLE object, DWORD mutation_mask) {
+      PSECURITY_DESCRIPTOR raw_descriptor = nullptr;
       const DWORD security_result = GetSecurityInfo(
         object,
         SE_FILE_OBJECT,
         OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-        &owner,
-        &group,
-        &dacl,
         nullptr,
-        &descriptor
+        nullptr,
+        nullptr,
+        nullptr,
+        &raw_descriptor
       );
+      const std::unique_ptr<void, decltype(&LocalFree)> descriptor {raw_descriptor, LocalFree};
       if (security_result != ERROR_SUCCESS || !descriptor) {
-        if (descriptor) {
-          LocalFree(descriptor);
-        }
-        return true;
-      }
-
-      HANDLE primary_token = retrieve_users_token(false);
-      if (!primary_token) {
-        LocalFree(descriptor);
-        return true;
-      }
-      HANDLE impersonation_token = nullptr;
-      const BOOL duplicated = DuplicateToken(primary_token, SecurityIdentification, &impersonation_token);
-      CloseHandle(primary_token);
-      if (!duplicated || !impersonation_token) {
-        LocalFree(descriptor);
-        return true;
+        return console_access::unverifiable;
       }
 
       GENERIC_MAPPING mapping {
@@ -357,31 +520,30 @@ namespace platf {
         .GenericExecute = FILE_GENERIC_EXECUTE,
         .GenericAll = FILE_ALL_ACCESS,
       };
-      std::array<BYTE, 1024> privilege_storage {};
+      alignas(PRIVILEGE_SET) std::array<BYTE, 1024> privilege_storage {};
       auto *privileges = reinterpret_cast<PRIVILEGE_SET *>(privilege_storage.data());
       DWORD privilege_size = static_cast<DWORD>(privilege_storage.size());
       DWORD granted_access = 0;
       BOOL access_status = FALSE;
-      const BOOL checked = AccessCheck(
-        descriptor,
-        impersonation_token,
-        MAXIMUM_ALLOWED,
-        &mapping,
-        privileges,
-        &privilege_size,
-        &granted_access,
-        &access_status
-      );
-
-      CloseHandle(impersonation_token);
-      LocalFree(descriptor);
-      if (!checked || !access_status) {
-        return true;
+      if (!AccessCheck(descriptor.get(), console.access_token.get(), MAXIMUM_ALLOWED, &mapping, privileges, &privilege_size, &granted_access, &access_status) ||
+          !access_status || !console.session_is_current()) {
+        return console_access::unverifiable;
       }
-      return (granted_access & mutation_mask) != 0;
+      return (granted_access & mutation_mask) != 0 ? console_access::writable : console_access::protected_object;
     }
 
-    std::optional<pinned_directory_t> pin_trusted_rtss_root(const fs::path &root) {
+    void log_console_access_rejection(console_access result, std::string_view object, const fs::path &path, bool *verification_unavailable) {
+      if (verification_unavailable && result == console_access::unverifiable) {
+        *verification_unavailable = true;
+      }
+      BOOST_LOG(warning) << "RTSS trust check rejected "sv << object
+                         << (result == console_access::writable ?
+                               " writable by the active console user: "sv :
+                               " because active console user write access could not be verified: "sv)
+                         << path.string();
+    }
+
+    std::optional<pinned_directory_t> pin_trusted_rtss_root(const fs::path &root, bool *verification_unavailable = nullptr) {
       const auto canonical = canonical_trusted_rtss_root(root);
       if (!canonical) {
         return std::nullopt;
@@ -421,14 +583,17 @@ namespace platf {
         DELETE |
         WRITE_DAC |
         WRITE_OWNER;
-      if (active_console_user_has_mutating_access(handle, root_mutation_rights)) {
-        BOOST_LOG(warning) << "RTSS trust check rejected an installation directory mutable by the active console user: "sv << canonical->string();
+      auto console = get_console_access_context();
+      const auto access = console ? active_console_user_access(*console, handle, root_mutation_rights) : console_access::unverifiable;
+      if (access != console_access::protected_object) {
+        log_console_access_rejection(access, "the installation directory", *canonical, verification_unavailable);
         CloseHandle(handle);
         return std::nullopt;
       }
       pinned_directory_t result;
       result.handle = handle;
       result.path = *canonical;
+      result.console.emplace(std::move(*console));
       return result;
     }
 
@@ -480,7 +645,9 @@ namespace platf {
 
     std::optional<verified_code_file_t> open_verified_code_file(
       const fs::path &path,
-      const std::optional<signer_fingerprint_t> &required_signer = std::nullopt
+      const console_access_context &console,
+      const std::optional<signer_fingerprint_t> &required_signer = std::nullopt,
+      bool *verification_unavailable = nullptr
     ) {
       const auto trusted_parent = canonical_trusted_rtss_root(path.parent_path());
       if (!trusted_parent) {
@@ -523,8 +690,9 @@ namespace platf {
         DELETE |
         WRITE_DAC |
         WRITE_OWNER;
-      if (active_console_user_has_mutating_access(file, file_mutation_rights)) {
-        BOOST_LOG(warning) << "RTSS trust check rejected a code file mutable by the active console user: "sv << canonical_path.string();
+      const auto access = active_console_user_access(console, file, file_mutation_rights);
+      if (access != console_access::protected_object) {
+        log_console_access_rejection(access, "a code file", canonical_path, verification_unavailable);
         CloseHandle(file);
         return std::nullopt;
       }
@@ -582,13 +750,13 @@ namespace platf {
       return matches;
     }
 
-    std::optional<verified_code_file_t> find_verified_rtss_executable(const fs::path &root) {
-      const auto canonical_root = canonical_trusted_rtss_root(root);
+    std::optional<verified_code_file_t> find_verified_rtss_executable(const pinned_directory_t &root, bool *verification_unavailable = nullptr) {
+      const auto canonical_root = canonical_trusted_rtss_root(root.path);
       if (!canonical_root) {
         return std::nullopt;
       }
       for (const auto *name : k_rtss_executable_names) {
-        if (auto verified = open_verified_code_file(*canonical_root / name)) {
+        if (auto verified = open_verified_code_file(*canonical_root / name, *root.console, std::nullopt, verification_unavailable)) {
           return verified;
         }
       }
@@ -596,19 +764,19 @@ namespace platf {
       return std::nullopt;
     }
 
-    bool rtss_installation_is_trusted(const fs::path &root) {
-      const auto pinned_root = pin_trusted_rtss_root(root);
+    bool rtss_installation_is_trusted(const fs::path &root, bool &verification_unavailable) {
+      const auto pinned_root = pin_trusted_rtss_root(root, &verification_unavailable);
       if (!pinned_root) {
         return false;
       }
-      auto executable = find_verified_rtss_executable(pinned_root->path);
+      auto executable = find_verified_rtss_executable(*pinned_root, &verification_unavailable);
       if (!executable) {
         return false;
       }
       for (const auto *name : {L"RTSSHooks64.dll", L"RTSSHooks.dll"}) {
         const fs::path hook = pinned_root->path / name;
         std::error_code ec;
-        if (fs::exists(hook, ec) && !ec && open_verified_code_file(hook, executable->signer)) {
+        if (fs::exists(hook, ec) && !ec && open_verified_code_file(hook, *pinned_root->console, executable->signer, &verification_unavailable)) {
           return true;
         }
       }
@@ -655,6 +823,7 @@ namespace platf {
       const std::optional<int> *sync_limiter
     );
     bool ensure_rtss_running(const fs::path &root);
+    bool rtss_process_confirmed_absent();
     bool reload_profiles_from_disk(
       bool mark_hooks_failed = true,
       bool *call_scheduled = nullptr
@@ -1028,10 +1197,7 @@ namespace platf {
     enum class recovery_result_t {
       /// Nothing was left over, or the persisted mutation was undone.
       resolved,
-      /// RTSS is provably not limiting anything: its install root is gone, or it
-      /// is not running and could not be started. A persisted snapshot cannot be
-      /// in force, so callers must release the provider slot instead of retaining
-      /// exclusivity they cannot honour.
+      /// No running RTSS process was found, so the snapshot cannot be in force.
       rtss_absent,
       /// The persisted state could not be resolved and live RTSS state is
       /// uncertain, so exclusivity must be retained.
@@ -1040,15 +1206,11 @@ namespace platf {
 
     recovery_result_t restore_from_snapshot(const recovery_snapshot_t &snapshot) {
       fs::path root = resolve_rtss_root();
-      if (!fs::exists(root)) {
-        BOOST_LOG(warning) << "RTSS overrides: install path not found for recovery: "sv << root.string();
-        return recovery_result_t::rtss_absent;
-      }
       if (!ensure_rtss_running(root)) {
-        // Same predicate rtss_streaming_start already falls back on: RTSS was not
-        // running and could not be started, so it is enforcing nothing.
-        BOOST_LOG(warning) << "RTSS overrides: unable to start RTSS for recovery";
-        return recovery_result_t::rtss_absent;
+        BOOST_LOG(warning) << "RTSS overrides: unable to establish a trusted RTSS process for recovery";
+        // Trust is checked before the launch path looks for a running process.
+        // A rejected or moved installation can still have a cap in effect.
+        return rtss_process_confirmed_absent() ? recovery_result_t::rtss_absent : recovery_result_t::unresolved;
       }
 
       bool hooks_loaded = false;
@@ -1581,6 +1743,11 @@ namespace platf {
       return {.known = enumeration_known, .pid = pid};
     }
 
+    bool rtss_process_confirmed_absent() {
+      const auto process = probe_rtss_process_id();
+      return process.known && !process.pid;
+    }
+
     std::optional<DWORD> find_rtss_process_id() {
       return probe_rtss_process_id().pid;
     }
@@ -1653,16 +1820,75 @@ namespace platf {
       }
     }
 
+    bool launch_service_rtss(
+      const console_access_context &console,
+      const std::wstring &exe_path,
+      const std::wstring &working_dir,
+      DWORD creation_flags,
+      STARTUPINFOW &startup,
+      PROCESS_INFORMATION &process,
+      std::error_code &error
+    ) {
+      auto token = console.primary_token.get();
+      owned_handle linked_token {nullptr, CloseHandle};
+      TOKEN_ELEVATION_TYPE elevation_type {};
+      DWORD returned = 0;
+      if (!GetTokenInformation(token, TokenElevationType, &elevation_type, sizeof(elevation_type), &returned)) {
+        error = std::error_code(GetLastError(), std::system_category());
+        return false;
+      }
+      if (elevation_type == TokenElevationTypeLimited) {
+        // Preserve service launch for RTSS releases that require an admin.
+        // This linked token is from the checked user's logon, without a
+        // second lookup of whichever console user happens to be active.
+        TOKEN_LINKED_TOKEN elevated {};
+        if (!GetTokenInformation(token, TokenLinkedToken, &elevated, sizeof(elevated), &returned)) {
+          error = std::error_code(GetLastError(), std::system_category());
+          return false;
+        }
+        linked_token.reset(elevated.LinkedToken);
+        token = linked_token.get();
+      }
+      if (!token || !token_matches_console_session(token, console.session)) {
+        error = std::make_error_code(std::errc::permission_denied);
+        return false;
+      }
+
+      LPVOID environment = nullptr;
+      if (!CreateEnvironmentBlock(&environment, token, FALSE)) {
+        error = std::error_code(GetLastError(), std::system_category());
+        return false;
+      }
+      bool launched = false;
+      const auto impersonation_error = impersonate_current_user(token, [&]() {
+        if (!console.session_is_current()) {
+          error = std::make_error_code(std::errc::permission_denied);
+          return;
+        }
+        launched = CreateProcessAsUserW(
+          token, exe_path.c_str(), nullptr, nullptr, nullptr, FALSE, creation_flags,
+          environment, working_dir.c_str(), &startup, &process
+        ) != FALSE;
+        if (!launched) {
+          error = std::error_code(GetLastError(), std::system_category());
+        }
+      });
+      DestroyEnvironmentBlock(environment);
+      if (impersonation_error) {
+        error = impersonation_error;
+      }
+      return launched;
+    }
+
     bool ensure_rtss_running(const fs::path &root) {
-      // The service host remains LocalSystem while RTSS itself is launched as the
-      // console user. Pin the trusted root without delete sharing, then pin a
+      // Pin the trusted root without delete sharing, then pin a
       // signed executable before consulting or starting the process so a Web UI
       // path cannot swap the directory or select user-controlled code.
       auto pinned_root = pin_trusted_rtss_root(root);
       if (!pinned_root) {
         return false;
       }
-      auto trusted_executable = find_verified_rtss_executable(pinned_root->path);
+      auto trusted_executable = find_verified_rtss_executable(*pinned_root);
       if (!trusted_executable) {
         return false;
       }
@@ -1686,7 +1912,6 @@ namespace platf {
       // image. FILE_SHARE_READ prevents a post-verification replacement.
       std::wstring exe_path = trusted_executable->path.wstring();
       std::wstring working_dir = pinned_root->path.wstring();
-      std::string cmd_utf8 = "\"" + to_utf8(exe_path) + "\"";
 
       std::error_code startup_ec;
       STARTUPINFOEXW startup_info = create_startup_info(nullptr, nullptr, startup_ec);
@@ -1701,15 +1926,22 @@ namespace platf {
 
       PROCESS_INFORMATION process_info {};
       std::error_code launch_ec;
-      bool launched = launch_process_with_impersonation(
-        true,
-        cmd_utf8,
-        working_dir,
-        creation_flags,
-        startup_info,
-        process_info,
-        launch_ec
-      );
+      bool launched = false;
+      const auto &console = *pinned_root->console;
+      if (console.host == rtss_host_identity::local_system) {
+        launched = launch_service_rtss(
+          console, exe_path, working_dir, creation_flags, startup_info.StartupInfo, process_info, launch_ec
+        );
+      } else if (console.session_is_current()) {
+        // CreateProcessW inherits the primary token verified above.
+        launched = CreateProcessW(
+          exe_path.c_str(), nullptr, nullptr, nullptr, FALSE, creation_flags,
+          nullptr, working_dir.c_str(), &startup_info.StartupInfo, &process_info
+        ) != FALSE;
+        if (!launched) {
+          launch_ec = std::error_code(GetLastError(), std::system_category());
+        }
+      }
 
       if (startup_info.lpAttributeList) {
         free_proc_thread_attr_list(startup_info.lpAttributeList);
@@ -1717,15 +1949,16 @@ namespace platf {
 
       if (!launched) {
         if (launch_ec) {
-          BOOST_LOG(warning) << "Failed to launch RTSS via impersonation: "sv << launch_ec.message();
+          BOOST_LOG(warning) << "Failed to launch the verified RTSS executable: "sv << launch_ec.message();
         } else {
-          BOOST_LOG(warning) << "Failed to launch RTSS via impersonation"sv;
+          BOOST_LOG(warning) << "Failed to launch the verified RTSS executable"sv;
         }
         reset_rtss_process_state();
         return false;
       }
 
       CloseHandle(process_info.hThread);
+      process_info.hThread = nullptr;
 
       g_rtss_process_info = process_info;
       g_rtss_started_by_sunshine = true;
@@ -1825,7 +2058,7 @@ namespace platf {
       if (!pinned_root) {
         return false;
       }
-      const auto trusted_executable = find_verified_rtss_executable(pinned_root->path);
+      const auto trusted_executable = find_verified_rtss_executable(*pinned_root);
       if (!trusted_executable) {
         return false;
       }
@@ -1835,8 +2068,8 @@ namespace platf {
         // RTSS' executable and hook DLL must chain to the same trusted signing
         // certificate. Keep the verified DLL handle open without write/delete
         // sharing across LoadLibraryExW to close the pathname replacement race.
-        auto trusted_dll = open_verified_code_file(p, trusted_executable->signer);
-        if (!trusted_dll) {
+        auto trusted_dll = open_verified_code_file(p, *pinned_root->console, trusted_executable->signer);
+        if (!trusted_dll || !pinned_root->console->session_is_current()) {
           return false;
         }
         HMODULE m = LoadLibraryExW(
@@ -2120,12 +2353,12 @@ namespace platf {
     }
 
     g_rtss_root = resolve_rtss_root();
-    if (!fs::exists(g_rtss_root)) {
-      BOOST_LOG(warning) << "RTSS install path not found: "sv << g_rtss_root.string();
-      return mark_safe_to_fallback();
-    }
     if (!ensure_rtss_running(g_rtss_root)) {
-      BOOST_LOG(warning) << "RTSS is not running; refusing to report a file-only frame limit as active."sv;
+      if (!rtss_process_confirmed_absent()) {
+        return retain_rtss_exclusive(
+          "A trusted RTSS process could not be established and a running limiter could not be ruled out.");
+      }
+      BOOST_LOG(warning) << "RTSS is unavailable and no RTSS limit was applied."sv;
       return mark_safe_to_fallback();
     }
 
@@ -2141,22 +2374,13 @@ namespace platf {
     g_original_limit = original_limit.value;
     g_original_denominator = original_denominator.value;
     g_original_sync_limiter = original_sync_limiter.value;
-    if (!load_hooks(g_rtss_root)) {
-      BOOST_LOG(warning) << "RTSSHooks could not be loaded; limiter state cannot be verified."sv;
-      if (g_original_limit && *g_original_limit > 0) {
-        return retain_rtss_exclusive(
-          "The running RTSS profile contains a positive frame limit whose enabled state is unknown.");
+    if (!load_hooks(g_rtss_root) || !(g_original_flags = get_hook_flags())) {
+      // A zero or missing disk profile does not establish the state of a
+      // running RTSS process when its live limiter cannot be queried.
+      if (!rtss_process_confirmed_absent()) {
+        return retain_rtss_exclusive("RTSS is running or could not be ruled out and its limiter state could not be verified.");
       }
-      return mark_safe_to_fallback();
-    }
-
-    g_original_flags = get_hook_flags();
-    if (!g_original_flags) {
-      BOOST_LOG(warning) << "RTSS limiter flags could not be read; refusing to apply an unverified profile-only limit."sv;
-      if (g_original_limit && *g_original_limit > 0) {
-        return retain_rtss_exclusive(
-          "The running RTSS profile contains a positive frame limit whose enabled state could not be read.");
-      }
+      BOOST_LOG(warning) << "RTSS stopped before the frame limit could be verified.";
       return mark_safe_to_fallback();
     }
 
@@ -2197,8 +2421,9 @@ namespace platf {
       g_recovery_file_owned = write_overrides_file(snapshot);
       if (!g_recovery_file_owned) {
         BOOST_LOG(error) << "RTSS overrides: refusing to apply changes without a durable recovery snapshot.";
-        const bool existing_limit_may_be_active =
-          !g_flags_modified && g_original_limit && *g_original_limit > 0;
+        // Enabled live flags leave open a cached cap even when the on-disk
+        // profile is zero or missing. No RTSS settings have changed here.
+        const bool existing_limit_may_be_active = !g_flags_modified;
         g_settings_dirty = false;
         g_flags_modified = false;
         g_denominator_modified = false;
@@ -2206,7 +2431,7 @@ namespace platf {
         g_sync_limiter_modified = false;
         if (existing_limit_may_be_active) {
           return retain_rtss_exclusive(
-            "RTSS was already limiting, but its original settings could not be persisted for recovery.");
+            "RTSS may already be limiting and its original settings could not be persisted for recovery.");
         }
         return mark_safe_to_fallback();
       }
@@ -2237,9 +2462,7 @@ namespace platf {
     if (g_flags_modified) {
       constexpr DWORD limiter_mask = k_rtss_flag_limiter_disabled;
       bool flag_call_scheduled = false;
-      const bool reload_with_flag_update = limit_to_write || denominator_to_write || sync_to_write;
-      const auto updated_flags =
-        set_hook_flags(~limiter_mask, 0, &flag_call_scheduled, reload_with_flag_update);
+      const auto updated_flags = set_hook_flags(~limiter_mask, 0, &flag_call_scheduled, true);
       if (!updated_flags) {
         if (!flag_call_scheduled) {
           BOOST_LOG(warning) << "RTSS limiter enable was not scheduled; allowing another provider.";
@@ -2254,7 +2477,8 @@ namespace platf {
       }
     }
 
-    if ((limit_to_write || denominator_to_write || sync_to_write) && !g_flags_modified) {
+    // A matching Global file still needs acknowledgement from the running RTSS.
+    if (!g_flags_modified) {
       bool reload_scheduled = false;
       if (!reload_profiles_from_disk(false, &reload_scheduled)) {
         return retain_rtss_exclusive(
@@ -2325,10 +2549,6 @@ namespace platf {
     const bool write_denominator = current_denominator != requested_denominator;
     constexpr DWORD limiter_mask = k_rtss_flag_limiter_disabled;
     const bool limiter_disabled = (*current_flags & limiter_mask) != 0;
-    if (!write_limit && !write_denominator && !limiter_disabled) {
-      return mark_applied();
-    }
-
     // If another program changed a profile key that this stream did not own
     // yet, refresh is about to take ownership of it. Capture that *current*
     // value and persist the expanded recovery snapshot before overwriting the
@@ -2348,7 +2568,7 @@ namespace platf {
       acquiring_limit ||
       acquiring_denominator ||
       acquiring_flags;
-    if (needs_snapshot) {
+    if ((write_limit || write_denominator || limiter_disabled) && needs_snapshot) {
       recovery_snapshot_t snapshot;
       snapshot.flags_modified = next_flags_modified;
       snapshot.original_flags = next_original_flags;
@@ -2398,9 +2618,7 @@ namespace platf {
 
     if (limiter_disabled) {
       bool flag_call_scheduled = false;
-      const bool reload_with_flag_update = write_limit || write_denominator;
-      const auto updated_flags =
-        set_hook_flags(~limiter_mask, 0, &flag_call_scheduled, reload_with_flag_update);
+      const auto updated_flags = set_hook_flags(~limiter_mask, 0, &flag_call_scheduled, true);
       if (!updated_flags) {
         if (!flag_call_scheduled) {
           return mark_safe_to_fallback();
@@ -2411,7 +2629,7 @@ namespace platf {
       if (*updated_flags & limiter_mask) {
         return mark_safe_to_fallback();
       }
-    } else if (write_limit || write_denominator) {
+    } else {
       bool reload_scheduled = false;
       if (!reload_profiles_from_disk(false, &reload_scheduled)) {
         return retain_rtss_exclusive(
@@ -2542,7 +2760,10 @@ namespace platf {
       bool hooks64 = fs::exists(root / "RTSSHooks64.dll");
       bool hooks = fs::exists(root / "RTSSHooks.dll");
       st.hooks_found = hooks64 || hooks;
-      st.trust_valid = st.hooks_found && rtss_installation_is_trusted(root);
+      st.trust_valid = st.hooks_found && rtss_installation_is_trusted(root, st.trust_verification_unavailable);
+      if (st.trust_valid) {
+        st.trust_verification_unavailable = false;
+      }
       st.can_bootstrap_profile = st.trust_valid;
       st.profile_found = fs::exists(root / "Profiles" / "Global");
     }

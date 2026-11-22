@@ -339,13 +339,11 @@ TEST(WgcGeometryUpdatePolicy, WgcRechecksTargetIdentityOnPollEvenWithColorEvents
   EXPECT_TRUE(target_observation_needed(false, false, false, false, false, false, true));
 }
 
-TEST(WgcHelperPublication, DirectPublishOnlyWhenNothingOlderIsInFlight) {
+TEST(WgcHelperPublication, DirectPublishOnlyWhenNoScratchFrameIsPending) {
   using platf::dxgi::wgc_policy::may_publish_directly;
-  EXPECT_TRUE(may_publish_directly(false, false, false));
-  // A queued or mid-delivery scratch frame is older and must be published first.
-  EXPECT_FALSE(may_publish_directly(false, true, false));
-  EXPECT_FALSE(may_publish_directly(false, false, true));
-  EXPECT_FALSE(may_publish_directly(true, false, false));
+  EXPECT_TRUE(may_publish_directly(false, false));
+  EXPECT_FALSE(may_publish_directly(false, true));
+  EXPECT_FALSE(may_publish_directly(true, false));
 }
 
 TEST(WgcDirectEncoderInput, EncodesEachSharedFrameOnce) {

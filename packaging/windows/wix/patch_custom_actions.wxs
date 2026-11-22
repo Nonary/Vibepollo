@@ -85,18 +85,17 @@
       <!-- Post-install chores -->
       <Custom Action="SetResetAcls" After="InstallFiles">NOT REMOVE</Custom>
       <Custom Action="ResetAcls" After="SetResetAcls">NOT REMOVE</Custom>
-      <Custom Action="SetInstallBundledDrivers" After="ResetAcls">NOT REMOVE</Custom>
+      <!-- Clear stale registrations before any driver action can start the host. -->
+      <Custom Action="SetClearVulkanHdrLayerBeforeInstall" After="ResetAcls">NOT REMOVE</Custom>
+      <Custom Action="ClearVulkanHdrLayerBeforeInstall" After="SetClearVulkanHdrLayerBeforeInstall">NOT REMOVE</Custom>
+      <Custom Action="SetInstallBundledDrivers" After="ClearVulkanHdrLayerBeforeInstall">NOT REMOVE</Custom>
       <Custom Action="InstallBundledDrivers" After="SetInstallBundledDrivers">NOT REMOVE</Custom>
       <!-- Explicit opt-in only; existing shared transports are left unchanged.
            There is intentionally no matching USB/IP uninstall action. -->
       <Custom Action="SetInstallUsbIpTransport" After="InstallBundledDrivers">NOT REMOVE AND USBIP_TRANSPORT_BUNDLED = "1" AND INSTALL_USBIP_TRANSPORT = "1"</Custom>
       <Custom Action="InstallUsbIpTransport" After="SetInstallUsbIpTransport">NOT REMOVE AND USBIP_TRANSPORT_BUNDLED = "1" AND INSTALL_USBIP_TRANSPORT = "1"</Custom>
-      <!-- Vibepollo registers the Vulkan HDR layer on every install (SudoVDA needs it too,
-           not just the virtual-display driver), so keep this gated only on NOT REMOVE. -->
-      <Custom Action="SetRegisterVulkanHdrLayer" After="InstallUsbIpTransport">NOT REMOVE</Custom>
-      <Custom Action="RegisterVulkanHdrLayer" After="SetRegisterVulkanHdrLayer">NOT REMOVE</Custom>
       <!-- Tightened to NOT Installed so repair/upgrade does not rerun install-time migration work. -->
-      <Custom Action="SetMigrateConfig" After="RegisterVulkanHdrLayer">NOT Installed AND NOT REMOVE</Custom>
+      <Custom Action="SetMigrateConfig" After="InstallUsbIpTransport">NOT Installed AND NOT REMOVE</Custom>
       <Custom Action="MigrateConfig" After="SetMigrateConfig">NOT Installed AND NOT REMOVE</Custom>
       <Custom Action="SetRunInstallerMigrations" After="MigrateConfig">NOT Installed AND NOT REMOVE</Custom>
       <Custom Action="RunInstallerMigrations" After="SetRunInstallerMigrations">NOT Installed AND NOT REMOVE</Custom>

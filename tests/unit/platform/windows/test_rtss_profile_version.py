@@ -41,13 +41,13 @@ for required in (
 
 assert text.count('AccessCheck(') == 1, 'RTSS ACL policy must use one handle-bound access helper'
 
-access_source_start = text.index('bool active_console_user_has_mutating_access')
+access_source_start = text.index('console_access active_console_user_access')
 access_source_end = text.index('\n    std::optional<pinned_directory_t>', access_source_start)
 access_source = text[access_source_start:access_source_end]
 assert 'GetSecurityInfo(' in access_source
 assert 'OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION' in access_source
 assert 'MAXIMUM_ALLOWED' in access_source
-assert 'retrieve_users_token(false)' in access_source
+assert 'WTSQueryUserToken(session, &console_token)' in text
 
 trusted_root_source_start = text.index('std::optional<fs::path> canonical_trusted_rtss_root')
 trusted_root_source_end = text.index('\n    std::optional<fs::path> final_dos_path', trusted_root_source_start)
@@ -71,7 +71,7 @@ assert 'normalized_path_key(*opened_trusted) != normalized_path_key(*canonical)'
 assert 'FILE_ADD_FILE' in pin_root_source
 assert 'FILE_ADD_SUBDIRECTORY' in pin_root_source
 assert 'FILE_DELETE_CHILD' in pin_root_source
-assert 'active_console_user_has_mutating_access(handle, root_mutation_rights)' in pin_root_source
+assert 'active_console_user_access(*console, handle, root_mutation_rights)' in pin_root_source
 
 verified_file_source_start = text.index('std::optional<verified_code_file_t> open_verified_code_file')
 verified_file_source_end = text.index('\n    bool same_file_identity', verified_file_source_start)
@@ -82,15 +82,15 @@ assert 'FILE_WRITE_DATA' in verified_file_source
 assert 'DELETE' in verified_file_source
 assert 'WRITE_DAC' in verified_file_source
 assert 'WRITE_OWNER' in verified_file_source
-assert 'active_console_user_has_mutating_access(file, file_mutation_rights)' in verified_file_source
+assert 'active_console_user_access(console, file, file_mutation_rights)' in verified_file_source
 assert verified_file_source.index('verify_authenticode_signature') < len(verified_file_source)
 
 load_hooks_source_start = text.index('bool load_hooks(const fs::path &root) {')
 load_hooks_source_end = text.index('\n    // Resolve RTSS only', load_hooks_source_start)
 load_hooks_source = text[load_hooks_source_start:load_hooks_source_end]
 assert 'pin_trusted_rtss_root(root)' in load_hooks_source
-assert 'find_verified_rtss_executable(pinned_root->path)' in load_hooks_source
-assert 'open_verified_code_file(p, trusted_executable->signer)' in load_hooks_source
+assert 'find_verified_rtss_executable(*pinned_root)' in load_hooks_source
+assert 'open_verified_code_file(p, *pinned_root->console, trusted_executable->signer)' in load_hooks_source
 assert 'loaded_module_matches_verified_file(m, *trusted_dll)' in load_hooks_source
 assert 'LoadLibraryW(' not in load_hooks_source
 assert 'LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR' not in load_hooks_source

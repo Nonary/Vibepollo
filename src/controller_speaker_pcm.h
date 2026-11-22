@@ -19,6 +19,7 @@ namespace controller_speaker_pcm {
   constexpr std::uint32_t session_feature = 0x08;
   constexpr std::uint16_t packet_type = 0x5602;
   constexpr std::uint16_t frames_per_block = 240;
+  constexpr unsigned pending_blocks = 6;  // 30 ms per controller, including USB bursts.
   constexpr std::size_t payload_size = 32 + frames_per_block * 4;
 
   inline bool capable(std::uint8_t type, std::uint16_t capabilities) {

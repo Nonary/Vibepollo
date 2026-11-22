@@ -93,12 +93,14 @@ feedback. PCM uses non-purging queue admission; it cannot clear pending rumble,
 LED or trigger messages. Connections advertising waveform support poll control
 at most every 5 ms so haptics continue when input is idle.
 
-The initial client renderer supports Linux Bluetooth DualSense and DualSense
-Edge through hidraw and the MPL-2.0 SAxense packet format. The client repository
+The host forwards controller-speaker channels 1/2 in separate 5 ms stereo
+blocks when the client negotiates speaker support. On Linux and Windows,
+Moonlight renders these blocks through the controller's USB audio endpoint
+or through its Bluetooth HID audio stream. The client repository
 retains the pinned upstream source/license, adaptations and credits, and embeds
 them in the binary (`moonlight --haptics-license`). No SAxense code is linked into
-Vibepollo or Inputtino. USB/other clients retain rumble fallback; speaker and
-microphone transport are outside this extension.
+Vibepollo or Inputtino. Controllers without a matching audio renderer retain
+ordinary rumble. Microphone audio is outside this extension.
 
 Test channel extraction/packet validation with `test_ds5_haptics`, and test the
 client resampler/worker using Moonlight's `tests/haptics/haptics.pro`. Validation

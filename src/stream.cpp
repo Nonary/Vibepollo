@@ -683,6 +683,10 @@ namespace stream {
       std::string ping_payload;
 
       std::uint32_t lowseq;
+#ifdef _WIN32
+      // The UDP sender owns this unwrapped clock for the lifetime of the session.
+      std::optional<std::int64_t> last_sent_rtp_tick;
+#endif
       udp::endpoint peer;
 
       std::optional<crypto::cipher::gcm_t> cipher;
@@ -2112,7 +2116,7 @@ namespace stream {
           // The gamepad feedback queues below are drained only by this loop, so a
           // session with a controller attached needs the short wait too: a Steam
           // haptic click or a rumble stop must not sit for up to 150 ms.
-          haptics_client |= (session->config.mlFeatureFlags & ML_FF_HAPTICS_PCM) != 0 ||
+          haptics_client |= (session->config.mlFeatureFlags & (ML_FF_HAPTICS_PCM | controller_speaker_pcm::session_feature)) != 0 ||
                             input::has_gamepad(session->input);
 
           if (now > session->pingTimeout) {
@@ -2654,8 +2658,16 @@ namespace stream {
       BOOST_LOG(verbose) << "Generating "sv << fec_blocks_needed << " FEC blocks"sv;
 
       std::size_t frame_packets_accepted = 0;
+#ifdef _WIN32
+      std::int64_t frame_rtp_tick = 0;
+#endif
       const auto bytes_per_packet = blocksize + (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
       auto account_accepted_packets = util::fail_guard([&] {
+#ifdef _WIN32
+        if (frame_packets_accepted != 0) {
+          session->video.last_sent_rtp_tick = frame_rtp_tick;
+        }
+#endif
         // These counters feed session-history bitrate. Preserve actual socket
         // traffic even when only a prefix of the frame was accepted.
         session->stats.packets_sent.fetch_add(frame_packets_accepted, std::memory_order_relaxed);
@@ -2881,9 +2893,19 @@ namespace stream {
           // had the encode time to deliver those presents.
           packet->frame_timestamp = platf::dxgi::present_timing::refine_send_timestamp(*packet->frame_timestamp);
         }
-#endif
+        // A repeat sent during a capture stall can have a newer stamp than
+        // the recovered image's source time. Advance only the RTP wire clock
+        // in that case and keep the source stamp for timing diagnostics.
+        using rtp_tick = std::chrono::duration<std::int64_t, std::ratio<1, 90000>>;
+        frame_rtp_tick = std::chrono::round<rtp_tick>(*packet->frame_timestamp - video_epoch).count();
+        if (session->video.last_sent_rtp_tick && frame_rtp_tick <= *session->video.last_sent_rtp_tick) {
+          frame_rtp_tick = *session->video.last_sent_rtp_tick + 1;
+        }
+        const auto timestamp = static_cast<std::uint32_t>(frame_rtp_tick);
+#else
         using rtp_tick = std::chrono::duration<uint32_t, std::ratio<1, 90000>>;
         const uint32_t timestamp = std::chrono::round<rtp_tick>(*packet->frame_timestamp - video_epoch).count();
+#endif
 
         // PyroWave record framing: flag the shards that start with a record, where a
         // client that lost a record header resumes parsing.
@@ -4040,6 +4062,9 @@ namespace stream {
       if (!session.stop_reason.compare_exchange_strong(expected, reason)) {
         return;
       }
+      if (session.remote_role == remote_session::role_e::monitor) {
+        nvhttp::notify_remote_monitor_stopping(session.device_uuid, session.remote_role_generation);
+      }
 
       // The first cancellation owns the reason. Publish it and media shutdown
       // before STOPPING lets the control owner detach this session. In
@@ -4149,13 +4174,11 @@ namespace stream {
               config::video.remote_monitor_disconnect_on_client_disconnect,
               client_disconnected)) {
           const auto reason = client_disconnected ? "Remote Monitor client disconnected" : "Remote Monitor stream ended";
-          if (remote_session::release_monitor(session.device_uuid, session.remote_role_generation, reason)) {
-            nvhttp::notify_remote_monitor_released(session.device_uuid, session.remote_role_generation);
-          }
+          nvhttp::end_remote_monitor_transport(session.device_uuid, session.remote_role_generation, reason);
         } else {
           // Retain the exact display and desired mode so this paired client can
           // resume the Remote Monitor without changing any peer's topology.
-          remote_session::notify_monitor_transport_lost(session.device_uuid, session.remote_role_generation);
+          nvhttp::end_remote_monitor_transport(session.device_uuid, session.remote_role_generation);
         }
       } else if (session.remote_role == remote_session::role_e::input && !session.device_uuid.empty()) {
         nvhttp::notify_remote_input_transport_lost(session.device_uuid, session.remote_role_generation);

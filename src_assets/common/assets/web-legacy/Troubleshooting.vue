@@ -104,7 +104,10 @@
               {{ $t('vulkan_hdr.troubleshooting_title') || 'Vulkan HDR layer' }}
             </h2>
             <p class="text-xs opacity-70 leading-snug">
-              <template v-if="vulkanHdrLayer?.installed">
+              <template v-if="vulkanHdrLayer?.enabled === false && !vulkanHdrLayer.installed">
+                {{ $t('_common.disabled') }}
+              </template>
+              <template v-else-if="vulkanHdrLayer?.installed">
                 {{ $t('vulkan_hdr.installed') || 'Vulkan HDR layer is installed.' }}
               </template>
               <template v-else>
@@ -122,7 +125,7 @@
             </p>
           </div>
           <n-button
-            v-if="!vulkanHdrLayer?.installed"
+            v-if="vulkanHdrLayer?.enabled && !vulkanHdrLayer.installed"
             type="primary"
             strong
             :loading="vulkanHdrLayerInstalling"

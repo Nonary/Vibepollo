@@ -53,11 +53,11 @@ USB audio drivers enumerate these functions and associate their container IDs.
 This is the same controller/audio contract used by the Linux composite DualSense.
 
 The game writes four-channel, 48 kHz S16LE audio to the controller endpoint.
-Only actuator channels 3/4 enter the waveform transport; controller-speaker channels
-and microphone audio are outside this extension. Vibepollo batches the signed
-samples into 240 stereo frames (5 ms) and forwards them through the existing
-gamepad feedback queue and encrypted `0x5601` control extension. PCM admission is
-bounded so audio cannot clear pending rumble, LED, or adaptive-trigger messages.
+Vibepollo batches channels 1/2 (speaker) and 3/4 (actuators) into separate 5 ms
+stereo blocks. The speaker uses encrypted control type `0x5602`, and the actuators
+use `0x5601`. Moonlight advertises speaker support once the controller's speaker
+renderer opens. PCM admission is bounded so audio cannot clear pending rumble,
+LED, or adaptive-trigger messages. Microphone capture is outside this extension.
 Slot teardown discards outstanding samples before that controller index is reused.
 Moonlight's **keep controllers attached after disconnect** setting (`gcpersist`)
 also preserves the composite controller's USB audio endpoint while the application

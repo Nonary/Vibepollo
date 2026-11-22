@@ -60,6 +60,7 @@ namespace rtsp_stream {
     // Pending launch only, protected by the stream lifecycle mutex. Once a
     // monitor stream is published its join path owns transport-loss handling.
     bool monitor_stream_published = false;
+    bool new_monitor_display = false;
     // Bound to this pending launch and then to the admitted stream generation.
     std::string monitor_profile_uuid;
     std::optional<display_target::descriptor_t> exact_monitor_target;
@@ -360,6 +361,7 @@ namespace rtsp_stream {
    * @param expire_pending False requests a conservative snapshot without expiry callbacks.
    */
   bool has_pending_launch_or_startup(bool expire_pending = true);
+  bool has_pending_monitor_launch(std::string_view client_uuid, std::uint64_t generation);
 
   /**
    * @brief Publish whether an HDR stream launch is pending before the RTSP session is active.
@@ -411,8 +413,11 @@ namespace rtsp_stream {
    * @return True if one or more sessions were stopped.
    */
   bool disconnect_client_sessions(const std::string &client_uuid);
-  // Preserve abrupt cancellation for administrative callers unless requested.
-  client_disconnect_result_t disconnect_client_sessions_with_result(const std::string &client_uuid, bool graceful = false);
+  // Preserve abrupt teardown for administrative callers unless the paired-client route opts in.
+  // before_removal runs under the lifecycle gate before either transport registry is scanned.
+  client_disconnect_result_t disconnect_client_sessions_with_result(
+    const std::string &client_uuid, bool graceful = false, const std::function<void()> &before_removal = {}
+  );
 
   /**
    * @brief Runs the RTSP server loop.

@@ -115,74 +115,72 @@ namespace statefile::policy {
     }
   }
 
-  namespace {
-    // Property-tree represents empty JSON arrays/objects as empty data nodes.
-    // Accept that historical representation, but reject scalar roots, duplicate
-    // object keys and malformed token containers before selecting a snapshot.
-    bool valid_vibeshine_tree(const pt::ptree &tree) {
-      const auto object = [](const pt::ptree &node) {
-        if (!node.data().empty()) {
-          return false;
-        }
-        for (const auto &[key, value] : node) {
-          if (key.empty() || node.count(key) != 1) {
-            return false;
-          }
-        }
-        return true;
-      };
-      const auto root = tree.get_child_optional("root");
-      if (!object(tree) || !root || !object(*root)) {
+  // Property-tree represents empty JSON arrays/objects as empty data nodes.
+  // Accept that historical representation, but reject scalar roots, duplicate
+  // object keys and malformed token containers before selecting a snapshot.
+  bool valid_vibeshine_tree(const pt::ptree &tree) {
+    const auto object = [](const pt::ptree &node) {
+      if (!node.data().empty()) {
         return false;
       }
-      for (const auto key : {"api_tokens", "session_tokens"}) {
-        const auto tokens = root->get_child_optional(key);
-        if (!tokens) {
-          continue;
-        }
-        if (!tokens->data().empty()) {
+      for (const auto &[key, value] : node) {
+        if (key.empty() || node.count(key) != 1) {
           return false;
-        }
-        for (const auto &[entry_key, token] : *tokens) {
-          const auto hash = token.get_child_optional("hash");
-          if (!entry_key.empty() || !object(token) || !hash || !hash->empty() || hash->data().empty()) {
-            return false;
-          }
-          for (const auto field : {"username", "refresh_token_hash", "rotation_id", "user_agent", "remote_address", "device_label"}) {
-            if (const auto value = token.get_child_optional(field); value && !value->empty()) {
-              return false;
-            }
-          }
-          for (const auto field : {"created_at", "expires_at", "refresh_expires_at", "last_seen"}) {
-            if (const auto value = token.get_child_optional(field); value && (!value->empty() || !value->get_value_optional<std::int64_t>())) {
-              return false;
-            }
-          }
-          if (const auto value = token.get_child_optional("remember_me"); value && (!value->empty() || !value->get_value_optional<bool>())) {
-            return false;
-          }
-          if (const auto scopes = token.get_child_optional("scopes")) {
-            if (!scopes->data().empty()) {
-              return false;
-            }
-            for (const auto &[scope_key, scope] : *scopes) {
-              const auto path = scope.get_child_optional("path");
-              const auto methods = scope.get_child_optional("methods");
-              if (!scope_key.empty() || !object(scope) || !path || !path->empty() || path->data().empty() || !methods || !methods->data().empty()) {
-                return false;
-              }
-              for (const auto &[method_key, method] : *methods) {
-                if (!method_key.empty() || !method.empty() || method.data().empty()) {
-                  return false;
-                }
-              }
-            }
-          }
         }
       }
       return true;
+    };
+    const auto root = tree.get_child_optional("root");
+    if (!object(tree) || !root || !object(*root)) {
+      return false;
     }
-  }  // namespace
+    for (const auto key : {"api_tokens", "session_tokens"}) {
+      const auto tokens = root->get_child_optional(key);
+      if (!tokens) {
+        continue;
+      }
+      if (!tokens->data().empty()) {
+        return false;
+      }
+      for (const auto &[entry_key, token] : *tokens) {
+        const auto hash = token.get_child_optional("hash");
+        if (!entry_key.empty() || !object(token) || !hash || !hash->empty() || hash->data().empty()) {
+          return false;
+        }
+        for (const auto field : {"username", "refresh_token_hash", "rotation_id", "user_agent", "remote_address", "device_label"}) {
+          if (const auto value = token.get_child_optional(field); value && !value->empty()) {
+            return false;
+          }
+        }
+        for (const auto field : {"created_at", "expires_at", "refresh_expires_at", "last_seen"}) {
+          if (const auto value = token.get_child_optional(field); value && (!value->empty() || !value->get_value_optional<std::int64_t>())) {
+            return false;
+          }
+        }
+        if (const auto value = token.get_child_optional("remember_me"); value && (!value->empty() || !value->get_value_optional<bool>())) {
+          return false;
+        }
+        if (const auto scopes = token.get_child_optional("scopes")) {
+          if (!scopes->data().empty()) {
+            return false;
+          }
+          for (const auto &[scope_key, scope] : *scopes) {
+            const auto path = scope.get_child_optional("path");
+            const auto methods = scope.get_child_optional("methods");
+            if (!scope_key.empty() || !object(scope) || !path || !path->empty() || path->data().empty() || !methods || !methods->data().empty()) {
+              return false;
+            }
+            for (const auto &[method_key, method] : *methods) {
+              if (!method_key.empty() || !method.empty() || method.data().empty()) {
+                return false;
+              }
+            }
+          }
+        }
+      }
+    }
+    return true;
+  }
 
   load_result_e load_vibeshine_state(
     const std::string &path,
@@ -227,6 +225,46 @@ namespace statefile::policy {
     }
     tree = std::move(backup_tree);
     return load_result_e::loaded;
+  }
+
+  bool is_zero_filled(std::string_view contents) {
+    return contents.find_first_not_of('\0') == std::string_view::npos;
+  }
+
+  bool reset_zeroed_auxiliary(
+    const std::string &path,
+    const read_file_t &read_file,
+    const write_file_t &archive_file,
+    const write_file_t &write_file
+  ) {
+    const auto backup_path = path + ".bak";
+    const auto primary = read_file(path);
+    const auto backup = read_file(backup_path);
+    const auto eligible = [](const read_result_t &snapshot) {
+      return snapshot.status == read_status_e::missing ||
+             (snapshot.status == read_status_e::loaded && is_zero_filled(snapshot.contents));
+    };
+    if (!eligible(primary) || !eligible(backup) ||
+        (primary.status == read_status_e::missing && backup.status == read_status_e::missing)) {
+      return false;
+    }
+    if ((primary.status == read_status_e::loaded && !archive_file(path, primary.contents)) ||
+        (backup.status == read_status_e::loaded && !archive_file(backup_path, backup.contents))) {
+      return false;
+    }
+
+    const auto unchanged = [&](const std::string &target, const read_result_t &before) {
+      const auto current = read_file(target);
+      return current.status == before.status && current.contents == before.contents;
+    };
+    // Publish a valid primary first so interruption can never leave both names
+    // absent and cause migration to import old authorization into a fresh profile.
+    if (!unchanged(path, primary) || !unchanged(backup_path, backup) ||
+        !write_file(path, std::string(auxiliary_reset_json))) {
+      return false;
+    }
+    const auto written = read_file(path);
+    return written.status == read_status_e::loaded && written.contents == auxiliary_reset_json;
   }
 
   bool normalize_legacy_pairing_state(pt::ptree &tree, const certificate_identity_t &certificate_identity, std::string *failure_reason,
@@ -547,7 +585,11 @@ namespace statefile::policy {
       throw std::runtime_error("refusing to write invalid auxiliary state");
     }
     write_json_atomic(path, tree, write_file, read_file);
-    write_json_atomic(path + ".bak", tree, write_file, read_file);
+    try {
+      write_json_atomic(path + ".bak", tree, write_file, read_file);
+    } catch (const std::exception &error) {
+      throw auxiliary_backup_error(error.what());
+    }
   }
 
   void write_json_atomic(
@@ -573,7 +615,7 @@ namespace statefile::policy {
     }
 
     const auto written = read_file(path);
-    if (written.status != read_status_e::loaded || !parses_as_json(written.contents)) {
+    if (written.status != read_status_e::loaded || written.contents != contents) {
       throw std::runtime_error("atomic JSON write verification failed");
     }
   }

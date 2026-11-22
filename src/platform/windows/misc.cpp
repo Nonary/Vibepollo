@@ -527,7 +527,7 @@ namespace platf {
 
     bool unregister_vulkan_hdr_layer_view(REGSAM view) {
       HKEY key = nullptr;
-      const LONG opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, KEY_QUERY_VALUE | KEY_SET_VALUE | view, &key);
+      const LONG opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, KEY_QUERY_VALUE | view, &key);
       if (opened == ERROR_FILE_NOT_FOUND) {
         return true;
       }
@@ -552,8 +552,21 @@ namespace platf {
           to_delete.push_back(std::move(name));
         }
       }
+      RegCloseKey(key);
+      if (to_delete.empty()) {
+        return ok;
+      }
+
+      const LONG writable = RegOpenKeyExW(HKEY_LOCAL_MACHINE, kVulkanImplicitLayersSubKey, 0, KEY_SET_VALUE | view, &key);
+      if (writable == ERROR_FILE_NOT_FOUND) {
+        return ok;
+      }
+      if (writable != ERROR_SUCCESS) {
+        return false;
+      }
       for (const auto &name : to_delete) {
-        if (RegDeleteValueW(key, name.c_str()) != ERROR_SUCCESS) {
+        const auto result = RegDeleteValueW(key, name.c_str());
+        if (result != ERROR_SUCCESS && result != ERROR_FILE_NOT_FOUND) {
           ok = false;
         }
       }

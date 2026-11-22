@@ -553,6 +553,9 @@ namespace config {
 
   int parse(int argc, char *argv[]);
   std::unordered_map<std::string, std::string> parse_config(const std::string_view &file_content);
+#ifdef _WIN32
+  bool vulkan_hdr_layer_preference(std::string_view file_content);
+#endif
 
   /**
    * Merge one raw configuration layer into another while treating the Windows

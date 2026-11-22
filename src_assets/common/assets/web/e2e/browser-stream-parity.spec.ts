@@ -12,6 +12,8 @@ interface BrowserStreamFixtureOptions {
   includeApp?: boolean;
   rejectFullscreen?: boolean;
   runningSession?: boolean;
+  sessionBitrateKbps?: number;
+  offerSdp?: string;
 }
 
 async function installBrowserStreamFixtures(
@@ -53,7 +55,7 @@ async function installBrowserStreamFixtures(
     },
     { rejectFullscreen: options.rejectFullscreen === true },
   );
-  await page.addInitScript(() => {
+  await page.addInitScript((offerSdp) => {
     const inputMessages: unknown[] = [];
     const hapticEffects: unknown[] = [];
     const gamepad = {
@@ -132,7 +134,9 @@ async function installBrowserStreamFixtures(
       async createOffer(): Promise<RTCSessionDescriptionInit> {
         return {
           type: 'offer',
-          sdp: 'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 H264/90000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n',
+          sdp:
+            offerSdp ??
+            'v=0\r\nm=video 9 UDP/TLS/RTP/SAVPF 96\r\na=rtpmap:96 H264/90000\r\nm=audio 9 UDP/TLS/RTP/SAVPF 111\r\n',
         };
       }
 
@@ -200,7 +204,7 @@ async function installBrowserStreamFixtures(
       RTCPeerConnection: FakePeerConnection,
       EventSource: FakeEventSource,
     });
-  });
+  }, options.offerSdp);
 
   await localRoute(page, '**/api/**', async (route) => {
     const request = route.request();
@@ -252,7 +256,11 @@ async function installBrowserStreamFixtures(
       sessions.push(request.postDataJSON() as SessionPayload);
       body = options.failConnection
         ? { status: false, error: 'Browser stream fixture rejected the session.' }
-        : { status: true, session: { id: 'browser-stream-test' }, ice_servers: [] };
+        : {
+            status: true,
+            session: { id: 'browser-stream-test', bitrate_kbps: options.sessionBitrateKbps },
+            ice_servers: [],
+          };
     } else if (path.endsWith('/offer') && request.method() === 'POST') {
       body = {
         status: true,
@@ -270,6 +278,59 @@ async function installBrowserStreamFixtures(
 
   return sessions;
 }
+
+for (const { name, requested, resolved, expectedBandwidth } of [
+  { name: 'automatic mode', requested: 0, resolved: 20_000, expectedBandwidth: 20_512 },
+  { name: 'an older host response', requested: 35_000, expectedBandwidth: 35_512 },
+  {
+    name: 'an oversized host limit',
+    requested: 0,
+    resolved: 2_147_483_647,
+    expectedBandwidth: 2_147_483,
+  },
+]) {
+  test(`browser stream signals video bandwidth for ${name}`, async ({ page }) => {
+    const offerSdp = [
+      'v=0',
+      'm=video 9 UDP/TLS/RTP/SAVPF 96',
+      'c=IN IP4 0.0.0.0',
+      'a=rtpmap:96 H264/90000',
+      'm=audio 9 UDP/TLS/RTP/SAVPF 111',
+      'b=AS:128',
+      '',
+    ].join('\r\n');
+    const sessions = await installBrowserStreamFixtures(page, {
+      sessionBitrateKbps: resolved,
+      offerSdp,
+    });
+    await page.goto('/v2/stream');
+    await page.locator('#browser-stream-bitrate').fill(String(requested));
+    const offerRequest = page.waitForRequest((request) => request.url().endsWith('/offer'));
+    await page.getByRole('button', { name: 'Start browser stream' }).click();
+    expect((await offerRequest).postDataJSON()).toEqual({
+      type: 'offer',
+      sdp: offerSdp.replace('a=rtpmap:96', `b=AS:${expectedBandwidth}\r\na=rtpmap:96`),
+    });
+    expect(sessions[0]).toMatchObject({ bitrate_kbps: requested });
+    await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+  });
+}
+
+test('browser stream preserves a video bandwidth limit already in the offer', async ({ page }) => {
+  const offerSdp = [
+    'v=0',
+    'm=video 9 UDP/TLS/RTP/SAVPF 96',
+    'b=AS:12000',
+    'a=rtpmap:96 H264/90000',
+    '',
+  ].join('\n');
+  await installBrowserStreamFixtures(page, { sessionBitrateKbps: 20_000, offerSdp });
+  await page.goto('/v2/stream');
+  const offerRequest = page.waitForRequest((request) => request.url().endsWith('/offer'));
+  await page.getByRole('button', { name: 'Start browser stream' }).click();
+  expect((await offerRequest).postDataJSON()).toEqual({ type: 'offer', sdp: offerSdp });
+  await expect(page.getByText('Connected', { exact: true })).toBeVisible();
+});
 
 for (const width of [1440, 390]) {
   test(`browser stream pacing and performance overlay remain usable at ${width}px`, async ({

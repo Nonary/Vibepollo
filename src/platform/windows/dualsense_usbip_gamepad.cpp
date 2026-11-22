@@ -48,6 +48,7 @@ namespace platf {
       std::chrono::steady_clock::time_point last_speaker {};
       bool persist_after_disconnect = false;
       bool nonzero_pcm_received = false;
+      bool speaker_diagnostic_logged = false;
       dualsense_usbip_gamepad::pcm_diagnostics pcm_diagnostics;
       std::uint16_t client_index = 0;
       std::uint8_t global_index = 0;
@@ -226,12 +227,15 @@ namespace platf {
         msg.data.speaker.flags = speaker_position == 0 ? 1 : 0;
         msg.data.speaker.samples = samples;
         speaker_position += 240;
-        // Keep at most one unsent speaker block per controller. Replacement
-        // leaves a sample-position gap, which the client treats as discontinuity.
-        // Never evict actuator or another controller's feedback.
-        feedback_queue->raise_latest(std::move(msg), [index = client_index](const gamepad_feedback_msg_t &pending) {
+        const bool nonzero = !speaker_diagnostic_logged && std::any_of(samples.begin(), samples.end(), [](auto sample) { return sample != 0; });
+        const bool queued = feedback_queue->raise_recent(std::move(msg), controller_speaker_pcm::pending_blocks, [index = client_index](const gamepad_feedback_msg_t &pending) {
           return pending.type == gamepad_feedback_e::speaker_pcm && pending.id == index;
         });
+        if (nonzero) {
+          BOOST_LOG(debug) << "Composite DualSense speaker PCM " << (queued ? "accepted" : "rejected")
+                           << " by feedback queue; client-relative controller index=" << client_index;
+          speaker_diagnostic_logged = true;
+        }
       });
     }
 
@@ -410,6 +414,7 @@ namespace platf {
         if (retained->ready && retained->controller && retained->controller->connected()) {
           retained->pcm_diagnostics = {};
           retained->nonzero_pcm_received = false;
+          retained->speaker_diagnostic_logged = false;
           retained->client_index = id.clientRelativeIndex;
           retained->waveform_capable = (metadata.capabilities & LI_CCAP_HAPTICS_PCM) != 0;
           retained->advance_speaker_incarnation();

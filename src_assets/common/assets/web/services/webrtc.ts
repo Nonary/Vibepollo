@@ -64,7 +64,7 @@ interface VideoStatsState extends VideoJitterStatsState {
 
 interface WebRtcSessionResponse {
   status?: boolean;
-  session?: { id?: string };
+  session?: { id?: string; bitrate_kbps?: number | null };
   cert_fingerprint?: string;
   cert_pem?: string;
   ice_servers?: RTCIceServer[];
@@ -90,6 +90,7 @@ interface WebRtcIceCandidateResponse {
 interface CreatedWebRtcSession {
   iceServers: RTCIceServer[];
   id: string;
+  videoBitrateKbps: number;
 }
 
 export class WebRtcConnectionCanceledError extends Error {
@@ -502,10 +503,30 @@ async function createSession(config: StreamConfig): Promise<CreatedWebRtcSession
     });
     const id = payload.session?.id;
     if (!id) throw new Error('The host did not return a WebRTC session identifier.');
-    return { id, iceServers: payload.ice_servers ?? [] };
+    return {
+      id,
+      iceServers: payload.ice_servers ?? [],
+      videoBitrateKbps: payload.session?.bitrate_kbps ?? config.bitrateKbps ?? 0,
+    };
   } catch (error) {
     throw describeApiError(error, 'Unable to create the browser stream.');
   }
+}
+
+function withVideoBandwidth(sdp: string, videoBitrateKbps: number): string {
+  if (!Number.isSafeInteger(videoBitrateKbps) || videoBitrateKbps <= 0) return sdp;
+
+  // libwebrtc applies video b=AS to the call's transport budget as well as
+  // the sender. Allow for the v2 stream's stereo Opus while the host caps video.
+  const stereoOpusKbps = 512;
+  // The SDP parser stores bandwidth in signed 32-bit bps.
+  const maxSdpBandwidthKbps = Math.floor(0x7fffffff / 1000);
+  const bandwidthKbps = Math.min(videoBitrateKbps + stereoOpusKbps, maxSdpBandwidthKbps);
+  return sdp.replace(/^m=video[ \t][^\r\n]*\r?\n(?:[icb]=[^\r\n]*\r?\n)*/m, (header) => {
+    if (/^b=(?:AS|TIAS):/m.test(header)) return header;
+    const newline = header.endsWith('\r\n') ? '\r\n' : '\n';
+    return `${header}b=AS:${bandwidthKbps}${newline}`;
+  });
 }
 
 async function waitForAnswer(
@@ -707,7 +728,7 @@ export class BrowserWebRtcSession {
       this.throwIfCanceled(generation);
       const answer = await apiPost<WebRtcAnswerResponse>(
         `/api/webrtc/sessions/${encodeURIComponent(this.sessionId)}/offer`,
-        { sdp: offer.sdp ?? '', type: offer.type },
+        { sdp: withVideoBandwidth(offer.sdp ?? '', session.videoBitrateKbps), type: offer.type },
       );
       this.throwIfCanceled(generation);
       if (answer.error && answer.error !== 'Answer not ready') {

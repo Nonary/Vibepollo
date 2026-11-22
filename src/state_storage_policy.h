@@ -8,7 +8,9 @@
 #include <cstddef>
 #include <functional>
 #include <optional>
+#include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace statefile::policy {
@@ -68,6 +70,23 @@ namespace statefile::policy {
     const std::string &path,
     boost::property_tree::ptree &tree,
     const read_file_t &read_file,
+    const write_file_t &write_file
+  );
+
+  bool valid_vibeshine_tree(const boost::property_tree::ptree &tree);
+
+  bool is_zero_filled(std::string_view contents);
+
+  inline constexpr std::string_view auxiliary_reset_json =
+    "{\n  \"root\": {\n    \"api_tokens\": [],\n    \"session_tokens\": []\n  }\n}\n";
+
+  /** Rebuild separate auxiliary state at startup after ordinary recovery failed.
+   * The caller must verify path separation and supply a create-only archive writer.
+   */
+  bool reset_zeroed_auxiliary(
+    const std::string &path,
+    const read_file_t &read_file,
+    const write_file_t &archive_file,
     const write_file_t &write_file
   );
 
@@ -143,6 +162,12 @@ namespace statefile::policy {
     const write_file_t &write_file,
     bool refresh_backup = true);
 
+  /** The primary was written and verified, but the auxiliary backup update failed. */
+  class auxiliary_backup_error: public std::runtime_error {
+  public:
+    using std::runtime_error::runtime_error;
+  };
+
   /** Validate auxiliary state before publishing it and refreshing its backup. */
   void write_vibeshine_state(
     const std::string &path,
@@ -152,7 +177,7 @@ namespace statefile::policy {
   );
 
   /**
-   * @brief Serializes, writes, and re-parses JSON through injected storage operations.
+   * @brief Serializes validated JSON and verifies the exact bytes after replacement.
    */
   void write_json_atomic(
     const std::string &path,

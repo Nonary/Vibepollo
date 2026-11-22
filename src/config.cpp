@@ -1466,6 +1466,16 @@ namespace config {
     input = to_bool(tmp);
   }
 
+#ifdef _WIN32
+  bool vulkan_hdr_layer_preference(std::string_view file_content) {
+    auto vars = parse_config(file_content);
+    merge_config_overrides(vars, command_line_overrides);
+    bool enabled = default_video.dd.vulkan_hdr_layer;
+    bool_f(vars, "vulkan_hdr_layer", enabled);
+    return enabled;
+  }
+#endif
+
   void double_f(std::unordered_map<std::string, std::string> &vars, const std::string &name, double &input) {
     std::string tmp;
     string_f(vars, name, tmp);

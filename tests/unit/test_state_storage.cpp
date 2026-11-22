@@ -258,6 +258,57 @@ TEST(StateStorageAuxiliary, FreshProfileRequiresBothSnapshotsMissing) {
   EXPECT_EQ(load_auxiliary(store, tree), policy::load_result_e::failed);
 }
 
+TEST(StateStorageAuxiliary, ZeroFilledResetPreservesEachExistingCopyAndBlocksLegacyTokens) {
+  for (const auto missing : {"", auxiliary_path, auxiliary_backup}) {
+    memory_state_store_t store;
+    for (const auto path : {auxiliary_path, auxiliary_backup}) {
+      if (std::string_view(path) != missing) {
+        store.files[path] = std::string(64, '\0');
+      }
+    }
+    const auto originals = store.files;
+    std::map<std::string, std::string> archived;
+    ASSERT_TRUE(policy::reset_zeroed_auxiliary(auxiliary_path,
+      [&](const std::string &path) { return store.read(path); },
+      [&](const std::string &path, const std::string &bytes) { return archived.emplace(path, bytes).second; },
+      [&](const std::string &path, const std::string &bytes) { return store.write(path, bytes); }));
+    EXPECT_EQ(archived, originals);
+
+    pt::ptree tree;
+    ASSERT_EQ(load_auxiliary(store, tree), policy::load_result_e::loaded);
+    EXPECT_TRUE(tree.get_child("root.api_tokens").empty());
+    EXPECT_TRUE(tree.get_child("root.session_tokens").empty());
+    EXPECT_TRUE(store.files.contains(auxiliary_backup));
+  }
+}
+
+TEST(StateStorageAuxiliary, ZeroFilledResetRequiresEvidenceAndArchivesBeforeItWrites) {
+  memory_state_store_t store;
+  for (const auto &companion : {
+         policy::read_result_t {policy::read_status_e::loaded, "partially intact"},
+         policy::read_result_t {policy::read_status_e::failed, {}},
+         policy::read_result_t {policy::read_status_e::loaded, {}},
+       }) {
+    store.files[auxiliary_path] = std::string(64, '\0');
+    const auto originals = store.files;
+    EXPECT_FALSE(policy::reset_zeroed_auxiliary(auxiliary_path,
+      [&](const std::string &path) { return path == auxiliary_backup ? companion : store.read(path); },
+      [&](const std::string &path, const std::string &) { return path != auxiliary_backup; },
+      [&](const std::string &, const std::string &) { ADD_FAILURE() << "must not publish reset"; return true; }));
+    EXPECT_EQ(store.files, originals);
+  }
+}
+
+TEST(StateStorageAuxiliary, ZeroFilledResetDoesNotOverwriteStateThatChangedDuringArchive) {
+  memory_state_store_t store;
+  store.files[auxiliary_path] = std::string(64, '\0');
+  EXPECT_FALSE(policy::reset_zeroed_auxiliary(auxiliary_path,
+    [&](const std::string &path) { return store.read(path); },
+    [&](const std::string &path, const std::string &) { return store.write(path, auxiliary_snapshot); },
+    [&](const std::string &, const std::string &) { ADD_FAILURE() << "must not replace changed state"; return true; }));
+  EXPECT_EQ(store.files[auxiliary_path], auxiliary_snapshot);
+}
+
 TEST(StateStorageAuxiliary, InvalidBackupNeverRestoresOrOverwritesEvidence) {
   for (const std::string invalid : {"{broken", R"({"root":{"api_tokens":[{"hash":"h","scopes":"all"}]}})", R"({"root":{"session_tokens":[{"hash":"h","expires_at":"not-a-time"}]}})", R"({"root":{"api_tokens":[{"hash":{"bad":"shape"}}]}})", R"({"root":{"api_tokens":[],"api_tokens":[]}})"}) {
     memory_state_store_t store;
@@ -371,6 +422,39 @@ TEST(StateStorageAuxiliary, FailedPrimaryWriteDoesNotRefreshBackup) {
                                              }),
                std::runtime_error);
   EXPECT_EQ(writes, 1U);
+  EXPECT_EQ(store.files[auxiliary_backup], auxiliary_snapshot);
+}
+
+TEST(StateStorageAuxiliary, BackupErrorIsReportedOnlyAfterPrimaryIsVerified) {
+  memory_state_store_t store;
+  store.files[auxiliary_path] = auxiliary_snapshot;
+  store.files[auxiliary_backup] = auxiliary_snapshot;
+  pt::ptree tree;
+  ASSERT_EQ(load_auxiliary(store, tree), policy::load_result_e::loaded);
+  tree.put("root.crashdump_dismissal.filename", "recent.dmp");
+  EXPECT_THROW(policy::write_vibeshine_state(auxiliary_path, tree,
+    [&](const std::string &path, const std::string &bytes) {
+      return path != auxiliary_backup && store.write(path, bytes);
+    },
+    [&](const std::string &path) { return store.read(path); }), policy::auxiliary_backup_error);
+  EXPECT_EQ(store.files[auxiliary_backup], auxiliary_snapshot);
+  ASSERT_EQ(load_for_read(store, auxiliary_path, tree), policy::load_result_e::loaded);
+  EXPECT_EQ(tree.get<std::string>("root.crashdump_dismissal.filename"), "recent.dmp");
+}
+
+TEST(StateStorageAuxiliary, ReadbackOfDifferentValidJsonDoesNotPublishBackup) {
+  memory_state_store_t store;
+  store.files[auxiliary_path] = auxiliary_snapshot;
+  store.files[auxiliary_backup] = auxiliary_snapshot;
+  pt::ptree tree;
+  ASSERT_EQ(load_auxiliary(store, tree), policy::load_result_e::loaded);
+  tree.put("root.crashdump_dismissal.filename", "recent.dmp");
+  EXPECT_THROW(policy::write_vibeshine_state(auxiliary_path, tree,
+    [&](const std::string &path, const std::string &) {
+      EXPECT_EQ(path, auxiliary_path);
+      return true;
+    },
+    [&](const std::string &path) { return store.read(path); }), std::runtime_error);
   EXPECT_EQ(store.files[auxiliary_backup], auxiliary_snapshot);
 }
 

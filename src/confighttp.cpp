@@ -23,6 +23,7 @@
 #include <optional>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string_view>
 #include <thread>
 #include <type_traits>
@@ -1252,6 +1253,18 @@ namespace confighttp {
     }
   }
 
+  // Serialize registry changes with config saves, including deferred reloads.
+  std::mutex config_write_mutex;
+
+  bool read_vulkan_hdr_layer_preference() {
+    std::ifstream file {config::sunshine.config_file, std::ios::binary};
+    if (!file) {
+      throw std::runtime_error("Unable to read the saved Vulkan HDR layer setting.");
+    }
+    const std::string contents {std::istreambuf_iterator<char> {file}, std::istreambuf_iterator<char> {}};
+    return config::vulkan_hdr_layer_preference(contents);
+  }
+
   /**
    * @brief Health check for the Sunshine Vulkan HDR implicit layer (virtual-display HDR support).
    * @details `installed` reflects the actual HKLM registration; `enabled` reflects the configured
@@ -1263,9 +1276,10 @@ namespace confighttp {
       return;
     }
     try {
+      const std::lock_guard lock {config_write_mutex};
       nlohmann::json out;
       out["installed"] = platf::is_vulkan_hdr_layer_registered();
-      out["enabled"] = config::video.dd.vulkan_hdr_layer;
+      out["enabled"] = read_vulkan_hdr_layer_preference();
       send_response(response, out);
     } catch (...) {
       bad_request(response, request, "Failed to evaluate Vulkan HDR layer health");
@@ -1274,9 +1288,8 @@ namespace confighttp {
 
   /**
    * @brief (Re)register the Sunshine Vulkan HDR implicit layer (repair action for the warning banner).
-   * @details Forces registration regardless of current state; used when the installer's best-effort
-   *          registration was skipped/failed. Requires SYSTEM/admin rights (Sunshine's service runs
-   *          as SYSTEM). Does not change the configured enable/disable preference.
+   * @details Repairs a missing registration when the saved preference enables it.
+   *          Requires SYSTEM/admin rights (Sunshine's service runs as SYSTEM).
    * @api_examples{/api/health/vulkan-hdr-layer/register| POST| {"status":true,"installed":true,"enabled":true}}
    */
   void postVulkanHdrLayerRegister(resp_https_t response, req_https_t request) {
@@ -1284,11 +1297,16 @@ namespace confighttp {
       return;
     }
     try {
+      const std::lock_guard lock {config_write_mutex};
+      if (!read_vulkan_hdr_layer_preference()) {
+        bad_request(response, request, "The Vulkan HDR layer is disabled in Settings.");
+        return;
+      }
       const bool ok = platf::set_vulkan_hdr_layer_enabled(true);
       nlohmann::json out;
       out["status"] = ok;
       out["installed"] = platf::is_vulkan_hdr_layer_registered();
-      out["enabled"] = config::video.dd.vulkan_hdr_layer;
+      out["enabled"] = true;
       send_response(response, out);
     } catch (...) {
       bad_request(response, request, "Failed to register Vulkan HDR layer");
@@ -2671,13 +2689,16 @@ namespace confighttp {
 #ifdef _WIN32
       if (disable_fullscreen) {
         try {
-          auto current_cfg = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
-          current_cfg["playnite_fullscreen_entry_enabled"] = "false";
-          std::stringstream config_stream;
-          for (const auto &kv : current_cfg) {
-            config_stream << kv.first << " = " << kv.second << std::endl;
+          {
+            const std::lock_guard lock {config_write_mutex};
+            auto current_cfg = config::parse_config(file_handler::read_file(config::sunshine.config_file.c_str()));
+            current_cfg["playnite_fullscreen_entry_enabled"] = "false";
+            std::stringstream config_stream;
+            for (const auto &kv : current_cfg) {
+              config_stream << kv.first << " = " << kv.second << std::endl;
+            }
+            file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
           }
-          file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
           config::apply_config_now();
           disabled_fullscreen_flag = true;
         } catch (...) {}
@@ -3486,6 +3507,26 @@ namespace confighttp {
     send_response(response, output_tree);
   }
 
+  void persist_config(const std::string &contents, [[maybe_unused]] bool reconcile_vulkan_hdr_layer) {
+#ifdef _WIN32
+    const bool should_register = reconcile_vulkan_hdr_layer && config::vulkan_hdr_layer_preference(contents);
+    // Apply an opt-out before publishing it. On failure, the caller can retry
+    // without a saved "off" setting that still permits the DLL to load.
+    if (reconcile_vulkan_hdr_layer && !should_register && !platf::set_vulkan_hdr_layer_enabled(false)) {
+      throw std::runtime_error("Could not disable the Vulkan HDR layer in Windows. Run Vibepollo as a service or as administrator and try again.");
+    }
+#endif
+    if (file_handler::write_file(config::sunshine.config_file.c_str(), contents) != 0) {
+      throw std::runtime_error("Could not save the configuration file.");
+    }
+#ifdef _WIN32
+    // Apply an opt-in only after it has been saved.
+    if (should_register && !platf::set_vulkan_hdr_layer_enabled(true)) {
+      BOOST_LOG(warning) << "The Vulkan HDR layer is enabled but its Windows registration could not be applied.";
+    }
+#endif
+  }
+
   /**
    * @brief Save the configuration settings.
    * @param response The HTTP response object.
@@ -3501,38 +3542,6 @@ namespace confighttp {
    *
    * @api_examples{/api/config| POST| {"key":"value"}}
    */
-#ifdef _WIN32
-  /**
-   * @brief Apply a changed `vulkan_hdr_layer` preference to the system Vulkan implicit-layer
-   *        registration immediately, so the Web UI toggle takes effect without a restart.
-   * @details Best-effort: registering/unregistering the HKLM implicit layer requires SYSTEM/admin
-   *          rights (Sunshine's service runs as SYSTEM). No-op when the key is not in the body.
-   */
-  void reconcile_vulkan_hdr_layer_from_body(const nlohmann::json &body) {
-    if (!body.is_object()) {
-      return;
-    }
-    const auto it = body.find("vulkan_hdr_layer");
-    if (it == body.end()) {
-      return;
-    }
-    const nlohmann::json &v = *it;
-    bool enabled = true;
-    if (v.is_boolean()) {
-      enabled = v.get<bool>();
-    } else if (v.is_number()) {
-      enabled = v.get<double>() != 0.0;
-    } else if (v.is_string()) {
-      std::string s = v.get<std::string>();
-      std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
-        return (char) std::tolower(c);
-      });
-      enabled = !(s.empty() || s == "false" || s == "disabled" || s == "0" || s == "off" || s == "no");
-    }
-    platf::set_vulkan_hdr_layer_enabled(enabled);
-  }
-#endif
-
   void saveConfig(resp_https_t response, req_https_t request) {
     if (!validateContentType(response, request, "application/json") || !authenticate(response, request)) {
       return;
@@ -3559,11 +3568,17 @@ namespace confighttp {
         // we should migrate the config file to straight json and get rid of all this nonsense
         config_stream << k << " = " << (v.is_string() ? v.get<std::string>() : v.dump()) << std::endl;
       }
-      file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
-
+      {
 #ifdef _WIN32
-      reconcile_vulkan_hdr_layer_from_body(input_tree);
+        const std::lock_guard lock {config_write_mutex};
+        const bool reconcile_vulkan_hdr_layer =
+          input_tree.contains("vulkan_hdr_layer") ||
+          (read_vulkan_hdr_layer_preference() != config::vulkan_hdr_layer_preference(config_stream.str()));
+#else
+        constexpr bool reconcile_vulkan_hdr_layer = false;
 #endif
+        persist_config(config_stream.str(), reconcile_vulkan_hdr_layer);
+      }
 
       // Detect restart-required keys
       static const std::set<std::string> restart_required_keys = {
@@ -3633,6 +3648,9 @@ namespace confighttp {
       }
       normalize_adapter_config_patch(patch_tree);
 
+#ifdef _WIN32
+      std::unique_lock vulkan_lock {config_write_mutex};
+#endif
       // Load existing config into a map
       std::unordered_map<std::string, std::string> current = config::parse_config(
         file_handler::read_file(config::sunshine.config_file.c_str())
@@ -3668,10 +3686,9 @@ namespace confighttp {
       for (const auto &kv : current) {
         config_stream << kv.first << " = " << kv.second << std::endl;
       }
-      file_handler::write_file(config::sunshine.config_file.c_str(), config_stream.str());
-
+      persist_config(config_stream.str(), patch_tree.contains("vulkan_hdr_layer"));
 #ifdef _WIN32
-      reconcile_vulkan_hdr_layer_from_body(patch_tree);
+      vulkan_lock.unlock();
 #endif
 
       // Detect restart-required keys

@@ -9,6 +9,7 @@ from test_delayed_mouse_release import function
 PREAMBLE = r"""
 #include "src/remote_session.h"
 #include "src/app_catalog_policy.h"
+#include "src/crypto.h"
 #include <cassert>
 #include <iostream>
 #include <map>
@@ -30,7 +31,7 @@ struct process_t { std::vector<ctx_t> apps; std::vector<ctx_t> get_apps() const 
  for(auto& app:apps)identities.push_back({.uuid=app.uuid,.id=app.id,.aliases=app.id_aliases});
  const auto found=catalog::resolve_app(identities,id,uuid);
  return found?std::make_optional(apps[*found]):std::nullopt;
-} } proc;
+} std::optional<ctx_t> resolve_app(int id) {return resolve_app(std::to_string(id), "");} } proc;
 }
 namespace util { int from_view(const std::string& s) { return std::stoi(s); } }
 int merge_calls=0,tail_reached=0,status=0;
@@ -58,7 +59,7 @@ void retained_regression() {
  admit_id(std::to_string(tile.id),tile.uuid);
  assert(status==200 && selected && selected->uuid==witness && merged.at("output_name")=="accepted-custom" && merged.at("adapter_name")=="client-current");
  assert(tile.id!=builtin.id && remote_session::identify(tile.id,tile.uuid)==remote_session::control_e::none);
- remember_remote_owner("paired-owner",remote_session::role_e::monitor,41,selected);
+ remember_profile(41,selected);
  proc::proc.apps[0].config_overrides["output_name"]="edited-custom";
  admit_id(std::to_string(remote_session::resume_id),"");
  assert(status==200 && selected->uuid==witness && merged.at("output_name")=="accepted-custom");
@@ -73,7 +74,7 @@ void retained_regression() {
  forget_remote_owner("paired-owner",remote_session::role_e::monitor,41);
  admit_id(std::to_string(builtin.id),builtin.uuid);
  assert(status==200 && selected->uuid==builtin.uuid && merged.at("output_name")=="builtin-before");
- remember_remote_owner("paired-owner",remote_session::role_e::monitor,42,selected);
+ remember_profile(42,selected);
  proc::proc.apps[0].config_overrides["output_name"]="builtin-after";
  admit_id(std::to_string(remote_session::resume_id),"");
  assert(status==200 && selected->uuid==builtin.uuid && merged.at("output_name")=="builtin-after");
@@ -100,7 +101,7 @@ void admit_profile(const std::string& id,const std::string& uuid,int current,con
  remote_role_owners.clear();admit_id(id,uuid,current);
  assert(last_control==remote_session::control_e::monitor && !last_decision.resume);
  assert(status==200 && selected && selected->uuid==expected && merged.at("output_name")==expected);
- remember_remote_owner("paired-owner",remote_session::role_e::monitor,100,selected);
+ remember_profile(100,selected);
  admit_id(std::to_string(remote_session::resume_id),"",current);
  assert(status==200 && selected && selected->uuid==expected);
 }
@@ -169,11 +170,21 @@ int main() {
 """
 def fixture(root):
  s=(root/'src/nvhttp.cpp').read_text()
- a=s.index('      const auto retained_profile = retained_monitor_profile(');z=s.index('      if (!no_active_sessions &&',a);block=s[a:z]
+ a=s.index('      const bool monitor_request =');z=s.index('      const auto succeed =',a);block=s[a:z]
+ a=s.index('std::unordered_map<std::string, std::string> requested_runtime_overrides;',z);z=s.index('      if (!no_active_sessions &&',a)
+ block+=s[a:z]
  a=s.index('auto synthetic_control =',s.index('auto appid_str ='));z=s.index('if (selected_monitor_profile)',a);z=s.index(';',z)+1;routing=s[a:z]
  struct=function(s,'struct remote_role_owner_t {')+';'
- funcs='\n'.join(function(s,x) for x in ['std::string remote_role_owner_key(','std::optional<remote_session::monitor_profile_t> retained_monitor_profile(','void remember_remote_owner(','bool forget_remote_owner(','std::vector<remote_session::app_t> remote_configured_catalogue('])
+ funcs='\n'.join(function(s,x) for x in ['std::string remote_role_owner_key(','std::vector<remote_role_owner_t> remote_monitor_owners(','void remember_remote_monitor(','bool forget_remote_owner(','std::vector<remote_session::app_t> remote_configured_catalogue('])
  fn="""
+std::optional<remote_session::monitor_profile_t> retained_monitor_profile(std::string_view uuid) {
+ const auto monitors=remote_monitor_owners(uuid);
+ return monitors.empty() ? std::nullopt : monitors.front().monitor_profile;
+}
+void remember_profile(std::uint64_t generation,const std::optional<remote_session::monitor_profile_t>& profile) {
+ remember_remote_monitor({.role=remote_session::role_e::monitor,.generation=generation,.client_uuid="paired-owner",
+  .monitor_profile=profile,.display_uuid="paired-owner"});
+}
 std::optional<remote_session::monitor_profile_t> selected; overrides_t merged;
 void admit_id(const std::string& appid_str,const std::string& appuuid_str,int current_appid=0) {
  status=0;merge_calls=0;tail_reached=0;selected.reset();merged.clear();
@@ -195,7 +206,7 @@ void admit_id(const std::string& appid_str,const std::string& appuuid_str,int cu
  a=s.index('const auto launch_identity_control =');z=s.index('launch_session->client_display_warning_requested',a)
  launch=s[a:z]
  adapters='std::optional<proc::ctx_t> asset_context(const std::string& appid,const std::string& appuuid,int current_appid) {'+asset+'return app_ctx;}\n'
- adapters+='std::optional<proc::ctx_t> launch_context(const std::string& launch_appid_arg,const std::string& launch_appuuid_arg) {'+launch+'return launch_app_ctx;}\n'
+ adapters+='std::optional<proc::ctx_t> launch_context(const std::string& launch_appid_arg,const std::string& launch_appuuid_arg) {const int resuming_app_id=0;'+launch+'return launch_app_ctx;}\n'
  if 'std::vector<const proc::ctx_t *> visible_apps;' in s:
   a=s.index('        std::vector<const proc::ctx_t *> visible_apps;',s.index('void applist('));z=s.index('        const auto current_app =',a)
   adapters+='std::vector<remote_session::app_t> projected_configured(int current_appid,bool should_hide_inactive_apps=false) {const auto app_list=proc::proc.get_apps();const bool show_terminate_entry=should_hide_inactive_apps;'+s[a:z]+'return configured_apps;}\n'

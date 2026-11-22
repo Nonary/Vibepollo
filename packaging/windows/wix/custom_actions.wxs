@@ -163,7 +163,7 @@
     <CustomAction Id="InstallVirtualDisplayDriver" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="InstallVirtualGamepadDriver" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="InstallUsbIpTransport" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
-    <CustomAction Id="RegisterVulkanHdrLayer" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
+    <CustomAction Id="ClearVulkanHdrLayerBeforeInstall" BinaryKey="WixCA" DllEntry="WixQuietExec64" Execute="deferred" Return="ignore" Impersonate="no" />
     <CustomAction Id="UpdatePathAdd" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
     <CustomAction Id="UpdatePathRemove" BinaryKey="WixCA" DllEntry="WixQuietExec" Execute="deferred" Return="check" Impersonate="no" />
 
@@ -216,9 +216,9 @@
                  Property="InstallVirtualGamepadDriver"
                  Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\vhf-gamepad\install.ps1&quot; -InstallerBestEffort -AllowLocalTestCertificate:[ALLOW_LOCAL_VIRTUAL_GAMEPAD_TEST_PACKAGE] -DailyUnsignedPolicy [DAILY_UNSIGNED_DRIVER_POLICY] -AllowLocalGamepadCertificateTrust [ALLOW_LOCAL_GAMEPAD_CERTIFICATE_TRUST] -ConsentCertificateThumbprint &quot;[LOCAL_GAMEPAD_CERTIFICATE_THUMBPRINT]&quot;"/>
 
-    <CustomAction Id="SetRegisterVulkanHdrLayer"
-                 Property="RegisterVulkanHdrLayer"
-                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sunshine\install.ps1&quot; -RegisterVulkanLayerOnly"/>
+    <CustomAction Id="SetClearVulkanHdrLayerBeforeInstall"
+                 Property="ClearVulkanHdrLayerBeforeInstall"
+                 Value="&quot;[System64Folder]WindowsPowerShell\v1.0\powershell.exe&quot; -NoLogo -NonInteractive -NoProfile -ExecutionPolicy Bypass -File &quot;[INSTALL_ROOT]drivers\sunshine\install.ps1&quot; -UnregisterVulkanLayerOnly"/>
 
     <CustomAction Id="SetUpdatePathAdd"
                  Property="UpdatePathAdd"

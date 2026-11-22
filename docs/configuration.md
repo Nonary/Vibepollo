@@ -1606,12 +1606,12 @@ apply a saved direction. Shared displays use the application layout.
 
 ### virtual_display_max_clients
 
-Maximum paired-client identities that may own virtual displays at once, from
-`1` to `8`. The default is `4`; set `virtual_display_max_clients = 6` to allow
-six clients. Normal game streams and Remote Monitor share one slot when they
-belong to the same paired client. Retained or retryable displays still own a
-slot until explicitly released. Lowering the setting does not unplug existing
-owners; it prevents new identities until usage falls below the limit.
+Maximum managed virtual screens at once, from `1` to `8`. The default is `4`.
+Normal game streams and the first Remote Monitor screen share a slot when they
+belong to the same paired client. Each extra Remote Monitor screen uses another
+slot. Retained or retryable displays still use a slot until released. When the
+limit is lowered, existing screens keep their slots and new screens wait for
+capacity.
 
 The Windows driver supports eight temporary per-client displays, independently
 of the permanent-display setting. Linux also clamps this limit to configured
@@ -1651,12 +1651,18 @@ limit. Arbitrarily many displays are not supported.
 
 ### Remote Monitor display policy
 
-Remote Monitor uses one stable private virtual display per paired client on
-Windows and Linux. Its display extends the current desktop through the topology
-coordinator. A normal per-client game and Remote Monitor from the same paired
-client share that display identity and release their ownership independently.
-The Remote Monitor disconnect settings below determine whether its display is
-retained for Resume after the stream ends.
+On Windows and Linux, the built-in **Remote Monitor** extends the current
+desktop with a private virtual display. To stream another screen on the same
+workstation, open a second Moonlight window, choose the same paired host, and
+launch **Remote Monitor** again. Vibepollo resumes an available retained screen
+first, or adds a display when the existing screens are already streaming. Each
+window shows a separate host display. Running several windows at once requires
+client support for unique streaming session IDs. **Disconnect Monitor** ends all
+Remote Monitor screens for that pairing.
+
+A normal per-client game and the first Remote Monitor screen share their display
+identity and release their ownership independently. The disconnect settings
+below determine whether each screen is retained when its stream ends.
 
 Set placement, gap, alignment, and primary status under **Devices → Arrange client
 displays** in the v2 interface. Selecting a physical display as a layout anchor

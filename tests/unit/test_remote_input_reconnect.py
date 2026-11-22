@@ -36,11 +36,19 @@ def fixture(root):
 std::unordered_map<std::string, remote_role_owner_t> remote_role_owners;\n'''
     owners += '\n'.join(function(nv, signature) for signature in (
         'std::string remote_role_owner_key(',
+        'std::vector<remote_role_owner_t> remote_monitor_owners(',
+        'auto find_monitor_owner_locked(',
         'remote_role_gate_snapshot_t remote_role_gate_snapshot_for_client(',
+        'void remember_remote_monitor(',
         'void remember_remote_owner(',
         'std::optional<std::uint64_t> remote_owner_generation(',
         ('bool' if 'bool forget_remote_owner(' in nv else 'void') + ' forget_remote_owner(',
         'void notify_remote_input_transport_lost(',
+        'bool can_start_remote_monitor(',
+        'void notify_remote_monitor_started(',
+        'void notify_remote_monitor_stopping(',
+        'bool end_remote_monitor_transport(',
+        'bool request_remote_monitor_release(',
         'bool has_remote_role_owner()',
     ))
     def locate(pattern, start):
@@ -56,7 +64,7 @@ std::unordered_map<std::string, remote_role_owner_t> remote_role_owners;\n'''
     replacement_start = locate(r'^[ \t]*std::unique_lock normal_transition_lock', dispatch_end)
     idle_start = locate(r'^[ \t]*const bool no_active_sessions =', replacement_start)
     replacement = nv[replacement_start:idle_start]
-    idle_end = locate(r'^[ \t]*const auto retained_profile =', idle_start)
+    idle_end = locate(r'^[ \t]*const bool monitor_request =', idle_start)
     runtime_idle = nv[idle_start:idle_end]
     runtime_start = locate(r'^[ \t]*bool runtime_overrides_applied = false;', idle_end)
     apply_start = locate(r'^[ \t]*if \(no_active_sessions\) \{', runtime_start)
@@ -67,7 +75,10 @@ std::unordered_map<std::string, remote_role_owner_t> remote_role_owners;\n'''
     matches = '\n'.join(function(stream, signature) for signature in (
         'bool uuid_match(', 'bool remote_role_match(',
     ))
-    return (template.replace('/* @MONITOR_RECONCILIATION@ */', monitor_reconciliation).replace('/* @OWNERS@ */', owners)
+    teardown = function(nv[start:], 'if (synthetic_control == remote_session::control_e::disconnect_input ||')
+    update_sessions = function(nv, 'bool find_and_udpate_session_info(')
+    return (template.replace('/* @TEARDOWN_CONTROL@ */', teardown)
+            .replace('/* @UPDATE_SESSION_INFO@ */', update_sessions).replace('/* @MONITOR_RECONCILIATION@ */', monitor_reconciliation).replace('/* @OWNERS@ */', owners)
             .replace('/* @DISPATCH@ */', dispatch).replace('/* @REPLACEMENT@ */', replacement)
             .replace('/* @RUNTIME_IDLE@ */', runtime_idle).replace('/* @RUNTIME_APPLY@ */', runtime_apply)
             .replace('/* @MATCHES@ */', matches))

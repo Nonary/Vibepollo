@@ -712,9 +712,13 @@ TEST_F(DualSenseUsbipGamepadTests, SpeakerQueueIsBoundedIndependentAndEpochInval
     endpoint->speaker(samples(std::uint8_t(i)));
   }
   auto messages = drain(feedback);
-  ASSERT_EQ(messages.size(), 2u);
+  ASSERT_EQ(messages.size(), 1u + controller_speaker_pcm::pending_blocks);
   EXPECT_EQ(messages[0].type, platf::gamepad_feedback_e::haptics_pcm);
-  const auto speaker = messages[1];
+  for (unsigned i = 1; i < messages.size(); ++i) {
+    EXPECT_EQ(messages[i].type, platf::gamepad_feedback_e::speaker_pcm);
+    EXPECT_EQ(messages[i].data.speaker.sequence, 100u - controller_speaker_pcm::pending_blocks + i - 1);
+  }
+  const auto speaker = messages.back();
   EXPECT_EQ(speaker.type, platf::gamepad_feedback_e::speaker_pcm);
   EXPECT_EQ(speaker.id, 7);
   EXPECT_EQ(speaker.data.speaker.sequence, 99u);

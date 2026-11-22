@@ -58,4 +58,10 @@ namespace mail {
   MAIL(dynamic_bitrate);  // Runtime encoder bitrate change (kbps), posted from the HTTP /bitrate handler
 #undef MAIL
 
+  // The main loop and HTTP teardown both view this process event without
+  // consuming it. Session-local shutdown events are independent.
+  inline safe::mail_raw_t::event_t<bool> process_shutdown_event() {
+    return man ? man->event<bool>(shutdown) : nullptr;
+  }
+
 }  // namespace mail

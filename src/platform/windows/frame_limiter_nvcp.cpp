@@ -1064,7 +1064,7 @@ namespace platf::frame_limiter_nvcp {
     return status == NVAPI_OK;
   }
 
-  bool streaming_start(int fps, bool apply_frame_limit, bool force_frame_limit_off, bool force_vsync_off, bool force_low_latency_off, bool apply_smooth_motion) {
+  start_result streaming_start(int fps, bool apply_frame_limit, bool force_frame_limit_off, bool force_vsync_off, bool force_low_latency_off, bool apply_smooth_motion) {
     std::scoped_lock lock(g_mutex);
     maybe_restore_from_overrides_file();
 
@@ -1092,7 +1092,7 @@ namespace platf::frame_limiter_nvcp {
     g_state.original_smooth_motion_mask_override = false;
 
     if (!apply_frame_limit && !force_frame_limit_off && !force_vsync_off && !force_low_latency_off && !apply_smooth_motion) {
-      return false;
+      return {};
     }
 
     if (apply_frame_limit && force_frame_limit_off) {
@@ -1105,11 +1105,10 @@ namespace platf::frame_limiter_nvcp {
     }
 
     if (!ensure_initialized()) {
-      return false;
+      return {};
     }
 
     bool dirty = false;
-    bool frame_limit_success = false;
     bool smooth_motion_already_enabled = false;
 
     if (apply_frame_limit || force_frame_limit_off) {
@@ -1140,11 +1139,10 @@ namespace platf::frame_limiter_nvcp {
           } else {
             g_state.frame_limit_applied = true;
             dirty = true;
-            frame_limit_success = true;
             if (apply_frame_limit) {
-              BOOST_LOG(info) << "NVIDIA Control Panel frame limiter set to " << clamped_fps;
+              BOOST_LOG(info) << "NVIDIA Control Panel frame limiter requested at " << clamped_fps;
             } else {
-              BOOST_LOG(info) << "NVIDIA Control Panel frame limiter disabled for stream";
+              BOOST_LOG(info) << "NVIDIA Control Panel frame limiter disable requested for stream";
             }
           }
         }
@@ -1351,11 +1349,17 @@ namespace platf::frame_limiter_nvcp {
       }
     }
 
+    bool saved = false;
     if (dirty) {
       NvAPI_Status status = NvAPI_DRS_SaveSettings(g_state.session);
       if (status != NVAPI_OK) {
         log_nvapi_error(status, "DRS_SaveSettings(stream)");
+        // Changes staged in this DRS session were not committed. Drop them
+        // instead of scheduling a restore that would overwrite later edits.
+        cleanup();
+        return {.settings_applied = smooth_motion_already_enabled};
       } else {
+        saved = true;
         log_streaming_readback();
         restore_info_t info {
           g_state.frame_limit_applied,
@@ -1389,7 +1393,10 @@ namespace platf::frame_limiter_nvcp {
       }
     }
 
-    return frame_limit_success || g_state.vsync_applied || g_state.llm_applied || g_state.ull_cpl_applied || g_state.ull_enabled_applied || g_state.smooth_motion_applied || g_state.smooth_motion_mask_applied || smooth_motion_already_enabled;
+    return {
+      .frame_limit_applied = apply_frame_limit && g_state.frame_limit_applied && saved,
+      .settings_applied = saved || smooth_motion_already_enabled,
+    };
   }
 
   void streaming_stop() {
@@ -1429,7 +1436,9 @@ namespace platf::frame_limiter_nvcp {
     cleanup();
 
     if (restore_with_fresh_session(info)) {
-      delete_overrides_file();
+      if (g_recovery_file_owned) {
+        delete_overrides_file();
+      }
     } else {
       BOOST_LOG(warning) << "Failed to restore NVIDIA Control Panel overrides";
     }

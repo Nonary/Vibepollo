@@ -42,6 +42,7 @@ fragments={
 'CANCEL_PENDING':body(rtsp,'    void cancel_pending_launches(','    '),
 'MONITOR_RECONCILIATION':'\n'.join(body(rtsp,signature,'    ') for signature in ('    void reconcile_abandoned_monitor_locked(', '    void retire_failed_monitor_start_locked(', '    void retry_abandoned_monitor(', '    void reconcile_abandoned_monitor(')),
 'EXPIRE':body(rtsp,'    void arm_launch_timer()','    '),
+'MONITOR_REPLAY':body(rtsp,'    bool has_pending_monitor_launch(','    '),
 'SESSION_CLEAR':body(rtsp,'    void session_clear(','    '),
 'DISCONNECT_CLIENT':body(rtsp,'    client_disconnect_result_t disconnect_client(','    '),
 'DISCONNECT_ROLE':body(rtsp,'    bool disconnect_remote_role(','    '),

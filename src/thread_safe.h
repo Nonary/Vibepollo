@@ -390,6 +390,22 @@ namespace safe {
       return true;
     }
 
+    /// Keep a short FIFO for a producer, shedding its oldest data only.
+    template<class Predicate>
+    bool raise_recent(T value, std::size_t limit, Predicate same_producer) {
+      std::lock_guard lock {_lock};
+      if (!limit || !_poll_state.running()) return false;
+      if (std::size_t(std::count_if(_queue.begin(), _queue.end(), same_producer)) >= limit) {
+        _queue.erase(std::find_if(_queue.begin(), _queue.end(), same_producer));
+      } else if (_queue.size() >= _max_elements) {
+        return false;
+      }
+      _queue.emplace_back(std::move(value));
+      _poll_state.set_ready(true);
+      _cv.notify_all();
+      return true;
+    }
+
     /// Coalesce obsolete snapshots at the tail (the newest value replaces every
     /// pending match and lands behind the events queued since), with three classes:
     ///   * priority values (`priority`) are never evicted and may evict an ordinary

@@ -146,16 +146,18 @@ namespace {
  std::vector<call> calls;
  int stops=0;
  int rtss_starts=0, rtss_stops=0, applied_rate=0;
- bool stalled=false;
+ bool stalled=false, nvcp_available=true, nvcp_cap_success=true, nvcp_save_success=true;
+ auto recovery_result=platf::rtss_recovery_audit_result::clear;
  std::string applied_sync;
  auto rtss_result=platf::rtss_apply_result::applied;
 }
 namespace platf {
  bool rtss_is_configured() { return true; }
- rtss_recovery_audit_result rtss_audit_pending_recovery() { return rtss_recovery_audit_result::clear; }
+ rtss_recovery_audit_result rtss_audit_pending_recovery() { return recovery_result; }
  rtss_apply_result rtss_streaming_start(int numerator, int denominator) {
   ++rtss_starts; applied_rate=numerator/denominator;
-  applied_sync=config::rtss.frame_limit_type; return rtss_result;
+  applied_sync=config::rtss.frame_limit_type;
+  return config::frame_limiter.enable ? rtss_result : rtss_apply_result::safe_to_fallback;
  }
  rtss_apply_result rtss_streaming_refresh(int, int) { return rtss_apply_result::safe_to_fallback; }
  bool rtss_hooks_stalled() { return stalled; }
@@ -163,9 +165,11 @@ namespace platf {
  bool rtss_warmup_process() { return true; }
  rtss_status_t rtss_get_status() { return {}; }
  namespace frame_limiter_nvcp {
-  bool is_available() { return true; }
-  bool streaming_start(int fps, bool limit, bool disable_limit, bool vsync, bool, bool) {
-   calls.push_back({fps,limit,disable_limit,vsync}); return true;
+  bool is_available() { return nvcp_available; }
+  start_result streaming_start(int fps, bool limit, bool disable_limit, bool vsync, bool, bool smooth_motion) {
+   calls.push_back({fps,limit,disable_limit,vsync});
+   return {limit && nvcp_cap_success && nvcp_save_success,
+           nvcp_save_success && (limit && nvcp_cap_success || disable_limit || vsync || smooth_motion)};
   }
   void streaming_stop() { ++stops; }
  }
@@ -455,6 +459,65 @@ int main() {
  rtss_result=rtss_apply_result::retained_exclusive;
  check(policy,"nvidia reflex");
  assert(calls.size()==1 && calls.back().disable_limit);
+ // Explicit RTSS preference can use the driver after a safe failure without a stall.
+ config::frame_limiter={.enable=true, .provider="rtss"};
+ policy={}; policy.fps=60;
+ constexpr auto owner=frame_limiter_owner::rtsp;
+ const auto check_fallback=[&](frame_limiter_provider expected, bool unconfirmed, bool driver_limit) {
+  calls.clear();
+  frame_limiter_streaming_start(owner,policy);
+  assert(frame_limiter_active_provider()==expected);
+  const auto status=frame_limiter_get_status();
+  assert(status.active_provider==expected && status.rtss_limit_unconfirmed==unconfirmed);
+  assert(std::ranges::any_of(calls, [](const call& c) { return c.limit; })==driver_limit);
+  frame_limiter_streaming_stop(owner);
+  assert(!frame_limiter_get_status().rtss_limit_unconfirmed);
+ };
+ const auto check_nvcp_failure=[&]() {
+  calls.clear();
+  const int previous_stops=stops;
+  frame_limiter_streaming_start(owner,policy);
+  assert(calls.size()==1 && calls.front().limit && calls.front().vsync);
+  assert(frame_limiter_active_provider()==frame_limiter_provider::none);
+  frame_limiter_streaming_stop(owner);
+  assert(stops==previous_stops+1);
+ };
+ stalled=false;
+ rtss_result=rtss_apply_result::safe_to_fallback;
+ check_fallback(frame_limiter_provider::nvidia_control_panel, false, true);
+ config::frame_limiter.disable_vsync=true;
+ nvcp_cap_success=false;
+ check_nvcp_failure(); // VSYNC succeeds, FRL fails.
+ nvcp_cap_success=true;
+ nvcp_save_success=false;
+ check_nvcp_failure(); // FRL was set in the session, but DRS save failed.
+ nvcp_save_success=true;
+ config::frame_limiter.disable_vsync=false;
+ nvcp_available=false;
+ gpus={amd};
+ check_fallback(frame_limiter_provider::none, false, false);
+ gpus={nvidia};
+ nvcp_available=true;
+ rtss_result=rtss_apply_result::retained_exclusive;
+ check_fallback(frame_limiter_provider::none, true, false);
+ rtss_result=rtss_apply_result::safe_to_fallback;
+ recovery_result=rtss_recovery_audit_result::retained_exclusive;
+ check_fallback(frame_limiter_provider::none, true, false);
+ recovery_result=rtss_recovery_audit_result::clear;
+
+ // A Lossless Scaling app requests the limiter even with global limiting and
+ // automatic virtual-display overrides disabled. RTSS must still audit ownership.
+ config::frame_limiter={.enable=false, .provider="rtss"};
+ policy={}; policy.fps=120; policy.uses_virtual_display=true; policy.lossless_rtss_limit=60;
+ rtss_result=rtss_apply_result::retained_exclusive;
+ calls.clear();
+ frame_limiter_streaming_start(owner,policy);
+ const auto lossless_status=frame_limiter_get_status();
+ assert(lossless_status.enabled && lossless_status.rtss_limit_unconfirmed);
+ assert(lossless_status.active_provider==frame_limiter_provider::none);
+ assert(std::ranges::none_of(calls, [](const call& c) { return c.limit; }));
+ frame_limiter_streaming_stop(owner);
+ assert(!config::frame_limiter.enable && config::frame_limiter.provider=="rtss");
  std::cout << adapter_scenarios << " selected-adapter and explicit-option lifecycle scenarios passed\n";
 }
 ''')

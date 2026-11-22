@@ -304,6 +304,9 @@ namespace remote_session {
       // still decides what may start while the Monitor is kept. Other Monitor
       // profiles conflict until Disconnect Monitor, so they stay hidden here.
       result.catalogue = {synthetic(control_e::resume), synthetic(control_e::disconnect_monitor)};
+      if (owner.builtin_monitor && caller.may_launch) {
+        result.catalogue.push_back(synthetic(control_e::monitor));
+      }
       std::copy_if(visible_configured.begin(), visible_configured.end(), std::back_inserter(result.catalogue), [](const app_t &app) {
         return !app.monitor_profile;
       });
@@ -367,10 +370,8 @@ namespace remote_session {
         break;
       case control_e::monitor:
         result.permission = permission_e::launch;
-        // Moonlight may retry a slow /launch request or invoke a cached Remote
-        // Monitor tile after ownership has already been published. For the
-        // same paired client this is an idempotent activation retry, not a
-        // permission failure. Another client's owner is never passed here.
+        // A paired Monitor owner can launch the same tile to resume or add a
+        // screen. The launch handler selects the display and deduplicates retries.
         result.allowed = caller.may_launch && (owner.role == role_e::none || owner.role == role_e::monitor);
         result.resume = result.allowed && owner.role == role_e::monitor;
         if (result.resume) result.resume_role = role_e::monitor;
@@ -547,6 +548,18 @@ namespace remote_session {
     // The built-in Monitor retains its existing live-configuration semantics.
     // Explicit profiles use their accepted application snapshot until release.
     return identify(0, retained->uuid) == control_e::monitor ? requested : *retained;
+  }
+
+  std::optional<std::size_t> select_monitor_slot(const monitor_slots_t &slots, const bool allow_create) {
+    using state = monitor_slot_state_e;
+    const auto retained = std::find(slots.begin(), slots.end(), state::retained);
+    if (retained != slots.end()) return retained - slots.begin();
+    if (!allow_create || std::any_of(slots.begin(), slots.end(), [](const auto slot) {
+          return slot == state::starting || slot == state::stopping;
+        })) return std::nullopt;
+    const auto free = std::find(slots.begin(), slots.end(), state::empty);
+    if (free == slots.end()) return std::nullopt;
+    return free - slots.begin();
   }
 
   void register_monitor_runtime_hooks(monitor_runtime_hooks_t hooks) {
