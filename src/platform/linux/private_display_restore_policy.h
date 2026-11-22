@@ -4,6 +4,8 @@
  */
 #pragma once
 
+#include "hdr_policy.h"
+
 #include "private_display_mode_policy.h"
 
 #include <algorithm>
@@ -133,7 +135,12 @@ namespace platf::linux_private_display::restore_policy {
    * disables only after connector retirement, when the output set has settled.
    */
   template <typename Configuration>
-  bool snapshot_matches(const Configuration &snapshot, const Configuration &current, const bool final = false) {
+  bool snapshot_matches(
+    const Configuration &snapshot,
+    const Configuration &current,
+    const bool final = false,
+    const std::set<std::string> &managed_outputs = {}
+  ) {
     const auto refresh = [](const auto &output) {
       const auto id = output.value("currentModeId", std::string {});
       for (const auto &mode : output.value("modes", Configuration::array())) {
@@ -168,7 +175,10 @@ namespace platf::linux_private_display::restore_policy {
       const bool equivalent_mode = known_size && known_refresh && size_matches && refresh_matches;
       // Equal identifiers cannot bypass saved semantic evidence. When it is
       // incomplete, require the identifier and every available constraint.
-      return (exact_mode || equivalent_mode) && size_matches && refresh_matches &&
+      const auto current_wcg = linux_hdr::observed_wcg(&*output);
+      const bool wcg_matches = !current_wcg || !managed_outputs.contains(saved.value("name", std::string {})) ||
+                               linux_hdr::wcg_matches(linux_hdr::observed_wcg(&saved), current_wcg);
+      return (exact_mode || equivalent_mode) && size_matches && refresh_matches && wcg_matches &&
              std::abs(saved.value("scale", 1.0) - output->value("scale", 1.0)) < 0.01 &&
              saved.value("pos", Configuration::object()) == output->value("pos", Configuration::object()) &&
              saved.value("rotation", 1) == output->value("rotation", 1) &&

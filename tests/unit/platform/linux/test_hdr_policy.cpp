@@ -115,6 +115,16 @@ TEST(LinuxHdrPolicy, OnlySupportedHdrActivationNeedsPostModesetTransaction) {
     hdr::resolve_output_state(std::nullopt, true, true).command));
 }
 
+TEST(LinuxHdrPolicy, VerifiesWideGamutWhenAnOutputChangeWasRequested) {
+  EXPECT_TRUE(hdr::wcg_matches(std::nullopt, std::nullopt));
+  EXPECT_TRUE(hdr::wcg_matches(std::nullopt, false));
+  EXPECT_TRUE(hdr::wcg_matches(true, true));
+  EXPECT_TRUE(hdr::wcg_matches(false, false));
+  EXPECT_FALSE(hdr::wcg_matches(true, false));
+  EXPECT_FALSE(hdr::wcg_matches(false, true));
+  EXPECT_FALSE(hdr::wcg_matches(true, std::nullopt));
+}
+
 TEST(LinuxHdrPolicy, OutputStateRequiresConsecutiveStableObservations) {
   hdr::output_state_stabilizer_t stabilizer;
 

@@ -77,6 +77,25 @@ namespace platf::linux_hdr {
     return {.command = std::nullopt, .expected_enabled = false};
   }
 
+  /** KScreen only includes wcg for outputs with a wide-color-gamut control. */
+  template <typename Output>
+  [[nodiscard]] std::optional<bool> observed_wcg(const Output *output) {
+    if (output) {
+      const auto value = output->find("wcg");
+      if (value != output->end() && value->is_boolean()) {
+        return value->template get<bool>();
+      }
+    }
+    return std::nullopt;
+  }
+
+  [[nodiscard]] constexpr bool wcg_matches(
+    const std::optional<bool> requested,
+    const std::optional<bool> observed
+  ) noexcept {
+    return !requested || requested == observed;
+  }
+
   struct chromaticity_t {
     std::uint16_t x;
     std::uint16_t y;

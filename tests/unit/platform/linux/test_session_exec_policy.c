@@ -693,6 +693,8 @@ int main(void) {
     "output.Virtual-2.vrrpolicy.always",
     "output.Virtual-2.hdr.enable",
     "output.Virtual-2.hdr.disable",
+    "output.Virtual-2.wcg.enable",
+    "output.Virtual-2.wcg.disable",
     "output.DP-3.rotation.none",
     "output.DP-3.rotation.left",
     "output.DP-3.rotation.inverted",
@@ -719,6 +721,10 @@ int main(void) {
   }
 
   const char *invalid_display_arguments[] = {
+    "output.DP-1.wcg.enable",
+    "output.Virtual-0.wcg.enable",
+    "output.Virtual-2.wcg.toggle",
+    "output.Virtual-2.wcg.enable.extra",
     "output.Virtual-1.enable;touch /tmp/x",
     "output.Virtual-1.scale.-1",
     "output.DP-1.rotation.foo",
