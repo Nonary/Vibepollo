@@ -313,7 +313,7 @@ namespace {
   // Start the client in its own transient user unit. Launching it from this
   // process would place it in the game's unit, and systemd kills that whole
   // control group the moment the game exits, taking Steam down with it.
-  bool start_steam_client() {
+  bool start_steam_client(std::string_view initial_command = "-silent") {
     const std::string unit = "vibepollo-steam-client-" + std::to_string(::time(nullptr));
     std::vector<std::string> arguments = {
       "systemd-run", "--user", "--quiet", "--collect",
@@ -329,7 +329,7 @@ namespace {
       }
     }
     arguments.emplace_back("/usr/bin/steam");
-    arguments.emplace_back("-silent");
+    arguments.emplace_back(initial_command);
     std::vector<char *> argv;
     argv.reserve(arguments.size() + 1);
     for (auto &argument : arguments) {
@@ -629,6 +629,18 @@ namespace {
     return state;
   }
 
+  int big_picture_ui(std::string_view uri) {
+    if (!install_clean_environment()) return 126;
+    if (!steam_client_running(steam_state_directory())) {
+      // Only opening may start Steam, and the client must live outside this
+      // transient command's cgroup. Leaving Big Picture never starts Steam.
+      if (uri == "steam://close/bigpicture") return 0;
+      return start_steam_client("-gamepadui") ? 0 : 1;
+    }
+    execl("/usr/bin/steam", "/usr/bin/steam", uri.data(), nullptr);
+    return errno == ENOENT ? 127 : 126;
+  }
+
   // Runs as the selected desktop user. The machine host cannot inspect or
   // signal that user's games, and must never parse this user-owned state.
   int big_picture(std::string_view uri) {
@@ -742,10 +754,10 @@ namespace {
 
 int main(int argc, char **argv) {
   openlog("vibepollo-steam-launch", LOG_PID, LOG_USER);
-  if (argc == 3 && std::string_view(argv[1]) == "--big-picture" &&
-      (std::string_view(argv[2]) == "steam://open/bigpicture" ||
-       std::string_view(argv[2]) == "steam://close/bigpicture")) {
-    return big_picture(argv[2]);
+  if (argc == 3 && (std::string_view(argv[2]) == "steam://open/bigpicture" ||
+                    std::string_view(argv[2]) == "steam://close/bigpicture")) {
+    if (std::string_view(argv[1]) == "--big-picture-ui") return big_picture_ui(argv[2]);
+    if (std::string_view(argv[1]) == "--big-picture") return big_picture(argv[2]);
   }
   std::uint32_t app_id = 0;
   const auto policy = parse_policy(argc, argv, app_id);

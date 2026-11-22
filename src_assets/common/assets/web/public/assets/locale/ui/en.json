@@ -695,6 +695,8 @@
         "name": "Steam",
         "noGames": "No Steam games were discovered.",
         "noMatchingGames": "No games match this search and filter.",
+        "bigPictureOnStream": "Use Steam Big Picture while streaming",
+        "bigPictureOnStreamDescription": "Open Big Picture before a synced game launches through Steam. Ending the app session closes Big Picture even if it was already open. Disconnecting and resuming keeps it open.",
         "policyDescription": "Control automatic library updates and advanced Steam discovery behavior.",
         "policyTitle": "Synchronization policy",
         "removeUninstalled": "Remove uninstalled games automatically",

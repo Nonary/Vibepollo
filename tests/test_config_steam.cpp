@@ -11,6 +11,7 @@ TEST(SteamConfig, DefaultsToOptInRecentSynchronizationOnBothPlatforms) {
   EXPECT_FALSE(result.enabled);
 #endif
   EXPECT_FALSE(result.auto_sync);
+  EXPECT_FALSE(result.big_picture_on_stream);
   EXPECT_FALSE(result.sync_all_installed);
   EXPECT_EQ(result.recent_games, 10);
   EXPECT_EQ(result.recent_max_age_days, 30);
@@ -78,4 +79,15 @@ TEST(SteamConfig, ParsesRecentSynchronizationPolicy) {
 
   vars = {{"steam_recent_games", "-1"}};
   EXPECT_EQ(config::parse_steam(vars).recent_games, 10);
+}
+
+TEST(SteamConfig, ParsesBigPictureStreamOptInIndependentlyOfSynchronization) {
+  std::unordered_map<std::string, std::string> vars {{"steam_big_picture_on_stream", "true"}};
+  const auto enabled = config::parse_steam(vars);
+  EXPECT_TRUE(enabled.big_picture_on_stream);
+  EXPECT_FALSE(enabled.auto_sync);
+  EXPECT_TRUE(vars.empty());
+  vars = {{"steam_big_picture_on_stream", "false"}};
+  EXPECT_FALSE(config::parse_steam(vars).big_picture_on_stream);
+  EXPECT_TRUE(vars.empty());
 }

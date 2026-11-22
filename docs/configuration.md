@@ -5201,6 +5201,16 @@ Steam compatibility/runtime/tool manifests are also excluded by default based
 on their manifest type and known runtime IDs. Set `steam_include_tools = true`
 to import those records intentionally.
 
+### steam_big_picture_on_stream
+
+On Windows and Linux desktop hosts, open Steam Big Picture before launching
+a synchronized game through Steam. Ending the app session exits Big Picture
+even if it was already open. A resumable disconnect leaves Big Picture open.
+This setting applies to Steam-mediated launches. Linux direct launches and
+SteamOS Gaming Mode keep their normal behavior.
+
+Default: disabled.
+
 ### steam_include_tools
 
 Includes Steam manifests marked as tools, runtimes, configuration, DLC, music,
