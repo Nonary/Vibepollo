@@ -871,8 +871,8 @@ controller of another client. This option does not create or redirect controller
             holding a finger before moving it drags. This needs the same Accessibility permission as mouse and keyboard input.
             <br>
             <br>
-            On macOS 27 and later, fingers can reach the Mac as a real touchscreen instead, if you
-            sign the bundled touch helper yourself. See [Direct touch on macOS 27](macos_touch.md).
+            On macOS 27 and later, fingers can reach the Mac as a real touchscreen instead. That needs a build
+            you sign yourself with a capability from Apple, and a Moonlight client that sends native touch. See [Direct touch on macOS 27](macos_touch.md).
         </td>
     </tr>
     <tr>

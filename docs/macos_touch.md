@@ -5,9 +5,18 @@ the streamed display. Taps, drags, pinches, and the icons in the Dock respond to
 touches, the way a touchscreen Mac would. Without it, touch is emulated with the mouse: a tap
 clicks, one finger scrolls (hold, then move, to drag), and two fingers scroll.
 
-Direct touch is off unless you sign the touch helper yourself, as described below. Release
-builds of Vibepollo can't turn it on for you, because Apple only grants the capability it needs
-for development signing.
+Direct touch needs two things that a download of Vibepollo doesn't give you:
+
+- **A build you sign yourself, with a capability from Apple.** You need a paid Apple Developer
+  account to turn on the HID Virtual Device (development) capability and sign the touch helper
+  with it, as described below. Release builds of Vibepollo can't turn direct touch on for you,
+  because Apple only grants that capability for development signing, which runs only on the
+  Macs listed in your profile.
+- **A Moonlight client that sends native touch.** The client has to send each finger as a touch
+  event. A client that turns touches into mouse movement on its own side never sends any, so
+  the Mac sees a mouse.
+
+Without both, touch is emulated, and everything else works as it did.
 
 ## What it needs
 
@@ -15,7 +24,9 @@ for development signing.
 - `native_pen_touch` enabled in the configuration (it is by default).
 - The touch helper, `Vibepollo.app/Contents/Helpers/VibepolloTouch.app`, signed with the
   **HID Virtual Device (development)** capability by the same team that signed Vibepollo.
-- A client that sends touch events, such as Moonlight or Artemis on a phone or tablet.
+- A Moonlight client that supports native touch and has it turned on, on a phone or tablet.
+  Clients name the setting differently; it is the one that passes touches to the host instead
+  of moving a pointer with them.
 
 The pen keeps working as a tablet (pressure, tilt, and buttons) either way; only fingers go to
 the touchscreen.
@@ -88,10 +99,10 @@ Run the script again after each build: the build signs the helper without the en
   status menus, which shows each one, including in a full-screen app. A client can offer these
   as buttons. Vibepollo reports its platform in serverinfo (`HostPlatform`) so a client knows
   which shortcuts apply.
-- **Make the interface larger for fingers.** macOS doesn't change its layout for a touchscreen.
-  With the touchscreen attached, `NSScreen.touchCapabilities` reports multi-touch for the
-  display, and apps widen their hit areas for each touch, but windows and controls keep their
-  size. On a phone, a lower stream resolution makes everything larger: at the phone's own
+- **Make the interface larger for fingers.** A Mac with a built-in touchscreen enlarges window
+  buttons and menus under a finger. That doesn't happen here: on macOS 27.2.1, AppKit records
+  that the last interaction was a direct touch, but windows and controls keep their size (a
+  window's close button stays 14 points). On a phone, a lower stream resolution makes everything larger: at the phone's own
   point size (for example 1864 by 860 on a 932 by 430 point screen) the Mac draws at the scale
   iOS does.
 - **Report finger size or pressure.** Each finger is a point. macOS hit-tests a touch at a
