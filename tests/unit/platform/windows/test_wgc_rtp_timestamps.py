@@ -25,6 +25,8 @@ def main():
     source = read_source("src/stream.cpp")
     owner_start = source.index("      std::uint32_t lowseq;")
     owner_end = source.index("      udp::endpoint peer;", owner_start)
+    failure_start = source.index("    struct video_send_failed_t {")
+    failure_end = source.index("\n    };", failure_start) + len("\n    };")
     account_start = source.index("      std::size_t frame_packets_accepted = 0;")
     account_end = source.index("\n      try {", account_start)
     stamp_start = source.index("        bool frame_is_dupe = false;")
@@ -99,11 +101,7 @@ struct WireFrame {
   std::vector<std::uint32_t> emitted_timestamps;
 };
 
-struct video_send_failed_t {
-  bool cancelled;
-  unsigned block;
-  std::size_t packets_accepted;
-};
+// SEND_FAILURE
 
 constexpr std::size_t shards_per_block = 3;
 constexpr unsigned fec_blocks = 2;
@@ -141,8 +139,14 @@ WireFrame send_frame(Session *session, std::optional<Clock::time_point> source_s
         auto *inspect = &shard;
         // SHARD_STAMP
       }
-      bool allow_fallback = true;
-      const auto send_result = stream::send_video_batch(shards.size(), allow_fallback,
+      const auto current_batch_size = shards.size();
+      const bool send_individually = false;
+      struct {
+        bool allow_fallback;
+        int socket_error;
+      } batch_info {true, 0};
+      [[maybe_unused]] const int datagram_error = 0;
+      const auto send_result = stream::send_video_batch(current_batch_size, batch_info.allow_fallback,
         [] { return false; },
         [&](std::size_t index) {
           if (wire.emitted_timestamps.size() == accept_limit) {
@@ -151,7 +155,7 @@ WireFrame send_frame(Session *session, std::optional<Clock::time_point> source_s
           wire.emitted_timestamps.push_back(util::endian::big(shards[index].rtp.timestamp));
           return true;
         },
-        [] { return false; });
+        [] { return false; }, send_individually);
       // BATCH_RESULT
     }
   } catch (const video_send_failed_t &) {
@@ -245,6 +249,7 @@ int main() {
     cpp_source = fixture
     for marker, start, end in (
         ("SESSION_CLOCK", owner_start, owner_end),
+        ("SEND_FAILURE", failure_start, failure_end),
         ("ACCOUNT", account_start, account_end),
         ("STAMP", stamp_start, stamp_end),
         ("SHARD_STAMP", shard_start, shard_end),
