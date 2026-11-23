@@ -313,86 +313,40 @@ namespace input {
     std::size_t total_size = 0;
   };
 
-  struct packet_size_bounds_t {
-    std::size_t min_total_size = 0;
-    std::size_t max_total_size = 0;
-  };
-
-  std::optional<packet_size_bounds_t> packet_size_bounds(std::uint32_t magic) {
-    switch (magic) {
-      case MOUSE_MOVE_REL_MAGIC_GEN5:
-        return packet_size_bounds_t {sizeof(NV_REL_MOUSE_MOVE_PACKET), sizeof(NV_REL_MOUSE_MOVE_PACKET)};
-      case MOUSE_MOVE_ABS_MAGIC:
-        return packet_size_bounds_t {sizeof(NV_ABS_MOUSE_MOVE_PACKET), sizeof(NV_ABS_MOUSE_MOVE_PACKET)};
-      case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
-      case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
-        return packet_size_bounds_t {sizeof(NV_MOUSE_BUTTON_PACKET), sizeof(NV_MOUSE_BUTTON_PACKET)};
-      case SCROLL_MAGIC_GEN5:
-        return packet_size_bounds_t {sizeof(NV_SCROLL_PACKET), sizeof(NV_SCROLL_PACKET)};
-      case SS_HSCROLL_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_HSCROLL_PACKET), sizeof(SS_HSCROLL_PACKET)};
-      case KEY_DOWN_EVENT_MAGIC:
-      case KEY_UP_EVENT_MAGIC:
-        return packet_size_bounds_t {sizeof(NV_KEYBOARD_PACKET), sizeof(NV_KEYBOARD_PACKET)};
-      case UTF8_TEXT_EVENT_MAGIC:
-        return packet_size_bounds_t {sizeof(NV_INPUT_HEADER), sizeof(NV_UNICODE_PACKET)};
-      case MULTI_CONTROLLER_MAGIC_GEN5:
-        return packet_size_bounds_t {sizeof(NV_MULTI_CONTROLLER_PACKET), sizeof(NV_MULTI_CONTROLLER_PACKET)};
-      case SS_TOUCH_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_TOUCH_PACKET), sizeof(SS_TOUCH_PACKET)};
-      case SS_PEN_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_PEN_PACKET), sizeof(SS_PEN_PACKET)};
-      case SS_CONTROLLER_ARRIVAL_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_CONTROLLER_ARRIVAL_PACKET), sizeof(SS_CONTROLLER_ARRIVAL_PACKET)};
-      case SS_CONTROLLER_TOUCH_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_CONTROLLER_TOUCH_PACKET), sizeof(SS_CONTROLLER_TOUCH_PACKET)};
-      case SS_CONTROLLER_MOTION_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_CONTROLLER_MOTION_PACKET), sizeof(SS_CONTROLLER_MOTION_PACKET)};
-      case SS_CONTROLLER_BATTERY_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_CONTROLLER_BATTERY_PACKET), sizeof(SS_CONTROLLER_BATTERY_PACKET)};
-      case SS_STEAM_CONTROLLER_ATTRIBUTES_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_STEAM_CONTROLLER_ATTRIBUTES_PACKET), sizeof(SS_STEAM_CONTROLLER_ATTRIBUTES_PACKET)};
-      default:
-        return std::nullopt;
-    }
-  }
-
+  // The packet table lives in input_validation_policy.cpp, where it is unit tested. A second copy
+  // used to live here and drifted from it: it did not know the DualSense speaker owner binding
+  // (0x55000009), so the host dropped that packet and never produced speaker PCM.
   std::optional<validated_input_packet_t> validate_packet(const std::vector<std::uint8_t> &input_data) {
-    const auto payload = std::string_view {
-      reinterpret_cast<const char *>(input_data.data()),
-      input_data.size()
-    };
-    const auto declared_size = util::packet::read_u32_be(payload, 0);
-    const auto magic = util::packet::read_u32_le(payload, sizeof(std::uint32_t));
-    if (!declared_size || !magic) {
-      BOOST_LOG(warning) << "Ignoring short input packet (" << input_data.size() << " bytes)";
-      return std::nullopt;
+    const auto result = validation::validate_packet(input_data);
+    if (result) {
+      return validated_input_packet_t {result.packet->magic, result.packet->total_size};
     }
 
-    const auto total_size = static_cast<std::size_t>(*declared_size) + sizeof(std::uint32_t);
-    if (total_size != input_data.size()) {
-      BOOST_LOG(warning) << "Ignoring malformed input packet for magic 0x" << util::hex(*magic).to_string_view()
-                         << " (declared=" << total_size << ", actual=" << input_data.size() << ')';
-      return std::nullopt;
+    switch (result.error) {
+      case validation::packet_validation_error_e::short_header:
+        BOOST_LOG(warning) << "Ignoring short input packet (" << input_data.size() << " bytes)";
+        break;
+      case validation::packet_validation_error_e::declared_size_mismatch:
+        BOOST_LOG(warning) << "Ignoring malformed input packet for magic 0x" << util::hex(result.magic).to_string_view()
+                           << " (declared=" << result.total_size << ", actual=" << input_data.size() << ')';
+        break;
+      case validation::packet_validation_error_e::unknown_magic:
+        BOOST_LOG(warning) << "Ignoring unknown input packet magic 0x" << util::hex(result.magic).to_string_view();
+        break;
+      case validation::packet_validation_error_e::invalid_size:
+        {
+          auto expected_size = std::to_string(result.expected_size.min_total_size);
+          if (result.expected_size.min_total_size != result.expected_size.max_total_size) {
+            expected_size += "-" + std::to_string(result.expected_size.max_total_size);
+          }
+          BOOST_LOG(warning) << "Ignoring malformed input packet for magic 0x" << util::hex(result.magic).to_string_view()
+                             << " (size=" << result.total_size << ", expected " << expected_size << ')';
+        }
+        break;
+      case validation::packet_validation_error_e::none:
+        break;
     }
-
-    const auto bounds = packet_size_bounds(*magic);
-    if (!bounds) {
-      BOOST_LOG(warning) << "Ignoring unknown input packet magic 0x" << util::hex(*magic).to_string_view();
-      return std::nullopt;
-    }
-
-    if (total_size < bounds->min_total_size || total_size > bounds->max_total_size) {
-      auto expected_size = std::to_string(bounds->min_total_size);
-      if (bounds->min_total_size != bounds->max_total_size) {
-        expected_size += "-" + std::to_string(bounds->max_total_size);
-      }
-      BOOST_LOG(warning) << "Ignoring malformed input packet for magic 0x" << util::hex(*magic).to_string_view()
-                         << " (size=" << total_size << ", expected " << expected_size << ')';
-      return std::nullopt;
-    }
-
-    return validated_input_packet_t {*magic, total_size};
+    return std::nullopt;
   }
 
   /**
