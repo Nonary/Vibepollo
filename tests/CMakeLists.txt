@@ -2235,6 +2235,7 @@ if(SUNSHINE_TEST_POWERSHELL)
 endif()
 
 sunshine_register_component(NAME test_component_controller_speaker_pcm TEST_SOURCE unit/test_controller_speaker_pcm.cpp)
+sunshine_register_component(NAME test_component_dualsense_controls TEST_SOURCE unit/test_dualsense_controls.cpp)
 
 sunshine_register_component(NAME test_component_dualsense_audio_pcm TEST_SOURCE unit/test_dualsense_audio_pcm.cpp)
 sunshine_register_component(NAME test_component_dualsense_launch_policy TEST_SOURCE unit/test_dualsense_launch_policy.cpp)

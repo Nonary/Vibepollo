@@ -28,6 +28,7 @@
 // local includes
 #include "audio.h"
 #include "src/controller_speaker_pcm.h"
+#include "src/dualsense_controls_protocol.h"
 #include "src/input_geometry_snapshot.h"
 #include "src/boost_process_shim.h"
 #include "src/config.h"
@@ -129,6 +130,7 @@ namespace platf {
     steam_haptic,  ///< A Steam Controller (2026) haptic output report, verbatim (Vibepollo extension)
     steam_settings,  ///< A Steam Controller (2026) settings write, verbatim (Vibepollo extension)
     speaker_pcm,  ///< Independent 5 ms controller speaker samples
+    dualsense_output,  ///< DualSense extended outputs (player LEDs, brightness, mic LED, volumes)
   };
 
   struct gamepad_feedback_msg_t {
@@ -203,6 +205,14 @@ namespace platf {
       return msg;
     }
 
+    static gamepad_feedback_msg_t make_dualsense_output(std::uint16_t id, const dualsense_controls::output_payload &payload) {
+      gamepad_feedback_msg_t msg;
+      msg.type = gamepad_feedback_e::dualsense_output;
+      msg.id = id;
+      msg.data.dualsense_output = payload;
+      return msg;
+    }
+
     gamepad_feedback_e type;
     std::uint16_t id;
     // Internal provenance for bounded host-side ViGEm send-result diagnostics.
@@ -257,6 +267,8 @@ namespace platf {
         std::uint8_t count;
         std::array<std::uint8_t, 27> triples;
       } steam_settings;
+
+      dualsense_controls::output_payload dualsense_output;
     } data;
   };
 
@@ -312,6 +324,10 @@ namespace platf {
         if (subkey == 0) return 0;
         break;
       }
+      case gamepad_feedback_e::dualsense_output:
+        subkey = msg.data.dualsense_output.valid_mask & dualsense_controls::out_all_mask;
+        if (subkey == 0) return 0;
+        break;
       default: return 0;
     }
     return ((static_cast<unsigned>(msg.type) + 1) << 16) | subkey;

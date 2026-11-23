@@ -1549,6 +1549,15 @@ namespace stream {
         encrypted_payload;
 
       payload = encode_control(session, util::view(plaintext), encrypted_payload);
+    } else if (msg.type == platf::gamepad_feedback_e::dualsense_output) {
+      const auto plaintext = dualsense_controls::encode_output(session->config.mlFeatureFlags, msg.id, msg.data.dualsense_output);
+      if (!plaintext) {
+        return 0;
+      }
+      std::array<std::uint8_t, sizeof(control_encrypted_t) + crypto::cipher::round_to_pkcs7_padded(dualsense_controls::output_payload_size + 4) + crypto::cipher::tag_size>
+        encrypted_payload;
+
+      payload = encode_control(session, std::string_view(reinterpret_cast<const char *>(plaintext->data()), plaintext->size()), encrypted_payload);
     } else {
       BOOST_LOG(error) << "Unknown gamepad feedback message type"sv;
       return -1;

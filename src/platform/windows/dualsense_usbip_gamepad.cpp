@@ -65,6 +65,7 @@ namespace platf {
       bool pending_rumble = false;
       bool pending_rgb = false;
       std::uint8_t pending_triggers = 0;
+      std::uint16_t pending_ds_controls = 0;
       bool pending_accel_request = false;
       bool pending_gyro_request = false;
 
@@ -106,6 +107,13 @@ namespace platf {
         if (pending_triggers && raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_adaptive_triggers(client_index, pending_triggers, last_output.left_effect.mode, last_output.right_effect.mode, last_output.left_effect.parameters, last_output.right_effect.parameters))) {
           pending_triggers = 0;
         }
+        if (pending_ds_controls) {
+          auto controls = output.current_ds_controls();
+          controls.valid_mask = pending_ds_controls;
+          if (raise_gamepad_feedback(*feedback_queue, gamepad_feedback_msg_t::make_dualsense_output(client_index, controls))) {
+            pending_ds_controls = 0;
+          }
+        }
       }
 
       void submit() {
@@ -135,6 +143,7 @@ namespace platf {
         pending_rumble = pending_rumble || change.rumble;
         pending_rgb = pending_rgb || change.rgb;
         pending_triggers |= change.triggers;
+        pending_ds_controls |= change.ds_controls.valid_mask;
         flush_output();
       }
 
@@ -430,6 +439,7 @@ namespace platf {
           retained->pending_rgb = retained->last_output.has_rgb;
           retained->pending_triggers = retained->last_output.has_trigger_effects ?
                                          DS_EFFECT_LEFT_TRIGGER | DS_EFFECT_RIGHT_TRIGGER : 0;
+          retained->pending_ds_controls = retained->output.current_ds_controls().valid_mask;
           retained->submit();
           BOOST_LOG(info) << "Composite DualSense " << id.globalIndex << " rebound to resumed client";
           return 0;
