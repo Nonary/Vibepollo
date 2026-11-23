@@ -1945,6 +1945,9 @@ if(APPLE)
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/macos/av_audio_policy.cpp")
     sunshine_register_component(NAME test_component_macos_display_policy TEST_SOURCE unit/platform/macos/test_display_policy.cpp
         PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/macos/display_policy.cpp")
+    sunshine_register_component(NAME test_component_macos_touchscreen_policy TEST_SOURCE unit/platform/macos/test_touchscreen_policy.cpp
+        PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/macos/touchscreen_policy.cpp"
+        LINK_LIBRARIES sunshine_test_moonlight_headers)
 endif()
 
 

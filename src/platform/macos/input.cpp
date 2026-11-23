@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <iostream>
 #include <map>
+#include <set>
 #include <thread>
 
 // platform includes
@@ -26,6 +27,8 @@
 #include "src/logging.h"
 #include "src/platform/common.h"
 #include "src/platform/macos/display_policy.h"
+#include "src/platform/macos/touchscreen.h"
+#include "src/platform/macos/touchscreen_policy.h"
 #include "src/platform/macos/virtual_display.h"
 #include "src/utility.h"
 
@@ -334,6 +337,71 @@ const KeyCodeMap kKeyCodesMap[] = {
     }
   }
 
+  /**
+   * @brief The flags a key carries by itself on a real keyboard, apart from held modifiers.
+   * @details Function, arrow, and navigation keys set the secondary-function flag, and arrows
+   *          and the keypad set the numeric-pad flag. System shortcuts match on them: Control-F2
+   *          (focus the menu bar), Control-F3 (focus the Dock), and Control-Up (Mission Control)
+   *          are stored with the function flag and don't fire without it.
+   */
+  CGEventFlags intrinsic_key_flags(const int key) {
+    switch (key) {
+      case kVK_LeftArrow:
+      case kVK_RightArrow:
+      case kVK_UpArrow:
+      case kVK_DownArrow:
+        return kCGEventFlagMaskSecondaryFn | kCGEventFlagMaskNumericPad;
+      case kVK_F1:
+      case kVK_F2:
+      case kVK_F3:
+      case kVK_F4:
+      case kVK_F5:
+      case kVK_F6:
+      case kVK_F7:
+      case kVK_F8:
+      case kVK_F9:
+      case kVK_F10:
+      case kVK_F11:
+      case kVK_F12:
+      case kVK_F13:
+      case kVK_F14:
+      case kVK_F15:
+      case kVK_F16:
+      case kVK_F17:
+      case kVK_F18:
+      case kVK_F19:
+      case kVK_F20:
+      case kVK_Home:
+      case kVK_End:
+      case kVK_PageUp:
+      case kVK_PageDown:
+      case kVK_ForwardDelete:
+      case kVK_Help:
+        return kCGEventFlagMaskSecondaryFn;
+      case kVK_ANSI_Keypad0:
+      case kVK_ANSI_Keypad1:
+      case kVK_ANSI_Keypad2:
+      case kVK_ANSI_Keypad3:
+      case kVK_ANSI_Keypad4:
+      case kVK_ANSI_Keypad5:
+      case kVK_ANSI_Keypad6:
+      case kVK_ANSI_Keypad7:
+      case kVK_ANSI_Keypad8:
+      case kVK_ANSI_Keypad9:
+      case kVK_ANSI_KeypadDecimal:
+      case kVK_ANSI_KeypadMultiply:
+      case kVK_ANSI_KeypadPlus:
+      case kVK_ANSI_KeypadClear:
+      case kVK_ANSI_KeypadDivide:
+      case kVK_ANSI_KeypadEnter:
+      case kVK_ANSI_KeypadMinus:
+      case kVK_ANSI_KeypadEquals:
+        return kCGEventFlagMaskNumericPad;
+      default:
+        return 0;
+    }
+  }
+
   void keyboard_update(input_t &input, uint16_t modcode, bool release, uint8_t flags) {
     auto key = keysym(modcode);
 
@@ -374,7 +442,7 @@ const KeyCodeMap kKeyCodesMap[] = {
       CGEventSetType(event, release ? kCGEventKeyUp : kCGEventKeyDown);
     }
 
-    CGEventSetFlags(event, macos_input->kb_flags);
+    CGEventSetFlags(event, macos_input->kb_flags | intrinsic_key_flags(key));
     CGEventPost(kCGSessionEventTap, event);
     CFRelease(event);
   }
@@ -610,24 +678,43 @@ const KeyCodeMap kKeyCodesMap[] = {
    *
    * The pen is posted as a tablet device: proximity events as it enters, leaves, or changes tool,
    * and mouse events carrying the tablet fields (pressure, tilt, rotation, buttons) while it is
-   * in range. Touch has no public injection API on macOS, so one finger scrolls (hold, then
-   * move, to drag), a tap clicks, and two fingers scroll.
+   * in range.
+   *
+   * On macOS 27, with the touch helper installed and signed, fingers go to a virtual HID
+   * touchscreen on the client's display (see touchscreen.h), so macOS sees direct touches.
+   * Otherwise touch is emulated: one finger scrolls (hold, then move, to drag), a tap clicks, and
+   * two fingers scroll. Each gesture keeps the route it started with.
    */
   class macos_client_input_t: public client_input_t {
   public:
     explicit macos_client_input_t(macos_input_t *macos_input):
         macos_input {macos_input} {
+      // Make the streamed display's touchscreen now, so it's ready before the first touch. A
+      // Remote Monitor stream's own display isn't known until a touch names it, and is made then.
+      macos_touchscreen::prepare(this, current_display(macos_input));
     }
 
     ~macos_client_input_t() override {
       pen_release();
       touch_release();
+      // The client is gone: lift its fingers, and remove the touchscreen if it was the last
+      // client on that display.
+      macos_touchscreen::release(this);
     }
 
     void pen_update(const touch_port_t &touch_port, const pen_input_t &pen);
     void touch_update(const touch_port_t &touch_port, const touch_input_t &touch);
 
   private:
+    enum class touch_route_e {
+      none,  ///< No finger is down.
+      emulation,  ///< This gesture is emulated with mouse and scroll events.
+      touchscreen,  ///< This gesture goes to the virtual touchscreen.
+    };
+
+    bool touchscreen_update(const touch_port_t &touch_port, const touch_input_t &touch);
+    void touchscreen_end();
+
     // Pen buttons, in the order used for the pressed state: tip, then the barrel buttons.
     enum pen_button_e {
       PEN_TIP,
@@ -833,6 +920,11 @@ const KeyCodeMap kKeyCodesMap[] = {
     CGPoint last_pen_down {};
     std::chrono::steady_clock::time_point last_pen_down_time {};
 
+    touch_route_e touch_route {touch_route_e::none};
+    bool logged_route {};  ///< The first gesture's route has been logged.
+    std::set<std::uint32_t> screen_pointers;  ///< Fingers down on the touchscreen.
+    CGDirectDisplayID screen_display {kCGNullDirectDisplay};  ///< The touchscreen's display for this gesture.
+
     std::map<std::uint32_t, touch_point_t> touch_points;
     bool touch_dragging {};  ///< The left button is held for a one-finger drag.
     bool touch_scrolling {};  ///< Two fingers have been down since the last finger lifted.
@@ -925,18 +1017,98 @@ const KeyCodeMap kKeyCodesMap[] = {
     }
   }
 
+  void macos_client_input_t::touchscreen_end() {
+    screen_pointers.clear();
+    screen_display = kCGNullDirectDisplay;
+    touch_route = touch_route_e::none;
+  }
+
+  // Sends a finger to the touchscreen. Returns false when the event belongs to the emulation.
+  bool macos_client_input_t::touchscreen_update(const touch_port_t &touch_port, const touch_input_t &touch) {
+    // Cancelling all is sent on every session end; it lifts fingers but never starts the helper
+    // or makes a device.
+    if (touch.eventType == LI_TOUCH_EVENT_CANCEL_ALL) {
+      if (touch_route == touch_route_e::touchscreen) {
+        macos_touchscreen::lift_owner(this);
+        touchscreen_end();
+      }
+      return false;  // The emulation lifts its own state too.
+    }
+
+    if (touch_route == touch_route_e::none) {
+      if (!macos_touchscreen::event_may_create(touch.eventType)) {
+        return false;
+      }
+      // A gesture picks its route when its first finger lands, on the display this client's
+      // touches belong to: the streamed display, or a Remote Monitor stream's own display.
+      const auto display = pointer_display(macos_input, touch_port);
+      const bool screen = macos_touchscreen::begin_gesture(this, display);
+      if (!logged_route) {
+        // Once per client, so it's clear which route touch takes without logging every gesture.
+        logged_route = true;
+        BOOST_LOG(info) << "Touchscreen: this client's touches on display "sv << display << " go to "sv
+                        << (screen ? "the touchscreen"sv : macos_touchscreen::supported() ? "the emulation until the touch helper is ready"sv : "the emulation (direct touch needs macOS 27 and native_pen_touch)"sv);
+      }
+      if (screen) {
+        touch_route = touch_route_e::touchscreen;
+        screen_display = display;
+      } else {
+        touch_route = touch_route_e::emulation;
+        return false;
+      }
+    }
+    if (touch_route != touch_route_e::touchscreen) {
+      return false;
+    }
+
+    bool alive = true;
+    switch (touch.eventType) {
+      case LI_TOUCH_EVENT_DOWN:
+      case LI_TOUCH_EVENT_MOVE: {
+        if (touch.eventType == LI_TOUCH_EVENT_MOVE && !screen_pointers.contains(touch.pointerId)) {
+          return true;
+        }
+        const auto location = clamp_to_display(stream_location(macos_input, touch_port, touch.x * touch_port.width, touch.y * touch_port.height));
+        screen_pointers.insert(touch.pointerId);
+        alive = macos_touchscreen::touch(this, screen_display, touch.pointerId, location.x, location.y);
+        break;
+      }
+      case LI_TOUCH_EVENT_UP:
+      case LI_TOUCH_EVENT_CANCEL:
+        if (screen_pointers.erase(touch.pointerId) > 0) {
+          alive = macos_touchscreen::lift(this, screen_display, touch.pointerId);
+        }
+        break;
+      default:
+        return true;  // Hover and button-only events have no touch equivalent.
+    }
+
+    // When the last finger lifts, or the touchscreen went away mid-gesture, the next gesture
+    // picks its route again.
+    if (!alive || screen_pointers.empty()) {
+      touchscreen_end();
+    }
+    return true;
+  }
+
   void macos_client_input_t::touch_update(const touch_port_t &touch_port, const touch_input_t &touch) {
+    if (touchscreen_update(touch_port, touch)) {
+      return;
+    }
+
     switch (touch.eventType) {
       case LI_TOUCH_EVENT_CANCEL:
         touch_points.erase(touch.pointerId);
         if (touch_points.empty()) {
           touch_release();
           touch_scrolling = false;
+          touch_route = touch_route_e::none;
         }
         return;
       case LI_TOUCH_EVENT_CANCEL_ALL:
         touch_release();
         touch_scrolling = false;
+        touch_route = touch_route_e::none;
         return;
       case LI_TOUCH_EVENT_DOWN:
       case LI_TOUCH_EVENT_UP:
@@ -1039,6 +1211,7 @@ const KeyCodeMap kKeyCodesMap[] = {
         }
         if (touch_points.empty()) {
           touch_scrolling = false;
+          touch_route = touch_route_e::none;
         }
         break;
       }
@@ -1187,7 +1360,9 @@ const KeyCodeMap kKeyCodesMap[] = {
     platform_caps::caps_t caps = 0;
 
     // Pen and touch are posted as ordinary input events, so they need only the permission that
-    // mouse and keyboard input already do.
+    // mouse and keyboard input already do. On macOS 27 fingers go to the touch helper's
+    // touchscreen when it's signed and running (touchscreen.h), and otherwise to the emulation,
+    // so the capability is the same either way.
     if (config::input.native_pen_touch) {
       caps |= platform_caps::pen_touch;
     }

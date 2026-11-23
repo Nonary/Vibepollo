@@ -38,6 +38,12 @@ else()
             DESTINATION "${MAC_BUNDLE_CONTENTS}"
             COMPONENT Runtime)
 
+    # The touch helper. Release builds sign it with the host's identity and no HID entitlement,
+    # so it stays inert and touch is emulated; see docs/macos_touch.md to enable it.
+    install(TARGETS vibepollo_touch_helper
+        BUNDLE DESTINATION "${MAC_BUNDLE_CONTENTS}/Helpers"
+        COMPONENT Runtime)
+
     install(FILES "${PROJECT_SOURCE_DIR}/src_assets/macos/build/vibepollo.icns"
             DESTINATION "${MAC_BUNDLE_RESOURCES}"
             COMPONENT Runtime)
@@ -110,6 +116,20 @@ else()
                       message(FATAL_ERROR \"codesign failed while signing library: \${item}\")
                   endif()
               endforeach()
+          endif()
+
+          # Sign the touch helper before the app that contains it, with its fixed identifier.
+          set(_helper \"\${_app}/Contents/Helpers/${TOUCH_HELPER_BUNDLE_NAME}.app\")
+          if(EXISTS \"\${_helper}\")
+              execute_process(COMMAND /usr/bin/codesign --verbose=2
+                  --sign \"${APPLE_CODESIGN_IDENTITY}\" \"\${_helper}\"
+                  --identifier \"${TOUCH_HELPER_IDENTIFIER}\"
+                  --force ${_codesign_extra_args}
+                  RESULT_VARIABLE rc_helper
+              )
+              if(NOT rc_helper EQUAL 0)
+                  message(FATAL_ERROR \"codesign failed while signing the touch helper\")
+              endif()
           endif()
 
           # Sign the app last

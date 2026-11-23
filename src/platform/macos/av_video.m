@@ -22,10 +22,15 @@
   NSMutableArray *result = [NSMutableArray array];
 
   for (uint32_t i = 0; i < count; i++) {
+    NSString *name = [NSString stringWithFormat:@"%d", displays[i]];
+    // A display that is coming or going (a virtual display, say) can be active before it has a
+    // screen, or after its screen is gone, and so has no name. A nil in the dictionary would
+    // throw and end the process, so such a display goes by its number.
+    NSString *displayName = [self getDisplayName:displays[i]] ?: name;
     [result addObject:@{
       @"id": [NSNumber numberWithUnsignedInt:displays[i]],
-      @"name": [NSString stringWithFormat:@"%d", displays[i]],
-      @"displayName": [self getDisplayName:displays[i]],
+      @"name": name,
+      @"displayName": displayName,
     }];
   }
 

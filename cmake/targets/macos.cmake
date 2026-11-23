@@ -3,6 +3,36 @@
 if (SUNSHINE_BUILD_HOMEBREW)
     target_link_options(sunshine PRIVATE LINKER:-sectcreate,__TEXT,__info_plist,${APPLE_PLIST_FILE})
 else()
+    # The touch helper: a small app bundle inside Vibepollo.app/Contents/Helpers that owns the
+    # macOS 27 virtual touchscreen. It's built for both architectures with the project's warning
+    # flags. The build signs it like the host, without the HID entitlement; touch needs it signed
+    # again with a development profile (scripts/macos_sign_touch_helper.sh).
+    configure_file("${SUNSHINE_SOURCE_ASSETS_DIR}/macos/touch_helper/Info.plist.in"
+            "${CMAKE_BINARY_DIR}/touch_helper/Info.plist" @ONLY)
+    add_executable(vibepollo_touch_helper MACOSX_BUNDLE
+            "${CMAKE_SOURCE_DIR}/tools/macos_touch_helper/main.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/macos/touchscreen_policy.cpp"
+            "${CMAKE_SOURCE_DIR}/src/platform/macos/touchscreen_policy.h")
+    set_target_properties(vibepollo_touch_helper PROPERTIES
+            OUTPUT_NAME "${TOUCH_HELPER_EXECUTABLE_NAME}"
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_BINARY_DIR}/touch_helper/Info.plist"
+            OSX_ARCHITECTURES "arm64;x86_64"
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/touch_helper")
+    target_include_directories(vibepollo_touch_helper PRIVATE "${CMAKE_SOURCE_DIR}")
+    target_include_directories(vibepollo_touch_helper SYSTEM PRIVATE "${CMAKE_SOURCE_DIR}/third-party")
+    target_compile_options(vibepollo_touch_helper PRIVATE $<$<COMPILE_LANGUAGE:CXX>:${SUNSHINE_COMPILE_OPTIONS}>)
+    target_compile_definitions(vibepollo_touch_helper PRIVATE
+            TOUCH_HELPER_IDENTIFIER="${TOUCH_HELPER_IDENTIFIER}"
+            TOUCH_HELPER_HOST_IDENTIFIER="${PROJECT_FQDN}")
+    target_link_libraries(vibepollo_touch_helper PRIVATE
+            "${CORE_FOUNDATION_LIBRARY}" "${IO_KIT_LIBRARY}" "${SECURITY_LIBRARY}")
+    add_dependencies(sunshine vibepollo_touch_helper)
+
+    set(_touch_helper_sign_identity "-")
+    if(APPLE_CODESIGN_IDENTITY)
+        set(_touch_helper_sign_identity "${APPLE_CODESIGN_IDENTITY}")
+    endif()
+
     # .app build
     set_target_properties(sunshine PROPERTIES
             OUTPUT_NAME "${CMAKE_PROJECT_NAME}"
@@ -35,6 +65,13 @@ else()
             COMMAND "${CMAKE_COMMAND}" -E make_directory "${_bundle_launch_agents_dir}"
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different
                     "${APPLE_LAUNCH_AGENT_FILE}" "${_bundle_launch_agents_dir}/${PROJECT_FQDN}.plist"
+            COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:sunshine>/../Helpers"
+            COMMAND "${CMAKE_COMMAND}" -E rm -rf "$<TARGET_FILE_DIR:sunshine>/../Helpers/${TOUCH_HELPER_BUNDLE_NAME}.app"
+            COMMAND "${CMAKE_COMMAND}" -E copy_directory "$<TARGET_BUNDLE_DIR:vibepollo_touch_helper>"
+                    "$<TARGET_FILE_DIR:sunshine>/../Helpers/${TOUCH_HELPER_BUNDLE_NAME}.app"
+            COMMAND /usr/bin/codesign --force --sign "${_touch_helper_sign_identity}" --options runtime
+                    --identifier "${TOUCH_HELPER_IDENTIFIER}"
+                    "$<TARGET_FILE_DIR:sunshine>/../Helpers/${TOUCH_HELPER_BUNDLE_NAME}.app"
             ${_sign_build_tree_bundle}
             VERBATIM)
 endif()
