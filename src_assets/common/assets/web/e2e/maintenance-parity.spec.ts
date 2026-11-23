@@ -13,6 +13,7 @@ interface HostOptions {
   golden?: Record<string, unknown>;
   config?: Record<string, unknown>;
   termination?: Record<string, unknown>;
+  metadataDelayMs?: number;
 }
 
 async function setupHost(page: Page, options: HostOptions = {}) {
@@ -39,6 +40,7 @@ async function setupHost(page: Page, options: HostOptions = {}) {
     browse: [] as string[],
     configPatches: [] as Record<string, unknown>[],
     playniteStatus: 0,
+    steamStatus: 0,
     failGoldenStatus: false,
     goldenStatusReads: 0,
     goldenExports: 0,
@@ -66,11 +68,15 @@ async function setupHost(page: Page, options: HostOptions = {}) {
     } else if (path === '/api/csrf-token') {
       body = { csrf_token: 'test-token' };
     } else if (path === '/api/metadata') {
+      if (options.metadataDelayMs) {
+        await new Promise((resolve) => setTimeout(resolve, options.metadataDelayMs));
+      }
       body = {
         platform,
         version: '1.0.0',
         prerelease: '',
         status: true,
+        providers: { steam: true },
         windows_build_number: 26100,
         encoder_status: { state: 'ready', h264: true },
         capture_status: { virtual_display_configured: true },
@@ -137,6 +143,7 @@ async function setupHost(page: Page, options: HostOptions = {}) {
         (payload?.['provider-maintenance'] === true && app['remote-monitor-profile'] === true));
       body = { status: true, removed: beforeCount - currentApps.length };
     } else if (path === '/api/steam/status') {
+      calls.steamStatus += 1;
       body = { enabled: true, available: true, game_count: 0 };
     } else if (path === '/api/steam/games') {
       body = [];
@@ -387,6 +394,17 @@ test('Windows library provider purge keeps explicit Monitor profiles and other p
   await expect(page.getByText('Removed 3 Playnite applications.', { exact: true })).toBeVisible();
   await expect(purgeButton).toHaveCount(0);
   await expect(page.getByText('Retained Monitor profile', { exact: true }).first()).toBeVisible();
+});
+
+test('Integrations opened by a full page load waits for host metadata', async ({ page }) => {
+  // The shell starts the metadata request without awaiting it, so the page's
+  // own load runs while that request is still in flight.
+  const calls = await setupHost(page, { metadataDelayMs: 500 });
+  await page.goto('/v2/integrations');
+  await expect(page.locator('.integrations-page')).toBeVisible();
+  await expect.poll(() => calls.steamStatus).toBeGreaterThan(0);
+  await expect.poll(() => calls.playniteStatus).toBeGreaterThan(0);
+  await expect(page.getByText('Status could not be loaded.', { exact: true })).toHaveCount(0);
 });
 
 test('Linux integrations do not query or expose Playnite', async ({ page }) => {
