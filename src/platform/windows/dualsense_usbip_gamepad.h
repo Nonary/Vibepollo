@@ -45,6 +45,7 @@ namespace platf {
     void touch(int nr, const gamepad_touch_t &event);
     void motion(int nr, const gamepad_motion_t &event);
     void battery(int nr, const gamepad_battery_t &event);
+    void audio_status(int nr, const gamepad_audio_status_t &event);
 
   private:
     struct impl_t;

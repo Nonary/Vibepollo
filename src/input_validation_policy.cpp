@@ -4,6 +4,7 @@
  */
 #include "input_validation_policy.h"
 #include "controller_speaker_pcm.h"
+#include "dualsense_controls_protocol.h"
 #include "steam_controller_protocol.h"
 
 extern "C" {
@@ -60,6 +61,8 @@ namespace input::validation {
           return packet_size_bounds_t {sizeof(SS_PEN_PACKET), sizeof(SS_PEN_PACKET)};
         case controller_speaker_pcm::binding_magic:
           return packet_size_bounds_t {controller_speaker_pcm::binding_size, controller_speaker_pcm::binding_size};
+        case dualsense_controls::audio_status_magic:
+          return packet_size_bounds_t {dualsense_controls::audio_status_size, dualsense_controls::audio_status_size};
         case SS_CONTROLLER_ARRIVAL_MAGIC:
           return packet_size_bounds_t {sizeof(SS_CONTROLLER_ARRIVAL_PACKET), sizeof(SS_CONTROLLER_ARRIVAL_PACKET)};
         case SS_CONTROLLER_TOUCH_MAGIC:
@@ -129,6 +132,7 @@ namespace input::validation {
     switch (magic) {
       case MULTI_CONTROLLER_MAGIC_GEN5:
       case controller_speaker_pcm::binding_magic:
+      case dualsense_controls::audio_status_magic:
       case SS_CONTROLLER_ARRIVAL_MAGIC:
       case SS_CONTROLLER_TOUCH_MAGIC:
       case SS_CONTROLLER_MOTION_MAGIC:

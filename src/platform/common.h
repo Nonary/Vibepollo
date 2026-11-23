@@ -541,6 +541,11 @@ namespace platf {
     std::uint8_t percentage;
   };
 
+  struct gamepad_audio_status_t {
+    gamepad_id_t id;
+    std::uint8_t flags;  ///< dualsense_controls::audio_* bits (byte 54 of DS5 USB input report)
+  };
+
   /**
    * @brief The real Steam Controller's firmware attributes, relayed by the client for a virtual one.
    * @details `valid_mask` holds the client's `LI_SCATTR_*` bits: a field means something only when
@@ -1219,6 +1224,11 @@ namespace platf {
    * @param battery The battery event.
    */
   void gamepad_battery(input_t &input, const gamepad_battery_t &battery);
+
+  /**
+   * @brief Reports DualSense 3.5 mm headset jack & mic mute state to the virtual controller.
+   */
+  void gamepad_audio_status(input_t &input, const gamepad_audio_status_t &status);
 
   /**
    * @brief Hands the real Steam Controller's firmware attributes to the virtual controller.

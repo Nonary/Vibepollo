@@ -2235,7 +2235,6 @@ if(SUNSHINE_TEST_POWERSHELL)
 endif()
 
 sunshine_register_component(NAME test_component_controller_speaker_pcm TEST_SOURCE unit/test_controller_speaker_pcm.cpp)
-sunshine_register_component(NAME test_component_dualsense_controls TEST_SOURCE unit/test_dualsense_controls.cpp)
 
 sunshine_register_component(NAME test_component_dualsense_audio_pcm TEST_SOURCE unit/test_dualsense_audio_pcm.cpp)
 sunshine_register_component(NAME test_component_dualsense_launch_policy TEST_SOURCE unit/test_dualsense_launch_policy.cpp)
@@ -2245,6 +2244,13 @@ if(NOT WIN32)
     # encoder. The production Windows targets use real Windows SDK headers.
     set(_dualsense_protocol_test_adapter "${CMAKE_CURRENT_LIST_DIR}/support/virtual_gamepad_protocol")
 endif()
+sunshine_register_component(NAME test_component_dualsense_controls TEST_SOURCE unit/test_dualsense_controls.cpp
+    PRODUCT_SOURCES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/input_validation_policy.cpp"
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/driver/src/dualsense.cpp"
+    INCLUDE_DIRECTORIES ${_dualsense_protocol_test_adapter}
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/include"
+    LINK_LIBRARIES sunshine_test_moonlight_headers)
 sunshine_register_component(NAME test_component_dualsense_usbip_gamepad_policy TEST_SOURCE unit/platform/windows/test_dualsense_usbip_gamepad_policy.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/driver/src/dualsense.cpp"
     INCLUDE_DIRECTORIES ${_dualsense_protocol_test_adapter}

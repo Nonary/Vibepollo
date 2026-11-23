@@ -186,6 +186,7 @@ namespace input {
     // it after the arrival event on the same reliable channel, so this should stay empty; holding
     // one packet until the arrival says whether it is wanted costs nothing.
     std::optional<platf::steam_controller_attributes_t> pending_steam_attributes;
+    std::optional<std::uint8_t> pending_audio_status;
 
     // When emulating the HOME button, we may need to artificially release the back button.
     // Afterwards, the gamepad state on sunshine won't match the state on Moonlight.
@@ -224,6 +225,7 @@ namespace input {
     gamepad.arrival_type = 0;
     gamepad.arrival_capabilities = 0;
     gamepad.pending_steam_attributes.reset();
+    gamepad.pending_audio_status.reset();
     gamepad.gamepad_state = {};
     gamepad.guide_key_down = false;
     gamepad.synthetic_home_down = false;
@@ -1251,6 +1253,7 @@ namespace input {
       // and any held reading must not carry over to the next allocation attempt.
       gamepad.alloc_failed = true;
       gamepad.pending_steam_attributes.reset();
+      gamepad.pending_audio_status.reset();
       return;
     }
 
@@ -1259,6 +1262,7 @@ namespace input {
       free_id(gamepadMask, id);
       gamepad.alloc_failed = true;
       gamepad.pending_steam_attributes.reset();
+      gamepad.pending_audio_status.reset();
       return;
     }
 
@@ -1269,6 +1273,11 @@ namespace input {
       auto attributes = *gamepad.pending_steam_attributes;
       gamepad.pending_steam_attributes.reset();
       forward_steam_attributes(gamepad, attributes);
+    }
+    if (gamepad.pending_audio_status) {
+      const auto flags = *gamepad.pending_audio_status;
+      gamepad.pending_audio_status.reset();
+      platf::gamepad_audio_status(platf_input, {{gamepad.id, packet->controllerNumber}, flags});
     }
   }
 
@@ -1606,7 +1615,7 @@ namespace input {
     for (std::size_t i = 0; i < input->gamepads.size(); ++i) {
       if (!(packet->activeGamepadMask & (1 << i)) &&
           (input->gamepads[i].id >= 0 || input->gamepads[i].back_timeout_id || input->gamepads[i].alloc_failed ||
-           input->gamepads[i].pending_steam_attributes)) {
+           input->gamepads[i].pending_steam_attributes || input->gamepads[i].pending_audio_status)) {
         reset_gamepad(input->gamepads[i]);
         input->allocated_gamepads.fetch_and(~(1u << i), std::memory_order_relaxed);
       }
@@ -1628,6 +1637,7 @@ namespace input {
       if (id < 0) {
         gamepad.alloc_failed = true;
         gamepad.pending_steam_attributes.reset();
+        gamepad.pending_audio_status.reset();
         return;
       }
 
@@ -1635,6 +1645,7 @@ namespace input {
         free_id(gamepadMask, id);
         gamepad.alloc_failed = true;
         gamepad.pending_steam_attributes.reset();
+        gamepad.pending_audio_status.reset();
         BOOST_LOG(warning) << "ControllerNumber ["sv << packet->controllerNumber
                            << "] could not be allocated; ignoring its input until the client removes and re-adds it"sv;
         return;
@@ -1642,6 +1653,11 @@ namespace input {
 
       gamepad.id = id;
       input->allocated_gamepads.fetch_or(1u << packet->controllerNumber, std::memory_order_relaxed);
+      if (gamepad.pending_audio_status) {
+        const auto flags = *gamepad.pending_audio_status;
+        gamepad.pending_audio_status.reset();
+        platf::gamepad_audio_status(platf_input, {{gamepad.id, (uint8_t) packet->controllerNumber}, flags});
+      }
     }
 
     // If this gamepad has not been initialized, ignore it.
@@ -2139,6 +2155,21 @@ namespace input {
             input->speaker_bindings.bind(entry.data, [&](std::uint16_t slot) {
               return slot < input->gamepads.size() && input->gamepads[slot].id < 0;
             });
+          }
+          break;
+        case dualsense_controls::audio_status_magic:
+          if (config::input.controller) {
+            if (const auto parsed = dualsense_controls::parse_audio_status(entry.data)) {
+              const auto [controller_number, flags] = *parsed;
+              if (controller_number < input->gamepads.size()) {
+                auto &gamepad = input->gamepads[controller_number];
+                if (gamepad.id >= 0) {
+                  platf::gamepad_audio_status(platf_input, {{gamepad.id, controller_number}, flags});
+                } else if (!gamepad.alloc_failed) {
+                  gamepad.pending_audio_status = flags;
+                }
+              }
+            }
           }
           break;
         case SS_CONTROLLER_ARRIVAL_MAGIC:

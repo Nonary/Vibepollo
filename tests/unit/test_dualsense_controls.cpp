@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "src/dualsense_controls_protocol.h"
+#include "src/input_validation_policy.h"
 #if defined(_WIN32) || defined(DUALSENSE_CONTROLS_TEST_WITH_WIN_STUBS)
   #include "src/platform/windows/dualsense_usbip_gamepad_policy.h"
 #endif
@@ -102,4 +103,39 @@ TEST(DualSenseControls, EncodeOutputRequiresFeatureFlagAndValidFields) {
   payload.headphone_volume = 100;
   payload.led_brightness = 3;
   EXPECT_FALSE(dualsense_controls::encode_output(dualsense_controls::session_feature, 0, payload));
+}
+
+TEST(DualSenseControls, ParseAndValidateAudioStatusPacket) {
+  std::vector<std::uint8_t> packet = {
+    0x00, 0x00, 0x00, 0x08,  // BE32(8)
+    0x0A, 0x00, 0x00, 0x55,  // LE32(0x5500000A)
+    0x02,                    // controllerNumber = 2
+    0x03,                    // headphones + headset mic
+    0x00, 0x00,              // reserved
+  };
+
+  const auto validated = input::validation::validate_packet(packet);
+  ASSERT_TRUE(validated);
+  EXPECT_EQ(validated.packet->magic, dualsense_controls::audio_status_magic);
+  EXPECT_EQ(validated.packet->total_size, dualsense_controls::audio_status_size);
+
+  const auto parsed = dualsense_controls::parse_audio_status(packet);
+  ASSERT_TRUE(parsed);
+  EXPECT_EQ(parsed->first, 2);
+  EXPECT_EQ(parsed->second, static_cast<std::uint8_t>(dualsense_controls::audio_headphones_connected |
+                                                      dualsense_controls::audio_headset_mic_connected));
+
+  // Unknown flags rejected.
+  packet[9] = 0x08;
+  EXPECT_FALSE(dualsense_controls::parse_audio_status(packet));
+
+  // Controller >= 16 rejected.
+  packet[9] = 0x01;
+  packet[8] = 16;
+  EXPECT_FALSE(dualsense_controls::parse_audio_status(packet));
+
+  // Truncated packet rejected by both validator and parser.
+  packet.pop_back();
+  EXPECT_FALSE(input::validation::validate_packet(packet));
+  EXPECT_FALSE(dualsense_controls::parse_audio_status(packet));
 }

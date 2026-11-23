@@ -66,6 +66,7 @@ namespace platf {
       bool pending_rgb = false;
       std::uint8_t pending_triggers = 0;
       std::uint16_t pending_ds_controls = 0;
+      std::uint8_t audio_status = 0;
       bool pending_accel_request = false;
       bool pending_gyro_request = false;
 
@@ -121,7 +122,9 @@ namespace platf {
         if (!controller || !active) {
           return;
         }
-        const auto report = lvg::driver::encode_ds5_input(input, &state);
+        auto report = lvg::driver::encode_ds5_input(input, &state);
+        static_assert(offsetof(lvg::driver::ds5_input_report, reserved3) == 54);
+        report.reserved3[0] = static_cast<std::uint8_t>(audio_status & dualsense_controls::audio_status_mask);
         std::ignore = controller->set_input_report({reinterpret_cast<const std::uint8_t *>(&report), sizeof(report)});
       }
 
@@ -571,6 +574,7 @@ namespace platf {
       slot->state.reset();
       slot->contacts.clear();
       slot->free_contacts = 3;
+      slot->audio_status = 0;
       slot->input = vhf_gamepad::make_input_state(nr, {});
       if (slot->controller) {
         const auto report = lvg::driver::encode_ds5_input(slot->input, &slot->state);
@@ -674,6 +678,19 @@ namespace platf {
     request.percent = event.percentage == LI_BATTERY_PERCENTAGE_UNKNOWN ? 0xFF : event.percentage;
     request.flags = vhf_gamepad::to_protocol_battery_state(event.state);
     if (lvg::driver::apply_ds5_battery(request, &slot->state)) {
+      slot->submit();
+    }
+  }
+
+  void usbip_gamepad_t::audio_status(int nr, const gamepad_audio_status_t &event) {
+    const auto slot = impl->find(nr);
+    if (!slot) {
+      return;
+    }
+    std::lock_guard lock {slot->mutex};
+    const auto masked = static_cast<std::uint8_t>(event.flags & dualsense_controls::audio_status_mask);
+    if (slot->audio_status != masked) {
+      slot->audio_status = masked;
       slot->submit();
     }
   }

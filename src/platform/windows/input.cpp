@@ -2237,6 +2237,14 @@ namespace platf {
     ds4_update_ts_and_send(vigem, battery.id.globalIndex);
   }
 
+  void gamepad_audio_status(input_t &input, const gamepad_audio_status_t &status) {
+    auto raw = (input_raw_t *) input.get();
+
+    if (usbip_owns_gamepad(raw, status.id.globalIndex)) {
+      raw->usbip->audio_status(status.id.globalIndex, status);
+    }
+  }
+
   void freeInput(void *p) {
     auto input = (input_raw_t *) p;
 
