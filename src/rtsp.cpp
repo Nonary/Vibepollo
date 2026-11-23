@@ -899,6 +899,9 @@ namespace rtsp_stream {
     ) {
       stream::session::cleanup_reservation_t cleanup_reservation;
       std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex());
+      // This worker no longer counts as a pending startup, and it may have been
+      // the last thing a deferred pause was waiting on.
+      retry_deferred_last_session_pause();
       const stream::session::shared_runtime_finalize_context_t finalize_context {
         .virtual_display_guid_bytes = virtual_display_guid_bytes,
       };
@@ -1056,7 +1059,8 @@ namespace rtsp_stream {
       if (!pending_launches_remain) set_pending_vulkan_hdr_layer_stream(false);
       release_pending_runtime_holds(retired);
       reconcile_abandoned_monitor_locked(retired);
-      // run_startup's finish_startup retains this worker's GUID for cleanup.
+      // run_startup's finish_startup retains this worker's GUID for cleanup and,
+      // with the worker no longer pending, retries a deferred pause.
     }
 
     void retry_abandoned_monitor(const std::shared_ptr<launch_session_t> &pending) {
@@ -1159,7 +1163,8 @@ namespace rtsp_stream {
      * The last RTSP session's join leaves the app running while another launch
      * is pending, since that launch's stream takes it over. If every such
      * launch then expires, fails to start or is cleared without a stream, no
-     * join follows to pause it, so the server does it here.
+     * join follows to pause it, so the server does it here. Every path that
+     * removes a pending launch or finishes a startup worker must call this.
      *
      * @pre The lifecycle gate is held, which orders this against admission and joins.
      */
@@ -1296,6 +1301,7 @@ namespace rtsp_stream {
       }
 
       set_pending_vulkan_hdr_layer_stream(false);
+      retry_deferred_last_session_pause();
       const stream::session::shared_runtime_finalize_context_t finalize_context {
         .virtual_display_guid_bytes = virtual_display_guid_bytes,
       };
@@ -1422,6 +1428,8 @@ namespace rtsp_stream {
     void insert(const std::shared_ptr<stream::session_t> &session, const std::string &client_uuid, bool hdr_enabled) {
       const bool has_uuid = !client_uuid.empty();
       [[maybe_unused]] bool vulkan_hdr_layer_active = false;
+      // This stream takes the app over, and its own last join decides the pause.
+      _last_session_pause_deferred.store(false, std::memory_order_release);
       {
         auto lg = _session_state.lock();
         _session_state->sessions.emplace(session);
@@ -1527,6 +1535,12 @@ namespace rtsp_stream {
         }
         stream::session::join(*slot);
       }
+      if (removed_pending) {
+        // After the joins, so a last join here makes the pause decision itself.
+        lifecycle_lock.lock();
+        retry_deferred_last_session_pause();
+        lifecycle_lock.unlock();
+      }
       for (const auto &pending : removed_pending_sessions) reconcile_abandoned_monitor(pending);
       if (!to_cleanup.empty()) {
         nvhttp::mark_client_last_seen(client_uuid);
@@ -1610,6 +1624,9 @@ namespace rtsp_stream {
         stream::session::cleanup_reservation_t cleanup_reservation;
         if (!lifecycle_lock_held) {
           lifecycle_lock.lock();
+        }
+        if (removed_pending) {
+          retry_deferred_last_session_pause();
         }
         const stream::session::shared_runtime_finalize_context_t finalize_context {
           .virtual_display_guid_bytes = virtual_display_guid_bytes,

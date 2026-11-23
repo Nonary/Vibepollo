@@ -211,8 +211,8 @@ struct rtsp_server_t {
  void set_pending_vulkan_hdr_layer_stream(bool value){_session_state->vulkan_hdr_layer_pending_stream=value;}
  bool pending_hdr_active(){return false;}
  void shutdown_socket(socket_t &){}
- void insert(std::shared_ptr<stream::session_t> session,const std::string &,bool){_session_state->sessions.insert(std::move(session));}
- void finish_startup(std::optional<std::array<std::uint8_t,16>>){std::lock_guard lock(nvhttp::lifecycle);stream::session::finalize_shared_runtime_if_idle("startup");}
+@INSERT_SESSION@
+@STARTUP_FINISHED@
 @POST@
 @RUN_STARTUP@
 @EXPIRE_LOCKED@
@@ -545,6 +545,51 @@ int main() {
      check(queued&&deferred&&app_pauses==0&&server._launch_sessions.empty(),
            "actual broadcast shutdown keeps the pause deferred once the preserved launch's stream starts");
    }
+ }
+ // The last join can leave the app running for a pending launch. Every path
+ // that drops that launch without a stream must run the deferred pause, once
+ // no startup worker is left, and a remaining launch must keep it deferred.
+ for(int path=0;path<5;++path) for(const bool peer:{false,true}) {
+   if(path==2&&peer) continue; // Canceling drops every pending launch.
+   reset();app_pauses=0;const auto now=std::chrono::steady_clock::now();
+   const auto launch=[&](std::uint32_t id,const std::string &client){auto l=std::make_shared<launch_session_t>();l->id=id;l->unique_id="launch-"+std::to_string(id);l->client_uuid=client;l->rtsp_source_address="10.0.0."+std::to_string(id);return l;};
+   auto kept=launch(51,"gone");if(path==3)kept->role=remote_session::role_e::monitor;
+   bool queued=server._launch_sessions.add(launch(50,"old"),now,10s,8)==rtsp_server_t::pending_launches_t::add_result_e::added;
+   queued=server._launch_sessions.add(kept,now,10s,8)==rtsp_server_t::pending_launches_t::add_result_e::added&&queued;
+   if(peer) queued=server._launch_sessions.add(launch(52,"peer"),now,10s,8)==rtsp_server_t::pending_launches_t::add_result_e::added&&queued;
+   auto old_session=std::make_shared<stream::session_t>();old_session->launch_session_id=50;server._session_state->sessions.insert(old_session);++running;
+   const auto clear=rtsp_stream::pending_policy::rtsp_loop_clear(true);
+   server.clear(clear.all_sessions,clear.preserve_pending_launches);
+   server.io_context.run();
+   const bool deferred=app_pauses==0&&server._last_session_pause_deferred;
+   bool held_for_worker=true;
+   const auto announce_kept=[&]{auto r=std::make_shared<Request>();r->payload=payload.data();r->payloadLength=payload.size();return cmd_announce(&server,std::make_shared<socket_t>(),kept,std::move(r));};
+   if(path==0) server.disconnect_client("gone",false,{});
+   else if(path==1) server.disconnect_remote_role("gone",remote_session::role_e::input,1);
+   else if(path==2) server.cancel_pending_launches("test");
+   else if(path==3) {stream::session::start_result=-1;queued=announce_kept()&&queued;server.startup_pool.run();}
+   else {queued=announce_kept()&&queued;server.session_clear(51);held_for_worker=app_pauses==0&&server._last_session_pause_deferred;server.startup_pool.run();}
+   server.io_context.run();
+   const std::array<const char *,5> names{"client disconnect","role disconnect","launch cancel","failed monitor start","launch cleared under a queued startup"};
+   const std::string name=std::string("actual ")+names[path]+(peer?" keeps the pause deferred for the remaining launch":" runs the deferred pause once");
+   check(queued&&deferred&&held_for_worker&&app_pauses==(peer?0:1)&&server._last_session_pause_deferred==peer,name.c_str());
+ }
+ // A stream that starts takes the app over, so a teardown that has removed it
+ // from the session set but not joined it yet must not run the old pause too.
+ {
+   reset();app_pauses=0;const auto now=std::chrono::steady_clock::now();
+   auto next=std::make_shared<launch_session_t>();next->id=61;next->unique_id="launch-61";next->rtsp_source_address="10.0.0.61";
+   const bool queued=server._launch_sessions.add(next,now,10s,8)==rtsp_server_t::pending_launches_t::add_result_e::added;
+   server._last_session_pause_deferred=true;
+   auto r=std::make_shared<Request>();r->payload=payload.data();r->payloadLength=payload.size();
+   const bool announced=cmd_announce(&server,std::make_shared<socket_t>(),next,std::move(r));
+   server.startup_pool.run();server.io_context.run();
+   const bool handed_off=running==1&&!server._last_session_pause_deferred;
+   server.session_clear(61);
+   auto departing=std::move(server._session_state->sessions);server._session_state->sessions.clear();
+   {std::lock_guard lock(nvhttp::lifecycle);server.retry_deferred_last_session_pause();}
+   check(queued&&announced&&handed_off&&app_pauses==0,"actual started stream takes over the deferred pause");
+   running=0;server.io_context.run();
  }
  auto fresh=host_stream_control::start_guard_t(host_stream_control::request_ticket());check(bool(fresh),"fresh starts remain eligible after terminal reopen");
  return failures?1:0;

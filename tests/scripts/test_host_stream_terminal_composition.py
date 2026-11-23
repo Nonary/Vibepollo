@@ -61,6 +61,8 @@ fragments={
 'EXPIRE_LOCKED':body(rtsp,'    std::vector<std::array<std::uint8_t, 16>> expire_launch_sessions_locked(','    '),
 'NOTIFY_EXPIRED':body(rtsp,'    void finalize_expired_launch_sessions(','    '),
 'RUN_STARTUP':body(rtsp,'    template<class Function>\n    void run_startup(','    '),
+'STARTUP_FINISHED':body(rtsp,'    void finish_startup(','    '),
+'INSERT_SESSION':body(rtsp,'    void insert(const std::shared_ptr<stream::session_t> &session,','    '),
 'POST':body(rtsp,'    template<class Function>\n    void post(','    '),
 'ANNOUNCE':body(rtsp,'  bool cmd_announce(','  '),
 'SNAPSHOT':body(rtsp,'  std::shared_ptr<launch_session_t> launch_session_t::clone_for_startup() const','  '),

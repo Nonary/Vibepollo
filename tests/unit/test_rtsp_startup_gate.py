@@ -147,6 +147,7 @@ struct Server {
  void finalize_expired_launch_sessions(const auto&, bool, const auto&, const auto&) {}
  // Nothing departs in these cases. The terminal composition test covers that path.
  void retire_departed_launch_sessions_locked(auto &, auto &) {}
+ void retry_deferred_last_session_pause() {}
  // The launch's startup claim ends with the start result, before publication.
  void finish_launch_startup(std::uint32_t id,const std::string &unique_id,bool ok) {
    assert(id==1&&unique_id=="pending");
