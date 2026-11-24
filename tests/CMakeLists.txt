@@ -2251,19 +2251,27 @@ sunshine_register_component(NAME test_component_dualsense_controls TEST_SOURCE u
     INCLUDE_DIRECTORIES ${_dualsense_protocol_test_adapter}
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/include"
     LINK_LIBRARIES sunshine_test_moonlight_headers)
+if(NOT TARGET Opus::opus)
+    list(APPEND CMAKE_MODULE_PATH "${SUNSHINE_TEST_REPOSITORY_ROOT}/cmake/dependencies")
+    find_package(Opus REQUIRED)
+endif()
+sunshine_register_component(NAME test_component_dualsense_mic_audio TEST_SOURCE unit/test_dualsense_mic_audio.cpp
+    PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/dualsense_mic_audio.cpp"
+    LINK_LIBRARIES Opus::opus)
 sunshine_register_component(NAME test_component_dualsense_usbip_gamepad_policy TEST_SOURCE unit/platform/windows/test_dualsense_usbip_gamepad_policy.cpp
     PRODUCT_SOURCES "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/driver/src/dualsense.cpp"
     INCLUDE_DIRECTORIES ${_dualsense_protocol_test_adapter}
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/include")
 sunshine_register_component(NAME test_component_dualsense_usbip_gamepad TEST_SOURCE unit/platform/windows/test_dualsense_usbip_gamepad.cpp
     PRODUCT_SOURCES
+        "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/dualsense_mic_audio.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/dualsense_usbip_gamepad.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/dualsense_usbip_protocol.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/platform/windows/vhf_gamepad_policy.cpp"
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/driver/src/dualsense.cpp"
     INCLUDE_DIRECTORIES ${_dualsense_protocol_test_adapter}
         "${SUNSHINE_TEST_REPOSITORY_ROOT}/third-party/libvirtualgamepad/include"
-    LINK_LIBRARIES nlohmann_json::nlohmann_json Boost::log Boost::process Boost::format sunshine_test_moonlight_headers Threads::Threads)
+    LINK_LIBRARIES nlohmann_json::nlohmann_json Boost::log Boost::process Boost::format sunshine_test_moonlight_headers Opus::opus Threads::Threads)
 if(TARGET test_component_dualsense_usbip_gamepad)
     set_tests_properties(test_component_dualsense_usbip_gamepad PROPERTIES TIMEOUT 30)
 endif()

@@ -20,6 +20,9 @@ namespace platf::dualsense_usbip {
     std::function<void(std::span<const std::uint8_t>, std::uint64_t)> speaker_pcm;
     // Capture at application-buffer admission, never at completion. Zero is fail-closed.
     std::function<std::uint64_t()> capture_speaker_incarnation;
+    // Stereo signed 16-bit little-endian PCM, 48 kHz, microphone capture endpoint 0x82.
+    // Callback fills the provided zero-initialized span with PCM bytes to return to the host.
+    std::function<void(std::span<std::uint8_t>)> mic_pcm;
   };
 
   // Portable USB/IP 1.1.1 device endpoint. Except set_input_report(), methods

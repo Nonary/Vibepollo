@@ -113,6 +113,10 @@ namespace platf {
     // Only the Windows composite USB DualSense backend exposes byte 54 jack status.
   }
 
+  void gamepad_mic_audio(input_t &input, const gamepad_mic_audio_t &audio) {
+    // Only the Windows composite USB DualSense backend exposes a USB audio capture endpoint.
+  }
+
   void gamepad_attributes(input_t &input, const steam_controller_attributes_t &attributes) {
     // No UHID backend presents a Steam Controller, so there is nothing to apply them to.
   }

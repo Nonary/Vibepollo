@@ -4,6 +4,7 @@
 #include "dualsense_usbip_gamepad_policy.h"
 #include "dualsense_usbip_transport.h"
 #include "src/controller_speaker_pcm.h"
+#include "src/dualsense_mic_audio.h"
 #include "src/logging.h"
 #include "vhf_gamepad_policy.h"
 
@@ -67,6 +68,7 @@ namespace platf {
       std::uint8_t pending_triggers = 0;
       std::uint16_t pending_ds_controls = 0;
       std::uint8_t audio_status = 0;
+      dualsense_mic_audio::slot_buffer mic_buffer;
       bool pending_accel_request = false;
       bool pending_gyro_request = false;
 
@@ -435,6 +437,7 @@ namespace platf {
           retained->persist_after_disconnect = metadata.persist_after_disconnect;
           retained->feedback_queue = feedback_queue;
           retained->clear_pcm();
+          retained->mic_buffer.reset();
           retained->active = true;
           retained->pending_accel_request = (metadata.capabilities & LI_CCAP_ACCEL) != 0;
           retained->pending_gyro_request = (metadata.capabilities & LI_CCAP_GYRO) != 0;
@@ -505,6 +508,11 @@ namespace platf {
                                                                    return alive->speaker_incarnation.load(std::memory_order_acquire);
                                                                  }
                                                                  return 0;
+                                                               },
+                                                               [weak](std::span<std::uint8_t> pcm) {
+                                                                 if (const auto alive = weak.lock()) {
+                                                                   std::ignore = alive->mic_buffer.read_stereo_pcm(pcm);
+                                                                 }
                                                                }});
     if (!controller) {
       BOOST_LOG(error) << "Couldn't attach composite DualSense USB gamepad " << id.globalIndex;
@@ -575,6 +583,7 @@ namespace platf {
       slot->contacts.clear();
       slot->free_contacts = 3;
       slot->audio_status = 0;
+      slot->mic_buffer.reset();
       slot->input = vhf_gamepad::make_input_state(nr, {});
       if (slot->controller) {
         const auto report = lvg::driver::encode_ds5_input(slot->input, &slot->state);
@@ -693,5 +702,13 @@ namespace platf {
       slot->audio_status = masked;
       slot->submit();
     }
+  }
+
+  void usbip_gamepad_t::mic_audio(int nr, const gamepad_mic_audio_t &event) {
+    const auto slot = impl->find(nr);
+    if (!slot) {
+      return;
+    }
+    std::ignore = slot->mic_buffer.push_opus(event.sequence, event.sample_count, event.opus_payload);
   }
 }  // namespace platf

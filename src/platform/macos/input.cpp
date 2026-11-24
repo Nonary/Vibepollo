@@ -1282,6 +1282,10 @@ const KeyCodeMap kKeyCodesMap[] = {
     // Unimplemented
   }
 
+  void gamepad_mic_audio(input_t &input, const gamepad_mic_audio_t &audio) {
+    // Unimplemented
+  }
+
   /**
    * @brief Hands the real Steam Controller's firmware attributes to the virtual controller.
    * @param input The global input context.

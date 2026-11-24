@@ -46,6 +46,7 @@ extern "C" {
 #include "deferred_stream_start_policy.h"
 #include "display_device.h"
 #include "display_helper_integration.h"
+#include "dualsense_mic_audio.h"
 #include "globals.h"
 #include "hardware_metrics_session.h"
 #include "host_stats.h"
@@ -1913,6 +1914,17 @@ namespace stream {
       }
 
       input::passthrough(session->input, std::move(plaintext), session->permission);
+    });
+
+    server->map(dualsense_mic_audio::packet_type, [](session_t *session, const std::string_view &payload) {
+      if (!(session->config.mlFeatureFlags & dualsense_mic_audio::session_feature)) {
+        return;
+      }
+      input::passthrough_controller_mic(
+        session->input,
+        std::span<const std::uint8_t>(reinterpret_cast<const std::uint8_t *>(payload.data()), payload.size()),
+        session->permission
+      );
     });
 
     server->map(packetTypes[IDX_EXEC_SERVER_CMD], [](session_t *session, const std::string_view &payload) {

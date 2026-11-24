@@ -2245,6 +2245,14 @@ namespace platf {
     }
   }
 
+  void gamepad_mic_audio(input_t &input, const gamepad_mic_audio_t &audio) {
+    auto raw = (input_raw_t *) input.get();
+
+    if (usbip_owns_gamepad(raw, audio.id.globalIndex)) {
+      raw->usbip->mic_audio(audio.id.globalIndex, audio);
+    }
+  }
+
   void freeInput(void *p) {
     auto input = (input_raw_t *) p;
 

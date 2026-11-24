@@ -22,6 +22,7 @@ extern "C" {
 
 // local includes
 #include "config.h"
+#include "dualsense_mic_audio.h"
 #include "globals.h"
 #include "input.h"
 #include "input_geometry_policy.h"
@@ -2284,6 +2285,45 @@ namespace input {
     if (schedule_input_task) {
       task_pool.push(passthrough_next_message, input);
     }
+  }
+
+  void passthrough_controller_mic(std::shared_ptr<input_t> &input, std::span<const std::uint8_t> packet, const crypto::PERM &permission) {
+    if (!input || !config::input.controller || !(permission & crypto::PERM::input_controller)) {
+      return;
+    }
+
+    const auto parsed = dualsense_mic_audio::parse_packet(packet);
+    if (!parsed || parsed->controller_number >= MAX_GAMEPADS) {
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lg(input->input_queue_lock);
+      if (input->input_closed) {
+        return;
+      }
+    }
+
+    std::vector<std::uint8_t> payload(parsed->opus_payload.begin(), parsed->opus_payload.end());
+    const auto controller_index = static_cast<std::uint8_t>(parsed->controller_number);
+    const auto sequence = parsed->sequence;
+    const auto sample_count = parsed->sample_count;
+
+    task_pool.push([input, controller_index, sequence, sample_count, payload = std::move(payload)]() mutable {
+      if (controller_index >= input->gamepads.size()) {
+        return;
+      }
+      auto &gamepad = input->gamepads[controller_index];
+      if (gamepad.id < 0) {
+        return;
+      }
+      platf::gamepad_mic_audio(platf_input, {
+        {gamepad.id, controller_index},
+        sequence,
+        sample_count,
+        std::move(payload),
+      });
+    });
   }
 
 #ifdef SUNSHINE_TESTS
