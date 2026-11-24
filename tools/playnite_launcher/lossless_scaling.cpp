@@ -2045,8 +2045,9 @@ namespace playnite_launcher::lossless {
       bool removed = remove_vibeshine_profiles(profiles);
       ProfileTemplates templates = find_profile_templates(profiles);
       capture_backup_fields(templates, backup);
-      auto base_dir = lossless_resolve_base_dir(install_dir_utf8, exe_path_utf8);
       auto explicit_exe = resolve_explicit_executable(exe_path_utf8);
+      // A game's executable can live outside its configured working directory.
+      auto base_dir = explicit_exe ? std::nullopt : lossless_resolve_base_dir(install_dir_utf8, exe_path_utf8);
       std::string filter_utf8 = build_executable_filter(base_dir, explicit_exe);
       bool inserted = insert_vibeshine_profile(templates, options, filter_utf8, profiles, backup);
       if (!removed && !inserted) {
