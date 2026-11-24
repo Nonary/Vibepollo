@@ -1011,6 +1011,8 @@ namespace config {
 
     0,  // pacing_max_bitrate_kbps (0 = legacy 1 Gbps Ethernet assumption)
     0,  // packetsize (0 = off)
+    0,  // max_video_packet (0 = off)
+    1024,  // video_send_buffer_kb
   };
 
   nvhttp_t nvhttp {
@@ -2220,6 +2222,8 @@ namespace config {
     int_between_f(vars, "fec_percentage", stream.fec_percentage, {1, 255});
     int_between_f(vars, "pacing_max_bitrate_kbps", stream.pacing_max_bitrate_kbps, {0, 10000000});
     int_between_f(vars, "packetsize", stream.packetsize, {0, PACKETSIZE_MAX});
+    int_between_f(vars, "max_video_packet", stream.max_video_packet, {0, 8192});
+    int_between_f(vars, "video_send_buffer_kb", stream.video_send_buffer_kb, {256, 65536});
     vars.erase("pyrowave_send_rate_mbps");
     int_between_f(vars, "pyrowave_critical_fec_percentage", stream.pyrowave_critical_fec_percentage, {0, 255});
     int_between_f(vars, "video_max_batch_size_kb", stream.video_max_batch_size_kb, {0, 64});

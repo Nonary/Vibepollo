@@ -105,6 +105,7 @@
 #include "video.h"
 #include "webrtc_stream.h"
 #include "zwpad.h"
+#include "video_packet.h"
 
 using namespace std::literals;
 
@@ -4377,6 +4378,11 @@ namespace nvhttp {
         codec_mode_flags |= pyrowave::protocol::SCM_MASK_PYROWAVE;
       }
       tree.put("root.ServerCodecModeSupport", codec_mode_flags);
+      // Jumbo video packets: the largest video packet this host accepts (each stream's
+      // DESCRIBE offer is further limited by its route's MTU).
+      if (const auto max_video_packet = video_packet::configured(config::stream.max_video_packet)) {
+        tree.put("root.MaxVideoPacket", max_video_packet);
+      }
 
       tree.put("root.PairStatus", pair_status);
     // This is the host's outbound physical link, not measured end-to-end
@@ -7124,7 +7130,8 @@ launch_session->exact_target_hold.reset();
     const bool burst = !get_arg(args, "fps", "").empty() || !get_arg(args, "pacekbps", "").empty();
     const int fps = burst ? parse("fps") : 0, pace_kbps = burst ? parse("pacekbps") : 0;
     if (kbps < 5000 || kbps > 3000000 || port < 1024 || port > 65535 ||
-        packetsize < 256 || packetsize > 1392 || token.size() != 32 ||
+        packetsize < 256 || packetsize > std::max(video_packet::STOCK_PACKET, video_packet::configured(config::stream.max_video_packet)) ||
+        token.size() != 32 ||
         token.find_first_not_of("0123456789abcdef") != std::string::npos ||
         (handshake != "0" && handshake != "1") ||
         (burst && (fps < 10 || fps > 500 || pace_kbps < kbps || pace_kbps > 9999999))) {

@@ -1986,6 +1986,13 @@ namespace platf {
         info->if_type = interface_row.Type;
         info->transmit_bps = interface_row.TransmitLinkSpeed;
       }
+      MIB_IPINTERFACE_ROW ip_row {};
+      InitializeIpInterfaceEntry(&ip_row);
+      ip_row.InterfaceLuid = route.InterfaceLuid;
+      ip_row.Family = destination.si_family;
+      if (GetIpInterfaceEntry(&ip_row) == NO_ERROR) {
+        info->mtu = ip_row.NlMtu;
+      }
     }
     if (entry_status != NO_ERROR || interface_row.OperStatus != IfOperStatusUp ||
         interface_row.TransmitLinkSpeed == std::numeric_limits<std::uint64_t>::max()) {

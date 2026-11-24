@@ -32,6 +32,7 @@ namespace platf {
     std::string alias;
     unsigned long if_type = 0;
     std::uint64_t transmit_bps = 0;
+    std::uint32_t mtu = 0;  ///< IP MTU of the routed interface, 0 when unknown.
   };
 
   /// Current transmit speed of the routed interface, or zero when unavailable.

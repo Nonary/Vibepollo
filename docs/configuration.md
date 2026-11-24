@@ -2856,6 +2856,71 @@ PyroWave is unchanged. Example: `pacing_group_demand_limit = true`.
     </tr>
 </table>
 
+### max_video_packet
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Largest video packet, in bytes, offered to clients that support jumbo video packets (for example Nightjar's
+            "Jumbo video packets" setting). The host lists it as <code>MaxVideoPacket</code> in serverinfo. For each stream
+            it offers the smaller of this value and what the stream's route carries (route MTU minus 64 bytes, rounded
+            down to 16) as <code>a=x-rl-max-packet-size</code> in the RTSP DESCRIBE, and accepts a client's
+            <code>x-nv-video[0].packetSize</code> up to that offer. A stream over a 1500-byte route gets no offer, so
+            clients keep stock 1400-byte packets. Values up to 1400 turn the offer off.
+            <br><br>
+            Use it only when every hop between the host and the client carries jumbo frames (MTU 9000 on the host NIC,
+            the switches and the client). Fewer, larger packets greatly reduce the per-packet receive work on low-power
+            clients at PyroWave bitrates. Supported on Windows and Linux hosts.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            0
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">0-8192</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            max_video_packet = 8192
+            @endcode</td>
+    </tr>
+</table>
+
+### video_send_buffer_kb
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            Send buffer size (SO_SNDBUF) of the video socket, in KiB. The default of 1024 matches the previous fixed size.
+            A larger buffer absorbs more of a large frame's burst when streaming above 1 Gbps, for example PyroWave
+            on a 2.5 GbE link.
+        </td>
+    </tr>
+    <tr>
+        <td>Default</td>
+        <td colspan="2">@code{}
+            1024
+            @endcode</td>
+    </tr>
+    <tr>
+        <td>Range</td>
+        <td colspan="2">256-65536</td>
+    </tr>
+    <tr>
+        <td>Example</td>
+        <td colspan="2">@code{}
+            video_send_buffer_kb = 8192
+            @endcode</td>
+    </tr>
+</table>
+
 ## Config Files
 
 ### file_apps
