@@ -35,13 +35,14 @@ namespace dualsense_controls {
   constexpr std::uint8_t audio_mic_muted = 0x04;
   constexpr std::uint8_t audio_status_mask = 0x07;
 
+  // Kept trivial (no default member initializers) so it can live in gamepad_feedback_msg_t's union.
   struct output_payload {
-    std::uint16_t valid_mask = 0;
-    std::uint8_t player_leds = 0;
-    std::uint8_t led_brightness = 0;
-    std::uint8_t mic_led = 0;
-    std::uint8_t speaker_volume = 0;
-    std::uint8_t headphone_volume = 0;
+    std::uint16_t valid_mask;
+    std::uint8_t player_leds;
+    std::uint8_t led_brightness;
+    std::uint8_t mic_led;
+    std::uint8_t speaker_volume;
+    std::uint8_t headphone_volume;
   };
 
   // Includes the 4-byte control_header_v2 (LE type + LE payloadLength).
