@@ -305,6 +305,14 @@ namespace config {
 
     // Limit the packetsize to avoid fragmentation on a low MTU link. 0 = off.
     int packetsize;
+
+    // Largest video packet offered to clients that support jumbo video packets
+    // (serverinfo MaxVideoPacket, DESCRIBE x-rl-max-packet-size), capped by the
+    // route's MTU per stream. 0 = off (stock 1400-byte limit).
+    int max_video_packet;
+
+    // SO_SNDBUF of the video socket, in KiB.
+    int video_send_buffer_kb;
   };
 
   struct nvhttp_t {

@@ -80,6 +80,7 @@ namespace rtsp_stream {
     std::string client_uuid;
     std::string client_name;
     std::string audio_codec_offered;  ///< Dolby codec offered during DESCRIBE, or empty when using Opus.
+    int max_video_packet_offer = 0;  ///< Jumbo video packet size offered during DESCRIBE (x-rl-max-packet-size), 0 for none.
     std::optional<std::string> hdr_profile;
     crypto::PERM perm;
     int appid;

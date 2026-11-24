@@ -3418,9 +3418,9 @@ namespace stream {
       return -1;
     }
 
-    // Set video socket send buffer size (SO_SENDBUF) to 1MB
+    // Set video socket send buffer size (SO_SNDBUF); video_send_buffer_kb, 1 MiB by default
     try {
-      ctx.video_sock.set_option(boost::asio::socket_base::send_buffer_size(1024 * 1024));
+      ctx.video_sock.set_option(boost::asio::socket_base::send_buffer_size(config::stream.video_send_buffer_kb * 1024));
     } catch (...) {
       BOOST_LOG(error) << "Failed to set video socket send buffer size (SO_SENDBUF)";
     }

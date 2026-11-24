@@ -55,6 +55,7 @@ extern "C" {
 #include "sync.h"
 #include "thread_pool.h"
 #include "video.h"
+#include "video_packet.h"
 
 namespace asio = boost::asio;
 
@@ -2165,6 +2166,26 @@ namespace rtsp_stream {
     ss << "a=x-ss-general.encryptionSupported:" << encryption_flags_supported << std::endl;
     ss << "a=x-ss-general.encryptionRequested:" << encryption_flags_requested << std::endl;
 
+    // Jumbo video packets: offer up to the configured size, limited by this route's MTU.
+    session->max_video_packet_offer = 0;
+#if defined(_WIN32) || defined(__linux__)
+    if (video_packet::configured(config::stream.max_video_packet)) {
+      boost::system::error_code local_ec, remote_ec;
+      const auto local = socket->sock.local_endpoint(local_ec);
+      const auto remote = socket->sock.remote_endpoint(remote_ec);
+      if (!local_ec && !remote_ec) {
+        platf::routed_link_info_t link_info;
+        platf::routed_link_bps(local.address(), remote.address(), &link_info);
+        session->max_video_packet_offer = video_packet::offer(config::stream.max_video_packet, link_info.mtu);
+        BOOST_LOG(info) << "Jumbo video packets: route MTU "sv << link_info.mtu << ", offering "sv
+                        << session->max_video_packet_offer << " bytes"sv;
+      }
+    }
+#endif
+    if (session->max_video_packet_offer) {
+      ss << "a=x-rl-max-packet-size:"sv << session->max_video_packet_offer << std::endl;
+    }
+
     if (video::last_encoder_probe_supported_ref_frames_invalidation) {
       ss << "a=x-nv-video[0].refPicInvalidation:1"sv << std::endl;
     }
@@ -2368,6 +2389,16 @@ namespace rtsp_stream {
 
       config.controlProtocolType = (int) util::from_view(args.at("x-nv-general.useReliableUdp"sv));
       config.packetsize = (int) util::from_view(args.at("x-nv-video[0].packetSize"sv));
+
+      // A video packet above stock needs this stream's DESCRIBE offer (x-rl-max-packet-size).
+      if (config.packetsize > video_packet::STOCK_MAX && config.packetsize > session->max_video_packet_offer) {
+        const int allowed = session->max_video_packet_offer ? session->max_video_packet_offer : video_packet::STOCK_PACKET;
+        BOOST_LOG(warning) << "Client asked for "sv << config.packetsize << "-byte video packets; offered "sv
+                           << session->max_video_packet_offer << ", using "sv << allowed;
+        config.packetsize = allowed;
+      } else if (config.packetsize > video_packet::STOCK_MAX) {
+        BOOST_LOG(info) << "Jumbo video packets: "sv << config.packetsize << " bytes"sv;
+      }
 
       // Limit the packetsize to avoid fragmentation with clients that cannot configure this value
       if (config::stream.packetsize && config::stream.packetsize < config.packetsize) {

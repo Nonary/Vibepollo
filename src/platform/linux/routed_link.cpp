@@ -8,6 +8,7 @@
 #include <ifaddrs.h>
 #include <net/if.h>
 #include <net/if_arp.h>
+#include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
@@ -119,6 +120,12 @@ namespace platf {
         info->if_index = if_nametoindex(entry->ifa_name);
         info->alias = name;
         info->transmit_bps = speed;
+        int mtu = 0;
+        socklen_t mtu_length = sizeof(mtu);
+        if (getsockopt(fd.descriptor, family == AF_INET ? IPPROTO_IP : IPPROTO_IPV6,
+                       family == AF_INET ? IP_MTU : IPV6_MTU, &mtu, &mtu_length) == 0 && mtu > 0) {
+          info->mtu = std::uint32_t(mtu);
+        }
       }
       return speed;
     }

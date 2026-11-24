@@ -14,6 +14,7 @@ namespace platf {
     std::uint32_t if_index = 0;
     std::string alias;
     std::uint64_t transmit_bps = 0;
+    std::uint32_t mtu = 0;  ///< Path MTU of the routed connection, 0 when unknown.
   };
 
   /// Returns zero when the selected route is not an active full-duplex wired link.
