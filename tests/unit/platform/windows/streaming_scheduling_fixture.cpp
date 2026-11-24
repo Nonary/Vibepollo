@@ -65,7 +65,7 @@ struct {
   // Other processes' requests remain independent of this process's FALSE.
   std::optional<ULONG> native_request, foreign_native_request;
   std::vector<DWORD> priority_sets;
-  bool mouse_present = true, paused = false;
+  bool mouse_present = true, paused = false, failed_revert = false;
   MOUSEKEYS mouse_keys {sizeof(MOUSEKEYS), 0x80, 37, 420};
   int mouse_gets = 0, mouse_sets = 0;
 } os;
@@ -157,6 +157,11 @@ BOOL SystemParametersInfoW(int action, unsigned, void *value, unsigned) {
 namespace display_helper_integration {
   void start_watchdog() { ++os.watchdog_starts; }
   void stop_watchdog() { ++os.watchdog_stops; }
+  bool stop_watchdog_unless_failed_revert() {
+    if (os.failed_revert) return true;
+    ++os.watchdog_stops;
+    return false;
+  }
 }
 namespace proc {
   struct {
@@ -322,6 +327,14 @@ int main(int argc, char **argv) {
   } else if (scenario == "paused-watchdog") {
     start(); os.paused = true; stop();
     check(os.watchdog_starts == 1 && os.watchdog_stops == 0, "paused app keeps the display helper watchdog");
+  } else if (scenario == "idle-watchdog") {
+    start(); stop();
+    check(os.watchdog_starts == 1 && os.watchdog_stops == 1, "an idle host stops the display helper watchdog");
+  } else if (scenario == "failed-revert-watchdog") {
+    start(); os.failed_revert = true; stop();
+    check(os.watchdog_starts == 1 && os.watchdog_stops == 0 &&
+            log_output.str().find("keeping watchdog alive to retry a REVERT the helper missed") != std::string::npos,
+          "a missed REVERT keeps the display helper watchdog");
   } else if (scenario.starts_with("priority-")) {
     const std::map<std::string, DWORD> priorities {
       {"priority-normal", NORMAL_PRIORITY_CLASS}, {"priority-above-normal", ABOVE_NORMAL_PRIORITY_CLASS},

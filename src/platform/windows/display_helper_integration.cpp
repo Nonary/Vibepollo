@@ -2269,6 +2269,50 @@ namespace {
     return j.dump();
   }
 
+  // Runs on the watchdog worker, so it reads the app id rather than calling
+  // running() for the same reason as the worker's interval selection.
+  static void retry_failed_revert_if_idle() {
+    if (!g_failed_revert.pending()) {
+      return;
+    }
+    bool reverted = false;
+    {
+      // Hold the gate so a launch cannot APPLY between this idle check and
+      // the REVERT. Never wait for it from this worker.
+      std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex(), std::try_to_lock);
+      if (!lifecycle_lock.owns_lock()) {
+        return;
+      }
+      const auto request = g_failed_revert.take_if_replayable({
+        stream_is_active_or_pending(),
+        rtsp_stream::has_pending_launch_or_startup(),
+        proc::proc.current_app_id() > 0,
+      });
+      if (!request) {
+        return;
+      }
+      BOOST_LOG(info) << "Display helper: helper is reachable again; retrying the REVERT it missed.";
+      reverted = display_helper_integration::revert(
+        request->prefer_golden_if_current_missing,
+        request->override_managed_ownership,
+        request->allow_disabled_recovery,
+        nullptr,
+        request->retain_paused_app ?
+          display_helper_integration::RevertOwnershipPolicy::RetainPausedNormalGame :
+          display_helper_integration::RevertOwnershipPolicy::AllOwnersMustRelease,
+        request->remove_display_after_restore ?
+          display_helper_integration::FinalRestoreDisplayPolicy::RemoveAfterRestore :
+          display_helper_integration::FinalRestoreDisplayPolicy::Retain
+      );
+    }
+    // A paused app still needs the watchdog's heartbeat until /resume or exit.
+    // Another REVERT can miss the helper after this replay. Its start finds
+    // this worker running and returns, so the stop keeps the worker for it.
+    if (reverted && rtsp_stream::session_count_no_cleanup() == 0 && proc::proc.current_app_id() <= 0) {
+      (void) display_helper_integration::stop_watchdog_unless_failed_revert();
+    }
+  }
+
   static void watchdog_proc(std::stop_token st) {
     using namespace std::chrono_literals;
     constexpr auto kActiveInterval = 5s;
@@ -2292,48 +2336,6 @@ namespace {
       return platf::display_helper_client::send_ping(
         stream_is_active_or_pending() || rtsp_stream::has_pending_launch_or_startup()
       );
-    };
-
-    // Runs on this worker, so it reads the app id rather than calling running()
-    // for the same reason as the interval selection below.
-    auto retry_failed_revert_if_idle = []() {
-      if (!g_failed_revert.pending()) {
-        return;
-      }
-      bool reverted = false;
-      {
-        // Hold the gate so a launch cannot APPLY between this idle check and
-        // the REVERT. Never wait for it from this worker.
-        std::unique_lock<std::mutex> lifecycle_lock(nvhttp::stream_lifecycle_mutex(), std::try_to_lock);
-        if (!lifecycle_lock.owns_lock()) {
-          return;
-        }
-        const auto request = g_failed_revert.take_if_replayable({
-          stream_is_active_or_pending(),
-          rtsp_stream::has_pending_launch_or_startup(),
-          proc::proc.current_app_id() > 0,
-        });
-        if (!request) {
-          return;
-        }
-        BOOST_LOG(info) << "Display helper: helper is reachable again; retrying the REVERT it missed.";
-        reverted = display_helper_integration::revert(
-          request->prefer_golden_if_current_missing,
-          request->override_managed_ownership,
-          request->allow_disabled_recovery,
-          nullptr,
-          request->retain_paused_app ?
-            display_helper_integration::RevertOwnershipPolicy::RetainPausedNormalGame :
-            display_helper_integration::RevertOwnershipPolicy::AllOwnersMustRelease,
-          request->remove_display_after_restore ?
-            display_helper_integration::FinalRestoreDisplayPolicy::RemoveAfterRestore :
-            display_helper_integration::FinalRestoreDisplayPolicy::Retain
-        );
-      }
-      // A paused app still needs the watchdog's heartbeat until /resume or exit.
-      if (reverted && rtsp_stream::session_count_no_cleanup() == 0 && proc::proc.current_app_id() <= 0) {
-        display_helper_integration::stop_watchdog();
-      }
     };
 
     while (!st.stop_requested()) {
@@ -3315,10 +3317,6 @@ namespace display_helper_integration {
     return ok;
   }
 
-  bool has_failed_revert() {
-    return g_failed_revert.pending();
-  }
-
   bool has_pending_apply() {
     std::lock_guard<std::mutex> lock(pending_apply_mutex());
     return pending_apply_state().has_value();
@@ -3860,14 +3858,14 @@ namespace display_helper_integration {
     }
   }
 
-  void stop_watchdog(bool force) {
+  static bool stop_watchdog_impl(const bool force, const bool keep_for_failed_revert) {
     for (;;) {
       std::jthread worker_to_join;
       std::optional<std::uint64_t> stopped_session_generation;
       {
         std::unique_lock lock(g_watchdog_mutex);
         if (g_watchdog_state == watchdog_state_e::stopped && !g_watchdog_thread.joinable() && !g_watchdog_reaping) {
-          return;
+          return false;
         }
 
         // Callers report a stream transition after releasing their own session
@@ -3876,7 +3874,7 @@ namespace display_helper_integration {
         // take down the watchdog the newer stream has already adopted.
         if (!force && stream_is_active_or_pending()) {
           BOOST_LOG(debug) << "Display helper: deferring watchdog stop while a stream is active or pending.";
-          return;
+          return false;
         }
 
         const auto active_generation = active_session_generation();
@@ -3885,7 +3883,13 @@ namespace display_helper_integration {
           BOOST_LOG(debug) << "Display helper: ignoring stale watchdog stop for session generation "
                            << (g_watchdog_session_generation ? std::to_string(*g_watchdog_session_generation) : std::string {"none"})
                            << "; active generation is " << *active_generation << '.';
-          return;
+          return false;
+        }
+
+        // Checked under this lock: a REVERT missed after the check then finds
+        // the worker stopping or stopped, so its start replaces the worker.
+        if (keep_for_failed_revert && g_failed_revert.pending()) {
+          return true;
         }
 
         ++g_watchdog_stop_epoch;
@@ -3901,7 +3905,7 @@ namespace display_helper_integration {
           // shutdown will join it. Waiting here would deadlock the reaper.
           finish_watchdog_stop_locked(stopped_session_generation);
           BOOST_LOG(warning) << "Display helper: watchdog requested its own stop; deferring join to an external caller.";
-          return;
+          return false;
         }
 
         if (g_watchdog_reaping) {
@@ -3914,7 +3918,7 @@ namespace display_helper_integration {
             // forced shutdown as complete.
             continue;
           }
-          return;
+          return false;
         }
 
         if (!g_watchdog_thread.joinable()) {
@@ -3922,7 +3926,7 @@ namespace display_helper_integration {
           g_watchdog_state = watchdog_state_e::stopped;
           finish_watchdog_stop_locked(stopped_session_generation);
           g_watchdog_session_generation.reset();
-          return;
+          return false;
         }
 
         worker_to_join = std::move(g_watchdog_thread);
@@ -3945,7 +3949,7 @@ namespace display_helper_integration {
           g_watchdog_thread = std::move(worker_to_join);
           g_watchdog_state = watchdog_state_e::stopping;
           g_watchdog_cv.notify_all();
-          return;
+          return false;
         }
         g_watchdog_worker_id = {};
         g_watchdog_state = watchdog_state_e::stopped;
@@ -3953,8 +3957,16 @@ namespace display_helper_integration {
         g_watchdog_session_generation.reset();
         g_watchdog_cv.notify_all();
       }
-      return;
+      return false;
     }
+  }
+
+  void stop_watchdog(bool force) {
+    (void) stop_watchdog_impl(force, false);
+  }
+
+  bool stop_watchdog_unless_failed_revert() {
+    return stop_watchdog_impl(false, true);
   }
 }  // namespace display_helper_integration
 

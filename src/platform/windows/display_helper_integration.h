@@ -71,10 +71,6 @@ namespace display_helper_integration {
   // Returns true if a deferred APPLY request is currently queued.
   bool has_pending_apply();
 
-  // Returns true if a REVERT could not reach the helper and the watchdog will
-  // retry it once the helper responds and no stream or app is active.
-  bool has_failed_revert();
-
   // Retry a deferred APPLY request once a user session is available. The
   // optional predicate lets an owned shutdown worker abandon a long helper
   // operation before teardown begins.
@@ -254,6 +250,11 @@ namespace display_helper_integration {
   // Stop the helper watchdog when no streams are active. Forced stops are
   // reserved for process shutdown or an explicit user-requested restore.
   void stop_watchdog(bool force = false);
+
+  // Like stop_watchdog(), but keeps the watchdog running while a REVERT that
+  // could not reach the helper waits for its replay. Returns true if it kept
+  // the watchdog for that REVERT.
+  bool stop_watchdog_unless_failed_revert();
 
   // Explicit killswitch fallback: stop and verify the owned helper, then run
   // native physical recovery while APPLY/REVERT dispatch remains fenced.
