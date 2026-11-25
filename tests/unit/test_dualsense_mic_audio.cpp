@@ -134,3 +134,68 @@ TEST(DualSenseMicAudio, SlotBufferDecodesDuplicatesStereoPlcAndIdleSilence) {
 
   opus_encoder_destroy(enc);
 }
+
+TEST(DualSenseMicAudio, MuteDiscardsBufferedAudioReturnsSilenceAndResumesWithoutStaleAudio) {
+  int err = OPUS_OK;
+  OpusEncoder *enc = opus_encoder_create(48000, 1, OPUS_APPLICATION_VOIP, &err);
+  ASSERT_EQ(err, OPUS_OK);
+  ASSERT_NE(enc, nullptr);
+
+  dualsense_mic_audio::slot_buffer buf;
+  const auto t0 = std::chrono::steady_clock::now();
+
+  const auto f0 = encode_sine_opus(enc, 0);
+  const auto f1 = encode_sine_opus(enc, 1);
+  const auto f2 = encode_sine_opus(enc, 2);
+  const auto f10 = encode_sine_opus(enc, 10);
+
+  EXPECT_FALSE(buf.is_muted());
+  EXPECT_EQ(buf.push_opus(0, 960, f0, t0), 960u);
+  EXPECT_EQ(buf.push_opus(1, 960, f1, t0 + std::chrono::milliseconds(20)), 960u);
+  EXPECT_EQ(buf.buffered_frames(), 1920u);
+
+  // Muting must immediately discard buffered pre-mute audio and return silence.
+  buf.set_muted(true);
+  EXPECT_TRUE(buf.is_muted());
+  EXPECT_EQ(buf.buffered_frames(), 0u);
+
+  std::vector<std::uint8_t> silent(960 * 4, 0xFF);
+  EXPECT_EQ(buf.read_stereo_pcm(silent, t0 + std::chrono::milliseconds(25)), 0u);
+  for (std::uint8_t b : silent) {
+    EXPECT_EQ(b, 0u);
+  }
+
+  // Incoming packets while muted must be dropped and never buffered.
+  EXPECT_EQ(buf.push_opus(2, 960, f2, t0 + std::chrono::milliseconds(40)), 0u);
+  EXPECT_EQ(buf.buffered_frames(), 0u);
+  std::fill(silent.begin(), silent.end(), 0xAA);
+  EXPECT_EQ(buf.read_stereo_pcm(silent, t0 + std::chrono::milliseconds(45)), 0u);
+  for (std::uint8_t b : silent) {
+    EXPECT_EQ(b, 0u);
+  }
+
+  // Unmuting must not deliver any stale audio before fresh packets arrive.
+  buf.set_muted(false);
+  EXPECT_FALSE(buf.is_muted());
+  EXPECT_EQ(buf.buffered_frames(), 0u);
+  std::fill(silent.begin(), silent.end(), 0x55);
+  EXPECT_EQ(buf.read_stereo_pcm(silent, t0 + std::chrono::milliseconds(50)), 0u);
+  for (std::uint8_t b : silent) {
+    EXPECT_EQ(b, 0u);
+  }
+
+  // Fresh packets after unmute decode cleanly without PLC across the muted gap.
+  EXPECT_EQ(buf.push_opus(10, 960, f10, t0 + std::chrono::milliseconds(60)), 960u);
+  std::vector<std::uint8_t> resumed(960 * 4, 0);
+  EXPECT_EQ(buf.read_stereo_pcm(resumed, t0 + std::chrono::milliseconds(65)), resumed.size());
+  bool any_nonzero = false;
+  for (std::uint8_t b : resumed) {
+    if (b != 0) {
+      any_nonzero = true;
+      break;
+    }
+  }
+  EXPECT_TRUE(any_nonzero);
+
+  opus_encoder_destroy(enc);
+}

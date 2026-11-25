@@ -82,6 +82,8 @@ namespace dualsense_mic_audio {
       std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()
     );
 
+    void set_muted(bool muted);
+    bool is_muted() const;
     void reset();
     std::size_t buffered_frames() const;
 
@@ -89,6 +91,7 @@ namespace dualsense_mic_audio {
     bool ensure_decoder_locked();
     void append_mono_as_stereo_locked(std::span<const std::int16_t> mono);
     void clear_ring_locked();
+    void reset_stream_state_locked();
 
     mutable std::mutex mutex_;
     OpusDecoder *decoder_ = nullptr;
@@ -96,6 +99,7 @@ namespace dualsense_mic_audio {
     std::size_t read_pos_ = 0;
     std::size_t write_pos_ = 0;
     std::size_t count_bytes_ = 0;
+    bool muted_ = false;
     bool has_sequence_ = false;
     std::uint32_t expected_sequence_ = 0;
     std::uint16_t last_frame_samples_ = 960;

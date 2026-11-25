@@ -86,6 +86,17 @@ namespace dualsense_mic_audio {
     primed_ = false;
   }
 
+  void slot_buffer::reset_stream_state_locked() {
+    clear_ring_locked();
+    has_sequence_ = false;
+    expected_sequence_ = 0;
+    last_frame_samples_ = 960;
+    last_push_ = {};
+    if (decoder_) {
+      opus_decoder_ctl(decoder_, OPUS_RESET_STATE);
+    }
+  }
+
   void slot_buffer::append_mono_as_stereo_locked(std::span<const std::int16_t> mono) {
     if (mono.empty()) {
       return;
@@ -132,6 +143,9 @@ namespace dualsense_mic_audio {
     }
 
     std::lock_guard lock {mutex_};
+    if (muted_) {
+      return 0;
+    }
     if (!ensure_decoder_locked()) {
       return 0;
     }
@@ -193,6 +207,10 @@ namespace dualsense_mic_audio {
     std::fill(out.begin(), out.end(), std::uint8_t {0});
 
     std::lock_guard lock {mutex_};
+    if (muted_) {
+      clear_ring_locked();
+      return 0;
+    }
     if (last_push_ != std::chrono::steady_clock::time_point {} && now > last_push_ && (now - last_push_) > idle_timeout) {
       clear_ring_locked();
       return 0;
@@ -217,16 +235,24 @@ namespace dualsense_mic_audio {
     return to_copy;
   }
 
+  void slot_buffer::set_muted(bool muted) {
+    std::lock_guard lock {mutex_};
+    if (muted_ == muted) {
+      return;
+    }
+    muted_ = muted;
+    reset_stream_state_locked();
+  }
+
+  bool slot_buffer::is_muted() const {
+    std::lock_guard lock {mutex_};
+    return muted_;
+  }
+
   void slot_buffer::reset() {
     std::lock_guard lock {mutex_};
-    clear_ring_locked();
-    has_sequence_ = false;
-    expected_sequence_ = 0;
-    last_frame_samples_ = 960;
-    last_push_ = {};
-    if (decoder_) {
-      opus_decoder_ctl(decoder_, OPUS_RESET_STATE);
-    }
+    muted_ = false;
+    reset_stream_state_locked();
   }
 
   std::size_t slot_buffer::buffered_frames() const {

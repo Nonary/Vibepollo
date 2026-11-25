@@ -437,6 +437,7 @@ namespace platf {
           retained->persist_after_disconnect = metadata.persist_after_disconnect;
           retained->feedback_queue = feedback_queue;
           retained->clear_pcm();
+          retained->audio_status = 0;
           retained->mic_buffer.reset();
           retained->active = true;
           retained->pending_accel_request = (metadata.capabilities & LI_CCAP_ACCEL) != 0;
@@ -698,6 +699,7 @@ namespace platf {
     }
     std::lock_guard lock {slot->mutex};
     const auto masked = static_cast<std::uint8_t>(event.flags & dualsense_controls::audio_status_mask);
+    slot->mic_buffer.set_muted((masked & dualsense_controls::audio_mic_muted) != 0);
     if (slot->audio_status != masked) {
       slot->audio_status = masked;
       slot->submit();
@@ -707,6 +709,10 @@ namespace platf {
   void usbip_gamepad_t::mic_audio(int nr, const gamepad_mic_audio_t &event) {
     const auto slot = impl->find(nr);
     if (!slot) {
+      return;
+    }
+    std::lock_guard lock {slot->mutex};
+    if (!slot->active || (slot->audio_status & dualsense_controls::audio_mic_muted) != 0) {
       return;
     }
     std::ignore = slot->mic_buffer.push_opus(event.sequence, event.sample_count, event.opus_payload);
