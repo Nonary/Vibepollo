@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "src/dualsense_controls_protocol.h"
 #include "third-party/libvirtualgamepad/driver/src/dualsense.h"
 #include "vhf_gamepad_policy.h"
 
@@ -67,10 +68,16 @@ namespace platf::dualsense_usbip_gamepad {
     // Only explicitly enabled trigger programs are forwarded. Omitted
     // programs retain their state, including when the other one is turned off.
     std::uint8_t triggers = 0;
+    // Extended DualSense controls that changed in this report (valid_mask != 0).
+    dualsense_controls::output_payload ds_controls {};
   };
 
   class output_state {
   public:
+    static constexpr std::uint8_t k_ds5_flag0_headphone_volume = 0x10;
+    static constexpr std::uint8_t k_ds5_flag0_speaker_volume = 0x20;
+    static constexpr std::uint8_t k_ds5_flag2_led_brightness = 0x01;
+
     output_update apply(std::span<const std::uint8_t> bytes) {
       output_update result;
       if (bytes.size() < sizeof(lvg::driver::ds5_output_report)) {
@@ -117,8 +124,63 @@ namespace platf::dualsense_usbip_gamepad {
         }
         have_right_ = true;
       }
+
+      // Extended DualSense controls: player LEDs, LED brightness, mute button LED,
+      // speaker volume (byte 6 = reserved0[1]), headphone volume (byte 5 = reserved0[0]).
+      std::uint16_t changed_mask = 0;
+      if (report.valid_flag1 & lvg::driver::k_ds5_flag1_player_indicator) {
+        const auto leds = static_cast<std::uint8_t>(report.player_leds & 0x1F);
+        if (!(ds_controls_seen_ & dualsense_controls::out_player_leds) || ds_controls_.player_leds != leds) {
+          ds_controls_.player_leds = leds;
+          changed_mask |= dualsense_controls::out_player_leds;
+        }
+        ds_controls_seen_ |= dualsense_controls::out_player_leds;
+      }
+      if (report.valid_flag2 & k_ds5_flag2_led_brightness) {
+        const auto brightness = static_cast<std::uint8_t>(std::min<std::uint8_t>(report.led_brightness, 2));
+        if (!(ds_controls_seen_ & dualsense_controls::out_led_brightness) || ds_controls_.led_brightness != brightness) {
+          ds_controls_.led_brightness = brightness;
+          changed_mask |= dualsense_controls::out_led_brightness;
+        }
+        ds_controls_seen_ |= dualsense_controls::out_led_brightness;
+      }
+      if (report.valid_flag1 & lvg::driver::k_ds5_flag1_mic_mute_led) {
+        const auto mic_led = static_cast<std::uint8_t>(std::min<std::uint8_t>(report.mute_button_led, 2));
+        if (!(ds_controls_seen_ & dualsense_controls::out_mic_led) || ds_controls_.mic_led != mic_led) {
+          ds_controls_.mic_led = mic_led;
+          changed_mask |= dualsense_controls::out_mic_led;
+        }
+        ds_controls_seen_ |= dualsense_controls::out_mic_led;
+      }
+      if (report.valid_flag0 & k_ds5_flag0_speaker_volume) {
+        const auto speaker_vol = report.reserved0[1];
+        if (!(ds_controls_seen_ & dualsense_controls::out_speaker_volume) || ds_controls_.speaker_volume != speaker_vol) {
+          ds_controls_.speaker_volume = speaker_vol;
+          changed_mask |= dualsense_controls::out_speaker_volume;
+        }
+        ds_controls_seen_ |= dualsense_controls::out_speaker_volume;
+      }
+      if (report.valid_flag0 & k_ds5_flag0_headphone_volume) {
+        const auto hp_vol = static_cast<std::uint8_t>(std::min<std::uint8_t>(report.reserved0[0], 0x7F));
+        if (!(ds_controls_seen_ & dualsense_controls::out_headphone_volume) || ds_controls_.headphone_volume != hp_vol) {
+          ds_controls_.headphone_volume = hp_vol;
+          changed_mask |= dualsense_controls::out_headphone_volume;
+        }
+        ds_controls_seen_ |= dualsense_controls::out_headphone_volume;
+      }
+      if (changed_mask != 0) {
+        result.ds_controls = ds_controls_;
+        result.ds_controls.valid_mask = changed_mask;
+      }
+
       result.state = state_;
       return result;
+    }
+
+    [[nodiscard]] dualsense_controls::output_payload current_ds_controls() const noexcept {
+      auto copy = ds_controls_;
+      copy.valid_mask = ds_controls_seen_;
+      return copy;
     }
 
   private:
@@ -126,6 +188,8 @@ namespace platf::dualsense_usbip_gamepad {
     bool have_rumble_ = false;
     bool have_left_ = false;
     bool have_right_ = false;
+    dualsense_controls::output_payload ds_controls_ {};
+    std::uint16_t ds_controls_seen_ = 0;
   };
 
   // The USB endpoint already supplies stereo 48 kHz S16LE. Preserve sample

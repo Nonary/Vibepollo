@@ -2,13 +2,18 @@
 // Exercise the production controller backend. Only the Windows USB transport
 // boundary is replaced, so controller state, Sony reports, feedback queues,
 // capability checks, and callback ownership use their actual implementation.
+#include "src/dualsense_mic_audio.h"
 #include "src/platform/windows/dualsense_usbip_gamepad.h"
 #include "src/platform/windows/dualsense_usbip_gamepad_policy.h"
 #include "src/platform/windows/dualsense_usbip_transport.h"
 #include "third-party/libvirtualgamepad/driver/src/dualsense.h"
 
+#include <opus/opus.h>
+
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <functional>
 #include <future>
@@ -925,4 +930,73 @@ TEST_F(DualSenseUsbipGamepadTests, SubmissionIncarnationRejectsSameOwnerRebindAn
     EXPECT_EQ(messages[0].data.speaker.samples, samples(85));
     backend.free(0, false);
   }
+}
+
+TEST_F(DualSenseUsbipGamepadTests, VirtualMicrophoneHonorsReportedMuteAndDiscardsBufferedAudio) {
+  int opus_err = OPUS_OK;
+  OpusEncoder *enc = opus_encoder_create(48000, 1, OPUS_APPLICATION_VOIP, &opus_err);
+  ASSERT_EQ(opus_err, OPUS_OK);
+  ASSERT_NE(enc, nullptr);
+
+  const auto encode_frame = [enc](std::size_t frame_index) {
+    std::array<std::int16_t, 960> pcm {};
+    for (std::size_t i = 0; i < pcm.size(); ++i) {
+      const double phase = 6.28318530717958647692 * 440.0 * static_cast<double>(frame_index * pcm.size() + i) / 48000.0;
+      pcm[i] = static_cast<std::int16_t>(std::sin(phase) * 16000.0);
+    }
+    std::vector<std::uint8_t> out(dualsense_mic_audio::max_payload);
+    const int n = opus_encode(enc, pcm.data(), static_cast<int>(pcm.size()), out.data(), static_cast<opus_int32>(out.size()));
+    EXPECT_GT(n, 0);
+    out.resize(static_cast<std::size_t>(std::max(n, 0)));
+    return out;
+  };
+
+  auto scope = sessions::start_session();
+  platf::usbip_gamepad_t backend;
+  auto feedback = queue();
+  ASSERT_EQ(backend.alloc({0, 0}, arrival(), feedback), 0);
+  auto endpoint = fake_transport::current[0];
+  ASSERT_NE(endpoint, nullptr);
+
+  // Unmuted: buffered audio is delivered on EP 0x82 capture callback.
+  const auto f0 = encode_frame(0);
+  const auto f1 = encode_frame(1);
+  const auto f2 = encode_frame(2);
+  const auto f3 = encode_frame(3);
+  backend.mic_audio(0, {{0, 0}, 0, 960, f0});
+  backend.mic_audio(0, {{0, 0}, 1, 960, f1});
+
+  std::vector<std::uint8_t> captured(960 * 4, 0);
+  endpoint->handlers.mic_pcm(captured);
+  EXPECT_TRUE(std::any_of(captured.begin(), captured.end(), [](std::uint8_t b) { return b != 0; }));
+
+  // Frame 1 is still buffered when the controller reports mute; muting must discard it and return silence.
+  backend.audio_status(0, {{0, 0}, static_cast<std::uint8_t>(dualsense_controls::audio_headphones_connected | dualsense_controls::audio_mic_muted)});
+  EXPECT_EQ(endpoint->latest_input().reserved3[0],
+            static_cast<std::uint8_t>(dualsense_controls::audio_headphones_connected | dualsense_controls::audio_mic_muted));
+
+  std::fill(captured.begin(), captured.end(), 0xFF);
+  endpoint->handlers.mic_pcm(captured);
+  EXPECT_TRUE(std::all_of(captured.begin(), captured.end(), [](std::uint8_t b) { return b == 0; }));
+
+  // Audio arriving while muted is dropped and never buffered for later delivery.
+  backend.mic_audio(0, {{0, 0}, 2, 960, f2});
+  std::fill(captured.begin(), captured.end(), 0xAA);
+  endpoint->handlers.mic_pcm(captured);
+  EXPECT_TRUE(std::all_of(captured.begin(), captured.end(), [](std::uint8_t b) { return b == 0; }));
+
+  // Unmuting updates reported status, delivers no stale audio, and resumes on fresh packets.
+  backend.audio_status(0, {{0, 0}, dualsense_controls::audio_headphones_connected});
+  EXPECT_EQ(endpoint->latest_input().reserved3[0], dualsense_controls::audio_headphones_connected);
+
+  std::fill(captured.begin(), captured.end(), 0x55);
+  endpoint->handlers.mic_pcm(captured);
+  EXPECT_TRUE(std::all_of(captured.begin(), captured.end(), [](std::uint8_t b) { return b == 0; }));
+
+  backend.mic_audio(0, {{0, 0}, 3, 960, f3});
+  endpoint->handlers.mic_pcm(captured);
+  EXPECT_TRUE(std::any_of(captured.begin(), captured.end(), [](std::uint8_t b) { return b != 0; }));
+
+  backend.free(0, false);
+  opus_encoder_destroy(enc);
 }

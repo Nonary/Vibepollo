@@ -4,6 +4,7 @@
  */
 #include "input_validation_policy.h"
 #include "controller_speaker_pcm.h"
+#include "dualsense_controls_protocol.h"
 #include "steam_controller_protocol.h"
 
 extern "C" {
@@ -60,6 +61,8 @@ namespace input::validation {
           return packet_size_bounds_t {sizeof(SS_PEN_PACKET), sizeof(SS_PEN_PACKET)};
         case controller_speaker_pcm::binding_magic:
           return packet_size_bounds_t {controller_speaker_pcm::binding_size, controller_speaker_pcm::binding_size};
+        case dualsense_controls::audio_status_magic:
+          return packet_size_bounds_t {dualsense_controls::audio_status_size, dualsense_controls::audio_status_size};
         case SS_CONTROLLER_ARRIVAL_MAGIC:
           return packet_size_bounds_t {sizeof(SS_CONTROLLER_ARRIVAL_PACKET), sizeof(SS_CONTROLLER_ARRIVAL_PACKET)};
         case SS_CONTROLLER_TOUCH_MAGIC:
@@ -115,6 +118,45 @@ namespace input::validation {
       .magic = *magic,
       .total_size = total_size,
     };
+  }
+
+  bool packet_permitted(const std::uint32_t magic, const crypto::PERM permission) {
+    if (!(permission & crypto::PERM::_all_inputs)) {
+      return false;
+    }
+
+    if ((permission & crypto::PERM::_all_inputs) == crypto::PERM::_all_inputs) {
+      return packet_size_bounds(magic).has_value();
+    }
+
+    switch (magic) {
+      case MULTI_CONTROLLER_MAGIC_GEN5:
+      case controller_speaker_pcm::binding_magic:
+      case dualsense_controls::audio_status_magic:
+      case SS_CONTROLLER_ARRIVAL_MAGIC:
+      case SS_CONTROLLER_TOUCH_MAGIC:
+      case SS_CONTROLLER_MOTION_MAGIC:
+      case SS_CONTROLLER_BATTERY_MAGIC:
+      case SS_STEAM_CONTROLLER_ATTRIBUTES_MAGIC:
+        return (permission & crypto::PERM::input_controller) != crypto::PERM::_no;
+      case MOUSE_MOVE_REL_MAGIC_GEN5:
+      case MOUSE_MOVE_ABS_MAGIC:
+      case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
+      case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
+      case SCROLL_MAGIC_GEN5:
+      case SS_HSCROLL_MAGIC:
+        return (permission & crypto::PERM::input_mouse) != crypto::PERM::_no;
+      case KEY_DOWN_EVENT_MAGIC:
+      case KEY_UP_EVENT_MAGIC:
+      case UTF8_TEXT_EVENT_MAGIC:
+        return (permission & crypto::PERM::input_kbd) != crypto::PERM::_no;
+      case SS_TOUCH_MAGIC:
+        return (permission & crypto::PERM::input_touch) != crypto::PERM::_no;
+      case SS_PEN_MAGIC:
+        return (permission & crypto::PERM::input_pen) != crypto::PERM::_no;
+      default:
+        return false;
+    }
   }
 
   std::optional<normalized_touch_port_t> normalize_touch_port(const touch_port_t &touch_port, std::pair<float, float> &coords) {

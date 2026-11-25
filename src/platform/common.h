@@ -18,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <thread>
+#include <vector>
 
 // lib includes
 #include <boost/core/noncopyable.hpp>
@@ -28,6 +29,7 @@
 // local includes
 #include "audio.h"
 #include "src/controller_speaker_pcm.h"
+#include "src/dualsense_controls_protocol.h"
 #include "src/input_geometry_snapshot.h"
 #include "src/boost_process_shim.h"
 #include "src/config.h"
@@ -129,6 +131,7 @@ namespace platf {
     steam_haptic,  ///< A Steam Controller (2026) haptic output report, verbatim (Vibepollo extension)
     steam_settings,  ///< A Steam Controller (2026) settings write, verbatim (Vibepollo extension)
     speaker_pcm,  ///< Independent 5 ms controller speaker samples
+    dualsense_output,  ///< DualSense extended outputs (player LEDs, brightness, mic LED, volumes)
   };
 
   struct gamepad_feedback_msg_t {
@@ -203,6 +206,14 @@ namespace platf {
       return msg;
     }
 
+    static gamepad_feedback_msg_t make_dualsense_output(std::uint16_t id, const dualsense_controls::output_payload &payload) {
+      gamepad_feedback_msg_t msg;
+      msg.type = gamepad_feedback_e::dualsense_output;
+      msg.id = id;
+      msg.data.dualsense_output = payload;
+      return msg;
+    }
+
     gamepad_feedback_e type;
     std::uint16_t id;
     // Internal provenance for bounded host-side ViGEm send-result diagnostics.
@@ -257,6 +268,8 @@ namespace platf {
         std::uint8_t count;
         std::array<std::uint8_t, 27> triples;
       } steam_settings;
+
+      dualsense_controls::output_payload dualsense_output;
     } data;
   };
 
@@ -312,6 +325,10 @@ namespace platf {
         if (subkey == 0) return 0;
         break;
       }
+      case gamepad_feedback_e::dualsense_output:
+        subkey = msg.data.dualsense_output.valid_mask & dualsense_controls::out_all_mask;
+        if (subkey == 0) return 0;
+        break;
       default: return 0;
     }
     return ((static_cast<unsigned>(msg.type) + 1) << 16) | subkey;
@@ -523,6 +540,18 @@ namespace platf {
     gamepad_id_t id;
     std::uint8_t state;
     std::uint8_t percentage;
+  };
+
+  struct gamepad_audio_status_t {
+    gamepad_id_t id;
+    std::uint8_t flags;  ///< dualsense_controls::audio_* bits (byte 54 of DS5 USB input report)
+  };
+
+  struct gamepad_mic_audio_t {
+    gamepad_id_t id;
+    std::uint32_t sequence;
+    std::uint16_t sample_count;
+    std::vector<std::uint8_t> opus_payload;
   };
 
   /**
@@ -1203,6 +1232,16 @@ namespace platf {
    * @param battery The battery event.
    */
   void gamepad_battery(input_t &input, const gamepad_battery_t &battery);
+
+  /**
+   * @brief Reports DualSense 3.5 mm headset jack & mic mute state to the virtual controller.
+   */
+  void gamepad_audio_status(input_t &input, const gamepad_audio_status_t &status);
+
+  /**
+   * @brief Feeds an Opus-encoded controller microphone frame to the virtual controller's USB mic endpoint.
+   */
+  void gamepad_mic_audio(input_t &input, const gamepad_mic_audio_t &audio);
 
   /**
    * @brief Hands the real Steam Controller's firmware attributes to the virtual controller.

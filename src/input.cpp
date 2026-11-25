@@ -22,6 +22,7 @@ extern "C" {
 
 // local includes
 #include "config.h"
+#include "dualsense_mic_audio.h"
 #include "globals.h"
 #include "input.h"
 #include "input_geometry_policy.h"
@@ -186,6 +187,7 @@ namespace input {
     // it after the arrival event on the same reliable channel, so this should stay empty; holding
     // one packet until the arrival says whether it is wanted costs nothing.
     std::optional<platf::steam_controller_attributes_t> pending_steam_attributes;
+    std::optional<std::uint8_t> pending_audio_status;
 
     // When emulating the HOME button, we may need to artificially release the back button.
     // Afterwards, the gamepad state on sunshine won't match the state on Moonlight.
@@ -224,6 +226,7 @@ namespace input {
     gamepad.arrival_type = 0;
     gamepad.arrival_capabilities = 0;
     gamepad.pending_steam_attributes.reset();
+    gamepad.pending_audio_status.reset();
     gamepad.gamepad_state = {};
     gamepad.guide_key_down = false;
     gamepad.synthetic_home_down = false;
@@ -313,86 +316,40 @@ namespace input {
     std::size_t total_size = 0;
   };
 
-  struct packet_size_bounds_t {
-    std::size_t min_total_size = 0;
-    std::size_t max_total_size = 0;
-  };
-
-  std::optional<packet_size_bounds_t> packet_size_bounds(std::uint32_t magic) {
-    switch (magic) {
-      case MOUSE_MOVE_REL_MAGIC_GEN5:
-        return packet_size_bounds_t {sizeof(NV_REL_MOUSE_MOVE_PACKET), sizeof(NV_REL_MOUSE_MOVE_PACKET)};
-      case MOUSE_MOVE_ABS_MAGIC:
-        return packet_size_bounds_t {sizeof(NV_ABS_MOUSE_MOVE_PACKET), sizeof(NV_ABS_MOUSE_MOVE_PACKET)};
-      case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
-      case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
-        return packet_size_bounds_t {sizeof(NV_MOUSE_BUTTON_PACKET), sizeof(NV_MOUSE_BUTTON_PACKET)};
-      case SCROLL_MAGIC_GEN5:
-        return packet_size_bounds_t {sizeof(NV_SCROLL_PACKET), sizeof(NV_SCROLL_PACKET)};
-      case SS_HSCROLL_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_HSCROLL_PACKET), sizeof(SS_HSCROLL_PACKET)};
-      case KEY_DOWN_EVENT_MAGIC:
-      case KEY_UP_EVENT_MAGIC:
-        return packet_size_bounds_t {sizeof(NV_KEYBOARD_PACKET), sizeof(NV_KEYBOARD_PACKET)};
-      case UTF8_TEXT_EVENT_MAGIC:
-        return packet_size_bounds_t {sizeof(NV_INPUT_HEADER), sizeof(NV_UNICODE_PACKET)};
-      case MULTI_CONTROLLER_MAGIC_GEN5:
-        return packet_size_bounds_t {sizeof(NV_MULTI_CONTROLLER_PACKET), sizeof(NV_MULTI_CONTROLLER_PACKET)};
-      case SS_TOUCH_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_TOUCH_PACKET), sizeof(SS_TOUCH_PACKET)};
-      case SS_PEN_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_PEN_PACKET), sizeof(SS_PEN_PACKET)};
-      case SS_CONTROLLER_ARRIVAL_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_CONTROLLER_ARRIVAL_PACKET), sizeof(SS_CONTROLLER_ARRIVAL_PACKET)};
-      case SS_CONTROLLER_TOUCH_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_CONTROLLER_TOUCH_PACKET), sizeof(SS_CONTROLLER_TOUCH_PACKET)};
-      case SS_CONTROLLER_MOTION_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_CONTROLLER_MOTION_PACKET), sizeof(SS_CONTROLLER_MOTION_PACKET)};
-      case SS_CONTROLLER_BATTERY_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_CONTROLLER_BATTERY_PACKET), sizeof(SS_CONTROLLER_BATTERY_PACKET)};
-      case SS_STEAM_CONTROLLER_ATTRIBUTES_MAGIC:
-        return packet_size_bounds_t {sizeof(SS_STEAM_CONTROLLER_ATTRIBUTES_PACKET), sizeof(SS_STEAM_CONTROLLER_ATTRIBUTES_PACKET)};
-      default:
-        return std::nullopt;
-    }
-  }
-
+  // The packet table lives in input_validation_policy.cpp, where it is unit tested. A second copy
+  // used to live here and drifted from it: it did not know the DualSense speaker owner binding
+  // (0x55000009), so the host dropped that packet and never produced speaker PCM.
   std::optional<validated_input_packet_t> validate_packet(const std::vector<std::uint8_t> &input_data) {
-    const auto payload = std::string_view {
-      reinterpret_cast<const char *>(input_data.data()),
-      input_data.size()
-    };
-    const auto declared_size = util::packet::read_u32_be(payload, 0);
-    const auto magic = util::packet::read_u32_le(payload, sizeof(std::uint32_t));
-    if (!declared_size || !magic) {
-      BOOST_LOG(warning) << "Ignoring short input packet (" << input_data.size() << " bytes)";
-      return std::nullopt;
+    const auto result = validation::validate_packet(input_data);
+    if (result) {
+      return validated_input_packet_t {result.packet->magic, result.packet->total_size};
     }
 
-    const auto total_size = static_cast<std::size_t>(*declared_size) + sizeof(std::uint32_t);
-    if (total_size != input_data.size()) {
-      BOOST_LOG(warning) << "Ignoring malformed input packet for magic 0x" << util::hex(*magic).to_string_view()
-                         << " (declared=" << total_size << ", actual=" << input_data.size() << ')';
-      return std::nullopt;
+    switch (result.error) {
+      case validation::packet_validation_error_e::short_header:
+        BOOST_LOG(warning) << "Ignoring short input packet (" << input_data.size() << " bytes)";
+        break;
+      case validation::packet_validation_error_e::declared_size_mismatch:
+        BOOST_LOG(warning) << "Ignoring malformed input packet for magic 0x" << util::hex(result.magic).to_string_view()
+                           << " (declared=" << result.total_size << ", actual=" << input_data.size() << ')';
+        break;
+      case validation::packet_validation_error_e::unknown_magic:
+        BOOST_LOG(warning) << "Ignoring unknown input packet magic 0x" << util::hex(result.magic).to_string_view();
+        break;
+      case validation::packet_validation_error_e::invalid_size:
+        {
+          auto expected_size = std::to_string(result.expected_size.min_total_size);
+          if (result.expected_size.min_total_size != result.expected_size.max_total_size) {
+            expected_size += "-" + std::to_string(result.expected_size.max_total_size);
+          }
+          BOOST_LOG(warning) << "Ignoring malformed input packet for magic 0x" << util::hex(result.magic).to_string_view()
+                             << " (size=" << result.total_size << ", expected " << expected_size << ')';
+        }
+        break;
+      case validation::packet_validation_error_e::none:
+        break;
     }
-
-    const auto bounds = packet_size_bounds(*magic);
-    if (!bounds) {
-      BOOST_LOG(warning) << "Ignoring unknown input packet magic 0x" << util::hex(*magic).to_string_view();
-      return std::nullopt;
-    }
-
-    if (total_size < bounds->min_total_size || total_size > bounds->max_total_size) {
-      auto expected_size = std::to_string(bounds->min_total_size);
-      if (bounds->min_total_size != bounds->max_total_size) {
-        expected_size += "-" + std::to_string(bounds->max_total_size);
-      }
-      BOOST_LOG(warning) << "Ignoring malformed input packet for magic 0x" << util::hex(*magic).to_string_view()
-                         << " (size=" << total_size << ", expected " << expected_size << ')';
-      return std::nullopt;
-    }
-
-    return validated_input_packet_t {*magic, total_size};
+    return std::nullopt;
   }
 
   /**
@@ -1297,6 +1254,7 @@ namespace input {
       // and any held reading must not carry over to the next allocation attempt.
       gamepad.alloc_failed = true;
       gamepad.pending_steam_attributes.reset();
+      gamepad.pending_audio_status.reset();
       return;
     }
 
@@ -1305,6 +1263,7 @@ namespace input {
       free_id(gamepadMask, id);
       gamepad.alloc_failed = true;
       gamepad.pending_steam_attributes.reset();
+      gamepad.pending_audio_status.reset();
       return;
     }
 
@@ -1315,6 +1274,11 @@ namespace input {
       auto attributes = *gamepad.pending_steam_attributes;
       gamepad.pending_steam_attributes.reset();
       forward_steam_attributes(gamepad, attributes);
+    }
+    if (gamepad.pending_audio_status) {
+      const auto flags = *gamepad.pending_audio_status;
+      gamepad.pending_audio_status.reset();
+      platf::gamepad_audio_status(platf_input, {{gamepad.id, packet->controllerNumber}, flags});
     }
   }
 
@@ -1652,7 +1616,7 @@ namespace input {
     for (std::size_t i = 0; i < input->gamepads.size(); ++i) {
       if (!(packet->activeGamepadMask & (1 << i)) &&
           (input->gamepads[i].id >= 0 || input->gamepads[i].back_timeout_id || input->gamepads[i].alloc_failed ||
-           input->gamepads[i].pending_steam_attributes)) {
+           input->gamepads[i].pending_steam_attributes || input->gamepads[i].pending_audio_status)) {
         reset_gamepad(input->gamepads[i]);
         input->allocated_gamepads.fetch_and(~(1u << i), std::memory_order_relaxed);
       }
@@ -1674,6 +1638,7 @@ namespace input {
       if (id < 0) {
         gamepad.alloc_failed = true;
         gamepad.pending_steam_attributes.reset();
+        gamepad.pending_audio_status.reset();
         return;
       }
 
@@ -1681,6 +1646,7 @@ namespace input {
         free_id(gamepadMask, id);
         gamepad.alloc_failed = true;
         gamepad.pending_steam_attributes.reset();
+        gamepad.pending_audio_status.reset();
         BOOST_LOG(warning) << "ControllerNumber ["sv << packet->controllerNumber
                            << "] could not be allocated; ignoring its input until the client removes and re-adds it"sv;
         return;
@@ -1688,6 +1654,11 @@ namespace input {
 
       gamepad.id = id;
       input->allocated_gamepads.fetch_or(1u << packet->controllerNumber, std::memory_order_relaxed);
+      if (gamepad.pending_audio_status) {
+        const auto flags = *gamepad.pending_audio_status;
+        gamepad.pending_audio_status.reset();
+        platf::gamepad_audio_status(platf_input, {{gamepad.id, (uint8_t) packet->controllerNumber}, flags});
+      }
     }
 
     // If this gamepad has not been initialized, ignore it.
@@ -2187,6 +2158,21 @@ namespace input {
             });
           }
           break;
+        case dualsense_controls::audio_status_magic:
+          if (config::input.controller) {
+            if (const auto parsed = dualsense_controls::parse_audio_status(entry.data)) {
+              const auto [controller_number, flags] = *parsed;
+              if (controller_number < input->gamepads.size()) {
+                auto &gamepad = input->gamepads[controller_number];
+                if (gamepad.id >= 0) {
+                  platf::gamepad_audio_status(platf_input, {{gamepad.id, controller_number}, flags});
+                } else if (!gamepad.alloc_failed) {
+                  gamepad.pending_audio_status = flags;
+                }
+              }
+            }
+          }
+          break;
         case SS_CONTROLLER_ARRIVAL_MAGIC:
           passthrough(input, (PSS_CONTROLLER_ARRIVAL_PACKET) payload);
           break;
@@ -2281,61 +2267,8 @@ namespace input {
     }
 
     const auto packet = validate_packet(input_data);
-    if (!packet) {
+    if (!packet || !validation::packet_permitted(packet->magic, permission)) {
       return;
-    }
-
-    // Have some input permission
-    // Otherwise have all input permission
-    if ((permission & crypto::PERM::_all_inputs) != crypto::PERM::_all_inputs) {
-      // Check permission
-      switch (packet->magic) {
-        case MULTI_CONTROLLER_MAGIC_GEN5:
-        case SS_CONTROLLER_ARRIVAL_MAGIC:
-        case SS_CONTROLLER_TOUCH_MAGIC:
-        case SS_CONTROLLER_MOTION_MAGIC:
-        case SS_CONTROLLER_BATTERY_MAGIC:
-        case SS_STEAM_CONTROLLER_ATTRIBUTES_MAGIC:
-          if (!(permission & crypto::PERM::input_controller)) {
-            return;
-          } else {
-            break;
-          }
-        case MOUSE_MOVE_REL_MAGIC_GEN5:
-        case MOUSE_MOVE_ABS_MAGIC:
-        case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
-        case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
-        case SCROLL_MAGIC_GEN5:
-        case SS_HSCROLL_MAGIC:
-          if (!(permission & crypto::PERM::input_mouse)) {
-            return;
-          } else {
-            break;
-          }
-        case KEY_DOWN_EVENT_MAGIC:
-        case KEY_UP_EVENT_MAGIC:
-        case UTF8_TEXT_EVENT_MAGIC:
-          if (!(permission & crypto::PERM::input_kbd)) {
-            return;
-          } else {
-            break;
-          }
-        case SS_TOUCH_MAGIC:
-          if (!(permission & crypto::PERM::input_touch)) {
-            return;
-          } else {
-            break;
-          }
-        case SS_PEN_MAGIC:
-          if (!(permission & crypto::PERM::input_pen)) {
-            return;
-          } else {
-            break;
-          }
-        default:
-          // Unknown input event
-          return;
-      }
     }
     {
       std::lock_guard<std::mutex> lg(input->input_queue_lock);
@@ -2352,6 +2285,45 @@ namespace input {
     if (schedule_input_task) {
       task_pool.push(passthrough_next_message, input);
     }
+  }
+
+  void passthrough_controller_mic(std::shared_ptr<input_t> &input, std::span<const std::uint8_t> packet, const crypto::PERM &permission) {
+    if (!input || !config::input.controller || !(permission & crypto::PERM::input_controller)) {
+      return;
+    }
+
+    const auto parsed = dualsense_mic_audio::parse_packet(packet);
+    if (!parsed || parsed->controller_number >= MAX_GAMEPADS) {
+      return;
+    }
+
+    {
+      std::lock_guard<std::mutex> lg(input->input_queue_lock);
+      if (input->input_closed) {
+        return;
+      }
+    }
+
+    std::vector<std::uint8_t> payload(parsed->opus_payload.begin(), parsed->opus_payload.end());
+    const auto controller_index = static_cast<std::uint8_t>(parsed->controller_number);
+    const auto sequence = parsed->sequence;
+    const auto sample_count = parsed->sample_count;
+
+    task_pool.push([input, controller_index, sequence, sample_count, payload = std::move(payload)]() mutable {
+      if (controller_index >= input->gamepads.size()) {
+        return;
+      }
+      auto &gamepad = input->gamepads[controller_index];
+      if (gamepad.id < 0) {
+        return;
+      }
+      platf::gamepad_mic_audio(platf_input, {
+        {gamepad.id, controller_index},
+        sequence,
+        sample_count,
+        std::move(payload),
+      });
+    });
   }
 
 #ifdef SUNSHINE_TESTS

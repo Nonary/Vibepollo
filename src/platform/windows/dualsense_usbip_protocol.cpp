@@ -654,8 +654,11 @@ namespace platf::dualsense_usbip {
         for (const auto &packet : request.packets) {
           size += std::min(packet.length, 192u);
         }
-        const std::vector<std::uint8_t> silence(size, 0);
-        reply(request, 0, silence);
+        std::vector<std::uint8_t> mic(size, 0);
+        if (callbacks_.mic_pcm && !mic.empty()) {
+          callbacks_.mic_pcm(mic);
+        }
+        reply(request, 0, mic);
       } else {
         std::vector<std::uint8_t> haptics;
         std::vector<std::uint8_t> speaker;

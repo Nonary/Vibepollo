@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <functional>
 #include <optional>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -28,6 +29,7 @@ namespace input {
    */
   void reset(std::shared_ptr<input_t> &input);
   void passthrough(std::shared_ptr<input_t> &input, std::vector<std::uint8_t> &&input_data, const crypto::PERM &permission);
+  void passthrough_controller_mic(std::shared_ptr<input_t> &input, std::span<const std::uint8_t> packet, const crypto::PERM &permission);
   // Order Guide neutralization on the input worker after a live permission loss.
   // Queued Guide presses retain admission permission and the permission generation.
   void update_guide_button_permissions(const std::shared_ptr<input_t> &input, const crypto::PERM &permission);
