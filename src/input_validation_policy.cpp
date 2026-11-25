@@ -117,6 +117,44 @@ namespace input::validation {
     };
   }
 
+  bool packet_permitted(const std::uint32_t magic, const crypto::PERM permission) {
+    if (!(permission & crypto::PERM::_all_inputs)) {
+      return false;
+    }
+
+    if ((permission & crypto::PERM::_all_inputs) == crypto::PERM::_all_inputs) {
+      return packet_size_bounds(magic).has_value();
+    }
+
+    switch (magic) {
+      case MULTI_CONTROLLER_MAGIC_GEN5:
+      case controller_speaker_pcm::binding_magic:
+      case SS_CONTROLLER_ARRIVAL_MAGIC:
+      case SS_CONTROLLER_TOUCH_MAGIC:
+      case SS_CONTROLLER_MOTION_MAGIC:
+      case SS_CONTROLLER_BATTERY_MAGIC:
+      case SS_STEAM_CONTROLLER_ATTRIBUTES_MAGIC:
+        return (permission & crypto::PERM::input_controller) != crypto::PERM::_no;
+      case MOUSE_MOVE_REL_MAGIC_GEN5:
+      case MOUSE_MOVE_ABS_MAGIC:
+      case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
+      case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
+      case SCROLL_MAGIC_GEN5:
+      case SS_HSCROLL_MAGIC:
+        return (permission & crypto::PERM::input_mouse) != crypto::PERM::_no;
+      case KEY_DOWN_EVENT_MAGIC:
+      case KEY_UP_EVENT_MAGIC:
+      case UTF8_TEXT_EVENT_MAGIC:
+        return (permission & crypto::PERM::input_kbd) != crypto::PERM::_no;
+      case SS_TOUCH_MAGIC:
+        return (permission & crypto::PERM::input_touch) != crypto::PERM::_no;
+      case SS_PEN_MAGIC:
+        return (permission & crypto::PERM::input_pen) != crypto::PERM::_no;
+      default:
+        return false;
+    }
+  }
+
   std::optional<normalized_touch_port_t> normalize_touch_port(const touch_port_t &touch_port, std::pair<float, float> &coords) {
     const float monitor_logical_w = (touch_port.width * touch_port.scalar_inv) / touch_port.scalar_tpcoords;
     const float monitor_logical_h = (touch_port.height * touch_port.scalar_inv) / touch_port.scalar_tpcoords;

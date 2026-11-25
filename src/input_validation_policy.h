@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "crypto_perm.h"
+
 namespace input::validation {
   struct validated_packet_t {
     std::uint32_t magic = 0;
@@ -48,6 +50,14 @@ namespace input::validation {
    * @return Validation details, including the parsed packet when valid.
    */
   packet_validation_result_t validate_packet(const std::vector<std::uint8_t> &input_data);
+
+  /**
+   * @brief Check whether a validated input packet magic is allowed by the client's permission mask.
+   * @param magic Little-endian input packet magic.
+   * @param permission Client permission bitmask.
+   * @return True when the packet belongs to an allowed input permission category.
+   */
+  bool packet_permitted(std::uint32_t magic, crypto::PERM permission);
 
   struct touch_port_t {
     int offset_x = 0;

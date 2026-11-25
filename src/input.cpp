@@ -2235,61 +2235,8 @@ namespace input {
     }
 
     const auto packet = validate_packet(input_data);
-    if (!packet) {
+    if (!packet || !validation::packet_permitted(packet->magic, permission)) {
       return;
-    }
-
-    // Have some input permission
-    // Otherwise have all input permission
-    if ((permission & crypto::PERM::_all_inputs) != crypto::PERM::_all_inputs) {
-      // Check permission
-      switch (packet->magic) {
-        case MULTI_CONTROLLER_MAGIC_GEN5:
-        case SS_CONTROLLER_ARRIVAL_MAGIC:
-        case SS_CONTROLLER_TOUCH_MAGIC:
-        case SS_CONTROLLER_MOTION_MAGIC:
-        case SS_CONTROLLER_BATTERY_MAGIC:
-        case SS_STEAM_CONTROLLER_ATTRIBUTES_MAGIC:
-          if (!(permission & crypto::PERM::input_controller)) {
-            return;
-          } else {
-            break;
-          }
-        case MOUSE_MOVE_REL_MAGIC_GEN5:
-        case MOUSE_MOVE_ABS_MAGIC:
-        case MOUSE_BUTTON_DOWN_EVENT_MAGIC_GEN5:
-        case MOUSE_BUTTON_UP_EVENT_MAGIC_GEN5:
-        case SCROLL_MAGIC_GEN5:
-        case SS_HSCROLL_MAGIC:
-          if (!(permission & crypto::PERM::input_mouse)) {
-            return;
-          } else {
-            break;
-          }
-        case KEY_DOWN_EVENT_MAGIC:
-        case KEY_UP_EVENT_MAGIC:
-        case UTF8_TEXT_EVENT_MAGIC:
-          if (!(permission & crypto::PERM::input_kbd)) {
-            return;
-          } else {
-            break;
-          }
-        case SS_TOUCH_MAGIC:
-          if (!(permission & crypto::PERM::input_touch)) {
-            return;
-          } else {
-            break;
-          }
-        case SS_PEN_MAGIC:
-          if (!(permission & crypto::PERM::input_pen)) {
-            return;
-          } else {
-            break;
-          }
-        default:
-          // Unknown input event
-          return;
-      }
     }
     {
       std::lock_guard<std::mutex> lg(input->input_queue_lock);
