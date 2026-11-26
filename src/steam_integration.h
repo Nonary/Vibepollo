@@ -13,16 +13,43 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace platf::steam {
 
+  struct vdf_child;
+
   struct vdf_node {
     std::string value;
-    std::vector<std::pair<std::string, vdf_node>> children;
+    std::vector<vdf_child> children;
+
+    vdf_node();
+    vdf_node(std::string value, std::vector<vdf_child> children);
+    ~vdf_node();
+    vdf_node(const vdf_node &);
+    vdf_node &operator=(const vdf_node &);
+    vdf_node(vdf_node &&) noexcept;
+    vdf_node &operator=(vdf_node &&) noexcept;
 
     const vdf_node *find(const std::string &key) const;
   };
+
+  struct vdf_child {
+    std::string first;
+    vdf_node second;
+  };
+
+  // Define the special members after the vector's element type is complete.
+  inline vdf_node::vdf_node() = default;
+  inline vdf_node::vdf_node(std::string value, std::vector<vdf_child> children):
+      value(std::move(value)),
+      children(std::move(children)) {}
+  inline vdf_node::~vdf_node() = default;
+  inline vdf_node::vdf_node(const vdf_node &) = default;
+  inline vdf_node &vdf_node::operator=(const vdf_node &) = default;
+  inline vdf_node::vdf_node(vdf_node &&) noexcept = default;
+  inline vdf_node &vdf_node::operator=(vdf_node &&) noexcept = default;
 
   // Parse Valve's quoted-key/quoted-value format. Comments and escaped quotes
   // are accepted; malformed trailing input is ignored after valid entries.
