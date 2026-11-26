@@ -2551,7 +2551,9 @@ namespace rtsp_stream {
       accepted_audio_codec,
       ac3_encoder_available,
       eac3_encoder_available,
-      config::audio.high_quality_audio
+      config::audio.high_quality_audio,
+      config::audio.ac3_bitrate,
+      config::audio.eac3_bitrate
     );
     if (config::audio.format != "opus"sv && session->audio_codec_offered.empty()) {
       BOOST_LOG(warning) << "Dolby audio format ["sv << config::audio.format
@@ -2686,11 +2688,7 @@ namespace rtsp_stream {
       // Account for the selected audio codec's bitrate without changing the Opus calculation.
       int audioBitrateAdjustment {};
       if (config.audio.use_ac3 || config.audio.use_eac3) {
-        audioBitrateAdjustment = audio::dolby_bitrate_kbps(
-          config.audio.use_eac3,
-          config.audio.high_quality_dolby,
-          config.audio.channels
-        );
+        audioBitrateAdjustment = config.audio.dolby_bitrate;
       } else {
         audioBitrateAdjustment = (config.audio.flags[audio::config_t::HIGH_QUALITY] ? 256 : 96) * config.audio.channels;
       }

@@ -3,6 +3,7 @@ import test from 'node:test';
 import { hostReadiness, linuxCaptureState } from '../utils/hostReadiness.ts';
 import {
   acknowledgeSettings,
+  applyLegacyDolbyBitrateDefaults,
   configBoolean,
   linuxVirtualCaptureWarning,
   settingError,
@@ -219,4 +220,51 @@ test('Guide key binding defaults off, validates integer ranges and is editable p
     for (const value of [0, 1, max]) assert.equal(settingError(field, value), undefined);
     for (const value of [-1, max + 1, 0.5, NaN]) assert.ok(settingError(field, value));
   }
+});
+
+test(
+  'AC-3 and E-AC-3 bitrate dropdowns expose discrete tiers and preserve legacy high_quality_audio',
+  async () => {
+  const { settingsDefaults } = await import('../configs/settingsSchema.ts');
+  const ac3 = settingsFields.get('ac3_bitrate');
+  const eac3 = settingsFields.get('eac3_bitrate');
+  assert.equal(settingsFields.get('high_quality_audio'), undefined);
+  assert.equal(settingsDefaults.ac3_bitrate, '384');
+  assert.equal(settingsDefaults.eac3_bitrate, '192');
+  assert.deepEqual(
+    ac3?.options?.map((option) => option.value),
+    ['384', '448', '640'],
+  );
+  assert.deepEqual(
+    eac3?.options?.map((option) => option.value),
+    ['192', '384', '640', '768', '960'],
+  );
+  assert.deepEqual(ac3?.visibleWhen, { key: 'audio_format', equals: 'ac3' });
+  assert.deepEqual(eac3?.visibleWhen, { key: 'audio_format', equals: 'eac3' });
+
+  const legacyEnabled: Record<string, unknown> = {
+    audio_format: 'eac3',
+    high_quality_audio: 'enabled',
+  };
+  applyLegacyDolbyBitrateDefaults(legacyEnabled);
+  assert.equal(legacyEnabled.ac3_bitrate, '640');
+  assert.equal(legacyEnabled.eac3_bitrate, '384');
+
+  const legacyDisabled: Record<string, unknown> = {
+    audio_format: 'eac3',
+    high_quality_audio: 'disabled',
+  };
+  applyLegacyDolbyBitrateDefaults(legacyDisabled);
+  assert.equal(legacyDisabled.ac3_bitrate, undefined);
+  assert.equal(legacyDisabled.eac3_bitrate, undefined);
+
+  const explicitOverride: Record<string, unknown> = {
+    audio_format: 'eac3',
+    high_quality_audio: true,
+    ac3_bitrate: '384',
+    eac3_bitrate: '192',
+  };
+  applyLegacyDolbyBitrateDefaults(explicitOverride);
+  assert.equal(explicitOverride.ac3_bitrate, '384');
+  assert.equal(explicitOverride.eac3_bitrate, '192');
 });

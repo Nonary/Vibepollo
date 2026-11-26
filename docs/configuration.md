@@ -1174,13 +1174,53 @@ dualsense_haptics_gain = 1.5
     <tr>
         <td>Description</td>
         <td colspan="2">
-            When AC-3 or E-AC-3 is accepted by the client, selects a higher Dolby bitrate at the cost of increased
-            network bandwidth. Stereo uses 128 kbit/s by default or 192 kbit/s with high quality; AC-3 5.1 uses
-            384 or 640 kbit/s; E-AC-3 5.1 uses 192 or 384 kbit/s. This setting has no effect when Opus is selected.
+            Legacy fallback used when <code>ac3_bitrate</code> or <code>eac3_bitrate</code> is not explicitly set.
+            When unset, stereo defaults to 128 kbit/s (or 192 kbit/s when enabled), AC-3 5.1 defaults to 384 kbit/s
+            (or 640 kbit/s when enabled), and E-AC-3 5.1 defaults to 192 kbit/s (or 384 kbit/s when enabled). This
+            setting has no effect when Opus is selected or when an explicit bitrate is configured.
         </td>
     </tr>
     <tr><td>Default</td><td colspan="2"><code>disabled</code></td></tr>
     <tr><td>Example</td><td colspan="2"><code>high_quality_audio = enabled</code></td></tr>
+</table>
+
+### ac3_bitrate
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            When AC-3 is accepted by the client, selects the target 5.1 bitrate in kbit/s (stereo streams
+            automatically map to 128, 160, or 192 kbit/s). If unset, defaults to 384 kbit/s (or 640 kbit/s when
+            <code>high_quality_audio</code> is enabled). This setting has no effect when Opus or E-AC-3 is selected.
+        </td>
+    </tr>
+    <tr><td>Default</td><td colspan="2"><code>384</code></td></tr>
+    <tr><td>Choices</td><td>384</td><td>384 kbit/s for 5.1, 128 kbit/s for stereo.</td></tr>
+    <tr><td></td><td>448</td><td>448 kbit/s for 5.1, 160 kbit/s for stereo.</td></tr>
+    <tr><td></td><td>640</td><td>640 kbit/s for 5.1, 192 kbit/s for stereo.</td></tr>
+    <tr><td>Example</td><td colspan="2"><code>ac3_bitrate = 640</code></td></tr>
+</table>
+
+### eac3_bitrate
+
+<table>
+    <tr>
+        <td>Description</td>
+        <td colspan="2">
+            When E-AC-3 is accepted by the client, selects the target 5.1 bitrate in kbit/s (stereo streams
+            automatically map to 128, 192, 256, or 384 kbit/s). If unset, defaults to 192 kbit/s (or 384 kbit/s
+            when <code>high_quality_audio</code> is enabled). This setting has no effect when Opus or AC-3 is
+            selected.
+        </td>
+    </tr>
+    <tr><td>Default</td><td colspan="2"><code>192</code></td></tr>
+    <tr><td>Choices</td><td>192</td><td>192 kbit/s for 5.1, 128 kbit/s for stereo.</td></tr>
+    <tr><td></td><td>384</td><td>384 kbit/s for 5.1, 192 kbit/s for stereo.</td></tr>
+    <tr><td></td><td>640</td><td>640 kbit/s for 5.1, 256 kbit/s for stereo.</td></tr>
+    <tr><td></td><td>768</td><td>768 kbit/s for 5.1, 256 kbit/s for stereo.</td></tr>
+    <tr><td></td><td>960</td><td>960 kbit/s for 5.1, 384 kbit/s for stereo.</td></tr>
+    <tr><td>Example</td><td colspan="2"><code>eac3_bitrate = 768</code></td></tr>
 </table>
 
 ### install_steam_audio_drivers

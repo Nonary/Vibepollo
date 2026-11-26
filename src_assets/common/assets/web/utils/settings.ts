@@ -52,3 +52,13 @@ export function linuxVirtualCaptureWarning(platform: string, capture: unknown): 
     capture !== 'kms'
   );
 }
+
+export function applyLegacyDolbyBitrateDefaults(configured: Record<string, unknown>): void {
+  if (!configBoolean(configured.high_quality_audio)) return;
+  if (configured.ac3_bitrate == null || String(configured.ac3_bitrate).trim() === '') {
+    configured.ac3_bitrate = '640';
+  }
+  if (configured.eac3_bitrate == null || String(configured.eac3_bitrate).trim() === '') {
+    configured.eac3_bitrate = '384';
+  }
+}

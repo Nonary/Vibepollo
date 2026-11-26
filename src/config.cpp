@@ -2163,6 +2163,12 @@ namespace config {
     bool_f(vars, "stream_audio", audio.stream);
     string_restricted_f(vars, "audio_format", audio.format, {"opus"sv, "ac3"sv, "eac3"sv});
     bool_f(vars, "high_quality_audio", audio.high_quality_audio);
+    std::string ac3_bitrate_str = audio.high_quality_audio ? "640" : "384";
+    std::string eac3_bitrate_str = audio.high_quality_audio ? "384" : "192";
+    string_restricted_f(vars, "ac3_bitrate", ac3_bitrate_str, {"384"sv, "448"sv, "640"sv});
+    string_restricted_f(vars, "eac3_bitrate", eac3_bitrate_str, {"192"sv, "384"sv, "640"sv, "768"sv, "960"sv});
+    audio.ac3_bitrate = std::stoi(ac3_bitrate_str);
+    audio.eac3_bitrate = std::stoi(eac3_bitrate_str);
     bool_f(vars, "audio_sink_capture_only", audio.sink_capture_only);
     bool_f(vars, "install_steam_audio_drivers", audio.install_steam_drivers);
     bool_f(vars, "keep_sink_default", audio.keep_default);

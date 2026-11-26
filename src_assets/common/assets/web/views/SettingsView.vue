@@ -7,6 +7,7 @@ import LinuxCaptureStatus from '@/components/settings/LinuxCaptureStatus.vue';
 import NetworkPortDetails from '@/components/settings/NetworkPortDetails.vue';
 import {
   acknowledgeSettings,
+  applyLegacyDolbyBitrateDefaults,
   configBoolean,
   linuxVirtualCaptureWarning,
   settingError,
@@ -768,6 +769,7 @@ function normalizeConfiguredValues(configured: Record<string, unknown>): Record<
       }
     }
   }
+  applyLegacyDolbyBitrateDefaults(normalized);
   return normalized;
 }
 
