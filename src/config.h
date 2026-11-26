@@ -66,7 +66,7 @@ namespace config {
 
     int hevc_mode;
     int av1_mode;
-    bool pyrowave;  ///< Advertise PyroWave (bitStreamFormat 3) when the capture GPU can encode it.
+    bool pyrowave;  ///< Advertise PyroWave (bitStreamFormat 100, legacy 3) when the capture GPU can encode it.
 
     int min_threads;  // Minimum number of threads/slices for CPU encoding
 
