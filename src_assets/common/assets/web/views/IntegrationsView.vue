@@ -2,7 +2,7 @@
 import { providerSupported } from '@/utils/providerCapabilities';
 import GameLibrarySetup from '../../web-legacy/components/GameLibrarySetup.vue';
 import { useUnsavedChanges } from '@/composables/useUnsavedChanges';
-import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch, type Ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { useI18n } from 'vue-i18n';
 
@@ -176,6 +176,7 @@ const system = useSystemStore();
 const playnite = ref<PlayniteStatus | null>(null);
 const libraryApps = ref<LibraryApp[]>([]);
 const libraryAppsLoaded = ref(false);
+const libraryAppsError = ref('');
 const playniteLaunching = ref(false);
 const steam = ref<SteamStatus | null>(null);
 const steamGames = ref<SteamGame[]>([]);
@@ -212,6 +213,14 @@ const vigem = ref<VigemStatus | null>(null);
 const vulkan = ref<VulkanStatus | null>(null);
 const loading = ref(true);
 const refreshing = ref(false);
+const metadataError = ref(false);
+const pendingStatuses = ref(new Set<IntegrationId>());
+const readyStatuses = ref(new Set<IntegrationId>());
+const statusErrors = ref<Partial<Record<IntegrationId, string>>>({});
+const pageRequests = new AbortController();
+let refreshAfterAction = false;
+let steamGamesRequest: AbortController | undefined;
+let lutrisGamesRequest: AbortController | undefined;
 const actionBusy = ref(false);
 const syncing = ref(false);
 const errors = ref<Partial<Record<IntegrationId, string>>>({});
@@ -437,11 +446,24 @@ function steamIncludeToolsEnabled(): boolean {
   return steam.value?.include_tools === true;
 }
 
+function getIntegrationData<T>(
+  path: string,
+  { timeout = 5000, signal = pageRequests.signal }: { timeout?: number; signal?: AbortSignal } = {},
+): Promise<T> {
+  return apiGet<T>(path, {
+    signal: AbortSignal.any([pageRequests.signal, signal, AbortSignal.timeout(timeout)]),
+  });
+}
+
 async function loadSteamGames(resetDraft = true): Promise<void> {
+  steamGamesRequest?.abort();
+  const request = new AbortController();
+  steamGamesRequest = request;
   steamGamesLoading.value = true;
   steamGamesError.value = '';
   try {
-    const payload = await apiGet<unknown>('/api/steam/games');
+    const payload = await getIntegrationData<unknown>('/api/steam/games', { timeout: 15000, signal: request.signal });
+    if (steamGamesRequest !== request) return;
     const games =
       payload && typeof payload === 'object' && !Array.isArray(payload)
         ? (payload as { games?: unknown }).games
@@ -450,113 +472,136 @@ async function loadSteamGames(resetDraft = true): Promise<void> {
       (game): game is SteamGame =>
         Boolean(game) && typeof game === 'object' && !Array.isArray(game),
     );
-    if (resetDraft) resetSteamExclusionDraft();
+    if (resetDraft && !steamExclusionsDirty.value) resetSteamExclusionDraft();
   } catch (cause) {
+    if (steamGamesRequest !== request) return;
     steamGames.value = [];
-    steamGamesError.value = message(cause, t('ui.integrations.errors.steamGames'));
+    steamGamesError.value = checkError(cause, 'steamGames');
   } finally {
-    steamGamesLoading.value = false;
+    if (steamGamesRequest === request) {
+      steamGamesRequest = undefined;
+      steamGamesLoading.value = false;
+    }
   }
 }
 
 async function loadLutrisGames(resetDraft = true): Promise<void> {
+  lutrisGamesRequest?.abort();
+  const request = new AbortController();
+  lutrisGamesRequest = request;
   lutrisGamesLoading.value = true;
   lutrisGamesError.value = '';
   try {
-    const payload = await apiGet<{ games?: LutrisGame[] }>('/api/lutris/games');
+    const payload = await getIntegrationData<{ games?: LutrisGame[] }>('/api/lutris/games', { timeout: 15000, signal: request.signal });
+    if (lutrisGamesRequest !== request) return;
     lutrisGames.value = Array.isArray(payload.games) ? payload.games : [];
-    if (resetDraft) resetLutrisExclusionDraft();
+    if (resetDraft && !lutrisExclusionsDirty.value) resetLutrisExclusionDraft();
   } catch (cause) {
+    if (lutrisGamesRequest !== request) return;
     lutrisGames.value = [];
-    lutrisGamesError.value = message(cause, t('ui.integrations.errors.lutrisGames'));
+    lutrisGamesError.value = checkError(cause, 'lutrisGames');
   } finally {
-    lutrisGamesLoading.value = false;
+    if (lutrisGamesRequest === request) {
+      lutrisGamesRequest = undefined;
+      lutrisGamesLoading.value = false;
+    }
+  }
+}
+
+function checkError(cause: unknown, errorKey: string): string {
+  if (cause instanceof DOMException && cause.name === 'TimeoutError') {
+    return t('ui.integrations.errors.checkTimedOut');
+  }
+  return message(cause, t(`ui.integrations.errors.${errorKey}`));
+}
+
+async function loadStatus<T>(
+  id: IntegrationId,
+  path: string,
+  target: Ref<T | null>,
+  onSuccess?: () => void,
+): Promise<void> {
+  pendingStatuses.value.add(id);
+  delete statusErrors.value[id];
+  try {
+    const status = await getIntegrationData<T>(path);
+    if (!status || typeof status !== 'object' || Array.isArray(status)) {
+      throw new ApiError('invalid-json', 200);
+    }
+    target.value = status;
+    onSuccess?.();
+    readyStatuses.value.add(id);
+  } catch (cause) {
+    readyStatuses.value.delete(id);
+    statusErrors.value[id] = checkError(cause, `${id}Status`);
+  } finally {
+    pendingStatuses.value.delete(id);
+  }
+}
+
+async function loadLibraryApps(): Promise<void> {
+  libraryAppsLoaded.value = false;
+  libraryAppsError.value = '';
+  try {
+    libraryApps.value = parseLibraryApps(await getIntegrationData<unknown>('/api/apps'));
+    libraryAppsLoaded.value = true;
+  } catch (cause) {
+    libraryAppsError.value = checkError(cause, 'playniteApps');
   }
 }
 
 async function load(preserveNotice = false): Promise<void> {
-  if (refreshing.value) return;
+  if (pageRequests.signal.aborted) return;
+  if (refreshing.value) {
+    if (preserveNotice) refreshAfterAction = true;
+    return;
+  }
   refreshing.value = true;
+  metadataError.value = false;
   if (!preserveNotice) notice.value = '';
-  const nextErrors: Partial<Record<IntegrationId, string>> = {};
+  errors.value = {};
 
-  if (!system.metadata) await system.refreshHost();
+  try {
+    if (!system.metadata) await system.refreshHost();
+    if (pageRequests.signal.aborted) return;
+    if (!system.metadata) {
+      metadataError.value = true;
+      return;
+    }
 
-  const steamResult = providerSupported(system.metadata, 'steam')
-    ? (await Promise.allSettled([apiGet<SteamStatus>('/api/steam/status')]))[0] : undefined;
-  const lutrisResult = providerSupported(system.metadata, 'lutris')
-    ? (await Promise.allSettled([apiGet<LutrisStatus>('/api/lutris/status')]))[0]
-    : undefined;
-  const mangoResult = providerSupported(system.metadata, 'mangohud')
-    ? (await Promise.allSettled([apiGet<MangoHudStatus>('/api/frame-limiter/status')]))[0]
-    : undefined;
-  const windowsResults = isWindows.value
-    ? await Promise.allSettled([
-        apiGet<PlayniteStatus>('/api/playnite/status'),
-        apiGet<RtssStatus>('/api/rtss/status'),
-        apiGet<LosslessStatus>('/api/lossless_scaling/status'),
-        apiGet<VigemStatus>('/api/vigembus/status'),
-        apiGet<VulkanStatus>('/api/health/vulkan-hdr-layer'),
-        apiGet<unknown>('/api/apps'),
-      ])
-    : [];
-  const [playniteResult, rtssResult, losslessResult, vigemResult, vulkanResult, appsResult] =
-    windowsResults;
+    const checks: Promise<void>[] = [];
+    if (providerSupported(system.metadata, 'steam')) {
+      checks.push(loadStatus('steam', '/api/steam/status', steam, () => void loadSteamGames()));
+    }
+    if (providerSupported(system.metadata, 'lutris')) {
+      checks.push(loadStatus('lutris', '/api/lutris/status', lutris, () => void loadLutrisGames()));
+    }
+    if (providerSupported(system.metadata, 'mangohud')) {
+      checks.push(loadStatus('mangohud', '/api/frame-limiter/status', mangohud, () => {
+        if (!mangoDirty.value && !mangoSaving.value) resetMangoDraft();
+      }));
+    }
+    if (isWindows.value) {
+      checks.push(
+        loadStatus('playnite', '/api/playnite/status', playnite),
+        loadStatus('rtss', '/api/rtss/status', rtss),
+        loadStatus('lossless', '/api/lossless_scaling/status', lossless),
+        loadStatus('vigem', '/api/vigembus/status', vigem),
+        loadStatus('vulkan', '/api/health/vulkan-hdr-layer', vulkan),
+        loadLibraryApps(),
+      );
+    }
 
-  if (steamResult?.status === 'fulfilled') steam.value = steamResult.value;
-  else if (steamResult) nextErrors.steam = message(steamResult.reason, t('ui.integrations.errors.steamStatus'));
-
-  if (lutrisResult?.status === 'fulfilled') lutris.value = lutrisResult.value;
-  else if (lutrisResult)
-    nextErrors.lutris = message(lutrisResult.reason, t('ui.integrations.errors.lutrisStatus'));
-
-  if (mangoResult?.status === 'fulfilled') {
-    mangohud.value = mangoResult.value;
-    if (!mangoDirty.value && !mangoSaving.value) resetMangoDraft();
-  } else if (mangoResult) {
-    nextErrors.mangohud = message(mangoResult.reason, t('ui.integrations.errors.mangohudStatus'));
+    loading.value = false;
+    await Promise.all(checks);
+  } finally {
+    loading.value = false;
+    refreshing.value = false;
+    if (refreshAfterAction) {
+      refreshAfterAction = false;
+      void load(true);
+    }
   }
-
-  if (playniteResult?.status === 'fulfilled') playnite.value = playniteResult.value;
-  else if (playniteResult)
-    nextErrors.playnite = message(
-      playniteResult.reason,
-      t('ui.integrations.errors.playniteStatus'),
-    );
-
-  if (rtssResult?.status === 'fulfilled') rtss.value = rtssResult.value;
-  else if (rtssResult)
-    nextErrors.rtss = message(rtssResult.reason, t('ui.integrations.errors.rtssStatus'));
-
-  if (losslessResult?.status === 'fulfilled') lossless.value = losslessResult.value;
-  else if (losslessResult)
-    nextErrors.lossless = message(
-      losslessResult.reason,
-      t('ui.integrations.errors.losslessStatus'),
-    );
-
-  if (vigemResult?.status === 'fulfilled') vigem.value = vigemResult.value;
-  else if (vigemResult)
-    nextErrors.vigem = message(vigemResult.reason, t('ui.integrations.errors.vigemStatus'));
-
-  if (vulkanResult?.status === 'fulfilled') vulkan.value = vulkanResult.value;
-  else if (vulkanResult)
-    nextErrors.vulkan = message(vulkanResult.reason, t('ui.integrations.errors.vulkanStatus'));
-
-  if (appsResult?.status === 'fulfilled') {
-    libraryApps.value = parseLibraryApps(appsResult.value);
-    libraryAppsLoaded.value = true;
-  } else if (appsResult) {
-    libraryAppsLoaded.value = false;
-    nextErrors.playnite = message(appsResult.reason, t('ui.integrations.errors.playniteApps'));
-  }
-
-  if (steamResult?.status === 'fulfilled') await loadSteamGames();
-  if (lutrisResult?.status === 'fulfilled') await loadLutrisGames();
-
-  errors.value = nextErrors;
-  loading.value = false;
-  refreshing.value = false;
 }
 
 function playniteSummary(): IntegrationSummary {
@@ -862,7 +907,7 @@ function failedSummary(id: IntegrationId, name: string, description: string): In
   };
 }
 
-const summaries = computed(() => {
+const platformSummaries = computed(() => {
   if (isLinux.value) return [steamSummary(), lutrisSummary(), mangoHudSummary()].filter((item) => providerSupported(system.metadata, item.id));
   if (isWindows.value) {
     return [
@@ -877,7 +922,23 @@ const summaries = computed(() => {
   return providerSupported(system.metadata, 'steam') ? [steamSummary()] : [];
 });
 
-const errorCount = computed(() => Object.keys(errors.value).length);
+const summaries = computed(() => platformSummaries.value.map((summary): IntegrationSummary => {
+  const { id, name, description } = summary;
+  const statusError = statusErrors.value[id];
+  if (statusError) {
+    return { ...failedSummary(id, name, description), details: [statusError] };
+  }
+  if (pendingStatuses.value.has(id) && !readyStatuses.value.has(id)) {
+    return { id, name, description, status: t('_common.loading'), tone: 'neutral', details: [] };
+  }
+  return summary;
+}));
+
+const errorCount = computed(() => new Set([
+  ...Object.keys(errors.value),
+  ...Object.keys(statusErrors.value),
+  ...(libraryAppsError.value ? ['playnite'] : []),
+]).size);
 
 const dialogCopy = computed(() => {
   switch (pendingAction.value) {
@@ -1276,7 +1337,7 @@ async function saveMangoSettings(): Promise<void> {
 useUnsavedChanges(computed(() => mangoDirty.value || mangoSaving.value));
 const route = useRoute();
 watch(
-  () => [loading.value, route.hash],
+  () => [loading.value, route.hash, summaries.value.length],
   async () => {
     if (loading.value || !route.hash) return;
     await nextTick();
@@ -1284,6 +1345,7 @@ watch(
   },
 );
 onMounted(() => void load());
+onUnmounted(() => pageRequests.abort());
 const librarySetupOpen = ref(false);
 function libraryRequest(
   method: 'GET' | 'POST' | 'PATCH',
@@ -1305,7 +1367,7 @@ function libraryRequest(
       :platform="system.metadata?.platform || ''"
       :metadata="system.metadata"
       :request="libraryRequest"
-      @saved="load()"
+      @saved="load(true)"
     />
     <PageHeader :title="t('ui.integrations.title')" :description="t('ui.integrations.description')">
       <template #actions>
@@ -1332,6 +1394,9 @@ function libraryRequest(
       announce="polite"
     >
       {{ notice }}
+    </InlineAlert>
+    <InlineAlert v-if="metadataError" tone="warning" :title="t('ui.system.host_status_unavailable')">
+      {{ t('ui.integrations.errors.retryHostStatus') }}
     </InlineAlert>
     <InlineAlert v-if="errorCount" tone="warning" :title="t('ui.integrations.checksFailed')">
       {{
@@ -1378,19 +1443,22 @@ function libraryRequest(
             <StatusBadge :label="summary.status" :tone="summary.tone" compact />
           </div>
           <PlaynitePolicySettings
-            v-if="summary.id === 'playnite' && isWindows"
+            v-if="summary.id === 'playnite' && readyStatuses.has(summary.id)"
             :needs-directory="!playnite?.extensions_dir"
-            @saved="load"
+            @saved="load(true)"
           />
           <ul v-if="summary.details.length" class="integration-details">
             <li v-for="detail in summary.details" :key="detail">{{ detail }}</li>
           </ul>
-          <p v-if="summary.id === 'steam' && steam?.forced" class="integration-notice">
+          <p v-if="summary.id === 'playnite' && libraryAppsError" class="integration-notice">
+            {{ libraryAppsError }}
+          </p>
+          <p v-if="summary.id === 'steam' && steam?.forced && readyStatuses.has(summary.id)" class="integration-notice">
             {{ t('ui.integrations.steam.linuxForced') }}
           </p>
           <p class="integration-row__description">{{ summary.description }}</p>
           <section
-            v-if="summary.id === 'steam'"
+            v-if="summary.id === 'steam' && readyStatuses.has(summary.id)"
             class="integration-settings"
             aria-labelledby="steam-policy-heading"
           >
@@ -1698,7 +1766,7 @@ function libraryRequest(
           </section>
 
           <section
-            v-else-if="summary.id === 'lutris'"
+            v-else-if="summary.id === 'lutris' && readyStatuses.has(summary.id)"
             class="integration-settings"
             aria-labelledby="lutris-policy-heading"
           >
@@ -1779,7 +1847,7 @@ function libraryRequest(
           </section>
 
           <section
-            v-else-if="summary.id === 'mangohud'"
+            v-else-if="summary.id === 'mangohud' && readyStatuses.has(summary.id)"
             class="integration-settings"
             aria-labelledby="mangohud-settings-heading"
           >
@@ -1918,7 +1986,7 @@ function libraryRequest(
             </div>
           </section>
         </div>
-        <div v-if="summary.id === 'steam' || summary.id === 'lutris' || isWindows" class="integration-row__actions">
+        <div v-if="readyStatuses.has(summary.id) && (summary.id === 'steam' || summary.id === 'lutris' || isWindows)" class="integration-row__actions">
           <template v-if="summary.id === 'steam'">
             <AppButton
               v-if="!steam?.forced"

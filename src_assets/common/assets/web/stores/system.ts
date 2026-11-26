@@ -106,10 +106,13 @@ export const useSystemStore = defineStore('system', () => {
     return result;
   }
 
+  let hostRefresh: Promise<void> | undefined;
+
   async function refreshHost(): Promise<void> {
-    if (loadingHost.value || needsLogin.value || needsSetup.value) return;
+    if (needsLogin.value || needsSetup.value) return;
+    if (hostRefresh) return hostRefresh;
     loadingHost.value = true;
-    try {
+    hostRefresh = (async () => {
       const [metadataResult, sessionResult] = await Promise.allSettled([
         apiGet<HostMetadata>('/api/metadata', { signal: AbortSignal.timeout(5000) }),
         apiGet<SessionStatus>('/api/session/status', { signal: AbortSignal.timeout(5000) }),
@@ -122,7 +125,11 @@ export const useSystemStore = defineStore('system', () => {
       );
       error.value = failure ? 'ui.system.host_status_unavailable' : '';
       lastUpdatedAt.value = Date.now();
+    })();
+    try {
+      await hostRefresh;
     } finally {
+      hostRefresh = undefined;
       loadingHost.value = false;
     }
   }

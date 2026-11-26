@@ -561,6 +561,8 @@
       "errors": {
         "actionFailed": "The integration action failed.",
         "actionIncomplete": "The integration action did not complete.",
+        "checkTimedOut": "This check timed out. Select Refresh status to try again.",
+        "retryHostStatus": "Select Refresh status to load the host integration list.",
         "losslessStatus": "Lossless Scaling status is unavailable.",
         "mangohudStatus": "MangoHUD status is unavailable.",
         "mangohudUpdateFailed": "Unable to update MangoHUD settings.",

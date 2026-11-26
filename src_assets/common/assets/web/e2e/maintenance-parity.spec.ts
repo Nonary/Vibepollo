@@ -260,6 +260,73 @@ test('Windows maintenance exposes every crash part and recovers a failed part', 
   });
 });
 
+test('a stalled Steam status leaves Windows integrations usable and can be retried', async ({ page }) => {
+  await setupHost(page);
+  await localRoute(page, '**/api/metadata', (route) => route.fulfill({
+    json: { platform: 'windows', providers: { steam: true } },
+  }));
+  let stallSteamStatus = true;
+  await localRoute(page, '**/api/steam/status', async (route) => {
+    if (stallSteamStatus) return;
+    await route.fallback();
+  });
+
+  await page.goto('/v2/integrations');
+  const steam = page.getByRole('article', { name: 'Steam', exact: true });
+  await expect(steam.getByText('Loading...', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Launch Playnite' })).toBeEnabled();
+  await expect(steam.getByText(/This check timed out/)).toBeVisible({ timeout: 8000 });
+
+  stallSteamStatus = false;
+  await page.getByRole('button', { name: 'Refresh status' }).click();
+  await expect(steam.getByRole('heading', { name: 'Synchronization policy' })).toBeVisible();
+  await expect(page.getByText('Some integration checks failed')).toHaveCount(0);
+});
+
+test('the Steam catalog can be refreshed while its first request is stalled', async ({ page }) => {
+  await setupHost(page);
+  await localRoute(page, '**/api/metadata', (route) => route.fulfill({
+    json: { platform: 'windows', providers: { steam: true } },
+  }));
+  let catalogRequests = 0;
+  await localRoute(page, '**/api/steam/games', async (route) => {
+    catalogRequests += 1;
+    if (catalogRequests === 1) return;
+    await route.fulfill({ json: { games: [{ appid: 42, name: 'Recovered Steam game' }] } });
+  });
+
+  const firstCatalog = page.waitForRequest('**/api/steam/games');
+  await page.goto('/v2/integrations');
+  await firstCatalog;
+  const refresh = page.getByRole('button', { name: 'Refresh status' });
+  await expect(refresh).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Launch Playnite' })).toBeEnabled();
+
+  const firstCatalogCancelled = page.waitForEvent('requestfailed', (request) =>
+    new URL(request.url()).pathname === '/api/steam/games',
+  );
+  await refresh.click();
+  await firstCatalogCancelled;
+  await page.getByText('Choose synchronized games', { exact: true }).click();
+  await expect(page.getByText('Recovered Steam game', { exact: true })).toBeVisible();
+});
+
+test('the Integrations page recovers when host metadata initially fails', async ({ page }) => {
+  await setupHost(page);
+  let failMetadata = true;
+  await localRoute(page, '**/api/metadata', (route) => failMetadata
+    ? route.fulfill({ status: 503, json: { error: 'metadata unavailable' } })
+    : route.fallback(),
+  );
+
+  await page.goto('/v2/integrations');
+  await expect(page.getByText('Select Refresh status to load the host integration list.')).toBeVisible();
+  failMetadata = false;
+  await page.getByRole('button', { name: 'Refresh status' }).click();
+  await expect(page.getByRole('button', { name: 'Launch Playnite' })).toBeEnabled();
+  await expect(page.getByText('Select Refresh status to load the host integration list.')).toHaveCount(0);
+});
+
 test('Windows Playnite launch is actionable and auto-sync purge is separately confirmed', async ({
   page,
 }) => {
