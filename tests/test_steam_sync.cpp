@@ -1,6 +1,11 @@
 #include "src/steam_sync_policy.h"
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <gtest/gtest.h>
+#include <random>
+#include <string>
 
 TEST(SteamSync, RepairsManualFallbackCoverWithoutChangingLaunchSettings) {
   nlohmann::json manual = {{"name", "My game"}, {"steam-id", "42"},
@@ -325,4 +330,60 @@ TEST(SteamSync, RecentLimitAppliesAfterExclusionsAndToolFiltering) {
     {excluded, tool, second, first, unplayed}, false, 1, 0, {{"1", ""}}, false);
   ASSERT_EQ(selected.size(), 1);
   EXPECT_EQ(selected[0].app_id, 3);
+}
+
+TEST(SteamSync, StatusCountsMatchRecentSelectionAndIgnoreUninstalledHistory) {
+  platf::steam::game_t excluded, tool, first, second, unplayed, uninstalled;
+  excluded.app_id = 1; excluded.installed = true; excluded.last_played = 500;
+  tool.app_id = 2; tool.installed = true; tool.app_type = "tool"; tool.last_played = 400;
+  first.app_id = 3; first.installed = true; first.last_played = 300;
+  second.app_id = 4; second.installed = true; second.last_played = 200;
+  unplayed.app_id = 5; unplayed.installed = true;
+  uninstalled.app_id = 6; uninstalled.installed = false; uninstalled.last_played = 600;
+  const std::vector<platf::steam::game_t> catalog {excluded, tool, first, second, unplayed, uninstalled};
+  const std::vector<config::id_name_t> exclusions {{"1", ""}};
+
+  const auto recent = platf::steam::sync::policy::status_counts(catalog, false, 10, 0, exclusions, false, 1000);
+  EXPECT_EQ(recent.game_count, 5U);
+  EXPECT_EQ(recent.tool_game_count, 1U);
+  EXPECT_EQ(recent.excluded_game_count, 1U);
+  EXPECT_EQ(recent.selected_game_count, platf::steam::sync::policy::select_games(catalog, false, 10, 0, exclusions, false, 1000).size());
+  EXPECT_EQ(recent.selected_game_count, 2U);
+
+  EXPECT_EQ(platf::steam::sync::policy::status_counts(catalog, false, 1, 0, exclusions, false, 1000).selected_game_count, 1U);
+  EXPECT_EQ(platf::steam::sync::policy::status_counts(catalog, true, 0, 0, exclusions, false, 1000).selected_game_count, 3U);
+}
+
+// Regression: the status page used discover(), which skips Steam's play
+// history on Windows, so recent mode showed "0 selected" while a real sync
+// (which uses discover_catalog()) imported the recently played games.
+TEST(SteamSync, StatusCountsSeeLocalPlayHistoryForInstalledGames) {
+  namespace fs = std::filesystem;
+  const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count() ^ static_cast<long long>(std::random_device {}());
+  const auto base = fs::temp_directory_path() / ("vibepollo-steam-status-test-" + std::to_string(nonce));
+  std::error_code ec;
+  fs::create_directories(base / "steamapps/common/Recent", ec);
+  fs::create_directories(base / "steamapps/common/Unplayed", ec);
+  fs::create_directories(base / "userdata/123/config", ec);
+  {
+    std::ofstream out(base / "steamapps/appmanifest_42.acf");
+    out << R"VDF("AppState" { "appid" "42" "name" "Recent" "installdir" "Recent" "StateFlags" "4" })VDF";
+  }
+  {
+    std::ofstream out(base / "steamapps/appmanifest_43.acf");
+    out << R"VDF("AppState" { "appid" "43" "name" "Unplayed" "installdir" "Unplayed" "StateFlags" "4" })VDF";
+  }
+  const auto now = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::seconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  {
+    std::ofstream out(base / "userdata/123/config/localconfig.vdf");
+    out << R"VDF("UserLocalConfigStore" { "Software" { "Valve" { "Steam" { "apps" {
+      "42" { "LastPlayed" ")VDF"
+        << (now - 3600) << R"VDF(" "Playtime" "15" }
+    } } } } })VDF";
+  }
+
+  const auto counts = platf::steam::sync::policy::status_counts(platf::steam::discover_catalog({base}), false, 10, 30, {}, false, now);
+  EXPECT_EQ(counts.game_count, 2U);
+  EXPECT_EQ(counts.selected_game_count, 1U);
+  fs::remove_all(base, ec);
 }

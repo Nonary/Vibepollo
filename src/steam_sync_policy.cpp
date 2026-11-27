@@ -6,6 +6,7 @@
 #include <charconv>
 #include <chrono>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <optional>
 #include <sstream>
@@ -269,6 +270,21 @@ namespace platf::steam::sync::policy {
       selected.resize(static_cast<std::size_t>(recent_games));
     }
     return selected;
+  }
+
+  status_counts_t status_counts(const std::vector<game_t> &catalog, bool sync_all_installed, int recent_games, int recent_max_age_days, const std::vector<config::id_name_t> &exclusions, bool include_tools, std::uint64_t now) {
+    std::vector<game_t> installed;
+    std::copy_if(catalog.begin(), catalog.end(), std::back_inserter(installed), [](const auto &game) {
+      return game.installed;
+    });
+    const auto importable = filter_games(installed, {}, include_tools).size();
+    const auto included = filter_games(installed, exclusions, include_tools).size();
+    status_counts_t counts;
+    counts.game_count = installed.size();
+    counts.tool_game_count = installed.size() - importable;
+    counts.excluded_game_count = importable - included;
+    counts.selected_game_count = select_games(catalog, sync_all_installed, recent_games, recent_max_age_days, exclusions, include_tools, now).size();
+    return counts;
   }
 
   bool reconcile(nlohmann::json &root, const std::vector<game_t> &input_games, bool remove_uninstalled, const std::vector<config::id_name_t> &exclusions, bool include_tools, const std::string &source) {
