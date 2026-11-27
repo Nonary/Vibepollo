@@ -23,18 +23,29 @@ def function(source, signature):
 
 
 PRELUDE = r'''
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
+#include <filesystem>
+#include <fstream>
+#include <functional>
 #include <iostream>
 #include <mutex>
+#include <optional>
+#include <string>
 #include <string_view>
 #include <thread>
+#include <utility>
 #include <vector>
 using namespace std::literals;
 struct log_sink {
   template<class T> log_sink &operator<<(const T &) { return *this; }
 };
 #define BOOST_LOG(level) log_sink{}
+using DWORD = unsigned;
+using UINT = unsigned;
 struct MOUSEKEYS {
-  unsigned cbSize, dwFlags, iMaxSpeed, iTimeToMaxSpeed, iCtrlSpeed,
+  DWORD cbSize, dwFlags, iMaxSpeed, iTimeToMaxSpeed, iCtrlSpeed,
     dwReserved1, dwReserved2;
   bool operator==(const MOUSEKEYS &) const = default;
 };
@@ -42,10 +53,13 @@ constexpr unsigned SM_MOUSEPRESENT = 1, SPI_GETMOUSEKEYS = 2,
   SPI_SETMOUSEKEYS = 3, MKF_MOUSEKEYSON = 1, MKF_AVAILABLE = 2;
 std::mutex desktop_mutex;
 MOUSEKEYS desktop;
+// mouse_present is SM_MOUSEPRESENT, which goes stale when Windows misses a
+// mouse arrival; raw_mice is what raw input lists.
 bool mouse_present = false, fail_get = false, fail_set = false;
 unsigned get_calls = 0, sets = 0;
+int last_error = 5;
 int GetSystemMetrics(unsigned) { return mouse_present; }
-int GetLastError() { return 5; }
+int GetLastError() { return last_error; }
 int SystemParametersInfoW(unsigned action, unsigned, void *data, unsigned) {
   std::lock_guard lock(desktop_mutex);
   auto state = static_cast<MOUSEKEYS *>(data);
@@ -60,6 +74,66 @@ int SystemParametersInfoW(unsigned action, unsigned, void *data, unsigned) {
   }
   return 1;
 }
+constexpr DWORD RIM_TYPEMOUSE = 0, RIM_TYPEKEYBOARD = 1;
+constexpr int ERROR_INSUFFICIENT_BUFFER = 122;
+struct RAWINPUTDEVICELIST {
+  void *hDevice;
+  DWORD dwType;
+};
+unsigned raw_mice = 0;
+bool raw_fail = false;
+UINT GetRawInputDeviceList(RAWINPUTDEVICELIST *devices, UINT *count, UINT) {
+  if (raw_fail) {
+    last_error = 31;
+    return static_cast<UINT>(-1);
+  }
+  const UINT total = raw_mice + 1;  // A keyboard is always listed.
+  if (!devices) {
+    *count = total;
+    return 0;
+  }
+  if (*count < total) {
+    *count = total;
+    last_error = ERROR_INSUFFICIENT_BUFFER;
+    return static_cast<UINT>(-1);
+  }
+  for (UINT i = 0; i != total; ++i) devices[i] = {nullptr, i < raw_mice ? RIM_TYPEMOUSE : RIM_TYPEKEYBOARD};
+  return total;
+}
+// Delayed tasks run only when a test calls run_polls().
+struct fake_task_pool {
+  std::vector<std::function<void()>> delayed;
+  template<class F, class Delay> void pushDelayed(F &&task, Delay) { delayed.emplace_back(std::forward<F>(task)); }
+} task_pool;
+std::filesystem::path record_directory;
+std::filesystem::path appdata() { return record_directory; }
+// The process runs in current_session, whose logon started at current_logon.
+using LPWSTR = wchar_t *;
+struct LARGE_INTEGER {
+  std::int64_t QuadPart;
+};
+struct WTSINFOW {
+  LARGE_INTEGER LogonTime;
+};
+void *const WTS_CURRENT_SERVER_HANDLE = nullptr;
+enum WTS_INFO_CLASS { WTSSessionInfo = 24 };
+DWORD current_session = 1;
+std::int64_t current_logon = 1000;
+bool fail_session = false;
+WTSINFOW session_info;
+DWORD GetCurrentProcessId() { return 42; }
+int ProcessIdToSessionId(DWORD, DWORD *session_id) {
+  if (fail_session) return 0;
+  *session_id = current_session;
+  return 1;
+}
+int WTSQuerySessionInformationW(void *, DWORD, WTS_INFO_CLASS, LPWSTR *buffer, DWORD *bytes) {
+  session_info.LogonTime.QuadPart = current_logon;
+  *buffer = reinterpret_cast<LPWSTR>(&session_info);
+  *bytes = sizeof(session_info);
+  return 1;
+}
+void WTSFreeMemory(void *) {}
 '''
 
 TESTS = r'''
@@ -69,30 +143,70 @@ void check(bool ok, const char *name) {
   if (!ok) { ++failures; std::cerr << "FAIL: " << name << '\n'; }
 }
 const MOUSEKEYS original {sizeof(MOUSEKEYS), 0x40, 77, 3000, 5, 0, 0};
+const MOUSEKEYS streaming {sizeof(MOUSEKEYS), MKF_MOUSEKEYSON | MKF_AVAILABLE, 10, 1000, 0, 0, 0};
+std::filesystem::path record_path(DWORD session) {
+  return record_directory / ("mouse_keys_restore-" + std::to_string(session) + ".txt");
+}
+bool record_exists(DWORD session = current_session) { return std::filesystem::exists(record_path(session)); }
+void run_polls() {
+  auto due = std::move(task_pool.delayed);
+  task_pool.delayed.clear();
+  for (auto &task : due) task();
+}
+// A new host process: in-memory state and queued polls are gone, while the
+// desktop's settings and the record on disk remain.
+void restart_host() {
+  enabled_mouse_keys = false;
+  mouse_keys_restore_deferred = false;
+  mouse_keys_restore_poll_scheduled = false;
+  mouse_keys_restore_failing = false;
+  previous_mouse_keys_state = {};
+  mouse_keys_record_owner.reset();
+  task_pool.delayed.clear();
+}
 void reset(MOUSEKEYS initial = original) {
   desktop = initial;
   get_calls = sets = 0;
-  mouse_present = fail_get = fail_set = false;
-  enabled_mouse_keys = false;
-  previous_mouse_keys_state = {};
+  mouse_present = fail_get = fail_set = raw_fail = false;
+  raw_mice = 0;
+  current_session = 1;
+  current_logon = 1000;
+  fail_session = false;
+  restart_host();
+  for (const DWORD session : {1u, 2u}) std::filesystem::remove(record_path(session));
 }
-int main() {
+// A mouse arrived while Mouse Keys was on and Windows missed it, then the stream ended.
+void defer_restore() {
+  reset(); enable_mouse_keys(); raw_mice = 1; restore_mouse_keys();
+}
+bool deferred_on() {
+  return enabled_mouse_keys && mouse_keys_restore_deferred && desktop == streaming && record_exists() &&
+         task_pool.delayed.size() == 1;
+}
+bool released(const MOUSEKEYS &expected) {
+  return desktop == expected && !enabled_mouse_keys && !mouse_keys_restore_deferred && !record_exists() &&
+         task_pool.delayed.empty();
+}
+int main(int argc, char **argv) {
+  if (argc != 2) return 2;
+  record_directory = argv[1];
+
   reset(); mouse_present = true;
   enable_mouse_keys(); restore_mouse_keys();
-  check(desktop == original && get_calls == 0 && sets == 0,
+  check(desktop == original && get_calls == 0 && sets == 0 && !record_exists(),
         "connected mouse leaves settings untouched");
 
   reset();
   enable_mouse_keys();
-  check(enabled_mouse_keys && desktop.dwFlags == (MKF_MOUSEKEYSON | MKF_AVAILABLE),
-        "missing mouse enables cursor workaround");
+  check(enabled_mouse_keys && desktop.dwFlags == (MKF_MOUSEKEYSON | MKF_AVAILABLE) && record_exists(),
+        "missing mouse enables cursor workaround and records the original settings");
   restore_mouse_keys();
-  check(desktop == original && !enabled_mouse_keys, "single enable restores exact settings");
+  check(released(original), "single enable restores exact settings and drops the record");
 
   reset();
   for (int i = 0; i != 1200; ++i) enable_mouse_keys();
   restore_mouse_keys();
-  check(desktop == original && get_calls == 1 && sets == 2,
+  check(desktop == original && get_calls == 2 && sets == 2,
         "per-frame checks preserve original baseline");
 
   reset();
@@ -102,7 +216,7 @@ int main() {
   }
   for (auto &worker : workers) worker.join();
   restore_mouse_keys();
-  check(desktop == original && get_calls == 1 && sets == 2,
+  check(desktop == original && get_calls == 2 && sets == 2,
         "concurrent capture checks share one original snapshot");
 
   reset();
@@ -110,23 +224,29 @@ int main() {
   check(desktop == original, "mouse reattachment still restores original settings");
 
   reset(); fail_get = true; enable_mouse_keys(); restore_mouse_keys();
-  check(desktop == original && sets == 0 && !enabled_mouse_keys,
+  check(desktop == original && sets == 0 && !enabled_mouse_keys && !record_exists(),
         "failed snapshot never changes desktop");
   fail_get = false; enable_mouse_keys(); restore_mouse_keys();
   check(desktop == original && !enabled_mouse_keys, "snapshot failure can retry");
 
   reset(); fail_set = true; enable_mouse_keys(); restore_mouse_keys();
-  check(desktop == original && sets == 1 && !enabled_mouse_keys,
+  check(desktop == original && sets == 1 && !enabled_mouse_keys && !record_exists(),
         "failed enable does not own desktop state");
   fail_set = false; enable_mouse_keys(); restore_mouse_keys();
   check(desktop == original && !enabled_mouse_keys, "failed enable can retry");
 
   reset(); enable_mouse_keys(); fail_set = true; restore_mouse_keys();
-  check(enabled_mouse_keys && previous_mouse_keys_state == original,
-        "failed restoration retains original snapshot");
-  fail_set = false; enable_mouse_keys(); restore_mouse_keys();
-  check(desktop == original && !enabled_mouse_keys,
-        "later cleanup retries restoration without replacing original baseline");
+  check(enabled_mouse_keys && previous_mouse_keys_state == original && record_exists() && task_pool.delayed.size() == 1,
+        "failed restoration retains original snapshot and queues a retry");
+  run_polls();
+  check(enabled_mouse_keys && desktop == streaming && task_pool.delayed.size() == 1,
+        "retry keeps polling while Windows refuses the restore");
+  fail_set = false; run_polls();
+  check(released(original), "retry restores a refused write without another stream or restart");
+
+  reset(); enable_mouse_keys(); fail_set = true; restore_mouse_keys();
+  fail_set = false; enable_mouse_keys(); restore_mouse_keys(); run_polls();
+  check(released(original), "later cleanup retries restoration without replacing original baseline");
 
   reset(); enable_mouse_keys(); restore_mouse_keys(); restore_mouse_keys();
   check(sets == 2 && desktop == original, "repeated cleanup is harmless");
@@ -137,6 +257,134 @@ int main() {
   auto existing = original; existing.dwFlags |= MKF_MOUSEKEYSON;
   reset(existing); enable_mouse_keys(); enable_mouse_keys(); restore_mouse_keys();
   check(desktop == existing, "existing accessibility preferences survive streaming");
+
+  // Deferred restoration.
+  defer_restore();
+  check(deferred_on(), "missed mouse arrival keeps Mouse Keys on, recorded, with a poll queued");
+  run_polls();
+  check(deferred_on(), "poll keeps Mouse Keys on while a mouse is listed");
+  raw_mice = 0; run_polls();
+  check(released(original), "poll restores once no mouse is listed");
+
+  // An enumeration error is not an empty list.
+  defer_restore(); raw_fail = true; run_polls();
+  check(deferred_on(), "enumeration error while the mouse stays connected keeps Mouse Keys on");
+  raw_mice = 0; run_polls();
+  check(deferred_on(), "enumeration error never counts as a disconnected mouse");
+  raw_fail = false; run_polls();
+  check(released(original), "restoration waits for a successful empty enumeration");
+
+  reset(); enable_mouse_keys(); raw_fail = true; restore_mouse_keys();
+  check(deferred_on(), "enumeration error at stream end defers instead of restoring");
+  raw_fail = false; run_polls();
+  check(released(original), "deferral after an enumeration error restores once no mouse is listed");
+
+  // Host restart.
+  defer_restore(); restart_host();
+  check(!enabled_mouse_keys && record_exists(), "record survives a host restart while deferred");
+  recover_mouse_keys();
+  check(deferred_on(), "restarted host resumes the deferral while the mouse stays connected");
+  run_polls();
+  check(deferred_on(), "resumed deferral keeps Mouse Keys on while a mouse is listed");
+  raw_mice = 0; run_polls();
+  check(released(original), "resumed deferral restores the original settings after mouse removal");
+
+  reset(); enable_mouse_keys(); restart_host(); recover_mouse_keys();
+  check(released(original), "host restart mid-stream restores the original settings at startup");
+
+  defer_restore(); restart_host(); desktop = original; sets = 0; recover_mouse_keys();
+  check(released(original) && sets == 0,
+        "restart after Windows reset the settings drops the record without writing");
+
+  reset(); recover_mouse_keys();
+  check(desktop == original && sets == 0 && !enabled_mouse_keys, "startup without a record does nothing");
+
+  reset();
+  { std::ofstream corrupt {record_path(current_session)}; corrupt << "garbage\n"; }
+  recover_mouse_keys();
+  check(desktop == original && sets == 0 && !record_exists() && !enabled_mouse_keys,
+        "unreadable record is discarded");
+
+  // Changes the user makes while restoration is deferred.
+  defer_restore(); desktop.iMaxSpeed = 63; run_polls();
+  check(enabled_mouse_keys && mouse_keys_restore_deferred && desktop.iMaxSpeed == 63 && task_pool.delayed.size() == 1,
+        "poll keeps a user change while the mouse stays connected");
+  raw_mice = 0; run_polls();
+  auto user_speed = original; user_speed.iMaxSpeed = 63;
+  check(released(user_speed), "mouse removal restores only the settings Sunshine still holds");
+
+  defer_restore(); desktop = original; sets = 0; run_polls();
+  check(released(original) && sets == 0, "user restoring the settings by hand ends the deferral without writing");
+
+  // A failed read of the current settings never writes the snapshot over a user change.
+  defer_restore(); desktop.iMaxSpeed = 63; fail_get = true; sets = 0; restore_mouse_keys();
+  check(enabled_mouse_keys && mouse_keys_restore_deferred && desktop.iMaxSpeed == 63 && desktop.dwFlags == streaming.dwFlags &&
+          sets == 0 && record_exists() && task_pool.delayed.size() == 1,
+        "failed read at a later stream end keeps a user change made while deferred, and ownership");
+  run_polls();
+  check(enabled_mouse_keys && desktop.iMaxSpeed == 63 && sets == 0 && task_pool.delayed.size() == 1,
+        "deferred poll retries after a failed read without writing");
+  fail_get = false; raw_mice = 0; run_polls();
+  check(released(user_speed), "retry after a failed read restores only the settings Sunshine still holds");
+
+  defer_restore(); desktop.iMaxSpeed = 63; restart_host(); fail_get = true; sets = 0; recover_mouse_keys();
+  check(enabled_mouse_keys && desktop.iMaxSpeed == 63 && desktop.dwFlags == streaming.dwFlags && sets == 0 && record_exists() &&
+          task_pool.delayed.size() == 1,
+        "failed read during same-logon recovery keeps a user change and ownership, and queues a retry");
+  fail_get = false; run_polls();
+  check(enabled_mouse_keys && mouse_keys_restore_deferred && desktop.iMaxSpeed == 63 && desktop.dwFlags == streaming.dwFlags &&
+          task_pool.delayed.size() == 1,
+        "retry after a failed recovery read resumes the deferral while the mouse stays connected");
+  raw_mice = 0; run_polls();
+  check(released(user_speed), "resumed deferral after a failed recovery read restores only the settings Sunshine still holds");
+
+  // A failed first read is retried without another stream or restart.
+  reset(); enable_mouse_keys(); fail_get = true; sets = 0; restore_mouse_keys();
+  check(enabled_mouse_keys && desktop == streaming && sets == 0 && record_exists() && task_pool.delayed.size() == 1,
+        "failed first read at stream end writes nothing, keeps ownership and queues a retry");
+  run_polls(); run_polls();
+  check(enabled_mouse_keys && desktop == streaming && sets == 0 && record_exists() && task_pool.delayed.size() == 1,
+        "retry keeps polling without writing while the read fails");
+  fail_get = false; run_polls();
+  check(released(original), "retry restores once the read succeeds, without another stream or restart");
+
+  reset(); enable_mouse_keys(); restart_host(); fail_get = true; sets = 0; recover_mouse_keys();
+  check(enabled_mouse_keys && desktop == streaming && sets == 0 && record_exists() && task_pool.delayed.size() == 1,
+        "failed first read during startup recovery writes nothing and queues a retry");
+  fail_get = false; run_polls();
+  check(released(original), "retry restores after a failed recovery read without another stream or restart");
+
+  reset(); enable_mouse_keys(); fail_get = true; restore_mouse_keys();
+  fail_get = false; restore_mouse_keys(); run_polls();
+  check(released(original), "a stream end that restores first leaves the queued retry nothing to do");
+
+  defer_restore(); desktop.iTimeToMaxSpeed = 2500; restart_host(); recover_mouse_keys();
+  check(enabled_mouse_keys && mouse_keys_restore_deferred && desktop.iTimeToMaxSpeed == 2500 &&
+          desktop.dwFlags == streaming.dwFlags && record_exists() && task_pool.delayed.size() == 1,
+        "restarted host keeps a user change while the mouse stays connected");
+  raw_mice = 0; run_polls();
+  auto user_time = original; user_time.iTimeToMaxSpeed = 2500;
+  check(released(user_time), "restarted host restores only the settings Sunshine still holds");
+
+  // Records belong to the logon that wrote them.
+  defer_restore(); restart_host();
+  current_session = 2; desktop = streaming; sets = 0; recover_mouse_keys();
+  check(sets == 0 && desktop == streaming && !enabled_mouse_keys && record_exists(1) && task_pool.delayed.empty(),
+        "another session's record is left alone and never restores its settings here");
+  current_session = 1; desktop = streaming; raw_mice = 1; recover_mouse_keys();
+  check(deferred_on(), "the record's own session still resumes the deferral");
+
+  defer_restore(); restart_host();
+  current_logon = 2000; desktop = streaming; sets = 0; recover_mouse_keys();
+  check(sets == 0 && desktop == streaming && !enabled_mouse_keys && !record_exists() && task_pool.delayed.empty(),
+        "a later logon reusing the session ID discards the record without writing");
+
+  reset(); fail_session = true; enable_mouse_keys();
+  check(enabled_mouse_keys && !record_exists(1) && !record_exists(2),
+        "an unidentified logon writes no record");
+  restore_mouse_keys();
+  check(desktop == original && !enabled_mouse_keys, "an unidentified logon still restores at stream end");
+
   std::cout << cases << " Mouse Keys cases, " << failures << " failed\n";
   return failures ? 1 : 0;
 }
@@ -151,23 +399,28 @@ def main():
     source = args.source.read_text()
     start = source.index(';', source.index('using adapteraddrs_t =')) + 1
     globals_source = source[start:source.index('  HANDLE qos_handle', start)]
+    helpers = function(source, '  namespace {\n    MOUSEKEYS streaming_mouse_keys_state()')
+    recover = function(source, '  void recover_mouse_keys()')
     enable = function(source, '  void enable_mouse_keys()')
     stop = function(source, '  void streaming_will_stop()')
     restore = 'void restore_mouse_keys() {\n' + stop[stop.index('    // Restore Mouse Keys'):]
     with tempfile.TemporaryDirectory(prefix='mouse-keys-test-') as directory:
         cpp = Path(directory) / 'test.cpp'
         executable = Path(directory) / 'test'
-        cpp.write_text(PRELUDE + globals_source + enable + '\n' + restore + TESTS)
+        records = Path(directory) / 'appdata'
+        records.mkdir()
+        cpp.write_text(PRELUDE + globals_source + helpers + '\n' + recover + '\n' + enable + '\n' + restore + TESTS)
         command = [args.compiler, '-std=c++20', '-Wall', '-Wextra', '-Werror', '-pthread']
         try:
             subprocess.run(command + ['-fsanitize=undefined', str(cpp), '-o', str(executable)],
                            check=True, capture_output=True, text=True)
         except subprocess.CalledProcessError as error:
             if 'cannot find -lubsan' not in error.stderr:
+                print(error.stderr)
                 raise
             print('UBSan runtime unavailable; running functional assertions without sanitizer')
             subprocess.run(command + [str(cpp), '-o', str(executable)], check=True)
-        return subprocess.run([str(executable)], check=False).returncode
+        return subprocess.run([str(executable), str(records)], check=False).returncode
 
 
 if __name__ == '__main__':
