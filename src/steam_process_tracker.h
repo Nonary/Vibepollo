@@ -161,4 +161,18 @@ namespace platf::steam::lifecycle {
   // Native controller used by production integration.
   std::shared_ptr<process_controller> native_process_controller();
 
+  // What the app's running() poll does with the tracker's latest result.
+  enum class launch_poll_action {
+    keep_waiting,  ///< Not associated yet; the launch window is still open.
+    game_running,  ///< The game's process tree is associated and alive.
+    game_exited,  ///< The associated tree is gone; end the app like any exited process.
+    detach,  ///< Never associated within the launch window; keep streaming detached.
+  };
+
+  // polled is empty when this call skipped polling (rate limit). A snapshot
+  // failure ("unavailable") never ends an associated game.
+  launch_poll_action decide_launch_poll(bool previously_associated,
+                                        const std::optional<association_result> &polled,
+                                        bool launch_window_open);
+
 }  // namespace platf::steam::lifecycle

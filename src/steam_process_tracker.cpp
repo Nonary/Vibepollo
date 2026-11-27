@@ -538,6 +538,25 @@ bool tracker::begin(const std::filesystem::path &install_dir,
   return true;
 }
 
+launch_poll_action decide_launch_poll(bool previously_associated,
+                                      const std::optional<association_result> &polled,
+                                      bool launch_window_open) {
+  if (polled) {
+    if (polled->associated()) {
+      return launch_poll_action::game_running;
+    }
+    // A complete snapshot with no retained PID means the tracked tree has
+    // exited. A failed snapshot proves nothing, so the game keeps running.
+    if (previously_associated && polled->reason.find("unavailable") == std::string::npos) {
+      return launch_poll_action::game_exited;
+    }
+  }
+  if (previously_associated) {
+    return launch_poll_action::game_running;
+  }
+  return launch_window_open ? launch_poll_action::keep_waiting : launch_poll_action::detach;
+}
+
 association_result tracker::finish() {
   if (!begun_) {
     association_result result;
