@@ -826,6 +826,7 @@ endif()
 
 sunshine_register_component(NAME test_component_color_profile_policy TEST_SOURCE unit/test_color_profile_policy.cpp)
 sunshine_register_component(NAME test_component_legacy_restore_event_policy TEST_SOURCE unit/test_legacy_restore_event_policy.cpp)
+sunshine_register_component(NAME test_component_failed_revert_policy TEST_SOURCE unit/test_failed_revert_policy.cpp)
 sunshine_register_component(NAME test_component_recovery_status_policy TEST_SOURCE unit/test_recovery_status_policy.cpp)
 sunshine_register_component(NAME test_component_wake_recovery_cleanup_policy
     TEST_SOURCE unit/platform/windows/test_wake_recovery_cleanup_policy.cpp)
@@ -1163,6 +1164,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_recovery.py"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}")
         set_tests_properties(test_component_display_helper_recovery PROPERTIES LABELS "component")
+        add_test(NAME test_component_display_helper_failed_revert_watchdog
+            COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
+                "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_failed_revert_watchdog.py"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}" --compiler "${CMAKE_CXX_COMPILER}")
+        set_tests_properties(test_component_display_helper_failed_revert_watchdog PROPERTIES LABELS "component" TIMEOUT 60)
         add_test(NAME test_component_display_helper_shell_refresh
             COMMAND "${SUNSHINE_TEST_PYTHON_EXECUTABLE}"
                 "${CMAKE_CURRENT_LIST_DIR}/unit/test_display_helper_shell_refresh.py"

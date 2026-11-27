@@ -251,6 +251,11 @@ namespace display_helper_integration {
   // reserved for process shutdown or an explicit user-requested restore.
   void stop_watchdog(bool force = false);
 
+  // Like stop_watchdog(), but keeps the watchdog running while a REVERT that
+  // could not reach the helper waits for its replay. Returns true if it kept
+  // the watchdog for that REVERT.
+  bool stop_watchdog_unless_failed_revert();
+
   // Explicit killswitch fallback: stop and verify the owned helper, then run
   // native physical recovery while APPLY/REVERT dispatch remains fenced.
   bool run_terminal_physical_recovery(const std::function<bool()> &recover);

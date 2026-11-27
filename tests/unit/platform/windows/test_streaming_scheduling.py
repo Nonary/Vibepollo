@@ -21,6 +21,7 @@ SCENARIOS = (
     "priority-cleanup-query-fails", "external-priority", "external-priority-after-failure",
     "unmatched-stop", "foreign-native", "foreign-winmm",
     "balanced-cycles", "mixed-backends", "mouse-keys", "paused-watchdog",
+    "idle-watchdog", "failed-revert-watchdog",
     "priority-normal", "priority-above-normal", "priority-below-normal",
     "priority-idle", "priority-high", "priority-realtime", "lifecycle-logs",
 )
