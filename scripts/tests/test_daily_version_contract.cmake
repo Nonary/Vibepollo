@@ -42,4 +42,15 @@ check_version("2.0.0" "2.0.99.0")
 check_version("2.0.6" "2.0.699.0")
 check_version("2.0.7-nightly.d20261104.aaaaaaaaaaaa" "2.0.790.0")
 check_version("255.255.654-daily.d20991231+aaaaaaaaaaaa" "255.255.65490.0")
+check_version("2.14.8" "2.14.899.0")
+check_version("2.17.6" "2.17.699.0")
+check_version("2.18.0" "2.18.99.0")
+check_version("2.18.1" "2.18.199.0")
+check_version("2.19.0" "2.19.99.0")
+if(NOT ("2.14.899.0" VERSION_LESS "2.18.99.0" AND
+        "2.17.699.0" VERSION_LESS "2.18.99.0" AND
+        "2.18.99.0" VERSION_LESS "2.18.199.0" AND
+        "2.18.199.0" VERSION_LESS "2.19.99.0"))
+  message(FATAL_ERROR "Shared feature-line MSI versions must advance monotonically.")
+endif()
 message(STATUS "Daily application metadata retained; MSI daily ranks below stable at the same numeric base.")
