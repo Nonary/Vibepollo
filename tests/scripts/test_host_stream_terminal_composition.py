@@ -20,6 +20,7 @@ p.add_argument('--boost-include', default='')
 a = p.parse_args()
 root=a.source.resolve(); out=a.build_dir.resolve(); out.mkdir(parents=True, exist_ok=True)
 rtsp=(root/'src/rtsp.cpp').read_text(); nv=(root/'src/nvhttp.cpp').read_text(); web=(root/'src/webrtc_stream.cpp').read_text()
+stream=(root/'src/stream.cpp').read_text()
 audio_header=(root/'src/audio.h').read_text(); audio_source=(root/'src/audio.cpp').read_text()
 def body(s, signature, indent):
     start=s.index(signature); end=s.index('\n'+indent+'}',start)+len('\n'+indent+'}')
@@ -39,6 +40,17 @@ fragments={
 'DOLBY_BITRATE':body(audio_source,'  int dolby_bitrate_kbps(','  '),
 'DOLBY_NAME':body(audio_source,'  std::string_view dolby_codec_name(','  '),
 'CLEAR':body(rtsp,'    void clear(bool all = true','    '),
+'NOTE_GUID':body(rtsp,'    static void note_virtual_display_guid(','    '),
+'FINISH_STARTUP':body(rtsp,'    void finish_launch_startup(','    '),
+'HAS_OTHER':body(rtsp,'    bool has_other_pending_launch_or_startup(','    '),
+'HAS_PENDING':body(rtsp,'    bool has_pending_launch_or_startup(','    '),
+'SESSION_COUNT':body(rtsp,'    int session_count() {','    '),
+'SET_PAUSE_DEFERRED':body(rtsp,'    void set_last_session_pause_deferred(','    '),
+'RETRY_PAUSE':body(rtsp,'    void retry_deferred_last_session_pause(','    '),
+'RETIRE_DEPARTED':body(rtsp,'    void retire_departed_launch_sessions_locked(','    '),
+'SESSION_RAISE':body(rtsp,'    bool session_raise(','    '),
+'STILL_RUNNING':body(rtsp,'  static bool session_still_running(','  '),
+'PAUSE_QUERY':stream[stream.index('        const bool rtsp_pending = rtsp_stream::'):stream.index(';',stream.index('        const bool rtsp_pending = rtsp_stream::'))+1],
 'CANCEL_PENDING':body(rtsp,'    void cancel_pending_launches(','    '),
 'MONITOR_RECONCILIATION':'\n'.join(body(rtsp,signature,'    ') for signature in ('    void reconcile_abandoned_monitor_locked(', '    void retire_failed_monitor_start_locked(', '    void retry_abandoned_monitor(', '    void reconcile_abandoned_monitor(')),
 'EXPIRE':body(rtsp,'    void arm_launch_timer()','    '),
@@ -49,6 +61,8 @@ fragments={
 'EXPIRE_LOCKED':body(rtsp,'    std::vector<std::array<std::uint8_t, 16>> expire_launch_sessions_locked(','    '),
 'NOTIFY_EXPIRED':body(rtsp,'    void finalize_expired_launch_sessions(','    '),
 'RUN_STARTUP':body(rtsp,'    template<class Function>\n    void run_startup(','    '),
+'STARTUP_FINISHED':body(rtsp,'    void finish_startup(','    '),
+'INSERT_SESSION':body(rtsp,'    void insert(const std::shared_ptr<stream::session_t> &session,','    '),
 'POST':body(rtsp,'    template<class Function>\n    void post(','    '),
 'ANNOUNCE':body(rtsp,'  bool cmd_announce(','  '),
 'SNAPSHOT':body(rtsp,'  std::shared_ptr<launch_session_t> launch_session_t::clone_for_startup() const','  '),
@@ -65,5 +79,5 @@ exe=out/'production-terminal-composition'
 cmd=[a.compiler,'-std=c++23','-Wall','-Wextra','-Werror','-Wno-sign-compare','-Wno-missing-field-initializers','-pthread','-I',str(root)]
 for inc in (a.json_include+';'+a.boost_include).split(';'):
     if inc: cmd+=['-I',str(Path(inc).resolve())]
-subprocess.run(cmd+[str(cpp),str(root/'src/remote_display_topology.cpp'),'-o',str(exe)],check=True)
+subprocess.run(cmd+[str(cpp),str(root/'src/remote_display_topology.cpp'),str(root/'src/rtsp_pending_policy.cpp'),'-o',str(exe)],check=True)
 subprocess.run([str(exe)],check=True,timeout=20)

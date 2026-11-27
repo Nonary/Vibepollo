@@ -3635,15 +3635,30 @@ namespace stream {
       ref->message_queue_queue->raise(type, session_id, nullptr);
     });
 
+    const auto type_str = type == socket_e::video ? "video"sv : "audio"sv;
     auto start_time = std::chrono::steady_clock::now();
     auto current_time = start_time;
 
+    // Wake periodically so a session stopped before its client pings (e.g. the
+    // app ended during startup) releases this thread now instead of after the
+    // full ping timeout. join() waits on this thread, and when the RTSP loop is
+    // the joiner, every RTSP reply, including this launch's ANNOUNCE, waits too.
+    constexpr auto stop_poll_interval = 100ms;
     while (current_time - start_time < config::stream.ping_timeout) {
+      if (session->shutdown_event->peek()) {
+        BOOST_LOG(info) << "Session stopped before the client's "sv << type_str << " ping arrived"sv;
+        return -1;
+      }
+
       auto delta_time = current_time - start_time;
 
-      auto msg_opt = messages->pop(config::stream.ping_timeout - delta_time);
+      auto msg_opt = messages->pop(std::min<std::chrono::steady_clock::duration>(config::stream.ping_timeout - delta_time, stop_poll_interval));
       if (!msg_opt) {
-        break;
+        if (!messages->running()) {
+          break;
+        }
+        current_time = std::chrono::steady_clock::now();
+        continue;
       }
 
       TUPLE_2D_REF(recv_peer, msg, *msg_opt);
@@ -3666,7 +3681,6 @@ namespace stream {
 
     BOOST_LOG(error) << "Initial Ping Timeout"sv;
 
-    const auto type_str = type == socket_e::video ? "video"sv : "audio"sv;
     const auto received = recv_counter.load(std::memory_order_relaxed) - recv_baseline;
     if (received == 0) {
       BOOST_LOG(error) << "No UDP datagrams reached the "sv << type_str << " socket while waiting for the client's ping. "sv
@@ -4106,6 +4120,27 @@ namespace stream {
     }
 #endif
 
+    void pause_after_abandoned_launch() {
+      if (webrtc_stream::has_active_or_pending_sessions() || webrtc_stream::has_teardown_in_progress()) {
+        return;
+      }
+      BOOST_LOG(info) << "The launch the app was kept running for ended without starting a stream; pausing the app."sv;
+      proc::proc.pause(true);
+#if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
+      if (proc::proc.current_app_id() > 0) {
+        system_tray::update_tray_pausing(proc::proc.get_last_run_app_name());
+      }
+#endif
+    }
+
+    std::uint32_t launch_session_id(const session_t &session) {
+      return session.launch_session_id;
+    }
+
+    bool control_peer_attached(const session_t &session) {
+      return session.control.peer != nullptr;
+    }
+
     void mark_client_disconnected(session_t &session) {
       session.client_disconnected.store(true, std::memory_order_release);
     }
@@ -4268,13 +4303,19 @@ namespace stream {
 #endif
       if (last_rtsp_session) {
         webrtc_stream::set_rtsp_sessions_active(false);
-        const bool rtsp_pending = rtsp_stream::has_pending_launch_or_startup();
+        // A session that stopped before its control stream attached still holds
+        // its own renewed launch here, as may other sessions clear() removed,
+        // until their posted cleanups run. Only other launches keep the app up.
+        const bool rtsp_pending = rtsp_stream::has_other_pending_launch_or_startup(session.launch_session_id);
         const bool webrtc_active =
           webrtc_stream::has_active_or_pending_sessions() ||
           webrtc_stream::has_teardown_in_progress();
         if (!rtsp_pending && !webrtc_active) {
           proc::proc.pause(true);
         }
+        // The pending launch's stream takes the app over. If that launch goes
+        // away without starting one, the RTSP server pauses the app then.
+        rtsp_stream::set_last_session_pause_deferred(rtsp_pending && !webrtc_active);
         const bool is_paused = proc::proc.current_app_id() > 0;
         if (is_paused) {
 #if defined SUNSHINE_TRAY && SUNSHINE_TRAY >= 1
