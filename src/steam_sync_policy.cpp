@@ -7,6 +7,7 @@
 #include <chrono>
 #include <iomanip>
 #include <limits>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -91,6 +92,47 @@ namespace platf::steam::sync::policy {
       return app.contains("uuid") && app["uuid"].is_string() &&
              lower(app["uuid"].get<std::string>()) ==
                canonical_steam_app_uuid(app_id);
+    }
+
+    // Whether the sync owns this entry (callers skip Monitor profiles first).
+    bool owned_by_sync(const nlohmann::json &app) {
+      if (app.contains("steam-managed")) {
+        return app["steam-managed"] == "auto";
+      }
+      // Early auto-imported entries already received Vibepollo's reserved,
+      // deterministic Steam UUID but predate the steam-managed marker.  That
+      // UUID is an ownership marker strong enough to adopt the entry.  Keep
+      // shortcuts identified only by steam-id untouched as manual entries.
+      const auto parsed_id = app_id_of(app);
+      return parsed_id && has_canonical_steam_identity(app, *parsed_id);
+    }
+
+    // Sync-owned entries keyed by Steam app ID.
+    std::map<std::string, const nlohmann::json *> owned_entries(const nlohmann::json &root) {
+      std::map<std::string, const nlohmann::json *> result;
+      if (!root.is_object() || !root.contains("apps") || !root["apps"].is_array()) {
+        return result;
+      }
+      for (const auto &app : root["apps"]) {
+        if (remote_session::marked_monitor_profile(app) || !owned_by_sync(app)) {
+          continue;
+        }
+        if (auto id = id_of(app); !id.empty()) {
+          result.emplace(std::move(id), &app);
+        }
+      }
+      return result;
+    }
+
+    std::string name_list(const std::vector<std::string> &names) {
+      std::string result;
+      for (const auto &name : names) {
+        if (!result.empty()) {
+          result += ", ";
+        }
+        result += name;
+      }
+      return result;
     }
 
     bool excluded(const game_t &game, const std::vector<config::id_name_t> &entries) {
@@ -289,16 +331,7 @@ namespace platf::steam::sync::policy {
         continue;
       }
       const auto steam_id = id_of(app);
-      const auto parsed_id = app_id_of(app);
-      const bool managed = app.contains("steam-managed") &&
-                           app["steam-managed"] == "auto";
-      // Early auto-imported entries already received Vibepollo's reserved,
-      // deterministic Steam UUID but predate the steam-managed marker.  That
-      // UUID is an ownership marker strong enough to adopt the entry.  Keep
-      // shortcuts identified only by steam-id untouched as manual entries.
-      const bool legacy_managed = !app.contains("steam-managed") && parsed_id &&
-                                  has_canonical_steam_identity(app, *parsed_id);
-      if (steam_id.empty() || (!managed && !legacy_managed)) {
+      if (steam_id.empty() || !owned_by_sync(app)) {
         // A manually added game may have been saved while artwork was offline.
         // Repair only provider-owned covers; leave its launch settings intact.
         if (const auto found = by_id.find(steam_id); found != by_id.end() &&
@@ -375,5 +408,55 @@ namespace platf::steam::sync::policy {
       changed = true;
     }
     return changed;
+  }
+
+  std::string describe_changes(const nlohmann::json &before, const nlohmann::json &after) {
+    const auto old_entries = owned_entries(before);
+    const auto new_entries = owned_entries(after);
+    std::vector<std::string> added;
+    std::vector<std::string> removed;
+    std::size_t updated = 0;
+    const auto label = [](const std::string &id, const nlohmann::json &app) {
+      const auto name = app.contains("name") && app["name"].is_string() ? app["name"].get<std::string>() : std::string {};
+      return name.empty() ? "app " + id : name;
+    };
+    for (const auto &[id, app] : new_entries) {
+      if (const auto found = old_entries.find(id); found == old_entries.end()) {
+        added.push_back(label(id, *app));
+      } else if (*found->second != *app) {
+        ++updated;
+      }
+    }
+    for (const auto &[id, app] : old_entries) {
+      if (!new_entries.contains(id)) {
+        removed.push_back(label(id, *app));
+      }
+    }
+    std::sort(added.begin(), added.end());
+    std::sort(removed.begin(), removed.end());
+
+    std::vector<std::string> parts;
+    if (!added.empty()) {
+      parts.push_back("added " + std::to_string(added.size()) + " (" + name_list(added) + ")");
+    }
+    if (!removed.empty()) {
+      parts.push_back("removed " + std::to_string(removed.size()) + " (" + name_list(removed) + ")");
+    }
+    if (updated > 0) {
+      parts.push_back("updated " + std::to_string(updated));
+    }
+    const auto summary = parts.empty() ? std::string {"no changes"} : name_list(parts);
+    return summary + "; " + std::to_string(new_entries.size()) + " Steam apps";
+  }
+
+  std::string describe_mode(bool sync_all_installed, int recent_games, int recent_max_age_days) {
+    if (sync_all_installed) {
+      return "all installed";
+    }
+    auto mode = std::to_string(std::max(recent_games, 0)) + " most recent";
+    if (recent_max_age_days > 0) {
+      mode += " within " + std::to_string(recent_max_age_days) + " days";
+    }
+    return mode;
   }
 }  // namespace platf::steam::sync::policy

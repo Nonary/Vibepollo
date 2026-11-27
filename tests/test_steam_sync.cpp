@@ -326,3 +326,30 @@ TEST(SteamSync, RecentLimitAppliesAfterExclusionsAndToolFiltering) {
   ASSERT_EQ(selected.size(), 1);
   EXPECT_EQ(selected[0].app_id, 3);
 }
+
+TEST(SteamSync, DescribesAddedRemovedAndUpdatedSyncEntries) {
+  platf::steam::game_t first, second, third;
+  first.app_id = 1; first.name = "Bravo"; first.installed = true;
+  second.app_id = 2; second.name = "Alpha"; second.installed = true;
+  third.app_id = 3; third.name = "Charlie"; third.installed = true;
+  nlohmann::json root = {{"apps", nlohmann::json::array({
+                                    nlohmann::json {{"name", "Manual"}},
+                                    nlohmann::json {{"name", "Shortcut"}, {"steam-id", "9"}, {"steam-managed", "manual"}},
+                                  })}};
+  const auto empty = root;
+  ASSERT_TRUE(platf::steam::sync::policy::reconcile(root, {first, second}));
+  EXPECT_EQ(platf::steam::sync::policy::describe_changes(empty, root), "added 2 (Alpha, Bravo); 2 Steam apps");
+  EXPECT_EQ(platf::steam::sync::policy::describe_changes(root, root), "no changes; 2 Steam apps");
+
+  const auto previous = root;
+  first.name = "Bravo Remastered";
+  ASSERT_TRUE(platf::steam::sync::policy::reconcile(root, {first, third}));
+  EXPECT_EQ(platf::steam::sync::policy::describe_changes(previous, root),
+            "added 1 (Charlie), removed 1 (Alpha), updated 1; 2 Steam apps");
+}
+
+TEST(SteamSync, DescribesSelectionMode) {
+  EXPECT_EQ(platf::steam::sync::policy::describe_mode(true, 10, 30), "all installed");
+  EXPECT_EQ(platf::steam::sync::policy::describe_mode(false, 10, 30), "10 most recent within 30 days");
+  EXPECT_EQ(platf::steam::sync::policy::describe_mode(false, 5, 0), "5 most recent");
+}
