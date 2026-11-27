@@ -8,6 +8,7 @@
 // standard includes
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -7392,30 +7393,20 @@ namespace nvhttp {
     }
 
     auto args = request->parse_query_string();
-    const int requested = (int) util::from_view(get_arg(args, "bitrate", "0"));
-    if (requested <= 0) {
+    const auto bitrate = get_arg(args, "bitrate", "0");
+    int requested = 0;
+    const auto end = bitrate.data() + bitrate.size();
+    const auto [parsed_end, parse_error] = std::from_chars(bitrate.data(), end, requested);
+    if (parse_error != std::errc {} || parsed_end != end || requested <= 0) {
       tree.put("root.bitrate", 0);
       tree.put("root.<xmlattr>.status_code", 400);
       tree.put("root.<xmlattr>.status_message", "Missing or invalid bitrate parameter");
       return;
     }
 
-    // Clamp to the host bitrate ceiling. max_bitrate == 0 means "unlimited" in config, so also
-    // enforce an absolute ceiling to keep the value sane and avoid overflow downstream
-    // (bitrate_kbps * 1000 must fit the encoder's 32-bit rate-control fields).
-    constexpr int absolute_max_bitrate_kbps = 500000;  // 500 Mbps
-    int applied = requested;
-    if (config::video.max_bitrate > 0 && applied > config::video.max_bitrate) {
-      applied = config::video.max_bitrate;
-    }
-    if (applied > absolute_max_bitrate_kbps) {
-      applied = absolute_max_bitrate_kbps;
-    }
-    if (applied != requested) {
-      BOOST_LOG(info) << "Clamped requested bitrate "sv << requested << " kbps to "sv << applied << " kbps"sv;
-    }
-
-    const int updated = stream::set_bitrate_for_sessions(verified_client->uuid, applied);
+    const int host_max_kbps = config::video.max_bitrate;
+    const int requested_kbps = host_max_kbps > 0 ? std::min(requested, host_max_kbps) : requested;
+    const auto [updated, applied] = stream::set_bitrate_for_sessions(verified_client->uuid, requested_kbps);
     if (updated < 0) {
       tree.put("root.bitrate", 0);
       tree.put("root.<xmlattr>.status_code", 400);
@@ -7430,6 +7421,9 @@ namespace nvhttp {
       return;
     }
 
+    if (applied != requested) {
+      BOOST_LOG(info) << "Clamped requested bitrate "sv << requested << " kbps to "sv << applied << " kbps"sv;
+    }
     BOOST_LOG(info) << "Client ["sv << verified_client->name << "] set runtime bitrate to "sv << applied << " kbps ("sv << updated << " session(s))"sv;
     tree.put("root.bitrate", applied);
     tree.put("root.<xmlattr>.status_code", 200);

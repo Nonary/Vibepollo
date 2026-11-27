@@ -6656,6 +6656,8 @@ namespace video {
     safe::mail_t mail,
     img_event_t images,
     config_t &config,
+    int maximum_wire_kbps,
+    int audio_control_reserve_kbps,
     std::shared_ptr<platf::display_t> disp,
     const sunshine_colorspace_t &colorspace,
     safe::signal_t &reinit_event,
@@ -6676,9 +6678,6 @@ namespace video {
     params.critical_fec_percentage = config::stream.pyrowave_critical_fec_percentage;
     params.min_parity_shards = config.pyrowave_min_parity_shards;
     params.critical_fec = params.critical_fec_percentage > 0;
-
-    const int maximum_wire_kbps = config.client_requested_bitrate > 0 ? config.client_requested_bitrate : config.bitrate;
-    const int audio_control_reserve_kbps = std::max(0, maximum_wire_kbps - config.bitrate);
 
     auto encoder = pyrowave::host::make_encoder(params, disp);
     if (!encoder) {
@@ -6829,6 +6828,10 @@ namespace video {
       return;
     }
 
+    // Retain the launch budget and overhead across encoder reinitialization.
+    const int maximum_wire_kbps = config.client_requested_bitrate > 0 ? config.client_requested_bitrate : config.bitrate;
+    const int audio_control_reserve_kbps = std::max(0, maximum_wire_kbps - config.bitrate);
+
     if (!source_ctx.capture_ctx_queue->running()) {
       return;
     }
@@ -6877,7 +6880,8 @@ namespace video {
 
         // absolute mouse coordinates require that the dimensions of the screen are known
         publish_touch_port(touch_port_event, make_port(display.get(), config));
-        if (!encode_run_pyrowave(frame_nr, mail, images, config, display, colorspace, source_ctx.reinit_event, channel_data, std::move(hdr_info), last_hdr_info)) {
+        if (!encode_run_pyrowave(frame_nr, mail, images, config, maximum_wire_kbps, audio_control_reserve_kbps,
+                                display, colorspace, source_ctx.reinit_event, channel_data, std::move(hdr_info), last_hdr_info)) {
           // Shutdown, or an encoder failure: end the session either way.
           return;
         }

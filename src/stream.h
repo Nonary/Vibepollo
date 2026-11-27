@@ -24,6 +24,7 @@
 #include "input_session_config.h"
 #include "thread_safe.h"
 #include "video.h"
+#include "stream_broadcast_runtime.h"
 #include "stream_protocol.h"
 #include "remote_session.h"
 
@@ -180,8 +181,8 @@ namespace stream {
   /**
    * @brief Apply a new encoder bitrate to active streaming sessions at runtime.
    * @param client_uuid Target client UUID; when empty, applies to every active session.
-   * @param bitrate_kbps New encoder bitrate in kbps (already clamped by the caller).
-   * @return Number of sessions updated.
+   * @param bitrate_kbps Requested rate in kbps after applying the host bitrate limit.
+   * @return The number of sessions updated and the common rate applied to them.
    */
-  int set_bitrate_for_sessions(const std::string &client_uuid, int bitrate_kbps);
+  bitrate_update_t set_bitrate_for_sessions(const std::string &client_uuid, int bitrate_kbps);
 }  // namespace stream

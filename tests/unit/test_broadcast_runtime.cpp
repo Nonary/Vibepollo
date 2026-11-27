@@ -287,10 +287,10 @@ namespace {
 
   TEST_F(BroadcastRuntime, IdleBitrateDoesNotConstructBroadcast) {
     idle_control([&] {
-      EXPECT_EQ(controls.set_bitrate_for_sessions("A", 12000), 0);
+      EXPECT_EQ(controls.set_bitrate_for_sessions("A", 12000).sessions_updated, 0);
     });
     idle_control([&] {
-      EXPECT_EQ(controls.set_bitrate_for_sessions("A", 0), 0);
+      EXPECT_EQ(controls.set_bitrate_for_sessions("A", 0).sessions_updated, 0);
     });
     EXPECT_EQ(admissions, 0);
   }
@@ -310,7 +310,7 @@ namespace {
     no_events.bitrate_event.reset();
     no_events.idr.reset();
     owner->sessions = {a.view(), b.view(), no_events.view()};
-    EXPECT_EQ(controls.set_bitrate_for_sessions("A", 12000), 1);
+    EXPECT_EQ(controls.set_bitrate_for_sessions("A", 12000).sessions_updated, 1);
     EXPECT_EQ(a.bitrate, 12000);
     EXPECT_EQ(a.requested, 12000);
     EXPECT_EQ(a.pacing_bitrate_kbps.load(std::memory_order_relaxed), 12000);
@@ -319,10 +319,10 @@ namespace {
     EXPECT_EQ(b.bitrate, 1000);
     EXPECT_EQ(b.pacing_bitrate_kbps.load(std::memory_order_relaxed), 1000);
     EXPECT_FALSE(b.bitrate_event->peek());
-    EXPECT_EQ(controls.set_bitrate_for_sessions("unknown", 12000), 0);
-    EXPECT_EQ(controls.set_bitrate_for_sessions("A", -1), 0);
+    EXPECT_EQ(controls.set_bitrate_for_sessions("unknown", 12000).sessions_updated, 0);
+    EXPECT_EQ(controls.set_bitrate_for_sessions("A", -1).sessions_updated, 0);
     EXPECT_EQ(admissions, 1);
-    EXPECT_EQ(controls.set_bitrate_for_sessions("", 24000), 2);
+    EXPECT_EQ(controls.set_bitrate_for_sessions("", 24000).sessions_updated, 2);
     EXPECT_EQ(a.bitrate_event->pop(0ms), 24000);
     EXPECT_EQ(b.bitrate_event->pop(0ms), 24000);
     EXPECT_EQ(a.bitrate, 24000);
@@ -343,13 +343,13 @@ namespace {
     session_data_t a {"A", mail};
     owner->sessions = {a.view()};
     admit = false;
-    EXPECT_EQ(controls.set_bitrate_for_sessions("A", 12000), -1);
+    EXPECT_EQ(controls.set_bitrate_for_sessions("A", 12000).sessions_updated, -1);
     EXPECT_EQ(admissions, 1);
     EXPECT_EQ(a.bitrate, 1000);
     EXPECT_EQ(a.requested, 1000);
     EXPECT_EQ(a.pacing_bitrate_kbps.load(std::memory_order_relaxed), 1000);
     EXPECT_FALSE(a.bitrate_event->peek());
-    EXPECT_EQ(controls.set_bitrate_for_sessions("unknown", 12000), 0);
+    EXPECT_EQ(controls.set_bitrate_for_sessions("unknown", 12000).sessions_updated, 0);
     EXPECT_EQ(admissions, 1);
     close(owner);
   }

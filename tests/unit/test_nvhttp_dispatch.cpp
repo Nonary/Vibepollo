@@ -142,7 +142,7 @@ namespace {
 
     dispatch(response, "bitrate", [&, uuid] {
       handler_entered.set_value();
-      result = controls.set_bitrate_for_sessions(uuid, 12000);
+      result = controls.set_bitrate_for_sessions(uuid, 12000).sessions_updated;
       handler_done.set_value();
     });
     // Dispatch already returned. The admitted handler has not run inline.
@@ -207,7 +207,7 @@ namespace {
     auto response = std::make_shared<response_t>();
     int result = -99;
     dispatch(response, "bitrate", [&, uuid] {
-      result = controls.set_bitrate_for_sessions(uuid, 12000);
+      result = controls.set_bitrate_for_sessions(uuid, 12000).sessions_updated;
     });
     ASSERT_EQ(pending.size(), 1);
     EXPECT_EQ(result, -99) << "the admitted handler is still queued";
@@ -243,7 +243,7 @@ namespace {
     auto response = std::make_shared<response_t>();
     int result = -99;
     dispatch(response, "bitrate", [&] {
-      result = controls.set_bitrate_for_sessions(uuid, 12000);
+      result = controls.set_bitrate_for_sessions(uuid, 12000).sessions_updated;
     });
     EXPECT_EQ(result, -99);
     pending.back()();
@@ -259,7 +259,7 @@ namespace {
 
     admit = false;
     dispatch(response, "bitrate", [&] {
-      result = controls.set_bitrate_for_sessions(uuid, 24000);
+      result = controls.set_bitrate_for_sessions(uuid, 24000).sessions_updated;
     });
     pending.back()();
     EXPECT_EQ(result, -1);

@@ -13,6 +13,13 @@
 #include <string>
 #include <string_view>
 
+namespace stream {
+  struct bitrate_update_t {
+    int sessions_updated = 0;  // Negative if transport admission rejected the change.
+    int applied_kbps = 0;
+  };
+}
+
 namespace stream::broadcast_runtime {
   enum class worker_e {
     receive,
@@ -93,6 +100,9 @@ namespace stream::broadcast_runtime {
     };
   }
 
+  // The runtime ceiling for H.264, HEVC and AV1 rate control.
+  constexpr int DEFAULT_BITRATE_LIMIT_KBPS = 500000;
+
   // Views are valid only while the caller holds the session registry lock.
   struct session_control_t {
     std::string_view client_uuid;
@@ -101,12 +111,13 @@ namespace stream::broadcast_runtime {
     std::reference_wrapper<std::atomic<int>> pacing_bitrate_kbps;
     safe::mail_raw_t::event_t<bool> idr_events;
     safe::mail_raw_t::event_t<int> bitrate_events;
+    int bitrate_limit_kbps = DEFAULT_BITRATE_LIMIT_KBPS;
   };
 
   using sessions_t = std::span<session_control_t>;
-  using session_action_t = std::function<int(sessions_t)>;
+  using session_action_t = std::function<bitrate_update_t(sessions_t)>;
   void request_idr(sessions_t sessions);
-  int set_bitrate(sessions_t sessions, const std::string &client_uuid, int bitrate_kbps, const std::function<bool()> &admit);
+  bitrate_update_t set_bitrate(sessions_t sessions, const std::string &client_uuid, int bitrate_kbps, const std::function<bool(int)> &admit);
 
   // The real shared_t protects construction/destruction. A session adapter only
   // exposes locked field views; client matching, admission ordering, metadata
@@ -114,7 +125,7 @@ namespace stream::broadcast_runtime {
   template<class Context>
   class controls_t {
   public:
-    using locked_sessions_t = std::function<int(Context &, const session_action_t &)>;
+    using locked_sessions_t = std::function<bitrate_update_t(Context &, const session_action_t &)>;
     using admission_t = std::function<bool(Context &, const std::string &, int)>;
 
     controls_t(safe::shared_t<Context> &broadcast, locked_sessions_t sessions, admission_t admit = {}):
@@ -126,24 +137,24 @@ namespace stream::broadcast_runtime {
     void request_idr_for_all_sessions() {
       auto ref = _broadcast.try_ref();
       if (ref) {
-        _sessions(*ref.get(), [](sessions_t sessions) {
+        _sessions(*ref.get(), [](sessions_t sessions) -> bitrate_update_t {
           request_idr(sessions);
-          return 0;
+          return {};
         });
       }
     }
 
-    int set_bitrate_for_sessions(const std::string &client_uuid, int bitrate_kbps) {
+    bitrate_update_t set_bitrate_for_sessions(const std::string &client_uuid, int bitrate_kbps) {
       if (bitrate_kbps <= 0) {
-        return 0;
+        return {};
       }
       auto ref = _broadcast.try_ref();
       if (!ref) {
-        return 0;
+        return {};
       }
       return _sessions(*ref.get(), [&](sessions_t sessions) {
-        return set_bitrate(sessions, client_uuid, bitrate_kbps, [&] {
-          return !_admit || _admit(*ref.get(), client_uuid, bitrate_kbps);
+        return set_bitrate(sessions, client_uuid, bitrate_kbps, [&](int applied_kbps) {
+          return !_admit || _admit(*ref.get(), client_uuid, applied_kbps);
         });
       });
     }

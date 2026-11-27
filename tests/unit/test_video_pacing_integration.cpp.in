@@ -59,6 +59,7 @@ struct session_t {
   struct {
     safe::mail_raw_t::event_t<int> bitrate_events;
     std::atomic<int> pacing_bitrate_kbps {0};
+    int bitrate_limit_kbps = stream::broadcast_runtime::DEFAULT_BITRATE_LIMIT_KBPS;
     bool adaptive_pacing_enabled = false;
     std::mutex adaptive_pacing_mutex;
     pacing::adaptive_pacing_t adaptive_pacing;
@@ -87,7 +88,7 @@ stream::broadcast_runtime::controls_t<Broadcast> controls {
     for (auto *session : *ctx.control_server._sessions) {
       if (session) {
         views.push_back({session->device_uuid, session->config.monitor.bitrate,
-          session->config.monitor.client_requested_bitrate, session->video.pacing_bitrate_kbps, {}, session->video.bitrate_events});
+          session->config.monitor.client_requested_bitrate, session->video.pacing_bitrate_kbps, {}, session->video.bitrate_events, session->video.bitrate_limit_kbps});
       }
     }
     return action(views);
@@ -178,11 +179,15 @@ struct Tree {
   void put(const char *key, const char *value) { values[key] = value; }
   void put(const char *key, int value) { values[key] = std::to_string(value); }
 };
-void bitrate_response(Tree &tree, int updated) {
-  struct { std::string name = "client"; } client;
+namespace stream {
+  bitrate_update_t set_bitrate_for_sessions(const std::string &client_uuid, int bitrate_kbps) {
+    return controls.set_bitrate_for_sessions(client_uuid, bitrate_kbps);
+  }
+}
+void bitrate_response(Tree &tree, const std::string &client_uuid, int requested, int host_max_kbps = 0) {
+  struct { std::string name = "client"; std::string uuid; } client {"client", client_uuid};
   auto *verified_client = &client;
 @HTTP_HANDLER@
-  tree.put("root.<xmlattr>.status_code", 200);
 }
 namespace stream::session {
   constexpr int START_PACING_REJECTED = -2;
@@ -219,7 +224,7 @@ TEST(VideoPacingIntegration, RejectsBitrateIncreaseAtomicallyAcrossMatchingSessi
   reset(400000);
   session_t one, two;
   for (auto *candidate : {&one, &two}) { attach(*candidate); ASSERT_EQ(publish_session(*candidate), 0); }
-  EXPECT_EQ(controls.set_bitrate_for_sessions("client", 160000), -1);
+  EXPECT_EQ(controls.set_bitrate_for_sessions("client", 160000).sessions_updated, -1);
   for (auto *candidate : {&one, &two}) {
     EXPECT_EQ(candidate->config.monitor.bitrate, 150000);
     EXPECT_EQ(candidate->config.monitor.client_requested_bitrate, 150000);
@@ -230,8 +235,8 @@ TEST(VideoPacingIntegration, FeasibleUpdateKeepsOtherClientAndNotFoundSemantics)
   reset(400000);
   session_t one, two; two.device_uuid = "other";
   for (auto *candidate : {&one, &two}) { attach(*candidate); ASSERT_EQ(publish_session(*candidate), 0); }
-  EXPECT_EQ(controls.set_bitrate_for_sessions("missing", 500000), 0);
-  EXPECT_EQ(controls.set_bitrate_for_sessions("client", 100000), 1);
+  EXPECT_EQ(controls.set_bitrate_for_sessions("missing", 500000).sessions_updated, 0);
+  EXPECT_EQ(controls.set_bitrate_for_sessions("client", 100000).sessions_updated, 1);
   EXPECT_EQ(one.config.monitor.bitrate, 100000);
   EXPECT_EQ(two.config.monitor.bitrate, 150000);
   EXPECT_EQ(one.video.bitrate_events->pop(0ms), 100000);
@@ -252,7 +257,7 @@ TEST(VideoPacingIntegration, ZeroKeepsLegacyAdmissionUpdatesAndPacing) {
   reset(0);
   session_t one, two, three;
   for (auto *candidate : {&one, &two, &three}) { attach(*candidate); EXPECT_EQ(publish_session(*candidate), 0); }
-  EXPECT_EQ(controls.set_bitrate_for_sessions("client", 500000), 3);
+  EXPECT_EQ(controls.set_bitrate_for_sessions("client", 500000).sessions_updated, 3);
   for (const size_t block : {216u, 516u, 1408u, 1472u, 9016u, 65551u}) {
     const auto legacy = std::max<size_t>(1, 800000000 / 1000 / block / 8);
     EXPECT_EQ(pace(0, false, false, block).first, legacy);
@@ -323,8 +328,8 @@ TEST(VideoPacingIntegration, FractionalMultiSessionChangesStayAtomicAndReleaseCa
     ASSERT_EQ(publish_session(one), 0);
     ASSERT_EQ(publish_session(two), 0);
     EXPECT_EQ(publish_session(three), START_PACING_REJECTED);
-    EXPECT_EQ(controls.set_bitrate_for_sessions("client", 1200), 2);
-    EXPECT_EQ(controls.set_bitrate_for_sessions("client", 2000), -1);
+    EXPECT_EQ(controls.set_bitrate_for_sessions("client", 1200).sessions_updated, 2);
+    EXPECT_EQ(controls.set_bitrate_for_sessions("client", 2000).sessions_updated, -1);
     for (auto *candidate : {&one, &two}) {
       EXPECT_EQ(candidate->config.monitor.bitrate, 1200);
       EXPECT_EQ(candidate->video.bitrate_events->pop(0ms), 1200);
@@ -338,9 +343,80 @@ TEST(VideoPacingIntegration, FractionalMultiSessionChangesStayAtomicAndReleaseCa
     EXPECT_EQ(two.config.monitor.bitrate, 1200);
   }
 }
+struct PyroWaveEncoder {
+  int bitrate_kbps = 0;
+  void set_bitrate(int rate) { bitrate_kbps = rate; }
+};
+
+TEST(VideoPacingIntegration, PyroWaveCanRaiseBitrateAgainWithinTheNegotiatedBudget) {
+  reset(0);
+  session_t pyro;
+  pyro.config.monitor.videoFormat = pyrowave::protocol::BITSTREAM_FORMAT;
+  pyro.config.monitor.client_requested_bitrate = 1'000'000;
+  pyro.config.monitor.bitrate = 999'212;
+  attach(pyro);
+  ASSERT_EQ(publish_session(pyro), 0);
+
+  // Capture keeps the launch budget while successive encoder instances
+  // receive the latest runtime bitrate.
+  auto config = pyro.config.monitor;
+@PYRO_LIMITS@
+  for (const auto &[requested, host_max, expected] : std::array {
+         std::array {400'000, 0, 400'000},
+         std::array {800'000, 0, 800'000},
+         std::array {1'200'000, 0, 1'000'000},
+         std::array {800'000, 600'000, 600'000},
+       }) {
+    Tree response;
+    bitrate_response(response, pyro.device_uuid, requested, host_max);
+    EXPECT_EQ(response.values["root.<xmlattr>.status_code"], "200");
+    EXPECT_EQ(response.values["root.bitrate"], std::to_string(expected));
+    const auto latest_bitrate = pyro.video.bitrate_events->pop(0ms);
+    ASSERT_EQ(latest_bitrate, expected);
+    EXPECT_EQ(pyro.video.pacing_bitrate_kbps.load(), expected);
+
+    PyroWaveEncoder instance;
+    auto *encoder = &instance;
+@PYRO_UPDATE@
+    EXPECT_EQ(instance.bitrate_kbps, expected - 788);
+  }
+}
+
+TEST(VideoPacingIntegration, MixedSessionsUseTheLowestMatchingCeilingBeforePacingAdmission) {
+  reset(1'600'000);
+  session_t pyro, hevc;
+  pyro.config.monitor.videoFormat = pyrowave::protocol::BITSTREAM_FORMAT;
+  pyro.config.monitor.client_requested_bitrate = 750'000;
+  pyro.config.monitor.bitrate = 749'212;
+  for (auto *candidate : {&pyro, &hevc}) {
+    attach(*candidate);
+    ASSERT_EQ(publish_session(*candidate), 0);
+  }
+
+  auto &server = broadcast_owner->control_server;
+  {
+    auto lock = server._sessions.lock();
+    ASSERT_FALSE(pacing_admits_locked(server, nullptr, &pyro.device_uuid, 900'000));
+  }
+  Tree response;
+  bitrate_response(response, pyro.device_uuid, 900'000);
+  EXPECT_EQ(response.values["root.<xmlattr>.status_code"], "200");
+  EXPECT_EQ(response.values["root.bitrate"], "500000");
+  EXPECT_EQ(pyro.video.bitrate_events->pop(0ms), 500'000);
+  EXPECT_EQ(hevc.video.bitrate_events->pop(0ms), 500'000);
+}
+
 TEST(VideoPacingIntegration, AdmissionFailureIsAClientErrorAndPreservesOtherStatuses) {
+  reset(400000);
+  session_t one, two;
+  for (auto *candidate : {&one, &two}) {
+    attach(*candidate);
+    ASSERT_EQ(publish_session(*candidate), 0);
+  }
   Tree rejected, absent, accepted;
-  bitrate_response(rejected, -1); bitrate_response(absent, 0); bitrate_response(accepted, 1);
+  bitrate_response(rejected, "client", 160000);
+  bitrate_response(absent, "missing", 100000);
+  bitrate_response(accepted, "client", 100000);
   EXPECT_EQ(rejected.values["root.<xmlattr>.status_code"], "400");
   EXPECT_EQ(absent.values["root.<xmlattr>.status_code"], "404");
   EXPECT_EQ(accepted.values["root.<xmlattr>.status_code"], "200");

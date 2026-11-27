@@ -50,31 +50,38 @@ namespace stream::broadcast_runtime {
     }
   }
 
-  int set_bitrate(sessions_t sessions, const std::string &client_uuid, int bitrate_kbps, const std::function<bool()> &admit) {
-    if (bitrate_kbps <= 0) {
-      return 0;
-    }
+  bitrate_update_t set_bitrate(sessions_t sessions, const std::string &client_uuid, int bitrate_kbps, const std::function<bool(int)> &admit) {
     const auto matches = [&](const auto &session) {
       return session.bitrate_events && (client_uuid.empty() || session.client_uuid == client_uuid);
     };
-    if (std::none_of(sessions.begin(), sessions.end(), matches)) {
-      return 0;
-    }
-    // Keep the downstream transport/pacing admission check before all updates
-    // and inside the caller's session lock. Rejection changes no metadata.
-    if (admit && !admit()) {
-      return -1;
-    }
-    int updated = 0;
-    for (auto &session : sessions) {
+
+    // The caller receives one applied rate. Use the highest rate all
+    // matching sessions can accept, including matches with different codecs.
+    int applied_kbps = bitrate_kbps;
+    int matches_count = 0;
+    for (const auto &session : sessions) {
       if (matches(session)) {
-        session.bitrate.get() = bitrate_kbps;
-        session.client_requested_bitrate.get() = bitrate_kbps;
-        session.pacing_bitrate_kbps.get().store(bitrate_kbps, std::memory_order_relaxed);
-        session.bitrate_events->raise(bitrate_kbps);
-        ++updated;
+        applied_kbps = std::min(applied_kbps, session.bitrate_limit_kbps);
+        ++matches_count;
       }
     }
-    return updated;
+    if (matches_count == 0 || applied_kbps <= 0) {
+      return {};
+    }
+
+    // Admit the clamped rate before publishing any change, under the same
+    // session lock used to select the matching sessions.
+    if (admit && !admit(applied_kbps)) {
+      return {-1, 0};
+    }
+    for (auto &session : sessions) {
+      if (matches(session)) {
+        session.bitrate.get() = applied_kbps;
+        session.client_requested_bitrate.get() = applied_kbps;
+        session.pacing_bitrate_kbps.get().store(applied_kbps, std::memory_order_relaxed);
+        session.bitrate_events->raise(applied_kbps);
+      }
+    }
+    return {matches_count, applied_kbps};
   }
 }  // namespace stream::broadcast_runtime

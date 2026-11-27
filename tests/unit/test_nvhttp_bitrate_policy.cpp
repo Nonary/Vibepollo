@@ -144,7 +144,7 @@ namespace {
           ++handler_calls;
           // Exercise the actual existing-session component, not a copied
           // mutation. Its session adapter is an in-memory registry boundary.
-          result = controls.set_bitrate_for_sessions(client->uuid, 12000);
+          result = controls.set_bitrate_for_sessions(client->uuid, 12000).sessions_updated;
         },
         [&](const std::string &message) {
           logs.push_back(message);
