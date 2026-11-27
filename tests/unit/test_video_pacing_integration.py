@@ -91,8 +91,12 @@ http_handler = http_handler.replace(
     'stream::set_bitrate_for_sessions(verified_client->uuid, applied);',
     'stream::set_bitrate_for_sessions(verified_client->uuid, applied).sessions_updated;')
 video = read('src/video.cpp')
-pyro_limits_at = video.index('    const int maximum_wire_kbps =')
-pyro_limits_end = video.index('\n', video.index('    const int audio_control_reserve_kbps =', pyro_limits_at))
+if '    const int initial_wire_kbps =' in video:
+    pyro_limits_at = video.index('    const int initial_wire_kbps =')
+    pyro_limits_end = video.index(';', video.index('    const int maximum_wire_kbps =', pyro_limits_at)) + 1
+else:
+    pyro_limits_at = video.index('    const int maximum_wire_kbps =')
+    pyro_limits_end = video.index(';', video.index('    const int audio_control_reserve_kbps =', pyro_limits_at)) + 1
 pyro_update_at = video.index('      if (latest_bitrate) {', video.index('  bool encode_run_pyrowave('))
 pyro_update_end = video.index('      if (idr_events->peek())', pyro_update_at)
 rtsp = read('src/rtsp.cpp')

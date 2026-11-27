@@ -702,7 +702,7 @@ namespace stream {
       safe::mail_raw_t::event_t<bool> idr_events;
       safe::mail_raw_t::event_t<std::pair<int64_t, int64_t>> invalidate_ref_frames_events;
       safe::mail_raw_t::event_t<int> bitrate_events;
-      int bitrate_limit_kbps = broadcast_runtime::DEFAULT_BITRATE_LIMIT_KBPS;
+      int bitrate_limit_kbps = video::policy::MAX_ENCODER_BITRATE_KBPS;
       // HTTP bitrate control is concurrent with the UDP sender.
       std::atomic<int> pacing_bitrate_kbps {0};
 
@@ -2693,7 +2693,7 @@ namespace stream {
       });
 
       try {
-        // Keep zero's legacy timing. Explicit ceilings count the
+        // Keep the legacy default pace for ordinary streams below it. Explicit ceilings count the
         // full video datagram and are never raised to cover encoder/FEC demand:
         // startup and bitrate admission reject demand that cannot fit instead.
         const auto pacing_ceiling = config::stream.pacing_max_bitrate_kbps;
@@ -2701,6 +2701,18 @@ namespace stream {
           pacing_ceiling, blocksize + (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0));
         size_t ratecontrol_packets_in_1ms = std::giga::num * 80 / 100 / 1000 / blocksize / 8;
         ratecontrol_packets_in_1ms = std::max<size_t>(1, ratecontrol_packets_in_1ms);
+        if (!pyrowave_session) {
+          const auto &monitor = session->config.monitor;
+          const auto datagram_bytes = blocksize + (session->video.cipher ? sizeof(video_packet_enc_prefix_t) : 0);
+          const auto demand_bps = pacing::nominal_wire_demand_bps(
+            session->video.pacing_bitrate_kbps.load(std::memory_order_relaxed),
+            monitor.framerate, sizeof(video_short_frame_header_t), blocksize - sizeof(video_packet_raw_t),
+            datagram_bytes, config::stream.fec_percentage, session->config.minRequiredFecPackets
+          );
+          const auto bits_per_packet_ms = std::uint64_t(datagram_bytes) * 8 * 1000;
+          const auto demand_packets = (demand_bps + bits_per_packet_ms - 1) / bits_per_packet_ms;
+          ratecontrol_packets_in_1ms = std::max(ratecontrol_packets_in_1ms, static_cast<size_t>(demand_packets));
+        }
         std::size_t ordinary_batch_quantum_packets = 1;
         if (pacing_ceiling > 0 && capped_batch_packets == 0) {
           BOOST_LOG(error) << "Configured pacing ceiling has an invalid video datagram"sv;
@@ -4364,7 +4376,8 @@ namespace stream {
                                          (monitor.bitrate > 0 ? monitor.bitrate : monitor.client_requested_bitrate);
       session.video.pacing_bitrate_kbps.store(pacing_bitrate_kbps, std::memory_order_relaxed);
       if (pyrowave_session) {
-        session.video.bitrate_limit_kbps = pacing_bitrate_kbps;
+        session.video.bitrate_limit_kbps = monitor.pyrowave_link_bitrate_limit_kbps > 0 ?
+                                             monitor.pyrowave_link_bitrate_limit_kbps : std::numeric_limits<int>::max();
       }
       // PyroWave keeps its own pacing; the controller only serves ordinary video.
       session.video.adaptive_pacing_enabled = config::stream.host_adaptive_pacing && !pyrowave_session;

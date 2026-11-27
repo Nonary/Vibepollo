@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <span>
 #include <string>
@@ -10,6 +11,9 @@
 #include <utility>
 
 namespace video::policy {
+  // Some encoders express the target in an unsigned 32-bit bits-per-second field.
+  constexpr int MAX_ENCODER_BITRATE_KBPS = std::numeric_limits<std::uint32_t>::max() / 1000;
+
   /**
    * What an encode loop does with an image after convert(): whether to encode it,
    * and the timestamps to encode it with.

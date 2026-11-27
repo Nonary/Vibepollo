@@ -97,6 +97,8 @@ namespace video {
     // is PyroWave, which pins and reads each capture image's own texture and
     // keyed mutex, so the capture must give every image a stable copy.
     bool shared_capture_pyrowave = false;
+    // Route/peer link ceiling, independent of the initial PyroWave wire budget.
+    int pyrowave_link_bitrate_limit_kbps = 0;
   };
 
   platf::mem_type_e map_base_dev_type(AVHWDeviceType type);

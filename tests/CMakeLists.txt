@@ -671,6 +671,8 @@ if(SUNSHINE_TEST_ENABLE_COMPONENT)
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.cpp"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/stream_protocol.h"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/pyrowave_policy.h"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/video.cpp"
+                "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/video_policy.h"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/nvhttp.cpp"
                 "${SUNSHINE_TEST_REPOSITORY_ROOT}/src/rtsp.cpp"
             VERBATIM)

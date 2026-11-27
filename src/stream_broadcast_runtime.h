@@ -8,6 +8,7 @@
 
 #include <atomic>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string>
@@ -100,9 +101,6 @@ namespace stream::broadcast_runtime {
     };
   }
 
-  // The runtime ceiling for H.264, HEVC and AV1 rate control.
-  constexpr int DEFAULT_BITRATE_LIMIT_KBPS = 500000;
-
   // Views are valid only while the caller holds the session registry lock.
   struct session_control_t {
     std::string_view client_uuid;
@@ -111,7 +109,7 @@ namespace stream::broadcast_runtime {
     std::reference_wrapper<std::atomic<int>> pacing_bitrate_kbps;
     safe::mail_raw_t::event_t<bool> idr_events;
     safe::mail_raw_t::event_t<int> bitrate_events;
-    int bitrate_limit_kbps = DEFAULT_BITRATE_LIMIT_KBPS;
+    int bitrate_limit_kbps = std::numeric_limits<int>::max();
   };
 
   using sessions_t = std::span<session_control_t>;

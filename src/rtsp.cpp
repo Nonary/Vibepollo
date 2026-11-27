@@ -16,6 +16,7 @@ extern "C" {
 #include <format>
 #include <functional>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <unordered_map>
 #include <set>
@@ -2642,27 +2643,32 @@ namespace rtsp_stream {
     }
     apply_rtx_hdr_stream_policy(config.monitor);
 
-#if defined(_WIN32) || defined(__linux__)
     if (pyrowave_session) {
+      std::uint64_t routed_bps = 0;
+#if defined(_WIN32) || defined(__linux__)
       boost::system::error_code local_ec, remote_ec;
       const auto local = socket->sock.local_endpoint(local_ec);
       const auto remote = socket->sock.remote_endpoint(remote_ec);
       if (!local_ec && !remote_ec) {
-        const auto link_bps = pyrowave::bandwidth::pacing_link_bps(
-          platf::routed_link_bps(local.address(), remote.address()), config.monitor.pyrowave_peer_link_bps);
-        if (link_bps) {
-          const auto limit_kbps = static_cast<std::int64_t>(link_bps / 1000);
-          const auto requested = configuredBitrateKbps ? configuredBitrateKbps : config.monitor.bitrate;
-          configuredBitrateKbps = std::min<std::int64_t>(requested, limit_kbps);
-          if (configuredBitrateKbps < requested) {
-            BOOST_LOG(warning) << "PyroWave bandwidth capped at " << configuredBitrateKbps
-                               << " kbps for the routed wired link, including FEC and headers";
-          }
+        routed_bps = platf::routed_link_bps(local.address(), remote.address());
+      }
+#endif
+      const auto link_kbps = pyrowave::bandwidth::pacing_link_bps(routed_bps, config.monitor.pyrowave_peer_link_bps) / 1000;
+      if (link_kbps > 0) {
+        config.monitor.pyrowave_link_bitrate_limit_kbps = static_cast<int>(
+          std::min<std::uint64_t>(link_kbps, std::numeric_limits<int>::max())
+        );
+        const auto requested = configuredBitrateKbps ? configuredBitrateKbps : config.monitor.bitrate;
+        configuredBitrateKbps = std::min<std::int64_t>(requested, config.monitor.pyrowave_link_bitrate_limit_kbps);
+        if (configuredBitrateKbps < requested) {
+          BOOST_LOG(warning) << "PyroWave bandwidth capped at " << configuredBitrateKbps
+                             << " kbps for the routed or peer link, including FEC and headers";
         }
       }
     }
 
-#endif
+    const int bitrate_limit_kbps = pyrowave_session ? std::numeric_limits<int>::max() : video::policy::MAX_ENCODER_BITRATE_KBPS;
+    configuredBitrateKbps = std::min<std::int64_t>(configuredBitrateKbps, bitrate_limit_kbps);
 
     // If the client sent a configured bitrate, we will choose the actual bitrate ourselves
     // by using FEC percentage and audio quality settings. If the calculated bitrate ends up

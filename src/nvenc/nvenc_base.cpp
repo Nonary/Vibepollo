@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstring>
 #include <format>
+#include <limits>
 #include <optional>
 
 // Make sure we check backwards compatibility when bumping the Video Codec SDK version
@@ -147,6 +148,10 @@ namespace nvenc {
       return false;
     }
 
+    if (client_config.bitrate < 0 || client_config.bitrate > video::policy::MAX_ENCODER_BITRATE_KBPS) {
+      BOOST_LOG(error) << "NvEnc: out-of-range bitrate " << client_config.bitrate << " kbps";
+      return false;
+    }
     const auto encode_guid = encode_guid_from_video_format(client_config.videoFormat);
     if (!encode_guid) {
       BOOST_LOG(error) << "NvEnc: unknown video format " << client_config.videoFormat;
@@ -493,13 +498,16 @@ namespace nvenc {
 
     enc_config.rcParams.enableAQ = config.adaptive_quantization;
     enc_config.rcParams.enableTemporalAQ = config.temporal_aq && get_encoder_cap(NV_ENC_CAPS_SUPPORT_TEMPORAL_AQ);
-    enc_config.rcParams.averageBitRate = client_config.bitrate * 1000;
+    enc_config.rcParams.averageBitRate = std::uint32_t(client_config.bitrate) * 1000u;
 
     if (get_encoder_cap(NV_ENC_CAPS_SUPPORT_CUSTOM_VBV_BUF_SIZE)) {
-      enc_config.rcParams.vbvBufferSize = client_config.bitrate * 1000 / client_config.framerate;
+      std::uint64_t buffer_size = enc_config.rcParams.averageBitRate / std::max(1, client_config.framerate);
       if (config.vbv_percentage_increase > 0) {
-        enc_config.rcParams.vbvBufferSize += enc_config.rcParams.vbvBufferSize * config.vbv_percentage_increase / 100;
+        buffer_size += buffer_size * config.vbv_percentage_increase / 100;
       }
+      enc_config.rcParams.vbvBufferSize = static_cast<std::uint32_t>(
+        std::min<std::uint64_t>(buffer_size, std::numeric_limits<std::uint32_t>::max())
+      );
     }
 
     auto set_h264_hevc_common_format_config = [&](auto &format_config) {
@@ -1136,9 +1144,7 @@ namespace nvenc {
       BOOST_LOG(warning) << "NvEnc: encoder not initialized; cannot change bitrate";
       return false;
     }
-    // Reject non-positive and absurd values. The 800000 kbps ceiling keeps bitrate_kbps * 1000
-    // well inside uint32 so the rate-control fields below cannot overflow.
-    if (bitrate_kbps <= 0 || bitrate_kbps > 800000) {
+    if (bitrate_kbps <= 0 || bitrate_kbps > video::policy::MAX_ENCODER_BITRATE_KBPS) {
       BOOST_LOG(error) << "NvEnc: out-of-range bitrate " << bitrate_kbps << " kbps";
       return false;
     }
@@ -1156,7 +1162,9 @@ namespace nvenc {
     // window (mirrors the create_encoder VBV sizing), with a floor to avoid an undersized buffer.
     if (enc_config.rcParams.vbvBufferSize > 0 && prev_bitrate_bps > 0) {
       const uint64_t scaled = static_cast<uint64_t>(new_bitrate_bps) * current_enc_config.rcParams.vbvBufferSize / prev_bitrate_bps;
-      enc_config.rcParams.vbvBufferSize = static_cast<uint32_t>(std::max<uint64_t>(scaled, 100u * 1000u));
+      enc_config.rcParams.vbvBufferSize = static_cast<std::uint32_t>(
+        std::clamp<std::uint64_t>(scaled, 100u * 1000u, std::numeric_limits<std::uint32_t>::max())
+      );
     }
 
     NV_ENC_RECONFIGURE_PARAMS reconfigure_params {api::reconfigure_params_version(selected_api_version)};

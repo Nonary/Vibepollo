@@ -1,5 +1,6 @@
 // Supplementary native policy replay; runtime controls are linked production.
 #include "stream_protocol.h"
+#include "src/video_policy.h"
 #include "src/stream_broadcast_runtime.h"
 #include "src/sync.h"
 #include "src/video_pacing_policy.h"
@@ -42,7 +43,8 @@ namespace config {
 struct config_t {
   struct { int bitrate = 150000, client_requested_bitrate = 150000, videoFormat = 1,
                framerate = 120, encodingFramerate = 120000, framerateX100 = 12000;
-           bool input_only = false; } monitor;
+           bool input_only = false;
+           int pyrowave_link_bitrate_limit_kbps = 0; } monitor;
   int packetsize = 1392, encryptionFlagsEnabled = 0, minRequiredFecPackets = 2;
 };
 struct session_t;
@@ -59,7 +61,7 @@ struct session_t {
   struct {
     safe::mail_raw_t::event_t<int> bitrate_events;
     std::atomic<int> pacing_bitrate_kbps {0};
-    int bitrate_limit_kbps = stream::broadcast_runtime::DEFAULT_BITRATE_LIMIT_KBPS;
+    int bitrate_limit_kbps = video::policy::MAX_ENCODER_BITRATE_KBPS;
     bool adaptive_pacing_enabled = false;
     std::mutex adaptive_pacing_mutex;
     pacing::adaptive_pacing_t adaptive_pacing;
@@ -105,7 +107,7 @@ int publish_session(session_t &session) {
 // Logging is an external edge; the controller and sender decisions are production fragments.
 void log_adaptive_pacing(const pacing::adaptive_pacing_events_t &, const pacing::adaptive_pacing_snapshot_t &, std::uint64_t) {}
 std::pair<size_t, size_t> pace(int cap, bool encrypted = false, bool pyro = false, size_t blocksize = 1408,
-                             std::uint64_t packets = 0, bool delay_mode = false, bool demand_limit = false, bool adaptive = false, bool group_limit = false, size_t actual_frame_packets = 5, bool ipv6 = false) {
+                             std::uint64_t packets = 0, bool delay_mode = false, bool demand_limit = false, bool adaptive = false, bool group_limit = false, size_t actual_frame_packets = 5, bool ipv6 = false, int stream_kbps = 150000) {
   config::stream.pacing_max_bitrate_kbps = cap;
   config::stream.pacing_batch_demand_limit = demand_limit;
   config::stream.pacing_group_demand_limit = group_limit;
@@ -120,7 +122,7 @@ std::pair<size_t, size_t> pace(int cap, bool encrypted = false, bool pyro = fals
   const auto pacing_bitrate_kbps = pyrowave_session ?
                                      (monitor.client_requested_bitrate > 0 ? monitor.client_requested_bitrate : monitor.bitrate) :
                                      (monitor.bitrate > 0 ? monitor.bitrate : monitor.client_requested_bitrate);
-  session->video.pacing_bitrate_kbps.store(pacing_bitrate_kbps, std::memory_order_relaxed);
+  session->video.pacing_bitrate_kbps.store(pyrowave_session ? pacing_bitrate_kbps : stream_kbps, std::memory_order_relaxed);
   video_short_frame_header_t frame_header{};
   const std::size_t payload_blocksize = blocksize - sizeof(video_packet_raw_t);
   const std::size_t min_parity_shards = session->config.minRequiredFecPackets;
@@ -348,23 +350,25 @@ struct PyroWaveEncoder {
   void set_bitrate(int rate) { bitrate_kbps = rate; }
 };
 
-TEST(VideoPacingIntegration, PyroWaveCanRaiseBitrateAgainWithinTheNegotiatedBudget) {
+TEST(VideoPacingIntegration, PyroWaveCanExceedItsInitialBudgetWithinTheLinkAndHostLimits) {
   reset(0);
   session_t pyro;
   pyro.config.monitor.videoFormat = pyrowave::protocol::BITSTREAM_FORMAT;
+  pyro.config.monitor.pyrowave_link_bitrate_limit_kbps = 1'300'000;
   pyro.config.monitor.client_requested_bitrate = 1'000'000;
   pyro.config.monitor.bitrate = 999'212;
   attach(pyro);
   ASSERT_EQ(publish_session(pyro), 0);
 
-  // Capture keeps the launch budget while successive encoder instances
+  // Capture keeps the route ceiling and overhead while successive encoder instances
   // receive the latest runtime bitrate.
   auto config = pyro.config.monitor;
 @PYRO_LIMITS@
   for (const auto &[requested, host_max, expected] : std::array {
          std::array {400'000, 0, 400'000},
          std::array {800'000, 0, 800'000},
-         std::array {1'200'000, 0, 1'000'000},
+         std::array {1'200'000, 0, 1'200'000},
+         std::array {1'500'000, 0, 1'300'000},
          std::array {800'000, 600'000, 600'000},
        }) {
     Tree response;
@@ -382,10 +386,43 @@ TEST(VideoPacingIntegration, PyroWaveCanRaiseBitrateAgainWithinTheNegotiatedBudg
   }
 }
 
+TEST(VideoPacingIntegration, OrdinaryRuntimeBitrateUsesBackendAndHostLimits) {
+  for (const int format : {0, 1, 2}) {
+    reset(0);
+    session_t ordinary;
+    ordinary.config.monitor.videoFormat = format;
+    attach(ordinary);
+    ASSERT_EQ(publish_session(ordinary), 0);
+
+    const int backend_limit = video::policy::MAX_ENCODER_BITRATE_KBPS;
+    for (const auto &[requested, host_max, expected] : std::array {
+           std::array {1'000'000, 0, 1'000'000},
+           std::array {std::numeric_limits<int>::max(), 0, backend_limit},
+           std::array {1'000'000, 700'000, 700'000},
+         }) {
+      Tree response;
+      bitrate_response(response, ordinary.device_uuid, requested, host_max);
+      EXPECT_EQ(response.values["root.<xmlattr>.status_code"], "200");
+      EXPECT_EQ(response.values["root.bitrate"], std::to_string(expected));
+      EXPECT_EQ(ordinary.video.bitrate_events->pop(0ms), expected);
+    }
+  }
+}
+
+TEST(VideoPacingIntegration, OrdinaryHighRateCanExceedLegacyPaceWithExplicitCeilingStillEnforced) {
+  constexpr auto datagram_bits = 1408ull * 8;
+  constexpr auto packet_count = 1000ull;
+  const auto at_high_rate = pace(0, false, false, 1408, 1'000, true, false, false, false, 5, false, 1'000'000).first;
+  EXPECT_LE(at_high_rate * 1'000'000, packet_count * datagram_bits * 1'000'000);
+  const auto at_operator_ceiling = pace(900'000, false, false, 1408, 1'000, true, false, false, false, 5, false, 1'000'000).first;
+  EXPECT_GE(at_operator_ceiling * 900'000, packet_count * datagram_bits * 1'000'000);
+}
+
 TEST(VideoPacingIntegration, MixedSessionsUseTheLowestMatchingCeilingBeforePacingAdmission) {
-  reset(1'600'000);
+  reset(2'150'000);
   session_t pyro, hevc;
   pyro.config.monitor.videoFormat = pyrowave::protocol::BITSTREAM_FORMAT;
+  pyro.config.monitor.pyrowave_link_bitrate_limit_kbps = 750'000;
   pyro.config.monitor.client_requested_bitrate = 750'000;
   pyro.config.monitor.bitrate = 749'212;
   for (auto *candidate : {&pyro, &hevc}) {
@@ -401,9 +438,9 @@ TEST(VideoPacingIntegration, MixedSessionsUseTheLowestMatchingCeilingBeforePacin
   Tree response;
   bitrate_response(response, pyro.device_uuid, 900'000);
   EXPECT_EQ(response.values["root.<xmlattr>.status_code"], "200");
-  EXPECT_EQ(response.values["root.bitrate"], "500000");
-  EXPECT_EQ(pyro.video.bitrate_events->pop(0ms), 500'000);
-  EXPECT_EQ(hevc.video.bitrate_events->pop(0ms), 500'000);
+  EXPECT_EQ(response.values["root.bitrate"], "750000");
+  EXPECT_EQ(pyro.video.bitrate_events->pop(0ms), 750'000);
+  EXPECT_EQ(hevc.video.bitrate_events->pop(0ms), 750'000);
 }
 
 TEST(VideoPacingIntegration, AdmissionFailureIsAClientErrorAndPreservesOtherStatuses) {
