@@ -2437,7 +2437,11 @@ namespace rtsp_stream {
       config.monitor.slicesPerFrame = (int) util::from_view(args.at("x-nv-video[0].videoEncoderSlicesPerFrame"sv));
       config.monitor.numRefFrames = (int) util::from_view(args.at("x-nv-video[0].maxNumReferenceFrames"sv));
       config.monitor.encoderCscMode = (int) util::from_view(args.at("x-nv-video[0].encoderCscMode"sv));
-      config.monitor.videoFormat = (int) util::from_view(args.at("x-nv-vqos[0].bitStreamFormat"sv));
+      // PyroWave arrives as WIRE_BITSTREAM_FORMAT (100) or the legacy 3; both map to the
+      // internal BITSTREAM_FORMAT so every downstream PyroWave check is unchanged.
+      config.monitor.videoFormat = pyrowave::protocol::session_video_format(
+        (int) util::from_view(args.at("x-nv-vqos[0].bitStreamFormat"sv))
+      );
       config.monitor.dynamicRange = (int) util::from_view(args.at("x-nv-video[0].dynamicRangeMode"sv));
       config.monitor.chromaSamplingType = (int) util::from_view(args.at("x-ss-video[0].chromaSamplingType"sv));
       config.monitor.enableIntraRefresh = (int) util::from_view(args.at("x-ss-video[0].intraRefresh"sv));

@@ -4668,7 +4668,9 @@ namespace nvhttp {
         }
       }
       if (advertised_video.pyrowave_mode >= 2) {
-        codec_mode_flags |= pyrowave::protocol::SCM_MASK_PYROWAVE;
+        // New bits for updated clients, plus the pre-move bits for existing ones during
+        // the transition. Drop the legacy mask before advertising MPEG-2 or H.263+.
+        codec_mode_flags |= pyrowave::protocol::SCM_MASK_PYROWAVE | pyrowave::protocol::LEGACY_SCM_MASK_PYROWAVE;
       }
       tree.put("root.ServerCodecModeSupport", codec_mode_flags);
 

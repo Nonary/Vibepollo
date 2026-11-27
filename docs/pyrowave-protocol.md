@@ -66,10 +66,14 @@ quality guarantee.
 
 | Bit | Value | Meaning |
 |---|---|---|
-| `SCM_PYROWAVE` | `0x00800000` | 8-bit 4:2:0 |
-| `SCM_PYROWAVE_444` | `0x01000000` | 8-bit 4:4:4 |
-| `SCM_PYROWAVE_HDR10` | `0x02000000` | 10-bit 4:2:0 (HDR10 when the display is HDR) |
-| `SCM_PYROWAVE_HDR10_444` | `0x04000000` | 10-bit 4:4:4 |
+| `SCM_PYROWAVE` | `0x08000000` | 8-bit 4:2:0 |
+| `SCM_PYROWAVE_444` | `0x10000000` | 8-bit 4:4:4 |
+| `SCM_PYROWAVE_HDR10` | `0x20000000` | 10-bit 4:2:0 (HDR10 when the display is HDR) |
+| `SCM_PYROWAVE_HDR10_444` | `0x40000000` | 10-bit 4:4:4 |
+
+Bit 31 is never used: clients parse `ServerCodecModeSupport` into a signed 32-bit
+`int`, and a value with bit 31 set fails to parse. See "Bit move and transition"
+for the pre-move values (`0x00800000`-`0x04000000`), which hosts still advertise.
 
 `SCM_MASK_10BIT` gains the two HDR10 bits and `SCM_MASK_YUV444` the two 4:4:4 bits.
 
@@ -77,13 +81,16 @@ Client-local format constants (moonlight-common-c `Limelight.h`, never on the wi
 
 | Constant | Value |
 |---|---|
-| `VIDEO_FORMAT_PYROWAVE` | `0x010000` |
-| `VIDEO_FORMAT_PYROWAVE_444` | `0x020000` |
-| `VIDEO_FORMAT_PYROWAVE_HDR10` | `0x040000` |
-| `VIDEO_FORMAT_PYROWAVE_HDR10_444` | `0x080000` |
-| `VIDEO_FORMAT_MASK_PYROWAVE` | `0x0F0000` |
-| `VIDEO_FORMAT_MASK_10BIT` | `0xCAA00` (adds `0x40000 \| 0x80000`) |
-| `VIDEO_FORMAT_MASK_YUV444` | `0xACC04` (adds `0x20000 \| 0x80000`) |
+| `VIDEO_FORMAT_PYROWAVE` | `0x01000000` |
+| `VIDEO_FORMAT_PYROWAVE_444` | `0x02000000` |
+| `VIDEO_FORMAT_PYROWAVE_HDR10` | `0x04000000` |
+| `VIDEO_FORMAT_PYROWAVE_HDR10_444` | `0x08000000` |
+| `VIDEO_FORMAT_MASK_PYROWAVE` | `0x0F000000` |
+| `VIDEO_FORMAT_MASK_10BIT` | `0x0C00AA00` (upstream `0x0000AA00` plus `0x04000000 \| 0x08000000`) |
+| `VIDEO_FORMAT_MASK_YUV444` | `0x0A00CC04` (upstream `0x0000CC04` plus `0x02000000 \| 0x08000000`) |
+
+The previous values (`0x010000`-`0x080000`) overlap moonlight-common-c's
+`VIDEO_FORMAT_MPEG2 = 0x00010000` and `VIDEO_FORMAT_H263P = 0x00040000`.
 
 Extending the two masks makes the existing SDP and `/launch` code emit
 `chromaSamplingType=1`, `dynamicRangeMode=1` and `hdrMode=1` for the matching
@@ -106,7 +113,7 @@ chosen automatically, since it needs a wired link with hundreds of Mbps to spare
 
 | Attribute | Value |
 |---|---|
-| `x-nv-vqos[0].bitStreamFormat` | `3` (PyroWave; 0/1/2 are H.264/HEVC/AV1) |
+| `x-nv-vqos[0].bitStreamFormat` | `100` (PyroWave; upstream uses 0-4 for H.264/HEVC/AV1/MPEG-2/H.263+). Pre-move clients send `3`. |
 | `x-ss-video[0].chromaSamplingType` | `1` for 4:4:4, else `0` (stock attribute) |
 | `x-nv-video[0].dynamicRangeMode` | `1` for 10-bit, else `0` (stock attribute) |
 | `x-ss-video[0].pyrowaveAdaptiveFec` | `0` (its presence selects record framing) |
@@ -123,7 +130,7 @@ chosen automatically, since it needs a wired link with hundreds of Mbps to spare
 record-framed frames use the partial-recovery layout when the negotiated packet size supports
 record alignment (see "Record framing"), and Vibepollo ignores `0x2`.
 
-The host rejects `bitStreamFormat=3` with `400 BAD REQUEST` when PyroWave is
+The host rejects `bitStreamFormat=100` (or the legacy `3`) with `400 BAD REQUEST` when PyroWave is
 unavailable, like HEVC/AV1. The former compression and Hybrid transports are
 retired: the host no longer advertises `PyroWaveCompressionVersion`, and explicit
 nonzero `pyrowaveCompression` or `pyrowaveHybrid` requests are rejected. Clients
@@ -134,6 +141,33 @@ Colour: the stock `x-nv-video[0].encoderCscMode` selects range and SDR matrix
 exactly as for the other codecs. 10-bit streams on an HDR display use BT.2020 PQ
 unless 10-bit SDR is preferred or SDR is forced; those streams use the SDR matrix.
 The host keeps sending the usual HDR mode and metadata control messages.
+
+### Bit move and transition
+
+Upstream Sunshine ([#5194](https://github.com/LizardByte/Sunshine/pull/5194)) and
+moonlight-common-c (`b4ee1ce`, #175) added MPEG-2 and H.263+ on values PyroWave
+already used:
+
+| Upstream | Value | Former PyroWave meaning |
+|---|---|---|
+| `SCM_MPEG2` | `0x00800000` | `SCM_PYROWAVE` |
+| `SCM_H263P` | `0x02000000` | `SCM_PYROWAVE_HDR10` |
+| `bitStreamFormat` MPEG-2 | `3` | PyroWave |
+| `VIDEO_FORMAT_MPEG2` | `0x00010000` | `VIDEO_FORMAT_PYROWAVE` |
+| `VIDEO_FORMAT_H263P` | `0x00040000` | `VIDEO_FORMAT_PYROWAVE_HDR10` |
+
+PyroWave therefore moved to the values above. During the transition:
+
+- **Hosts** advertise both the new bits and the legacy bits (`0x00800000`,
+  `0x01000000`, `0x02000000`, `0x04000000`), and accept both `bitStreamFormat=100`
+  and `3` as PyroWave. A host must stop advertising the legacy bits, and stop
+  reading `3` as PyroWave, before it ever advertises MPEG-2 or H.263+.
+- **Clients** check the new bits first. They may fall back to the legacy bits only
+  when the DESCRIBE reply also carries `a=rtpmap:99 PYROWAVE/90000` and a matching
+  `a=x-ss-pyrowave.bitstream`, which an MPEG-2 host never sends. A client sends
+  `bitStreamFormat=100` when the host advertised a new bit, and `3` only to a host
+  that advertised legacy bits alone.
+- The DESCRIBE markers are unchanged and remain the authoritative PyroWave signal.
 
 ## Frames
 
