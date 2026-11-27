@@ -1,3 +1,4 @@
+#include "src/video_policy.h"
 #include "src/host_stream_control.h"
 #include "src/display_target_lease.h"
 #include "src/app_audio_termination.h"
@@ -66,7 +67,7 @@ bool eac3_available(){return eac3_encoder;}
 namespace stream {
 struct monitor_t {
  int height=0,width=0,framerate=0,encodingFramerate=0,framerateX100=0,bitrate=0,client_requested_bitrate=0,slicesPerFrame=0,numRefFrames=0,encoderCscMode=0,videoFormat=0,dynamicRange=0,chromaSamplingType=0,enableIntraRefresh=0,packetsize=0,pyrowave_min_parity_shards=0;
- bool input_only=false,vrr_low_latency=false,force_sdr=false,prefer_sdr_10bit=false; std::uint64_t pyrowave_peer_link_bps=0,pyrowave_peer_pace_bps=0; int pyrowave_framing=0;
+ bool input_only=false,vrr_low_latency=false,force_sdr=false,prefer_sdr_10bit=false; std::uint64_t pyrowave_peer_link_bps=0,pyrowave_peer_pace_bps=0; int pyrowave_framing=0,pyrowave_link_bitrate_limit_kbps=0;
 };
 struct config_t {
  audio::config_t audio{};
