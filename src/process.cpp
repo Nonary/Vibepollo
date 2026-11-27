@@ -61,6 +61,7 @@
 #include "globals.h"
 #include "logging.h"
 #include "platform/common.h"
+#include "posture_state.h"
 #if defined(_WIN32) || defined(__linux__)
   #include "display_helper_integration.h"
   #include "remote_display_topology.h"
@@ -1728,6 +1729,21 @@ namespace proc {
         const int refresh_multiplier = std::max(
           4,
           framegen_refresh_active ? rtsp_stream::framegen_refresh_multiplier(*launch_session) : 1
+        );
+
+        // Posture size policy: the display backend reads this by GUID when it creates the display.
+        // An empty result leaves the driver's default size, exactly as before.
+        posture::display_key_t posture_display_key {};
+        std::memcpy(posture_display_key.data(), &display_guid, posture_display_key.size());
+        posture::set_desired_size(
+          posture_display_key,
+          posture::derive_physical_size(
+            launch_session->client_posture,
+            static_cast<int>(render_width),
+            static_cast<int>(render_height),
+            config::video.touch_posture_diagonal_mm
+          ),
+          launch_session->client_uuid
         );
 
         const char *hdr_profile = launch_session->hdr_profile ? launch_session->hdr_profile->c_str() : nullptr;

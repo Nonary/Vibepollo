@@ -53,6 +53,7 @@
 #include "logging.h"
 #include "nvhttp.h"
 #include "platform/common.h"
+#include "posture_size.h"
 #include "process.h"
 #include "process_catalog.h"
 #include "rtsp.h"
@@ -977,6 +978,9 @@ namespace config {
       false  // wayland_hdr_compatibility
     },  // display_device
 
+    356,  // touch_posture_diagonal_mm (14 in; range 100-419)
+    true,  // touch_tablet_mode
+    "xbox_fullscreen",  // handheld_mode (tablet | xbox_fullscreen | desktop)
     0,  // max_bitrate
     20,  // minimum_fps_target (FPS; 0 uses the capture/encoder path fallback)
     true,  // wgc_pacing_smoothing
@@ -2062,6 +2066,44 @@ namespace config {
     }
     bool_f(vars, "dd_wa_dummy_plug_hdr10", video.dd.wa.dummy_plug_hdr10);
 
+    {
+      // Strict parse: digits only, 100..419 mm. Anything else keeps the default and says so.
+      std::string touch_posture_diagonal;
+      string_f(vars, "touch_posture_diagonal_mm", touch_posture_diagonal);
+      // Tolerate the quoting int_f accepts ("356") and surrounding blanks.
+      touch_posture_diagonal = boost::algorithm::trim_copy(touch_posture_diagonal);
+      if (touch_posture_diagonal.size() >= 2 && touch_posture_diagonal.front() == '"' && touch_posture_diagonal.back() == '"') {
+        touch_posture_diagonal = touch_posture_diagonal.substr(1, touch_posture_diagonal.size() - 2);
+      }
+      if (!touch_posture_diagonal.empty()) {
+        if (const auto parsed = posture::parse_touch_diagonal_mm(touch_posture_diagonal)) {
+          video.touch_posture_diagonal_mm = *parsed;
+        } else {
+          video.touch_posture_diagonal_mm = posture::default_touch_diagonal_mm;
+          BOOST_LOG(warning) << "config: touch_posture_diagonal_mm must be an integer from "sv << posture::min_touch_diagonal_mm
+                             << " to "sv << posture::max_touch_diagonal_mm << " mm, got ["sv << touch_posture_diagonal
+                             << "]; using the default "sv << posture::default_touch_diagonal_mm << " mm"sv;
+        }
+      }
+    }
+    bool_f(vars, "touch_tablet_mode", video.touch_tablet_mode);
+    {
+      std::string handheld_mode;
+      string_f(vars, "handheld_mode", handheld_mode);
+      handheld_mode = boost::algorithm::trim_copy(handheld_mode);
+      if (handheld_mode.size() >= 2 && handheld_mode.front() == '"' && handheld_mode.back() == '"') {
+        handheld_mode = handheld_mode.substr(1, handheld_mode.size() - 2);
+      }
+      if (!handheld_mode.empty()) {
+        if (posture::parse_handheld_policy(handheld_mode)) {
+          video.handheld_mode = handheld_mode;
+        } else {
+          video.handheld_mode = "xbox_fullscreen";
+          BOOST_LOG(warning) << "config: handheld_mode must be tablet, xbox_fullscreen or desktop, got ["sv << handheld_mode
+                             << "]; using the default tablet"sv;
+        }
+      }
+    }
     int_f(vars, "max_bitrate", video.max_bitrate);
     double_between_f(vars, "minimum_fps_target", video.minimum_fps_target, {0.0, 1000.0});
 

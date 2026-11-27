@@ -291,6 +291,11 @@ install(FILES "${SUNSHINE_VIRTUAL_GAMEPAD_ROOT_CLEANUP_SCRIPT}"
         DESTINATION "${SUNSHINE_VHF_GAMEPAD_DRIVER_DESTINATION}"
         COMPONENT assets)
 
+# Removes the laptop/slate indicator node the host creates for tablet posture (src/tablet_posture.h).
+install(FILES "${SUNSHINE_SOURCE_ASSETS_DIR}/windows/drivers/tablet-posture/cleanup.ps1"
+        DESTINATION "drivers/tablet-posture"
+        COMPONENT assets)
+
 set(SUNSHINE_VHF_GAMEPAD_WIX_BUNDLED 0)
 set(SUNSHINE_VHF_GAMEPAD_WIX_ALLOW_LOCAL_TEST 0)
 set(SUNSHINE_LIBVIRTUALGAMEPAD_PREBUILT_DIR "" CACHE PATH

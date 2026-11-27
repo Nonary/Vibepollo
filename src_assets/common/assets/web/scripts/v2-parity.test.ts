@@ -179,6 +179,9 @@ test('Linux keeps common virtual-display policy and hides Windows display intern
     'wgc_direct_encoder_input',
     'always_send_scancodes',
     'native_pen_touch',
+    'touch_tablet_mode',
+    'handheld_mode',
+    'touch_posture_diagonal_mm',
     'install_steam_audio_drivers',
   ]);
 
