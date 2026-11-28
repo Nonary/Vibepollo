@@ -135,6 +135,10 @@ TEST(ManagedAppFocus, HardCapBoundsNewWindowsAndStatusRefresh) {
   EXPECT_FALSE(retry.active(start + 180s));
   EXPECT_FALSE(retry.can_focus(start + 180s));
   EXPECT_FALSE(retry.observe("late", start + 180s));
+  // The allowance handed to the KWin script ends at the hard cap, too.
+  EXPECT_EQ(retry.until("170"), start + 180s);
+  EXPECT_EQ(retry.until("0"), start + 180s);
+  EXPECT_FALSE(retry.until("late").has_value());
 }
 
 TEST(ManagedAppFocus, TimeoutLongerThanDiscoveryFloorIsPreserved) {

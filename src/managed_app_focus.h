@@ -4,6 +4,7 @@
 #include <chrono>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 
@@ -76,6 +77,13 @@ namespace managed_app_focus {
 
     clock::time_point deadline() const {
       return deadline_;
+    }
+
+    // Where identity's allowance ends; observe and refresh cap it at the hard
+    // deadline.
+    std::optional<clock::time_point> until(const std::string &identity) const {
+      const auto found = seen_.find(identity);
+      return found == seen_.end() ? std::nullopt : std::optional(found->second);
     }
 
     void confirmed() {
