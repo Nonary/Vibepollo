@@ -260,7 +260,7 @@ prefix = prefix.replace('vhf_gamepad_t::~vhf_gamepad_t()=default;', '')
 methods = '\n'.join(block(source, marker) for marker in (
     'vhf_gamepad_t::~vhf_gamepad_t()', 'void vhf_gamepad_t::impl_t::feedback_loop()',
     'int vhf_gamepad_t::alloc(', 'void vhf_gamepad_t::free(',
-    'bool vhf_gamepad_t::open_keyboard_mouse()', 'bool vhf_gamepad_t::keyboard_mouse_fallback_safe()',
+    'bool vhf_gamepad_t::open_keyboard_mouse(', 'bool vhf_gamepad_t::keyboard_mouse_fallback_safe()',
     'bool vhf_gamepad_t::keyboard_mouse_fallback(', 'void vhf_gamepad_t::keyboard_mouse_key(',
     'bool vhf_gamepad_t::keyboard_mouse_consumer_supported() const', 'void vhf_gamepad_t::keyboard_mouse_consumer(',
     'void vhf_gamepad_t::keyboard_mouse_button(', 'void vhf_gamepad_t::keyboard_mouse_relative(',

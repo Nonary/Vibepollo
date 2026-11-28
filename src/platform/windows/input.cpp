@@ -633,6 +633,12 @@ namespace platf {
     return raw->vhf_keyboard_mouse;
   }
 
+  void recover_vhf_keyboard_mouse(input_t &input) {
+    if (config::input.keyboard_mouse_backend == "sendinput"sv) return;
+    auto *raw = static_cast<input_raw_t *>(input.get());
+    raw->vhf_keyboard_mouse = raw->vhf->open_keyboard_mouse(true);
+  }
+
   /**
    * @brief Calls InjectSyntheticPointerInput() and switches input desktops if required.
    * @details Must only be called if InjectSyntheticPointerInput() is available.

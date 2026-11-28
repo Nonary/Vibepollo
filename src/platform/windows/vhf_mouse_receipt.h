@@ -35,12 +35,39 @@ namespace platf::vhf_keyboard_mouse {
 
     ~mouse_receipt() { stop(); }
 
-    bool start() {
+    static bool input_desktop_is_default() {
+      const HDESK desktop = OpenInputDesktop(0, FALSE, DESKTOP_READOBJECTS);
+      if (!desktop) return false;
+      const bool is_default = desktop_is_default(desktop);
+      CloseDesktop(desktop);
+      return is_default;
+    }
+
+    // The caller serializes start/stop and input submissions. The observer's
+    // message thread can use the receipt state until stop() joins it.
+    bool start(bool default_desktop_only = false) {
       if (worker.joinable()) return false;
-      worker = std::thread([this] { run(); });
+      worker = std::thread([this, default_desktop_only] { run(default_desktop_only); });
       std::unique_lock lock(mutex);
       changed.wait(lock, [this] { return initialized; });
       return window != nullptr && hook != nullptr;
+    }
+
+    void stop() {
+      HWND target;
+      { std::lock_guard lock(mutex); target = window; }
+      if (target) PostMessageW(target, WM_CLOSE, 0, 0);
+      if (worker.joinable()) worker.join();
+
+      std::lock_guard lock(mutex);
+      window = nullptr;
+      hook = nullptr;
+      relative_device = nullptr;
+      absolute_device = nullptr;
+      pending.clear();
+      counters = {};
+      initialized = false;
+      removed = false;
     }
 
     // Called after OPEN, before admitting any input. Resolve only these two
@@ -145,6 +172,13 @@ namespace platf::vhf_keyboard_mouse {
 
   private:
     friend struct mouse_receipt_test;
+    static bool desktop_is_default(HDESK desktop) {
+      wchar_t name[256] {};
+      DWORD needed = 0;
+      return GetUserObjectInformationW(desktop, UOI_NAME, name, sizeof(name), &needed) &&
+             _wcsicmp(name, L"Default") == 0;
+    }
+
     inline static std::atomic<std::uint32_t> injection_sequence {GetTickCount() ^ (GetCurrentProcessId() * 0x9e3779b9u)};
     static ULONG_PTR next_injection_tag() {
       // MOUSE_INPUT_DATA carries a 32-bit ExtraInformation value. A wider
@@ -279,14 +313,14 @@ namespace platf::vhf_keyboard_mouse {
       return result;
     }
 
-    void run() {
+    void run(bool default_desktop_only) {
       // Raw Input and the hook must live on the active input desktop. Later
       // desktop switches fail closed at the bounded receipt wait; recovery
       // deletes the HID child before subsequent ordinary Windows input.
       const HDESK original_desktop = GetThreadDesktop(GetCurrentThreadId());
       HDESK desktop = OpenInputDesktop(0, FALSE,
         DESKTOP_READOBJECTS | DESKTOP_WRITEOBJECTS | DESKTOP_CREATEWINDOW | DESKTOP_HOOKCONTROL);
-      const bool desktop_ready = desktop && SetThreadDesktop(desktop);
+      const bool desktop_ready = desktop && (!default_desktop_only || desktop_is_default(desktop)) && SetThreadDesktop(desktop);
       const HINSTANCE module = GetModuleHandleW(nullptr);
       WNDCLASSW cls {};
       cls.lpfnWndProc = procedure;
@@ -300,7 +334,7 @@ namespace platf::vhf_keyboard_mouse {
       HHOOK installed = created ? SetWindowsHookExW(WH_MOUSE_LL, mouse_hook, module, 0) : nullptr;
       {
         std::lock_guard lock(mutex);
-        window = created;
+        window = installed ? created : nullptr;
         hook = installed;
         initialized = true;
         changed.notify_all();
@@ -318,13 +352,6 @@ namespace platf::vhf_keyboard_mouse {
       observer = nullptr;
       // Restore before closing the handle of the former assigned desktop.
       if (desktop) { SetThreadDesktop(original_desktop); CloseDesktop(desktop); }
-    }
-
-    void stop() {
-      HWND target;
-      { std::lock_guard lock(mutex); target = window; }
-      if (target) PostMessageW(target, WM_CLOSE, 0, 0);
-      if (worker.joinable()) worker.join();
     }
 
     std::mutex mutex;
