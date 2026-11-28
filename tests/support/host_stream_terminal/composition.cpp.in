@@ -60,8 +60,8 @@ namespace audio {
 bool ac3_encoder=true,eac3_encoder=true;
 bool ac3_available(){return ac3_encoder;}
 bool eac3_available(){return eac3_encoder;}
-@DOLBY_CONFIGURE@
 @DOLBY_BITRATE@
+@DOLBY_CONFIGURE@
 @DOLBY_NAME@
 }
 namespace stream {
@@ -99,7 +99,7 @@ int start(session_t &,const std::string &) {if(start_exception)throw std::runtim
 }
 }
 namespace config { struct {int fec_percentage=0,packetsize=0;std::chrono::seconds ping_timeout{5};} stream; struct {bool limit_framerate=false;int max_bitrate=0;} video; @PACKET_CONSTANTS@ constexpr int ENCRYPTION_MODE_MANDATORY=1; void maybe_apply_deferred() {} std::shared_mutex apply_gate; std::shared_lock<std::shared_mutex> acquire_apply_read_gate(){return std::shared_lock(apply_gate);}}
-namespace config {struct {std::string format="opus";bool high_quality_audio=false;} audio;}
+namespace config {struct {std::string format="opus";bool high_quality_audio=false;int ac3_bitrate=0;int eac3_bitrate=0;} audio;}
 namespace video {int active_hevc_mode=3,active_av1_mode=3,active_pyrowave_mode=2;}
 namespace net {int encryption_mode_for_address(int) {return 0;}}
 namespace platf {std::uint64_t routed_link_bps(int,int){return 0;}}
@@ -392,18 +392,31 @@ int main() {
  // Exercise the unchanged ANNOUNCE parser and production negotiation helper,
  // controlling only FFmpeg encoder discovery. Each accepted session must still
  // transfer and retire its resource owner through the real terminal path.
- struct AudioCase {const char *offered,*accepted,*expected;int channels;bool encoder,quality;int status;};
- for(const auto &test:std::array<AudioCase,8>{{
-   {"AC3","AC3","AC3",2,true,false,200},
-   {"EAC3","EAC3","EAC3",6,true,true,200},
-   {"AC3","","Opus",2,true,false,200},
-   {"EAC3","AC3","Opus",6,true,false,200},
-   {"AC3","AC3","",2,false,false,400},
-   {"EAC3","EAC3","",6,false,false,400},
-   {"AC3","AC3","",8,true,false,400},
-   {"","EAC3","Opus",2,true,false,200},
+ struct AudioCase {const char *offered,*accepted,*expected;int ac3_br,eac3_br,channels;bool encoder,quality;int status;int expected_kbps;};
+ for(const auto &test:std::array<AudioCase,21>{{
+   {"AC3","AC3","AC3",0,0,2,true,false,200,128},
+   {"AC3","AC3","AC3",0,0,6,true,true,200,640},
+   {"AC3","AC3","AC3",384,0,6,true,true,200,384},
+   {"AC3","AC3","AC3",448,0,6,true,false,200,448},
+   {"AC3","AC3","AC3",448,0,2,true,false,200,160},
+   {"AC3","AC3","AC3",640,0,2,true,false,200,192},
+   {"AC3","AC3","AC3",960,0,6,true,true,200,640},
+   {"EAC3","EAC3","EAC3",0,0,6,true,true,200,384},
+   {"EAC3","EAC3","EAC3",0,192,6,true,true,200,192},
+   {"EAC3","EAC3","EAC3",0,448,6,true,false,200,192},
+   {"EAC3","EAC3","EAC3",0,9999,6,true,true,200,384},
+   {"EAC3","EAC3","EAC3",0,640,2,true,false,200,256},
+   {"EAC3","EAC3","EAC3",0,768,6,true,false,200,768},
+   {"EAC3","EAC3","EAC3",0,768,2,true,false,200,256},
+   {"EAC3","EAC3","EAC3",0,960,6,true,false,200,960},
+   {"EAC3","EAC3","EAC3",0,960,2,true,false,200,384},
+   {"AC3","","Opus",640,0,2,true,false,200,0},
+   {"EAC3","AC3","Opus",0,768,6,true,false,200,0},
+   {"AC3","AC3","",640,0,2,false,false,400,0},
+   {"EAC3","EAC3","",0,768,6,false,false,400,0},
+   {"AC3","AC3","",640,0,8,true,false,400,0},
  }}) {
-   reset();audio::ac3_encoder=test.encoder;audio::eac3_encoder=test.encoder;config::audio.high_quality_audio=test.quality;
+   reset();audio::ac3_encoder=test.encoder;audio::eac3_encoder=test.encoder;config::audio.high_quality_audio=test.quality;config::audio.ac3_bitrate=test.ac3_br;config::audio.eac3_bitrate=test.eac3_br;
    pending=std::make_shared<launch_session_t>();pending->audio_codec_offered=test.offered;
    pending->audio_context_guard=std::make_shared<int>(1);resource=pending->audio_context_guard;
    server._launch_sessions.emplace_back(rtsp_server_t::launch_session_entry_t{pending,std::chrono::steady_clock::now()+1s});
@@ -417,9 +430,9 @@ int main() {
    if(admitted) {
      const auto &selected=stream::session::allocated_audio;const bool dolby=std::string_view(test.expected)!="Opus";
      check(selected.use_ac3==(std::string_view(test.expected)=="AC3") && selected.use_eac3==(std::string_view(test.expected)=="EAC3") &&
-           selected.high_quality_dolby==(dolby && test.quality) && selected.packetDuration==(dolby?32:5) &&
+           selected.dolby_bitrate==test.expected_kbps && selected.packetDuration==(dolby?32:5) &&
            (!dolby || (selected.flags[audio::config_t::HIGH_QUALITY] && !selected.flags[audio::config_t::CUSTOM_SURROUND_PARAMS])),
-           "production negotiation reaches capture with exact codec, quality and packet duration");
+           "production negotiation reaches capture with exact codec, resolved Dolby bitrate and packet duration");
      check(running==1 && !resource.expired(),"negotiated ANNOUNCE retains its active resource handoff");
    } else check(running==0 && server.startup_pool.queue.empty(),"rejected negotiation never queues capture");
    terminal();check(resource.expired() && running==0 && !late_ordinary,"terminal drains negotiated or rejected session resources before recovery");

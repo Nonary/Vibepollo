@@ -276,7 +276,9 @@ namespace config {
     bool auto_capture;
     bool sink_capture_only;  ///< Capture the selected Windows audio sink without changing default outputs.
     std::string format {"opus"};  ///< Encoded stream format: Opus, AC-3, or E-AC-3.
-    bool high_quality_audio {false};  ///< Higher bitrate for negotiated Dolby streams; ignored for Opus.
+    bool high_quality_audio {false};  ///< Legacy fallback for AC-3/E-AC-3 bitrate when explicit bitrate keys are unset.
+    int ac3_bitrate {384};  ///< Target 5.1 bitrate (kbit/s) for negotiated AC-3 streams: 384, 448, or 640.
+    int eac3_bitrate {192};  ///< Target 5.1 bitrate (kbit/s) for negotiated E-AC-3 streams: 192, 384, 640, 768, or 960.
   };
 
   constexpr int ENCRYPTION_MODE_NEVER = 0;  // Never use video encryption, even if the client supports it

@@ -258,7 +258,7 @@ namespace audio {
     if (config.use_ac3 || config.use_eac3) {
       const auto codec_id = config.use_eac3 ? AV_CODEC_ID_EAC3 : AV_CODEC_ID_AC3;
       const auto codec_name = config.use_eac3 ? "E-AC-3"sv : "AC-3"sv;
-      const auto bitrate_kbps = dolby_bitrate_kbps(config.use_eac3, config.high_quality_dolby, config.channels);
+      const auto bitrate_kbps = config.dolby_bitrate;
       ffmpeg_audio_encoder_t encoder;
 
       // The worker's control flow is shared with the CPU-only regression test.
@@ -279,8 +279,8 @@ namespace audio {
           return active_encoder.encode(sample, packet);
         },
         [] {
-          // Reserve enough room for the largest supported 640 kbit/s AC-3 access unit.
-          return buffer_t {4096};
+          // Reserve enough room for the largest supported AC-3 / E-AC-3 access unit (up to 960 kbit/s = 3840 B).
+          return buffer_t {MAX_DOLBY_PACKET_BYTES};
         },
         [&](const auto &sample, buffer_t packet, int bytes) {
           if (webrtc_stream::has_active_sessions() && channel_data == nullptr) {
@@ -506,13 +506,31 @@ namespace audio {
     return avcodec_find_encoder(AV_CODEC_ID_EAC3) != nullptr;
   }
 
-  int dolby_bitrate_kbps(bool eac3, bool high_quality, int channels) {
-    if (channels == 2) return high_quality ? 192 : 128;
-    if (channels == 6) {
-      if (eac3) return high_quality ? 384 : 192;
-      return high_quality ? 640 : 384;
+  int dolby_bitrate_kbps(bool eac3, bool high_quality, int channels, int configured_51_kbps) {
+    if (channels != 2 && channels != 6) return 0;
+    struct tier_t {
+      bool eac3;
+      int surround_51;
+      int stereo;
+    };
+    static constexpr tier_t tiers[] = {
+      {false, 384, 128}, {false, 448, 160}, {false, 640, 192},
+      {true, 192, 128}, {true, 384, 192}, {true, 640, 256},
+      {true, 768, 256}, {true, 960, 384},
+    };
+    // 1536 samples at 48 kHz = 32 ms -> kbps * 4 bytes per access unit; leave headroom for AES padding and RTP.
+    static_assert(960 * 4 + 64 <= 4096, "Largest Dolby tier must fit within the 4096-byte audio packet buffer");
+    const int default_51 = eac3 ? (high_quality ? 384 : 192) : (high_quality ? 640 : 384);
+    const tier_t *selected = nullptr;
+    for (const auto &tier : tiers) {
+      if (tier.eac3 != eac3) continue;
+      if (tier.surround_51 == configured_51_kbps) {
+        selected = &tier;
+        break;
+      }
+      if (tier.surround_51 == default_51) selected = &tier;
     }
-    return 0;
+    return selected ? (channels == 6 ? selected->surround_51 : selected->stereo) : 0;
   }
 
   dolby_codec_e configure_dolby_audio(
@@ -521,12 +539,14 @@ namespace audio {
     std::string_view accepted,
     bool ac3_encoder_available,
     bool eac3_encoder_available,
-    bool high_quality
+    bool high_quality,
+    int ac3_bitrate,
+    int eac3_bitrate
   ) {
     using enum audio::dolby_codec_e;
     config.use_ac3 = false;
     config.use_eac3 = false;
-    config.high_quality_dolby = false;
+    config.dolby_bitrate = 0;
     const bool supported_channels = config.channels == 2 || config.channels == 6;
     auto selected = opus;
     if (supported_channels && offered == "AC3" && accepted == offered && ac3_encoder_available) {
@@ -540,7 +560,12 @@ namespace audio {
       config.packetDuration = 32;
       config.flags[config_t::HIGH_QUALITY] = true;
       config.flags[config_t::CUSTOM_SURROUND_PARAMS] = false;
-      config.high_quality_dolby = high_quality;
+      config.dolby_bitrate = dolby_bitrate_kbps(
+        selected == eac3,
+        high_quality,
+        config.channels,
+        selected == eac3 ? eac3_bitrate : ac3_bitrate
+      );
     }
     return selected;
   }

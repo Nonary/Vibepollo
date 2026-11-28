@@ -529,6 +529,7 @@ namespace stream {
   }
 
   constexpr std::size_t MAX_AUDIO_PACKET_SIZE = 4096;
+  static_assert(MAX_AUDIO_PACKET_SIZE >= audio::MAX_DOLBY_PACKET_BYTES, "Audio packet buffer must accommodate Dolby access units");
 
   using audio_aes_t = std::array<char, round_to_pkcs7_padded(MAX_AUDIO_PACKET_SIZE)>;
 
