@@ -1889,7 +1889,14 @@ namespace video {
   // never open a desktop/WGC/DD capture target. Reuse the synthetic D3D source
   // and feed black frames at the client cadence.
   std::shared_ptr<platf::display_t> make_black_display(const config_t &config) {
-    auto display = std::make_shared<synthetic_vram_display_t>(config, std::nullopt);
+    // Create the source on the render GPU. DXGI's first adapter can be a
+    // different GPU on hybrid systems, where the encoder cannot open a session.
+    std::optional<platf::adapter_id_t> required_adapter;
+    if (const auto preferred_adapter = platf::resolve_preferred_render_adapter(config::video.adapter_name, config::video.adapter_pnp_id)) {
+      required_adapter = adapter_id_from_luid(*preferred_adapter.luid);
+    }
+
+    auto display = std::make_shared<synthetic_vram_display_t>(config, required_adapter);
     if (!display->valid()) return {};
     display->client_frame_rate = std::max(1, config.framerate);
     return display;
