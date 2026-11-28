@@ -155,3 +155,35 @@ TEST(InputValidation, SteamAttributesRequireExactWireSize) {
   write_u32_be(bytes, 0, bytes.size() - 4);
   EXPECT_FALSE(input::validation::validate_packet(bytes));
 }
+
+TEST(InputValidation, SpeakerBindingHonorsControllerPermissionInMixedMasks) {
+  using crypto::PERM;
+  std::vector<std::uint8_t> binding {0, 0, 0, 16, 9, 0, 0, 0x55, 15, 0, 1, 0, 8, 7, 6, 5, 4, 3, 2, 1};
+  const auto validated = input::validation::validate_packet(binding);
+  ASSERT_TRUE(validated);
+
+  // Full input permissions accept speaker registration.
+  EXPECT_TRUE(input::validation::packet_permitted(validated.magic, PERM::_all_inputs));
+
+  // Mixed permission masks with controller input enabled (other inputs disabled) accept speaker registration.
+  const auto mixed_with_controller = PERM::input_controller | PERM::input_kbd;
+  EXPECT_TRUE(input::validation::packet_permitted(validated.magic, mixed_with_controller));
+  EXPECT_TRUE(input::validation::packet_permitted(SS_CONTROLLER_ARRIVAL_MAGIC, mixed_with_controller));
+  EXPECT_TRUE(input::validation::packet_permitted(KEY_DOWN_EVENT_MAGIC, mixed_with_controller));
+  EXPECT_FALSE(input::validation::packet_permitted(MOUSE_MOVE_REL_MAGIC_GEN5, mixed_with_controller));
+  EXPECT_FALSE(input::validation::packet_permitted(SS_TOUCH_MAGIC, mixed_with_controller));
+  EXPECT_FALSE(input::validation::packet_permitted(SS_PEN_MAGIC, mixed_with_controller));
+
+  EXPECT_TRUE(input::validation::packet_permitted(validated.magic, PERM::input_controller));
+
+  // Mixed permission mask with controller input disabled rejects speaker registration (even when other inputs are allowed).
+  const auto mixed_without_controller = PERM::input_mouse | PERM::input_kbd | PERM::input_touch | PERM::input_pen;
+  EXPECT_FALSE(input::validation::packet_permitted(validated.magic, mixed_without_controller));
+  EXPECT_FALSE(input::validation::packet_permitted(SS_CONTROLLER_ARRIVAL_MAGIC, mixed_without_controller));
+  EXPECT_TRUE(input::validation::packet_permitted(MOUSE_MOVE_REL_MAGIC_GEN5, mixed_without_controller));
+  EXPECT_TRUE(input::validation::packet_permitted(KEY_DOWN_EVENT_MAGIC, mixed_without_controller));
+
+  // Non-input / empty permissions reject speaker registration.
+  EXPECT_FALSE(input::validation::packet_permitted(validated.magic, PERM::_default));
+  EXPECT_FALSE(input::validation::packet_permitted(validated.magic, PERM::_no));
+}
